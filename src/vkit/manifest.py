@@ -39,7 +39,12 @@ class Prerequisite:
 
 @dataclass(frozen=True)
 class CheckSpec:
-    """One executable, fully resolved against the repository root."""
+    """One executable, fully resolved against the repository root.
+
+    `argv` still holds the placeholders unexpanded. They are substituted once the
+    run directory exists, because that path is only known at run time and a
+    check's own arguments are the only thing that legitimately needs it.
+    """
 
     id: str
     description: str
@@ -50,6 +55,15 @@ class CheckSpec:
     artifact_name: str
     prerequisites: tuple[Prerequisite, ...]
     inputs: tuple[str, ...]
+
+    def resolved_argv(self, run_dir: Path, python: str) -> tuple[str, ...]:
+        """The exact list to execute. Only two placeholders exist, both documented
+        in CONTRACT.md: the run artifact directory and the resolved interpreter.
+        Nothing is ever passed through a shell or evaluated."""
+        return tuple(
+            part.replace("{{run_dir}}", str(run_dir)).replace("{{python}}", python)
+            for part in self.argv
+        )
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 from typing import Any
 
 from .identity import SourceIdentity, compute_source_identity, source_unchanged
@@ -28,7 +29,7 @@ from .outcome import (
     Passed,
     ScenarioResult,
 )
-from .procs import ProcessResult, run_process
+from .procs import run_command
 from .schemas import CHECK_ARTIFACT, RUN_REPORT, SchemaValidationError, parse_artifact, validate
 from .storage import Store, StoreError
 
@@ -107,6 +108,22 @@ def _scenarios_from_artifact(
     return scenarios, None
 
 
+@dataclass(frozen=True)
+class ProcessResult:
+    """What the execution layer reports, in the shape the outcome rules read.
+
+    `launch_error` is a (reason, detail) pair rather than a bare string so a
+    refusal to own the process stays distinguishable from a command that ran and
+    failed. A run must never claim a subprocess executed when none did.
+    """
+
+    pid: int | None
+    ownership: str
+    exit_code: int | None
+    timed_out: bool
+    launch_error: tuple[BlockedReason, str] | None = None
+
+
 def _derive(
     check: CheckSpec,
     process: ProcessResult,
@@ -119,7 +136,8 @@ def _derive(
     validity alone is never enough; both are required, per CONTRACT.md.
     """
     if process.launch_error is not None:
-        return Blocked(BlockedReason.LAUNCH_FAILED, process.launch_error)
+        reason, detail = process.launch_error
+        return Blocked(reason, detail)
     if process.timed_out:
         return Blocked(
             BlockedReason.TIMEOUT,
@@ -188,6 +206,15 @@ def run_check(
     run_dir = store.run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Register before anything else can conclude. A missing prerequisite is a
+    # real answer about this run and has to be recorded as one, and a report can
+    # only be published against a row that exists.
+    store.register_run(
+        run_id, check.id, task_id=None, attempt=None,
+        source=source.to_json(), configuration_digest=manifest.digest(),
+        fixture_digest=None,
+    )
+
     blocked = check_prerequisites(check)
     if blocked is not None:
         report = _terminal_report(
@@ -198,22 +225,25 @@ def run_check(
         _publish(store, run_id, report)
         return RunOutcome(report, blocked)
 
-    store.register_run(
-        run_id, check.id, task_id=None, attempt=None,
-        source=source.to_json(), configuration_digest=manifest.digest(),
-        fixture_digest=None,
-    )
-
     started_at = _now()
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
-    process = run_process(
-        list(check.argv),
+    # The interpreter a check should use, and the run directory it should write
+    # into, are the only two substitutions. The manifest may not name a shell.
+    argv = check.resolved_argv(run_dir, sys.executable)
+    result = run_command(
+        list(argv),
         cwd=check.cwd,
-        env=_child_environment(),
-        timeout_seconds=check.timeout_seconds,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
+        timeout_seconds=check.timeout_seconds,
+    )
+    process = ProcessResult(
+        pid=result.pid,
+        ownership=result.ownership,
+        exit_code=result.exit_code,
+        timed_out=result.timed_out,
+        launch_error=None if result.reason is None else (result.reason, result.detail),
     )
     store.mark_running(run_id, {
         "pid": process.pid, "ownership": process.ownership,
@@ -235,30 +265,10 @@ def run_check(
         run_id, check, manifest, source,
         outcome=outcome, started_at=started_at, ended_at=_now(),
         process=process, artifact=artifact, run_dir=run_dir,
+        executed_argv=list(argv),
     )
     _publish(store, run_id, report)
     return RunOutcome(report, outcome)
-
-
-def _child_environment() -> dict[str, str]:
-    """A deliberately small environment for the child.
-
-    The check is repository policy, but it is not entitled to the caller's full
-    credential environment. Keeping PATH is what makes a declared prerequisite
-    findable at all.
-    """
-    import os
-    import sys
-
-    return {
-        "PATH": os.environ.get("PATH", ""),
-        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
-        "TEMP": os.environ.get("TEMP", ""),
-        "TMP": os.environ.get("TMP", ""),
-        "PYTHONIOENCODING": "utf-8",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONUNBUFFERED": "1",
-    }
 
 
 def _terminal_report(
@@ -273,6 +283,7 @@ def _terminal_report(
     process: ProcessResult | None,
     artifact: Path | None,
     run_dir: Path,
+    executed_argv: list[str] | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "schema_version": 1,
@@ -283,7 +294,12 @@ def _terminal_report(
         "ended_at": ended_at,
         "outcome": outcome.to_json(),
         "source": source.to_json(),
-        "command": {"argv": list(check.argv), "cwd": str(check.cwd)},
+        # The list actually executed, so a reader can reproduce the run without
+        # knowing what the placeholders meant.
+        "command": {
+            "argv": executed_argv if executed_argv is not None else list(check.argv),
+            "cwd": str(check.cwd),
+        },
         "configuration_digest": manifest.digest(),
         "fixture_digest": None,
         "process": None if process is None else {

@@ -2,6 +2,37 @@
 
 Read [CONTRACT.md](CONTRACT.md). Ready after Plan 04 provides a tested plugin package and installation mechanism.
 
+## Owner decision, 2026-09-29: this is a web management console
+
+The repository owner chose a **browser-based management console** over the
+terminal wizard this plan originally described. The operations are unchanged:
+detect, show, select, apply, verify, repair, remove. Only the presentation
+changes. A graphical interface is a view over the same core, and Plan 05 must
+still have exactly one setup engine. The terminal renderer may be dropped rather
+than maintained alongside the web one.
+
+The console is **read-mostly by default and may write only what the core already
+supports.** The one deliberate exception is enrollment and install operations
+that already exist in the core. In particular, the console must not become a way
+to edit `verification/manifest.json`. That file is executable repository policy:
+it is checked in, reviewed in a pull request, and its digest is part of the
+evidence. A settings screen that silently rewrites it would let an operator
+weaken the very contract the evidence is measured against. If a manifest needs
+to change, that is a commit.
+
+**What the console may write** is enumerated in `src/vkit/admin.py` and nowhere
+else, so the writable surface is one list a reviewer can read. Every mutation
+goes through the same core operation the CLI and MCP use, and every mutation
+records what it changed in the run log.
+
+**Host binding.** The console is local-only. It binds to `127.0.0.1`, refuses a
+non-loopback bind address, and serves nothing outside the process. It is not a
+network service and must not be described as one.
+
+**Multi-host.** The first release targets Claude Code only. The core must keep
+host-specific code in adapters so a later host does not require rewriting
+anything, but no abstraction for a host that does not exist yet.
+
 ## Outcome
 
 A user runs `vkit setup`, sees what is installed and missing, selects the desired integration and scope, and gets a working app connection without hand-editing several unrelated configuration files. The app offers skills and hooks explicitly and can later repair or remove its own integration.

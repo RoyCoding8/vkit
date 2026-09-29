@@ -14,6 +14,34 @@ below. No other milestone has begun.
 | 07 | Waiting for 02, 04, 06 | None |
 | 08 | Optional; waiting for 02 | None |
 | 09 | Package checks wait for 01-07; pilot also needs repository and live-usage authorization | None |
+| 10 | Accepted by owner 2026-09-29; sequenced after 09 | None |
+
+## Build order agreed with the owner, 2026-09-29
+
+Components are built one at a time, then integrated. A management console is the
+final integration, not an early one.
+
+| Step | Plan | Result |
+| --- | --- | --- |
+| 1 | 02 | Ownership, background runs, cancellation, recovery |
+| 2 | 06 | Repository onboarding and feature maps |
+| 3 | 03 | MCP tools for agents |
+| 4 | 04 | Claude Code plugin, skills, lifecycle hooks |
+| 5 | 05 | Setup and install operations, now as a web console |
+| 6 | 07 | Combined-candidate checks and parallel workflow |
+| 7 | 08 | Optional formal checks |
+| 8 | 09 | Release, fresh-session install, pilot |
+| 9 | 10 | Management console over the finished core |
+
+The console is last because a UI over a moving core is a UI that gets rewritten.
+Plan 10 is a view, not a new source of truth. The owner originally asked it to
+"modify settings"; that is deliberately reduced to a fixed writable surface,
+because the manifest is executable policy that must stay reviewed in a diff.
+See [10-management-console.md](10-management-console.md).
+
+First release targets Claude Code only. Host-specific code stays behind adapters
+so a later host is an addition, not a rewrite, but no abstraction is built for a
+host that does not exist yet.
 
 Workers update their milestone row only with actual evidence. Preserve failed
 checks and blockers. Add a short entry below for any public interface change,

@@ -315,13 +315,21 @@ class Store:
         return candidate
 
     def list_runs(self, *, task_id: str | None = None, limit: int = 50) -> list[dict]:
-        """Recent runs, newest first. Bounded so a console cannot ask for all."""
-        sql = "SELECT run_id, check_id, task_id, lifecycle, result, reason, registered_at, ended_at FROM runs"
+        """Recent runs, newest first. Bounded so a console cannot ask for all.
+
+        Ordered by rowid rather than registered_at. Two runs started in the same
+        microsecond would tie on the timestamp, and SQLite does not promise an
+        order between equal values, so "the most recent run" would be whichever
+        row the query happened to return first. rowid is monotonic with
+        insertion, so the ordering is total and the answer is reproducible.
+        """
+        sql = ("SELECT run_id, check_id, task_id, lifecycle, result, reason,"
+               " registered_at, ended_at FROM runs")
         params: list[object] = []
         if task_id is not None:
             sql += " WHERE task_id = ?"
             params.append(task_id)
-        sql += " ORDER BY registered_at DESC LIMIT ?"
+        sql += " ORDER BY rowid DESC LIMIT ?"
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()

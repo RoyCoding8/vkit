@@ -1,96 +1,127 @@
-# Plan 05: ship the user-facing setup application
+# Plan 05: the setup console
 
-Read [CONTRACT.md](CONTRACT.md). Ready after Plan 04 provides a tested plugin package and installation mechanism.
+Status: **owner decision, 2026-09-29.** This plan replaces the original terminal
+wizard and absorbs the former Plan 10 management console. There is now exactly
+one setup surface: a local browser console over the setup operations.
 
-## Owner decision, 2026-09-29: this is a web management console
-
-The repository owner chose a **browser-based management console** over the
-terminal wizard this plan originally described. The operations are unchanged:
-detect, show, select, apply, verify, repair, remove. Only the presentation
-changes. A graphical interface is a view over the same core, and Plan 05 must
-still have exactly one setup engine. The terminal renderer may be dropped rather
-than maintained alongside the web one.
-
-The console is **read-mostly by default and may write only what the core already
-supports.** The one deliberate exception is enrollment and install operations
-that already exist in the core. In particular, the console must not become a way
-to edit `verification/manifest.json`. That file is executable repository policy:
-it is checked in, reviewed in a pull request, and its digest is part of the
-evidence. A settings screen that silently rewrites it would let an operator
-weaken the very contract the evidence is measured against. If a manifest needs
-to change, that is a commit.
-
-**What the console may write** is enumerated in `src/vkit/admin.py` and nowhere
-else, so the writable surface is one list a reviewer can read. Every mutation
-goes through the same core operation the CLI and MCP use, and every mutation
-records what it changed in the run log.
-
-**Host binding.** The console is local-only. It binds to `127.0.0.1`, refuses a
-non-loopback bind address, and serves nothing outside the process. It is not a
-network service and must not be described as one.
-
-**Multi-host.** The first release targets Claude Code only. The core must keep
-host-specific code in adapters so a later host does not require rewriting
-anything, but no abstraction for a host that does not exist yet.
+Read [CONTRACT.md](CONTRACT.md) first. Ready after Plan 04 provides a tested
+plugin package and installation mechanism.
 
 ## Outcome
 
-A user runs `vkit setup`, sees what is installed and missing, selects the desired integration and scope, and gets a working app connection without hand-editing several unrelated configuration files. The app offers skills and hooks explicitly and can later repair or remove its own integration.
+A user opens a local page, sees what is installed and what is missing, selects
+components and scope, sees the exact changes that will be made, and applies
+them. The same page monitors runs, shows stored evidence, and can cancel a run.
+No hand-editing of unrelated configuration files, and no second setup engine.
 
-Default presentation: terminal wizard using ordinary prompts and clear text. No TUI framework is required. A graphical-first user preference would change the presentation work in this plan; the core operations and acceptance criteria remain the same. Do not build two independent setup engines.
+## Why one plan and not two
 
-## User flow
+The owner originally asked for a terminal setup wizard and, separately, a
+management console. Those are the same product. Building both would mean two
+renderers over one core, and the second one would rot. So the console is the only
+setup surface, and the operations live in a layer it does not own.
 
-1. Explain that vkit supplies verification tools and uses the existing Claude Code model/session.
-2. Detect the installed app version, supported Claude version, plugin registration, current project, and required skill availability. Inspect only relevant installation/configuration paths; avoid reading unrelated conversations or secrets.
-3. Offer project-only or user-level installation using the host's supported scopes. Explain which files/settings will change. Keep this choice distinct from repository enrollment.
-4. Show components: app MCP connection, vkit skills, lifecycle hooks, and optional installation/connection of required pstack skills. Detect compatible existing components and offer reuse.
-5. Present the resolved change set, source/version of downloaded components, and any conflict. Ask once to apply the selected changes. Selection must not silently enable unrestricted shell tools, new model spending, or future agent delegation.
-6. Apply through official host installation commands where possible. Preserve unrelated configuration. Run a local connection/doctor test and show what works plus any remaining host restart or user action.
+## Shape
 
-The app should ask to install skills, as requested. It must distinguish app-provided skills from pstack. Reusing an existing installation should not create duplicate names or stale copies. Use pinned provenance and retained license notices for any approved vendored material.
-
-## Commands and mechanics
+A local HTTP server over the same core the CLI and MCP use. No web framework:
+the standard library's `http.server` covers a loopback JSON API plus a small
+static page. Adding a framework here is the kind of dependency the rest of the
+project refuses.
 
 ```text
-vkit setup
-vkit integration status --json
-vkit integration repair
-vkit integration remove
+src/vkit/setup/
+    operations.py   install, repair, remove, enroll. Pure. The real logic.
+    plan.py         the exact change set, computed and shown before applying
+    server.py       loopback HTTP and routing. No business logic.
+    api.py          request and response shapes. Validation at the boundary.
+    static/         index.html, app.js, style.css
 ```
 
-Provide a noninteractive mode that accepts a saved explicit selection/change set for repeatable testing and managed installation. Noninteractive invocation without required choices returns instructions; it does not assume consent.
+The dependency direction matters and is the whole design: `operations.py` knows
+nothing about HTTP, and `server.py` knows nothing about installing. A test drives
+`operations.py` directly and never starts a server.
 
-Keep installation receipts separate from repository runtime state. The receipt records installed component IDs, versions, scope, and exact owned changes, not a mirror of all user settings. Use official uninstall mechanisms where available. For files the app must edit, validate the format, write atomically, and preserve recoverable prior values.
+## The writable surface
 
-Repair and uninstall must compare current values with the recorded owned values. If a user changed an entry, preserve it and report the conflict; do not restore a whole old settings file over newer work. Do not delete a user's preexisting pstack installation just because vkit used it.
+This is the file to read when asking "what can this thing change?" It is one
+list, in `src/vkit/setup/plan.py`, and nothing outside it writes.
 
-Handle interruption between installation steps by inspecting actual host state on the next invocation. Idempotent reapplication should converge on the selected setup. A small installation receipt is sufficient; no background repair watcher or generic deployment engine.
+| Operation | Effect |
+| --- | --- |
+| enroll | Register a repository as verified |
+| install | Install the host plugin, skills, and hooks at a chosen scope |
+| repair | Re-apply a drifted installation |
+| remove | Undo an installation, preserving recoverable prior values |
+| run check | Start a registered check |
+| cancel run | Stop a running check, verifying process identity first |
 
-Hook execution and MCP startup must never run a package installation or network update. Install the pinned executable during setup. Test invocation through paths with spaces and without relying on the initiating shell's PATH.
+**The manifest is not on this list, and that is deliberate.**
+`verification/manifest.json` is executable repository policy. It is committed,
+reviewed in a pull request, and its digest is recorded in every run report. A
+console that could rewrite it would let an operator weaken the contract the
+evidence is measured against without any diff to review. Changing the manifest
+means making a commit. The same applies to the schemas and to the policy digest.
+
+Every mutation goes through an operation that already exists, displays the
+resolved change set before applying it, and records what it did.
+
+## Local-only, and why that is a constraint rather than a caveat
+
+The server binds `127.0.0.1` and refuses any other address, at the socket. A
+request from a non-loopback peer is refused. There is no authentication because
+there is no remote peer, and it must not be described as a network service.
+
+A loopback server with no auth is only safe while it genuinely cannot be reached
+from another machine. That is why the bind address is refused rather than
+warned about.
+
+Single user. No accounts, no multi-user, no HTTPS. If a second user ever needs
+it, that is a new plan, not a configuration flag.
+
+## What it shows
+
+All of it is already a durable record from Plan 01. The console is a view, not a
+new source of truth. If it displays something the store does not hold, that is a
+bug in the console, not a reason to add storage to it.
+
+1. **Project.** Root, Git common directory, HEAD, dirty status.
+2. **Readiness.** What `doctor` reports, running nothing.
+3. **Installation.** Plugin, skills, and hooks present, missing, or drifted.
+4. **Checks.** Every registered check with its id, command, timeout, scenarios.
+5. **Runs.** Outcome, reason, timings, exit code, log paths.
+6. **One run in full.** The stored report and the tail of its logs.
+
+Logs are paginated. A run can produce tens of megabytes, and a console that
+loads one to render it is a console that hangs.
+
+## What it does
+
+Only the six operations above, each calling `operations.py`. The console never
+holds its own idea of what is valid; if the operation refuses, the console shows
+that refusal rather than a friendlier invention.
+
+Install must distinguish app-provided skills from pstack, must not create
+duplicate names or stale copies, and must preserve recoverable prior values.
+Reusing an existing installation is the default when a compatible one is found.
 
 ## Acceptance
 
-Use an isolated home/profile and fixture host configuration for destructive installation scenarios. Do not experiment on the user's real configuration.
-
-| Scenario | Expected outcome |
+| Exercise | Required evidence |
 | --- | --- |
-| Fresh install | Selected components installed and doctor identifies the actual versions |
-| Compatible pstack already present | Reused without duplicate skill copies |
-| Missing skills | Clear offer and explicit selection before installation |
-| User declines | No configuration mutation or download |
-| Unrelated MCP servers/hooks/settings exist | Preserved byte-for-byte where untouched, semantically preserved where structured editing is necessary |
-| Interrupted install then rerun | Correctly resumes/reconciles without duplicate entries |
-| Network unavailable | Reports failed dependency with recoverable state; no false success |
-| Host configuration changed concurrently | Detects conflict before overwriting |
-| Upgrade while tasks are active | Existing tasks retain compatible pinned code/contracts, or upgrade is deferred with a specific reason |
-| Repair | Fixes owned broken registration without resetting unrelated preferences |
-| Uninstall | Removes owned integration while preserving product source, evidence, and external skills |
-| Noninteractive explicit selection | Same resulting setup as wizard; no hidden prompt/hang |
-| New shell after installation | App and plugin executable paths still resolve |
+| Server binds loopback only | Binding `0.0.0.0` is refused |
+| Remote peer refused | Rejected at the socket |
+| Operations work without a server | `operations.py` tested directly; no HTTP in its tests |
+| Run list matches the CLI | Same runs and outcomes as `vkit run show` |
+| A refused mutation shows the core's reason | A bad check id yields the operation's message, not a reworded one |
+| Install shows changes before applying | The change set is visible in a test, not only in the browser |
+| No endpoint writes the manifest | Asserted against the writable list |
+| Large log does not hang | A 10 MB log renders its tail, not the whole file |
+| Killing the console loses nothing | Every run still readable afterwards |
+| Two browsers agree | Both read the store; no console-held state |
+| Prior settings preserved | An install over an existing config records the previous value |
 
-The wizard must use the working MCP/plugin integration from Plans 03-04. A page that merely prints generic setup instructions does not complete this plan. Unsupported host versions may receive precise manual instructions, but must be labeled unsupported rather than installed successfully.
+## Limits
 
-## Finish and handoff
-
-Return a short recorded setup transcript, exact configuration diffs, install/repair/remove counterchecks, supported scope/version matrix, and recovery behavior. This milestone makes the app installable by a person. Plan 06 supplies repository enrollment, and Plan 09 validates the complete fresh-user path.
+Browser-based, local-only, single user. Not a network service. No accounts, no
+remote access, no HTTPS. The console is a view; a fact it shows must exist in the
+store first.

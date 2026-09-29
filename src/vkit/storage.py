@@ -137,6 +137,37 @@ def _reject_network_path(path: Path) -> None:
         raise StoreError(f"network-backed state path is unsupported: {path}")
 
 
+class _Transaction:
+    """One BEGIN IMMEDIATE, committed only if the body returns.
+
+    The write lock is taken before the caller's first read. That is the whole
+    point: read-then-write without it is the race two processes both win.
+    """
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, store: "Store"):
+        self._conn = store._connect()
+
+    def __enter__(self) -> sqlite3.Connection:
+        conn = self._conn.__enter__()
+        conn.execute("BEGIN IMMEDIATE")
+        return conn
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            if exc_type is None:
+                self._conn.__exit__(None, None, None)
+            else:
+                try:
+                    self._conn.execute("ROLLBACK")
+                finally:
+                    self._conn.__exit__(None, None, None)
+        finally:
+            self._conn = None
+        return False
+
+
 class Store:
     """Run, task, and claim records, plus the artifact directories beside them."""
 
@@ -147,6 +178,18 @@ class Store:
         _reject_network_path(self._db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._migrate()
+
+    def transaction(self):
+        """A connection inside one BEGIN IMMEDIATE, committed only on success.
+
+        Public because ownership and idempotency both need read-then-write
+        coordination, and a module reaching into `_connect` is one rename away
+        from silently losing its atomicity. Callers commit or roll back.
+
+            with store.transaction() as conn:
+                conn.execute(...)
+        """
+        return _Transaction(self)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

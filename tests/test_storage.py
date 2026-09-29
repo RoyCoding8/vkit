@@ -98,16 +98,21 @@ def test_a_terminal_run_cannot_be_republished(store: Store) -> None:
 
 
 def test_duplicate_run_id_is_refused(tmp_path: Path) -> None:
+    """A repeated run id is a caller bug, reported as a store error.
+
+    Asserting a raw sqlite3.IntegrityError here would pin a storage detail as
+    public contract; the caller should catch StoreError, not a driver exception.
+    """
     s = Store(tmp_path / "state.sqlite3")
-    for _ in range(2):
-        try:
-            s.register_run(
-                "same", "unit", task_id=None, attempt=None, source={},
-                configuration_digest="c", fixture_digest=None,
-            )
-        except sqlite3.IntegrityError:
-            return
-    pytest.fail("registering the same run id twice was accepted")
+    s.register_run(
+        "same", "unit", task_id=None, attempt=None, source={},
+        configuration_digest="c", fixture_digest=None,
+    )
+    with pytest.raises(StoreError):
+        s.register_run(
+            "same", "unit", task_id=None, attempt=None, source={},
+            configuration_digest="c", fixture_digest=None,
+        )
 
 
 def test_loading_an_unpublished_run_raises(store: Store) -> None:

@@ -1,8 +1,13 @@
-"""The durable run record: a small authoritative SQLite row, plus the report file.
+"""The durable run record and its migrations.
 
-Nothing here knows what a check is. It stores identity and lifecycle so a crashed
-run is still discoverable, and publishes a terminal report so no reader can see
-half of one.
+Nothing here knows what a check is. This layer stores identity, lifecycle, and
+ownership so a crashed run stays discoverable and a superseded attempt cannot
+publish accepted evidence.
+
+Migrations are numbered, applied once, and recorded in `schema_version`. A plan
+01 report written by an earlier build must still be readable after any later
+migration, because the report is the evidence and the evidence does not expire
+with the software that produced it.
 """
 from __future__ import annotations
 
@@ -20,27 +25,97 @@ REPORT_NAME = "report.json"
 BUSY_TIMEOUT_S = 5.0
 DRIVE_REMOTE = 4
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    run_id               TEXT PRIMARY KEY,
-    check_id             TEXT NOT NULL,
-    task_id              TEXT,
-    attempt              INTEGER,
-    lifecycle            TEXT NOT NULL CHECK (lifecycle IN ('preparing','running','terminal')),
-    result               TEXT CHECK (result IS NULL OR result IN ('PASS','FAIL','BLOCKED')),
-    reason               TEXT,
-    source_json          TEXT NOT NULL,
-    configuration_digest TEXT NOT NULL,
-    fixture_digest       TEXT,
-    process_json         TEXT,
-    registered_at        TEXT NOT NULL,
-    ended_at             TEXT
+# Migrations are an ordered list of SQL blocks. Each runs exactly once, inside one
+# transaction, and the applied version is recorded before the transaction commits.
+# Never edit a shipped migration: a database that already applied it would then
+# hold a shape the code no longer expects.
+MIGRATIONS: tuple[tuple[int, str], ...] = (
+    (1, """
+    CREATE TABLE IF NOT EXISTS runs (
+        run_id               TEXT PRIMARY KEY,
+        check_id             TEXT NOT NULL,
+        task_id              TEXT,
+        attempt              INTEGER,
+        lifecycle            TEXT NOT NULL CHECK (lifecycle IN ('preparing','running','terminal')),
+        result               TEXT CHECK (result IS NULL OR result IN ('PASS','FAIL','BLOCKED')),
+        reason               TEXT,
+        source_json          TEXT NOT NULL,
+        configuration_digest TEXT NOT NULL,
+        fixture_digest       TEXT,
+        process_json         TEXT,
+        registered_at        TEXT NOT NULL,
+        ended_at             TEXT
+    )
+    """),
+    (2, """
+    CREATE TABLE IF NOT EXISTS tasks (
+        task_id          TEXT PRIMARY KEY,
+        contract_json    TEXT NOT NULL,
+        policy_digest    TEXT NOT NULL,
+        status           TEXT NOT NULL CHECK (status IN ('active','paused','closed')),
+        generation       INTEGER NOT NULL,
+        readiness        TEXT CHECK (readiness IS NULL OR readiness IN ('READY','REJECTED','BLOCKED')),
+        opened_at        TEXT NOT NULL,
+        closed_at        TEXT
+    );
+
+    -- A resource has at most one owner. The primary key IS the mutual exclusion,
+    -- so a second claimant loses in the database rather than in application code
+    -- that might be racing. CHECK keeps a superseded owner from lingering.
+    CREATE TABLE IF NOT EXISTS claims (
+        resource_key  TEXT NOT NULL,
+        kind          TEXT NOT NULL CHECK (kind IN ('exclusive','capacity')),
+        capacity      INTEGER,
+        held          INTEGER NOT NULL DEFAULT 0,
+        task_id       TEXT NOT NULL,
+        generation    INTEGER NOT NULL,
+        acquired_at   TEXT NOT NULL,
+        released_at   TEXT,
+        PRIMARY KEY (resource_key, task_id, generation),
+        FOREIGN KEY (task_id) REFERENCES tasks(task_id)
+    );
+
+    -- One row per resource that currently has an owner. A unique index on the
+    -- resource alone is what makes two processes racing for the same key produce
+    -- exactly one winner.
+    CREATE TABLE IF NOT EXISTS claim_holders (
+        resource_key  TEXT PRIMARY KEY,
+        kind          TEXT NOT NULL CHECK (kind IN ('exclusive','capacity')),
+        capacity      INTEGER,
+        held          INTEGER NOT NULL DEFAULT 0,
+        task_id       TEXT NOT NULL,
+        generation    INTEGER NOT NULL,
+        acquired_at   TEXT NOT NULL
+    );
+
+    -- Idempotency keys outlive the operation they name. A retry arriving after
+    -- the operation completed must still find its original record, so these are
+    -- not expired while a duplicate execution is still possible.
+    CREATE TABLE IF NOT EXISTS request_keys (
+        request_id   TEXT NOT NULL,
+        operation    TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        subject_id   TEXT,
+        created_at   TEXT NOT NULL,
+        PRIMARY KEY (request_id, operation)
+    );
+
+    CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id);
+    CREATE INDEX IF NOT EXISTS claims_by_task ON claims(task_id, generation);
+    """),
 )
-"""
 
 
 class StoreError(Exception):
     """The durable state could not record what it was asked to record."""
+
+
+class ConflictError(StoreError):
+    """The request is well formed but contradicts recorded state.
+
+    Separate from StoreError because a conflict is a legitimate answer the caller
+    shows the user, while a StoreError means the store itself could not decide.
+    """
 
 
 def _now() -> str:
@@ -63,7 +138,7 @@ def _reject_network_path(path: Path) -> None:
 
 
 class Store:
-    """One run table and the artifact directories beside it."""
+    """Run, task, and claim records, plus the artifact directories beside them."""
 
     __slots__ = ("_db_path",)
 
@@ -71,18 +146,50 @@ class Store:
         self._db_path = Path(db_path)
         _reject_network_path(self._db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.execute(SCHEMA)
+        self._migrate()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        # isolation_level=None keeps every statement its own committed transaction,
-        # so no caller can leave one open across a subprocess.
+        # isolation_level=None keeps every statement its own committed
+        # transaction, so no caller can leave one open across a subprocess.
         conn = sqlite3.connect(self._db_path, isolation_level=None, timeout=BUSY_TIMEOUT_S)
         try:
+            conn.execute("PRAGMA foreign_keys = ON")
             yield conn
         finally:
             conn.close()
+
+    def _migrate(self) -> None:
+        """Apply pending migrations, each atomically.
+
+        `executescript` issues its own COMMIT before running anything, so an
+        explicit BEGIN or ROLLBACK around it does not survive the call and
+        raises "no transaction is active". The script is therefore the
+        transaction: each migration appends its own version insert, so SQLite
+        applies the tables and the recorded version together and a crash rolls
+        the whole thing back.
+
+        The version is re-read immediately before each script under the write
+        lock `executescript` itself takes, so two processes starting together
+        cannot both apply the same migration.
+        """
+        with self._connect() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+            for version, sql in MIGRATIONS:
+                row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+                if row and row[0] is not None and version <= row[0]:
+                    continue
+                # The trailing semicolon matters: a migration's last statement has
+                # none of its own, so without this the version INSERT is appended
+                # to that statement and the whole script is a syntax error.
+                conn.executescript(
+                    sql.rstrip().rstrip(";") + f";\nINSERT INTO schema_version (version) VALUES ({int(version)});"
+                )
+
+    def version(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+            return row[0] if row and row[0] is not None else 0
 
     def run_dir(self, run_id: str) -> Path:
         return self._db_path.parent / RUNS_DIR_NAME / run_id
@@ -105,15 +212,18 @@ class Store:
         """
         self.run_dir(run_id).mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO runs (run_id, check_id, task_id, attempt, lifecycle,"
-                " source_json, configuration_digest, fixture_digest, registered_at)"
-                " VALUES (?, ?, ?, ?, 'preparing', ?, ?, ?, ?)",
-                (
-                    run_id, check_id, task_id, attempt, _dumps(source),
-                    configuration_digest, fixture_digest, _now(),
-                ),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO runs (run_id, check_id, task_id, attempt, lifecycle,"
+                    " source_json, configuration_digest, fixture_digest, registered_at)"
+                    " VALUES (?, ?, ?, ?, 'preparing', ?, ?, ?, ?)",
+                    (
+                        run_id, check_id, task_id, attempt, _dumps(source),
+                        configuration_digest, fixture_digest, _now(),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise StoreError(f"run {run_id} is already registered") from exc
 
     def mark_running(self, run_id: str, process: dict) -> None:
         """Attach process identity. A terminal run never returns to running: a retry
@@ -126,6 +236,14 @@ class Store:
             )
             if cursor.rowcount == 0:
                 raise StoreError(f"cannot mark running: {run_id} is unknown or already terminal")
+
+    def attach_task(self, run_id: str, task_id: str, attempt: int) -> None:
+        """Bind a run to the attempt that started it."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE runs SET task_id = ?, attempt = ? WHERE run_id = ?",
+                (task_id, attempt, run_id),
+            )
 
     def publish(self, run_id: str, report: dict) -> None:
         """Put the report where a reader expects it, atomically, and exactly once.
@@ -195,3 +313,27 @@ class Store:
         if candidate != run_dir and run_dir not in candidate.parents:
             raise StoreError(f"artifact {name!r} escapes run directory {run_dir}")
         return candidate
+
+    def list_runs(self, *, task_id: str | None = None, limit: int = 50) -> list[dict]:
+        """Recent runs, newest first. Bounded so a console cannot ask for all."""
+        sql = "SELECT run_id, check_id, task_id, lifecycle, result, reason, registered_at, ended_at FROM runs"
+        params: list[object] = []
+        if task_id is not None:
+            sql += " WHERE task_id = ?"
+            params.append(task_id)
+        sql += " ORDER BY registered_at DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        keys = ("run_id", "check_id", "task_id", "lifecycle", "result", "reason",
+                "registered_at", "ended_at")
+        return [dict(zip(keys, row)) for row in rows]
+
+    def run_process_identity(self, run_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT process_json FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if not row or not row[0]:
+            return None
+        return json.loads(row[0])

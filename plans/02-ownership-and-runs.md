@@ -2,6 +2,21 @@
 
 Read [CONTRACT.md](CONTRACT.md). Ready after Plan 01 passes. Inspect its actual execution and storage code before changing it.
 
+**Delegation.** Same standing authority as Plan 01: bounded parallel subagents,
+disjoint file ownership, separate worktrees, owner merges serially in the main
+checkout. The storage migration and lifecycle code have one owner because they
+are the shared contract the other workstreams code against.
+
+## Owner decisions carried into this plan
+
+- **Host scope.** Claude Code only in the first release. Host-specific code
+  belongs behind an adapter so a later host is an addition, not a rewrite, but
+  no abstraction is built for a host that does not exist yet.
+- **Writes go to existing operations only.** A later UI or MCP tool may add no
+  mutation that this plan does not already own. See
+  [05-setup-app.md](05-setup-app.md) for the writable surface, which is
+  deliberately closed.
+
 ## Outcome
 
 Several participating clients can share a project without claiming the same exclusive resource. A check can outlive its initiating request, be queried or cancelled, and recover honestly after interruption. An old attempt cannot submit accepted evidence after reassignment.

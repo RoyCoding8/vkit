@@ -15,8 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-# db_path is <state_root>/state.sqlite3 and Project.runs_root is <state_root>/runs,
-# so the artifact directory is derivable from the database path alone.
 RUNS_DIR_NAME = "runs"
 REPORT_NAME = "report.json"
 BUSY_TIMEOUT_S = 5.0
@@ -54,8 +52,8 @@ def _dumps(value: object) -> str:
 
 
 def _reject_network_path(path: Path) -> None:
-    """SQLite's file locking cannot be trusted on a network filesystem, and it fails
-    by corrupting rather than by complaining, so refuse the path up front."""
+    """SQLite's file locking cannot be trusted on a network filesystem, and it
+    fails by corrupting rather than by complaining, so refuse the path up front."""
     absolute = os.path.abspath(path)
     drive, _ = os.path.splitdrive(absolute)
     if absolute.startswith(("//",)) or drive.startswith("\\\\"):
@@ -130,38 +128,52 @@ class Store:
                 raise StoreError(f"cannot mark running: {run_id} is unknown or already terminal")
 
     def publish(self, run_id: str, report: dict) -> None:
-        """Put the report where a reader expects it, atomically, then record it.
+        """Put the report where a reader expects it, atomically, and exactly once.
 
-        The file is replaced before the row is updated: os.replace is atomic, so
-        report.json is either absent or complete, and a crash in between leaves a
-        correct report and a row that is merely stale rather than a terminal record
-        pointing at a report that was never written.
+        Ordering is the whole design here. The file is fully written and fsynced
+        to a temp name first, the row is claimed second, and the temp is swapped
+        into place last. Claiming the row before the swap is what stops a refused
+        republish from overwriting evidence: an earlier bug wrote report.json
+        first and only then discovered the run was already terminal, so a retry
+        silently replaced a FAIL with a PASS. Staging first means the guard runs
+        while the only thing on disk is a temp file nobody reads.
+
+        A crash between the claim and the swap leaves a terminal row with no
+        report, and `load` raises rather than inventing an outcome. That is the
+        correct failure direction: absent evidence, never a fabricated PASS.
         """
         outcome = report.get("outcome")
         if report.get("run_id") != run_id or report.get("lifecycle") != "terminal":
             raise StoreError(f"refusing to publish a report that is not terminal for {run_id}")
         if not isinstance(outcome, dict) or "result" not in outcome:
             raise StoreError(f"refusing to publish {run_id} with no outcome: a terminal run has exactly one")
+        if outcome["result"] == "BLOCKED" and not outcome.get("reason"):
+            raise StoreError(f"refusing to publish {run_id} as BLOCKED with no reason")
 
         run_dir = self.run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
         # Same directory, so the replace stays on one filesystem and stays atomic.
         temp = run_dir / f"{REPORT_NAME}.{os.getpid()}.tmp"
-        with temp.open("w", encoding="utf-8", newline="\n") as fh:
-            json.dump(report, fh, indent=2, ensure_ascii=False)
-            fh.write("\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(temp, run_dir / REPORT_NAME)
+        try:
+            with temp.open("w", encoding="utf-8", newline="\n") as fh:
+                json.dump(report, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
 
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "UPDATE runs SET lifecycle = 'terminal', result = ?, reason = ?, ended_at = ?"
-                " WHERE run_id = ? AND lifecycle != 'terminal'",
-                (outcome["result"], outcome.get("reason"), report.get("ended_at"), run_id),
-            )
-            if cursor.rowcount == 0:
-                raise StoreError(f"cannot publish: {run_id} is unknown or already terminal")
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "UPDATE runs SET lifecycle = 'terminal', result = ?, reason = ?, ended_at = ?"
+                    " WHERE run_id = ? AND lifecycle != 'terminal'",
+                    (outcome["result"], outcome.get("reason"), report.get("ended_at"), run_id),
+                )
+                if cursor.rowcount == 0:
+                    raise StoreError(f"cannot publish: {run_id} is unknown or already terminal")
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
+
+        os.replace(temp, run_dir / REPORT_NAME)
 
     def load(self, run_id: str) -> dict:
         """Read the published report back."""
@@ -170,3 +182,16 @@ class Store:
             raise StoreError(f"no published report for run {run_id}: {path}")
         with path.open("r", encoding="utf-8") as fh:
             return json.load(fh)
+
+    def resolve_artifact(self, run_id: str, name: str) -> Path:
+        """Resolve a check-written artifact name inside the run directory.
+
+        The artifact is written by the process under test, so its name is the
+        least trusted string in the system. Containment is checked after
+        resolution, because a prefix test loses to `..` and to absolute paths.
+        """
+        run_dir = self.run_dir(run_id).resolve()
+        candidate = (run_dir / name).resolve()
+        if candidate != run_dir and run_dir not in candidate.parents:
+            raise StoreError(f"artifact {name!r} escapes run directory {run_dir}")
+        return candidate

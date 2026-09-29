@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "description": "A small real CLI that totals integer item amounts, verified by running it.",
+  "checks": [
+    {
+      "id": "totals-behavior",
+      "description": "Runs the real totals CLI and compares actual output with literal expected totals.",
+      "command": [
+        "python",
+        "verify_totals.py",
+        "--app",
+        "src/totals.py",
+        "--out",
+        "{{run_dir}}/result.json"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 120,
+      "required_scenarios": [
+        "empty-cart",
+        "single-positive",
+        "several-positives",
+        "mixed-sign",
+        "negatives-only",
+        "cancels-to-zero"
+      ],
+      "artifact": "result.json",
+      "prerequisites": [
+        {
+          "name": "python",
+          "executable": "python",
+          "args": ["--version"]
+        }
+      ],
+      "inputs": ["src/totals.py", "verify_totals.py"]
+    }
+  ]
+}

@@ -177,7 +177,10 @@ def _environment_facts(check: CheckSpec) -> dict[str, Any]:
     git = shutil.which("git")
     if git:
         try:
-            done = subprocess.run([git, "--version"], capture_output=True, text=True, timeout=15)
+            done = subprocess.run(
+                [git, "--version"], capture_output=True, encoding="utf-8",
+                errors="replace", timeout=15,
+            )
             tools["git"] = done.stdout.strip()
         except (OSError, subprocess.SubprocessError):
             pass

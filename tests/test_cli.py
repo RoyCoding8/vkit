@@ -180,10 +180,30 @@ def test_state_lives_in_the_git_common_dir_not_the_worktree(example_repo: Path) 
                 "--check", "totals-behavior", "--json")
     run_id = json.loads(done.stdout)["run_id"]
     report = json.loads(done.stdout)["report_path"]
+    # Decode as UTF-8. The locale's ANSI code page mangles a non-ASCII path, so
+    # reading git's output with text=True compares mojibake against mojibake and
+    # fails for a path that is actually correct.
     common = subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        cwd=example_repo, capture_output=True, text=True, check=True,
+        cwd=example_repo, capture_output=True, encoding="utf-8", check=True,
     ).stdout.strip()
-    assert report.startswith(Path(common).as_posix()) or Path(common) in Path(report).parents
+    assert Path(common) in Path(report).parents
     assert Path(report).is_file()
     assert run_id
+
+
+def test_non_ascii_repository_path_is_read_exactly(tmp_path: Path) -> None:
+    """Regression: git emits UTF-8 paths, and decoding them with the locale's
+    ANSI code page produced a different string, so the next process launch died
+    with WinError 267. The acceptance table requires non-ASCII paths to work."""
+    repo = tmp_path / "späce repo"
+    shutil.copytree(EXAMPLE, repo)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "e"],
+                   cwd=repo, check=True)
+    done = vkit("doctor", "--project", str(repo), "--json")
+    # The point is that the path survives: before the fix this died with
+    # WinError 267 and no JSON at all.
+    assert done.returncode == EXIT_OK, done.stderr
+    assert json.loads(done.stdout)["project"] == str(repo)

@@ -59,25 +59,15 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         closed_at        TEXT
     );
 
-    -- A resource has at most one owner. The primary key IS the mutual exclusion,
-    -- so a second claimant loses in the database rather than in application code
-    -- that might be racing. CHECK keeps a superseded owner from lingering.
-    CREATE TABLE IF NOT EXISTS claims (
-        resource_key  TEXT NOT NULL,
-        kind          TEXT NOT NULL CHECK (kind IN ('exclusive','capacity')),
-        capacity      INTEGER,
-        held          INTEGER NOT NULL DEFAULT 0,
-        task_id       TEXT NOT NULL,
-        generation    INTEGER NOT NULL,
-        acquired_at   TEXT NOT NULL,
-        released_at   TEXT,
-        PRIMARY KEY (resource_key, task_id, generation),
-        FOREIGN KEY (task_id) REFERENCES tasks(task_id)
-    );
-
-    -- One row per resource that currently has an owner. A unique index on the
-    -- resource alone is what makes two processes racing for the same key produce
-    -- exactly one winner.
+    -- A resource has at most one owner, and this table is the only record of
+    -- that. The primary key IS the mutual exclusion, so a second claimant loses
+    -- in the database rather than in application code that might be racing.
+    --
+    -- An earlier draft also carried a `claims` history table. It was deleted
+    -- rather than filled in: nothing wrote it, so it would have been a second,
+    -- divergent record of the same fact. The acquisition time and owner on this
+    -- row are the history. A released claim leaves no trace, which is correct
+    -- for a current-state table and is what `recover` inspects.
     CREATE TABLE IF NOT EXISTS claim_holders (
         resource_key  TEXT PRIMARY KEY,
         kind          TEXT NOT NULL CHECK (kind IN ('exclusive','capacity')),
@@ -85,7 +75,8 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         held          INTEGER NOT NULL DEFAULT 0,
         task_id       TEXT NOT NULL,
         generation    INTEGER NOT NULL,
-        acquired_at   TEXT NOT NULL
+        acquired_at   TEXT NOT NULL,
+        released_at   TEXT
     );
 
     -- Idempotency keys outlive the operation they name. A retry arriving after
@@ -101,7 +92,6 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
     );
 
     CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id);
-    CREATE INDEX IF NOT EXISTS claims_by_task ON claims(task_id, generation);
     """),
 )
 

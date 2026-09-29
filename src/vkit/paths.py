@@ -29,12 +29,22 @@ class ProjectError(Exception):
 
 
 def _git(args: list[str], cwd: Path) -> str:
+    """Run git and return its output as text.
+
+    The decode is pinned to UTF-8 rather than inherited from the locale. A path
+    read back with the wrong encoding is a *different* string, not an error, and
+    the mismatch then surfaces much later as WinError 267 from an unrelated
+    process launch. See tests/test_encoding.py.
+    """
     try:
         done = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=30, check=False
+            ["git", *args], cwd=cwd, capture_output=True,
+            encoding="utf-8", errors="replace", timeout=30, check=False,
         )
     except FileNotFoundError as exc:
         raise ProjectError("git is not installed or not on PATH") from exc
+    except NotADirectoryError as exc:
+        raise ProjectError(f"{cwd} is not a usable working directory: {exc}") from exc
     if done.returncode != 0:
         detail = done.stderr.strip().splitlines()
         message = detail[-1] if detail else f"git {' '.join(args)} failed"

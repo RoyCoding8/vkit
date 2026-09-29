@@ -21,23 +21,12 @@ from pathlib import Path
 
 import pytest
 
-_HERE = Path(__file__).resolve().parents[1]
-_SRC = _HERE / "src"
-sys.path.insert(0, str(_SRC))
-# The shared virtualenv carries an editable install of whichever checkout
-# installed it, so `import vkit` can land in a different worktree than the one
-# under test. Drop any path that has a real package (rather than this
-# checkout's namespace portion) before importing, or a passing test would be
-# another worker's code.
-sys.path[:] = [
-    entry
-    for entry in sys.path
-    if entry == str(_SRC) or not (Path(entry) / "vkit" / "__init__.py").is_file()
-]
-
 from vkit.identity import compute_source_identity, source_unchanged  # noqa: E402
 from vkit.paths import open_project  # noqa: E402
 from vkit.schemas import RUN_REPORT, validate  # noqa: E402
+
+
+_SRC = Path(__file__).resolve().parents[1] / "src"
 
 
 def test_these_tests_exercise_this_worktree() -> None:

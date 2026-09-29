@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vkit"
+version = "0.1.0"
+description = "Run a registered check in a Git repository and keep a durable, trustworthy outcome."
+requires-python = ">=3.11"
+dependencies = [
+    "jsonschema>=4.23,<5",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+vkit = "vkit.cli:main"
+
+# The schemas are the authoritative boundary contract, so they ship inside the
+# wheel. Import-time discovery of a source checkout would stop working the moment
+# a user installs the package, which is exactly when validation still has to work.
+[tool.hatch.build.targets.wheel]
+packages = ["src/vkit"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"schemas" = "vkit/_schemas"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

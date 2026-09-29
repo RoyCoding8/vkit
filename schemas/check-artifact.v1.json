@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/check-artifact.v1.json",
+  "title": "vkit check artifact, schema version 1",
+  "description": "Written by the check. This is the only channel through which a check can report what it observed.",
+  "type": "object",
+  "required": ["schema_version", "scenarios"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "description": { "type": "string" },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Must be non-empty. Zero scenarios cannot be evidence of anything.",
+      "items": {
+        "type": "object",
+        "required": ["id", "result", "observation"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "result": { "enum": ["PASS", "FAIL"] },
+          "observation": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What was actually seen, so a reader can judge without re-running."
+          }
+        }
+      }
+    }
+  }
+}

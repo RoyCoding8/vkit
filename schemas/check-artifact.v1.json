@@ -11,8 +11,7 @@
     "description": { "type": "string" },
     "scenarios": {
       "type": "array",
-      "minItems": 1,
-      "description": "Must be non-empty. Zero scenarios cannot be evidence of anything.",
+      "description": "May be empty here on purpose. An artifact that reports no scenarios is a distinct, more actionable BLOCKED reason than a malformed one, so the emptiness rule lives in the parser rather than in this schema. It still cannot produce PASS.",
       "items": {
         "type": "object",
         "required": ["id", "result", "observation"],

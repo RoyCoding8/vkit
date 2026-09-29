@@ -125,6 +125,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     ]
     if source is not None:
         lines.append(f"head    : {source.head[:12]}  dirty={source.dirty}")
+    # Both output modes must describe the same result, so name the checks here
+    # too, not only in the JSON payload.
+    lines.append(f"checks  : {', '.join(payload['checks']) or '<none>'}")
     for finding in findings:
         mark = "ok  " if finding.get("ok", True) else "FAIL"
         label = finding.get("prerequisite", finding["check"])
@@ -214,25 +217,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vkit", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def add(name: str, help_text: str) -> argparse.ArgumentParser:
-        p = sub.add_parser(name, help=help_text)
-        p.add_argument("--project", required=True, help="repository root, or a directory inside it")
-        p.add_argument("--json", action="store_true", help="write one JSON object to stdout")
-        return p
+    def common(target: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        target.add_argument("--project", required=True, help="repository root, or a directory inside it")
+        target.add_argument("--json", action="store_true", help="write one JSON object to stdout")
+        return target
 
-    add("doctor", "report whether this project's checks could run")
+    common(sub.add_parser("doctor", help="report whether this project's checks could run"))
 
     check = sub.add_parser("check", help="run registered checks")
     check_sub = check.add_subparsers(dest="check_command", required=True)
-    run = check_sub.add_parser("run", help="run one registered check in the foreground")
-    run.add_argument("--project", required=True)
-    run.add_argument("--check", required=True, help="a registered check id, never a command")
-    run.add_argument("--json", action="store_true")
+    run_check_parser = check_sub.add_parser("run", help="run one registered check in the foreground")
+    common(run_check_parser)
+    run_check_parser.add_argument("--check", required=True, help="a registered check id, never a command")
 
-    show = sub.add_parser("run", help="inspect a completed run")
-    show.add_argument("--project", required=True)
+    run = sub.add_parser("run", help="inspect a run")
+    run_sub = run.add_subparsers(dest="run_command", required=True)
+    show = run_sub.add_parser("show", help="display a completed run by id")
+    common(show)
     show.add_argument("--run", required=True, help="run id to display")
-    show.add_argument("--json", action="store_true")
     return parser
 
 

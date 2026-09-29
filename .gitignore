@@ -1,9 +1,13 @@
 .venv/
 .worktrees/
-tmp/
 __pycache__/
 *.pyc
 .pytest_cache/
 dist/
 build/
 *.egg-info/
+
+# scratch only; tmp/research and tmp/source are preserved source material
+tmp/*
+!tmp/research/
+!tmp/source/

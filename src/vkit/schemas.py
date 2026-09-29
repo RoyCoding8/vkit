@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from importlib import resources
+from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -32,8 +33,32 @@ class SchemaValidationError(Exception):
 
 
 @lru_cache(maxsize=None)
+def _schema_dir():
+    """Find the schemas whether vkit came from a wheel or a source checkout.
+
+    A wheel force-includes them as the vkit._schemas package. An editable
+    install has no such package, because the files are not inside the source
+    tree, so fall back to the repository's schemas/ directory. Without the
+    fallback, `vkit doctor` breaks the moment anyone pip-installs -e, which is
+    the normal way a developer runs it.
+    """
+    try:
+        packaged = resources.files("vkit._schemas")
+        if packaged.is_dir():
+            return packaged
+    except (ModuleNotFoundError, TypeError):
+        pass
+    checkout = Path(__file__).resolve().parents[2] / "schemas"
+    if checkout.is_dir():
+        return checkout
+    raise FileNotFoundError(
+        "the vkit schemas are not installed; reinstall the package or run from a checkout"
+    )
+
+
+@lru_cache(maxsize=None)
 def _validator(name: str) -> Draft202012Validator:
-    text = resources.files("vkit._schemas").joinpath(name).read_text(encoding="utf-8")
+    text = _schema_dir().joinpath(name).read_text(encoding="utf-8")
     return Draft202012Validator(json.loads(text))
 
 

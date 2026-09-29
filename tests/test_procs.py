@@ -23,15 +23,6 @@ import pytest
 # regular package outranks any other path entry. Removing the installed entry is
 # what lets this checkout's src/vkit resolve, as a namespace package.
 # Worktree plumbing, not product behavior.
-_THIS_SRC = (Path(__file__).resolve().parents[1] / "src").resolve()
-sys.path[:] = [
-    entry
-    for entry in sys.path
-    if not (entry and Path(entry).resolve() == _THIS_SRC)
-    if not (entry and (Path(entry) / "vkit" / "__init__.py").is_file())
-]
-sys.path.insert(0, str(_THIS_SRC))
-
 import vkit.procs as _procs  # noqa: E402
 
 if Path(_procs.__file__).resolve() != (_THIS_SRC / "vkit" / "procs.py"):

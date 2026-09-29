@@ -16,13 +16,10 @@ from pathlib import Path
 
 import pytest
 
-# This host's venv holds an editable install of the MAIN checkout, and this
-# worktree has no src/vkit/__init__.py of its own, so a bare `import vkit.procs`
-# resolves the package to the sibling checkout and this gate would silently
-# measure another owner's module. Reordering sys.path is not enough: an installed
-# regular package outranks any other path entry. Removing the installed entry is
-# what lets this checkout's src/vkit resolve, as a namespace package.
-# Worktree plumbing, not product behavior.
+# conftest.py puts this checkout's src ahead of the editable install, so the
+# module under test is this worktree's. Assert it rather than trust it: a gate
+# that silently measures another owner's code is a false pass.
+_THIS_SRC = (Path(__file__).resolve().parents[1] / "src").resolve()
 import vkit.procs as _procs  # noqa: E402
 
 if Path(_procs.__file__).resolve() != (_THIS_SRC / "vkit" / "procs.py"):

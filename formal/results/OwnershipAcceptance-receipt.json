@@ -24,8 +24,8 @@
   "states_generated": 1935362,
   "distinct_states": 207360,
   "depth": 19,
-  "elapsed_s": 12.7,
-  "finished_at": "2026-09-30T05:47:23.925795+00:00",
+  "elapsed_s": 15.5,
+  "finished_at": "2026-09-30T06:10:21.241917+00:00",
   "reason": "TLC explored every reachable state in the recorded configuration and the checked properties held in all of them.",
   "counterexample": null,
   "scope": "A PASS establishes these properties for this model at this finite configuration only. It does not establish them for other worker counts, other revision counts, or any Python implementation. Safety properties only; no fairness or termination assumption was modelled, so no liveness claim is made."

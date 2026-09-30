@@ -72,20 +72,22 @@ work that closes it has run and left a receipt.
 | GAP-1 | The `mcp` SDK stdio adapter has never been executed. | `import mcp` fails on this host. The adapter is `serve_stdio` in `src/vkit/mcp/__init__.py`. |
 | GAP-2 | The POSIX process path is untested. | Verified on Windows 11 with Python 3.13.14 only. No POSIX host has run this package. |
 | GAP-3 | No live Claude Code host session has exercised the plugin. | `claude plugin validate --strict` passed. Install and hook delivery were not exercised. |
-| GAP-4 | `vkit mcp serve` does not exist as a CLI subcommand. | `build_parser()` defines `doctor`, `check run`, and `run show` only. |
+| GAP-4 | The `mcp serve` subcommand exists but has never been run over a real transport. | `vkit mcp serve --project . --json` lists the six tools, exit 0. The command resolves; `serve_stdio` still has not been driven by a client, which is GAP-1. |
 | GAP-5 | The setup console is incomplete. | Plan 05 is the last build step and is still being built in parallel. |
 | GAP-6 | Guided enrollment and integration verification are not built. | No `enroll` or `integration verify` subcommand exists. |
 | GAP-7 | The acceptance script proves less than it appears to. | It resolves `vkit` from the environment, which is an editable install. |
 | GAP-8 | There is no acceptance table to map. | `KIT_ACCEPTANCE.md` is absent from this repository. |
 | GAP-9 | Two documented limits have no check behind them. | A `.cmd` launcher mangles a non-ASCII path. A reverted edit escapes the source digest. |
 
-GAP-4 deserves its own paragraph because it is the one that a user would hit
-first. `plugin/.mcp.json` starts the server with `vkit mcp serve --project`,
-and that command does not exist. On this build a fresh install of the plugin
-starts a host that cannot reach the tool surface, because the executable the
-manifest names is not the executable that was built. The six tools themselves
-are implemented and covered by tests that drive `Server.call_tool`, the same
-entry point an SDK adapter forwards to. What is unexecuted is the transport.
+GAP-4 was a missing command and no longer is. It was the one a user would have
+hit first: `plugin/.mcp.json` starts the server with `vkit mcp serve
+--project`, and `build_parser()` had no such subcommand, so a fresh install of
+the plugin started a host that could not reach the tool surface. The executable
+the manifest named was not the executable that was built. The subcommand now
+exists and `vkit mcp serve --project . --json` lists the six bound tools, so
+the manifest points at something real. What is still unexecuted is the
+transport itself, which is GAP-1: the command resolves, and no client has
+driven it.
 
 ## Build the artifacts
 
@@ -203,7 +205,7 @@ file existing.
 | Installs from a wheel and validates its schemas outside the source tree | verified | Wheel built and installed from this revision. |
 | Exposes six MCP tools to an agent | not verified | The tools are tested. The stdio transport is unexecuted, GAP-1. |
 | Installs into Claude Code as a plugin | not verified | The manifest validates. No live host session ran it, GAP-3. |
-| Supplies the plugin's MCP server | blocked | `vkit mcp serve` is not a subcommand, GAP-4. |
+| Supplies the plugin's MCP server | not verified | The subcommand exists and lists the six tools. No client has driven the transport, GAP-1 and GAP-4. |
 | Works on macOS or Linux | blocked | The POSIX path has never run, GAP-2. |
 | Enrolls a repository through a user flow | blocked | No `enroll` subcommand and no finished console, GAP-5 and GAP-6. |
 | Is ready for a pilot | blocked | See [PILOT.md](PILOT.md). |

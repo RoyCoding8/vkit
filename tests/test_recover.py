@@ -127,8 +127,15 @@ def process_record(db_path: Path, run_id: str) -> dict:
 
 
 def start_run(store: Store, run_id: str, *, pid: int | None, task_id: str | None = None,
-              attempt: int | None = None, reconcile: bool = False) -> None:
-    """Register a run and, when a pid is named, attach it exactly as execution does."""
+              attempt: int | None = None, reconcile: bool = False,
+              creation_time: int | None = None) -> None:
+    """Register a run and, when a pid is named, attach it exactly as execution does.
+
+    `creation_time` is part of the identity `execution.run_check` records, so it
+    is a parameter rather than an omission. A fixture that never wrote it would
+    leave every test reading the weaker bare-pid liveness path and the identity
+    check untested, which is exactly how a recycled pid shipped.
+    """
     store.register_run(
         run_id, f"check-{run_id}", task_id=task_id, attempt=attempt,
         source={"head": "abc"}, configuration_digest="cfg", fixture_digest=None,
@@ -138,6 +145,8 @@ def start_run(store: Store, run_id: str, *, pid: int | None, task_id: str | None
             "pid": pid, "ownership": "windows_job_object",
             "exit_code": None, "timed_out": False,
         }
+        if creation_time is not None:
+            process["creation_time"] = creation_time
         if reconcile:
             process["reconciliation"] = {
                 "state": "process_dead_confirmed",
@@ -587,6 +596,78 @@ def test_releasing_a_claim_whose_holder_run_is_dead_succeeds(
     assert holder(store, "build") is None
 
 
+def test_a_recycled_pid_does_not_release_its_claim(store: Store, alive_pid: int) -> None:
+    """The end-to-end consequence, and the reason the identity check exists.
+
+    A stale-generation claim looks releasable whenever no run of the old
+    generation is alive. That test consults a pid. If the OS has handed that
+    number to an unrelated process, the check reports "live" and the claim
+    stays held -- safe, but only by accident, because a stranger happened to be
+    running.
+
+    The dangerous direction is the reverse. A run whose process really did exit
+    leaves a pid behind, and if the OS has *not* yet reused it, every reader says
+    DEAD and the claim is released. That is correct today. The day the number is
+    reused by something whose creation time the record does not match, the same
+    code must not read DEAD, or a second task is handed a resource whose real
+    owner may still be working on it.
+
+    Here the recorded identity belongs to a process that has exited, and the pid
+    is now held by a live stranger. The claim must survive.
+    """
+    from vkit.procidentity import read_identity
+
+    stranger = read_identity(alive_pid)
+    assert stranger is not None
+
+    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
+    # The recorded identity is one this pid has never had, standing in for a
+    # process that exited and left its number behind.
+    start_run(store, "r-old", pid=alive_pid, task_id="t1", attempt=1,
+              creation_time=stranger.creation_time + 1)
+    supersede_task(store, "t1")
+
+    findings = inspect(store)
+    holder_states = {
+        f.kind for f in findings.findings
+        if f.kind in (FindingKind.RUN_LIVE_PROCESS, FindingKind.RUN_UNCERTAIN_PROCESS,
+                      FindingKind.RUN_DEAD_PROCESS)
+    }
+
+    assert holder_states == {FindingKind.RUN_UNCERTAIN_PROCESS}, (
+        "a pid whose creation time does not match the record is a stranger's "
+        "process, and reporting it live or dead both misdescribe our run"
+    )
+    assert holder(store, "build") is not None, (
+        "the claim was released on the strength of a process that never ran the check"
+    )
+
+
+def test_marking_a_run_dead_refuses_when_its_pid_was_recycled(
+    store: Store, alive_pid: int
+) -> None:
+    """`mark dead` is the action that actually releases, so it refuses hardest.
+
+    A run record naming a pid that a stranger now holds is not a crashed run. It
+    is a run whose process ended and whose number was reused, and confirming
+    that death from the pid alone would be a stranger's exit code filed as ours.
+    """
+    from vkit.procidentity import read_identity
+
+    stranger = read_identity(alive_pid)
+    assert stranger is not None
+
+    start_run(store, "r-gone", pid=alive_pid,
+              creation_time=stranger.creation_time + 1)
+
+    with pytest.raises(RecoveryRefused) as caught:
+        apply_action(store, Action.MARK_RUN_DEAD, target="r-gone",
+                     evidence="the operator believes this crashed")
+
+    assert "recycled" in str(caught.value) or "creation time" in str(caught.value)
+
+
 def test_a_paused_task_keeps_its_claims_and_reports_no_finding(store: Store) -> None:
     """Paused records that the owner is idle, not gone. Nothing here infers otherwise."""
     open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
@@ -634,6 +715,64 @@ def test_liveness_distinguishes_a_real_process_from_an_absent_one(alive_pid: int
     # process left to have exited with one.
     assert dead.exit_code is None
     assert "no process carries that pid" in dead.detail
+
+
+def test_a_pid_now_held_by_a_stranger_is_uncertain_and_never_dead(alive_pid: int) -> None:
+    """A recycled pid must not be read as our dead process.
+
+    Windows recycles process identifiers. A run that exited leaves its pid
+    behind, and the OS is free to hand that number to an unrelated process.
+    Reading such a pid as DEAD releases the run's claims on the strength of a
+    stranger's process, which is the exact failure `vkit.procidentity` exists to
+    prevent -- and this module was doing it, because it asked about a bare pid
+    while the record carried the creation time that settles the question.
+
+    UNCERTAIN is the only safe reading. It retains the claim and reports the run
+    as needing reconciliation.
+    """
+    from vkit.procidentity import read_identity
+
+    real = read_identity(alive_pid)
+    assert real is not None, "the fixture process must be readable for this to mean anything"
+
+    # The same pid, with a creation time that is not the live process's. This is
+    # exactly the record a run written before its process exited now carries.
+    stranger_creation_time = real.creation_time + 1
+
+    state = liveness(alive_pid, creation_time=stranger_creation_time)
+
+    assert state.state is LivenessState.UNCERTAIN, (
+        "a pid whose creation time does not match is a stranger's process, and "
+        "reporting it DEAD releases a claim on the wrong evidence"
+    )
+    assert "creation time" in state.detail
+    assert not state.dead
+
+
+def test_a_matching_creation_time_still_reads_alive(alive_pid: int) -> None:
+    """The pair must not make a genuinely running process look uncertain."""
+    from vkit.procidentity import read_identity
+
+    real = read_identity(alive_pid)
+    assert real is not None
+
+    state = liveness(alive_pid, creation_time=real.creation_time)
+
+    assert state.state is LivenessState.ALIVE
+    assert state.exit_code == 259
+
+
+def test_an_absent_pid_is_still_dead_with_a_recorded_identity(dead_pid: int) -> None:
+    """A pid no process carries is DEAD even when a creation time was recorded.
+
+    The creation time does not conjure a process. When the pid is simply gone
+    there is no stranger to confuse it with, and calling that UNCERTAIN would
+    strand every crashed run's claim forever.
+    """
+    state = liveness(dead_pid, creation_time=133000000000000000)
+
+    assert state.state is LivenessState.DEAD
+    assert "no process carries that pid" in state.detail
 
 
 def test_a_dead_run_stays_reconciled_on_the_next_inspection(store: Store, dead_pid: int) -> None:

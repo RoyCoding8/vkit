@@ -117,7 +117,7 @@ host that blocks network access cannot build the wheel with this command.
 $ <venv>/Scripts/python.exe -m pytest tests/
 ```
 
-Observed on this host: `234 passed, 1 skipped in 96.88s`. The skip is
+Observed on this host: `244 passed, 1 skipped in 111.68s`. The skip is
 `tests/test_procidentity.py:440`, which the Windows host cannot exercise.
 
 That count is evidence about the code in this repository, and only that. It is

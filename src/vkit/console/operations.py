@@ -19,6 +19,7 @@ so and performs nothing.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -683,12 +684,17 @@ def remove(context: Context, **_: Any) -> dict[str, Any]:
             f"uninstall; the installation is not fully removed."
         )
     cache = Path.home() / ".claude" / "plugins" / "cache" / _MARKETPLACE / _PLUGIN_NAME
-    orphan = cache.is_dir()
-    if orphan:
-        import shutil
-
-        shutil.rmtree(cache, ignore_errors=True)
-        orphan = cache.exists()
+    leftover = _remove_cache(cache)
+    if leftover is not None:
+        # Reported as a refusal, not a warning. "No orphans" that quietly leaves
+        # a directory behind is the claim this operation exists to make true, and
+        # `shutil.rmtree(ignore_errors=True)` is exactly how it would: it returns
+        # success while a locked file survives. The reason names the path.
+        raise Refused(
+            f"the plugin was uninstalled but its cache directory still holds files "
+            f"under {leftover}. Close any process holding it and remove again; "
+            f"nothing else is left installed."
+        )
     return {
         "operation": "remove",
         "plugin": PLUGIN_ID,
@@ -697,9 +703,44 @@ def remove(context: Context, **_: Any) -> dict[str, Any]:
         # path in a response is a string. The response is JSON and nothing else.
         "cache_removed": str(cache),
         "marketplace_removed": _MARKETPLACE,
-        "orphan_cache": orphan,
         "host_output": out.strip(),
     }
+
+
+def _remove_cache(cache: Path) -> str | None:
+    """Delete the host's cache directory, or name what would not go.
+
+    `shutil.rmtree(..., ignore_errors=True)` is the wrong call here: it reports
+    success whatever it managed to delete, so a locked file leaves an orphan
+    behind and the operation claims there is none. This deletes without the
+    suppression, clearing the read-only flag Windows puts on plugin files, and
+    returns a description of whatever survived so the caller can name it rather
+    than guess.
+    """
+    if not cache.is_dir():
+        return None
+    import shutil
+    import stat
+
+    def clear_readonly(func, path, _exc) -> None:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+
+    # `onerror` was renamed `onexc` in 3.12 and removed later; the module must
+    # work on both, because the read-only flag is a Windows fact, not a version
+    # fact, and silently skipping it is what leaves the orphan.
+    handler = (
+        {"onexc": clear_readonly} if sys.version_info >= (3, 12) else {"onerror": clear_readonly}
+    )
+    try:
+        shutil.rmtree(cache, **handler)
+    except OSError as exc:
+        return f"{exc.filename or cache} ({exc.strerror})"
+    if cache.exists():
+        # Returned without raising and the directory is still there, which is
+        # what a partly-deleted tree looks like on Windows.
+        return str(cache)
+    return None
 
 
 def enroll(context: Context, accepted: bool = False, **_: Any) -> dict[str, Any]:

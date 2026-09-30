@@ -899,10 +899,33 @@ def test_remove_leaves_no_orphan(context: operations.Context, scratch_host: Path
     result = operations.remove(context)
 
     assert result["uninstalled"] is True
-    assert result["orphan_cache"] is False
     assert operations._installed_plugin_record("vkit@vkit") is None
     assert not Path(result["cache_removed"]).exists()
     assert operations._marketplace_registered() is False
+
+
+@requires_host
+def test_remove_reports_a_cache_it_could_not_delete(
+    context: operations.Context, scratch_host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An orphan that survives is named, not hidden behind a success.
+
+    `shutil.rmtree(ignore_errors=True)` is the failure this guards: it reports
+    success whatever it deleted, so a locked file leaves the cache behind and
+    the operation would claim there is nothing left. Reverting `_remove_cache`
+    to the ignoring form makes this fail.
+    """
+    operations.install(context)
+    monkeypatch.setattr(operations, "_remove_cache", lambda cache: str(cache))
+    with pytest.raises(Refused) as caught:
+        operations.remove(context)
+    reason = caught.value.reason
+    assert "still holds files" in reason
+    assert "cache" in reason.lower()
+    # The plugin itself is gone even though the cache was not, and the refusal
+    # says so rather than implying an installation is still active.
+    assert operations._installed_plugin_record("vkit@vkit") is None
+    assert "nothing else is left installed" in reason
 
 
 @requires_host

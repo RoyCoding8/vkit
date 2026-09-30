@@ -644,6 +644,37 @@ def cmd_recover(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_mcp_serve(args: argparse.Namespace) -> int:
+    """Serve this project to an agent over MCP, bound to one root.
+
+    The root is fixed at startup and no tool accepts another, so an agent cannot
+    steer the server at a different repository.
+    """
+    from .mcp import Server, serve_stdio, tool_definitions
+
+    try:
+        project = open_project(args.project)
+    except ProjectError as exc:
+        return _fail(str(exc), args.json, EXIT_INVALID)
+
+    try:
+        server = Server(project.root)
+    except ProjectError as exc:
+        return _fail(str(exc), args.json, EXIT_INVALID)
+
+    if args.json:
+        # A catalogue, so the wiring is inspectable without a transport.
+        catalogue = tool_definitions()
+        _emit(
+            {"command": "mcp serve", "project": str(project.root), "tools": catalogue},
+            True,
+            "\n".join(t["name"] for t in catalogue),
+        )
+        return EXIT_OK
+
+    return serve_stdio(project.root)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vkit", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -665,6 +696,14 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--task", required=True, help="task id returned by task begin")
     start.add_argument("--check", required=True, help="a registered check id, never a command")
     start.add_argument("--request-id", required=True, help="retry this exact request to get the same run")
+
+    serve = sub.add_parser("mcp", help="serve the project to an agent over MCP")
+    serve_sub = serve.add_subparsers(dest="mcp_command", required=True)
+    serve_stdio = serve_sub.add_parser("serve", help="serve stdio, bound to one project root")
+    serve_stdio.add_argument("--project", required=True,
+                             help="the one project root this server answers for")
+    serve_stdio.add_argument("--json", action="store_true",
+                             help="print the tool catalogue and exit, without serving")
 
     run = sub.add_parser("run", help="inspect a run")
     run_sub = run.add_subparsers(dest="run_command", required=True)
@@ -710,6 +749,7 @@ _DISPATCH = {
     ("task", "begin"): cmd_task_begin,
     ("task", "finalize"): cmd_task_finalize,
     ("recover", None): cmd_recover,
+    ("mcp", "serve"): cmd_mcp_serve,
 }
 
 

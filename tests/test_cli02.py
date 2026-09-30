@@ -410,3 +410,31 @@ def _state_digest(repo: Path) -> list[tuple[str, str]]:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_mcp_serve_lists_the_bound_project_tools(tmp_path: Path) -> None:
+    """The plugin's .mcp.json runs `vkit mcp serve --project <root>`. If that
+    subcommand does not exist, the plugin ships a config pointing at nothing and a
+    green suite hides it."""
+    import json as _json
+
+    repo = tmp_path / "repo"
+    shutil.copytree(EXAMPLE, repo)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+    done = vkit("mcp", "serve", "--project", str(repo), "--json")
+    assert done.returncode == EXIT_OK, done.stderr
+    payload = _json.loads(done.stdout)
+    assert payload["project"] == str(repo)
+    names = {t["name"] for t in payload["tools"]}
+    assert names == {
+        "project_inspect", "task_begin", "check_start",
+        "run_get", "run_cancel", "task_finalize",
+    }
+
+
+def test_mcp_serve_refuses_a_path_outside_a_repository(tmp_path: Path) -> None:
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    done = vkit("mcp", "serve", "--project", str(plain), "--json")
+    assert done.returncode == EXIT_INVALID

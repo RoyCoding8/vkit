@@ -73,7 +73,41 @@ DEGRADED_PREFIX = "vkit: acceptance not established"
 # `mcp__<server>__<tool>`, plus the plugin-scoped `mcp__plugin_<plugin>_<server>__<tool>`
 # form. The matcher in hooks.json prefilters on this shape; the check below is
 # the real one, because a prefilter that decides is a policy in a config file.
-_MCP_TOOL = re.compile(r"^mcp__(?:plugin_)?(?P<server>.+?)__(?P<tool>[^_].*)$")
+_MCP_TOOL = re.compile(r"^mcp__(?P<server>.+?)__(?P<tool>[^_].*)$")
+
+#: This plugin's server key in `.mcp.json`. A live host session was recorded
+#: naming the tool `mcp__plugin_vkit_vkit__project_inspect`, where the plugin
+#: name and the server key are both `vkit`, so the segment between `mcp__` and
+#: the tool is `vkit_vkit` and not `vkit`. Matching the server exactly therefore
+#: rejected every tool a real host delivered, which made PreToolUse a silent
+#: no-op: the response was `{}` for every call. A plugin-scoped name ends with
+#: the server key, so that is what is compared.
+VKIT_SERVER = "vkit"
+
+
+def _is_vkit_server(server: str) -> bool:
+    """Whether a tool name's server segment names this plugin's server.
+
+    Two forms exist, and both were recorded from a live host. A server from
+    `--mcp-config` is `mcp__vkit__tool`, and a server this plugin declares is
+    `mcp__plugin_<plugin>_<server key>__tool`, so the segment is
+    `plugin_<plugin>_vkit`.
+
+    The plugin name is not split out to compare it, because a plugin name may
+    contain `_` and the split would then be a guess about where the name ends.
+    What is checked is the `plugin_` prefix plus the server key as the suffix,
+    which pins both ends of the segment and leaves a name such as
+    `plugin_other_vkit_extra` rejected.
+
+    The tool name is the one thing this gate is not entitled to be lenient
+    about: it names what the caller believes it is invoking, and a match on a
+    different plugin's server would attach this plugin's registration to a call
+    it has no knowledge of.
+    """
+    return server == VKIT_SERVER or (
+        server.startswith("plugin_") and server.endswith(f"_{VKIT_SERVER}")
+    )
+
 
 # The corrective action is bounded on purpose: it names the registered tool to
 # call, not a command to run and not a procedure the model has to guess at.
@@ -217,7 +251,7 @@ def _mcp_tool(payload: dict[str, Any]) -> tuple[str, str] | None:
     if match is None:
         return None
     server, tool = match.group("server"), match.group("tool")
-    if server != "vkit" or tool not in VKIT_TOOLS:
+    if not _is_vkit_server(server) or tool not in VKIT_TOOLS:
         return None
     return server, tool
 

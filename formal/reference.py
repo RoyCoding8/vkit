@@ -202,11 +202,10 @@ class Model:
         model's Property4 forbids. The two genuinely disagree there, and the
         tests record which one is which.
 
-        `generation=None` deliberately ignores the generation, which is what
-        `decide` used to do before the readiness fix. It stays available because
-        the FAIL-over-BLOCKED ordering has to be observable independently of which
-        generation the run belongs to -- a stale FAIL still decides REJECTED,
-        because a recorded failure is an answer rather than an absence.
+        `generation=None` deliberately ignores the generation, and exists for
+        callers that want the recorded history rather than this attempt's
+        evidence. `decide` passes the generation, because the core filters by it
+        and a model that did not would answer about runs the attempt never made.
         """
         latest: dict[str, Outcome] = {}
         for record in self.evidence:
@@ -264,30 +263,22 @@ class Model:
         immediately and outranks a missing check. This ordering is the core's
         and is deliberate: a failing check is not "incomplete".
 
-        A FAIL is also preserved across a generation change, which is the
-        subtler half. CONTRACT says to keep the original failure, flag the
-        instability, and never overwrite it with the later pass, so a retry that
-        has re-run one check is not a repair of a failure in another. The core
-        reaches that verdict by reporting a stale failure among its gaps and
-        deciding REJECTED on it; an earlier version of this model filtered
-        evidence by generation here as well, read the re-run PASS, and answered
-        BLOCKED. Hypothesis found the divergence on its first ever execution.
+        Evidence from another generation is not eligible here, and that includes
+        a failure. This is F09's repair and the model is the side that had it
+        wrong: it used to carry a stale FAIL across a generation change, on the
+        reading that a retry that re-ran one check was not a repair of a failure
+        in another. That reading made a repaired attempt permanently unaccepted,
+        which is the defect the finding names. The failure is kept — as history,
+        which the core reports separately — and the current attempt is decided
+        only on runs it produced itself. So the generation is passed through to
+        `_latest_by_check` rather than read across every attempt's evidence.
 
-        A stale BLOCKED does not carry across the same way: an interrupted run
-        that was never re-run is a gap in the current attempt, not a verdict
+        A stale BLOCKED never carried across in the first place: an interrupted
+        run that was never re-run is a gap in the current attempt, not a verdict
         about it, and a retry that re-runs it is exactly the repair that case
         calls for.
         """
-        stale_failures = [
-            record
-            for record in self.evidence
-            if record.owner == owner
-            and record.generation != generation
-            and record.outcome == "FAIL"
-        ]
-        if stale_failures:
-            return "REJECTED"
-        latest = self._latest_by_check(owner)
+        latest = self._latest_by_check(owner, generation)
         if any(outcome == "FAIL" for outcome in latest.values()):
             return "REJECTED"
         if not self.acceptable(owner, generation, revision):

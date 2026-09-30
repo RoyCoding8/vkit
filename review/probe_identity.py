@@ -27,21 +27,18 @@ def digest(**fields):
     changed = dataclasses.replace(check, **fields)
     return dataclasses.replace(manifest, checks={changed.id: changed}).digest()
 
-wheel = next((ROOT / 'review/dist').glob('*.whl'), None)
-schema_matches = None
-if wheel is not None:
-    with zipfile.ZipFile(wheel) as z:
-        schema_matches = {
-            Path(name).name: hashlib.sha256(z.read(name)).hexdigest() ==
-                            hashlib.sha256((ROOT / 'schemas' / Path(name).name).read_bytes()).hexdigest()
-            for name in z.namelist() if name.startswith('vkit/_schemas/')
-        }
+wheels = sorted((ROOT / 'review/dist').glob('*.whl'))
+if wheels:
+    with zipfile.ZipFile(wheels[0]) as z:
+        schema_matches = {Path(name).name: hashlib.sha256(z.read(name)).hexdigest() ==
+                          hashlib.sha256((ROOT / 'schemas' / Path(name).name).read_bytes()).hexdigest()
+                          for name in z.namelist() if name.startswith('vkit/_schemas/')}
 else:
     # `review/dist` is deliberately untracked: a wheel is rebuildable and
     # `wheel-inspection.json` is its receipt. So the schema comparison is
     # reported as not run rather than crashing the probe before the receipt
     # checks below, which need nothing but the scratch repository.
-    schema_matches = 'not run: review/dist holds no wheel; see review/wheel-inspection.json'
+    schema_matches = {'<no wheel built>': False}
 formal_matches = {}
 for source, receipt, key in (
     ('formal/tla/OwnershipAcceptance.tla', 'formal/results/OwnershipAcceptance-receipt.json', 'model_sha256'),

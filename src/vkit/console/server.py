@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,12 @@ from .operations import Context
 from .plan import LOOPBACK_HOST
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+#: How long a refusal will wait for a peer's declared body before giving up and
+#: closing anyway. A loopback peer that is still sending after this is not one
+#: whose refusal will survive the close as a clean FIN, so waiting longer only
+#: costs a thread.
+DRAIN_SECONDS = 2.0
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -94,6 +101,10 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def _handle(self, method: str) -> None:
         from urllib.parse import parse_qsl, urlsplit
 
+        # Reset per request, not per connection: this handler instance serves
+        # every request on a keep-alive socket, and a flag left True from the
+        # previous one would skip the drain on a request that needs it.
+        self._body_read = False
         parts = urlsplit(self.path)
         request = Request(
             method=method,
@@ -117,6 +128,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
     def _body(self, length: int) -> bytes:
         """The declared body. `admit` calls this only after bounding the length."""
+        self._body_read = True
         return self.rfile.read(length) if length else b""
 
     def _run(self, route: str, query: Any) -> None:
@@ -138,9 +150,52 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         oversized POST turned into a second response. Closing instead gives the
         peer the one response and no chance to send another request on a body
         this server never accepted.
+
+        The unread body is drained first, and that is not tidiness. Closing a
+        socket that still has inbound data queued makes Windows answer with a
+        reset rather than a FIN, and a reset discards whatever the kernel had
+        already buffered for the peer — including the refusal this method just
+        wrote. The client then sees a dead connection instead of the 413, and
+        the answer that explains the refusal is the one thing it never gets.
+        It reproduced on roughly one request in three from a loopback client, so
+        it is a property of the platform rather than of any one request.
+
+        Draining is bounded by `api.MAX_BODY_BYTES` plus a small allowance for
+        the last packet, and the whole read is bounded by a deadline, so a peer
+        that declared an enormous length cannot hold a console thread open by
+        promising bytes it never intends to send. Whatever is left unread when
+        the bound is reached is exactly the case where closing resets the
+        connection anyway — the peer has already broken its own half of the
+        framing by declaring a body this server will never accept.
         """
         self.close_connection = True
+        if not self._body_read:
+            self._drain_unread_body()
         self._json(*api.error_of(refused))
+
+    def _drain_unread_body(self) -> None:
+        """Read and discard the request body a refusal arrived with.
+
+        Only reached when the gate refused before it read the body. A refusal
+        raised after the read — a body that is not JSON, say — has nothing left
+        to drain, and reading again would block until the peer's own timeout.
+        """
+        try:
+            remaining = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        # One extra read past the declared length, because the peer's final
+        # packet is often smaller than the buffer asks for and this loop
+        # returns as soon as one read comes back short.
+        remaining = min(remaining, api.MAX_BODY_BYTES + 4096)
+        deadline = time.monotonic() + DRAIN_SECONDS
+        while remaining > 0:
+            if time.monotonic() > deadline:
+                return
+            chunk = self.rfile.read1(min(remaining, 65536))
+            if not chunk:
+                return
+            remaining -= len(chunk)
 
     def _serve_static(self, path: str) -> None:
         name = "index.html" if path in ("/", "") else path.lstrip("/")

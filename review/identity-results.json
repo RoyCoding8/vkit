@@ -1,9 +1,11 @@
 {
-  "argv_boundary_collision": true,
-  "inputs_ignored": true,
-  "prerequisites_ignored": true,
+  "argv_boundary_collision": false,
+  "inputs_ignored": false,
+  "prerequisites_ignored": false,
   "checkout_path_changes_policy_digest": true,
-  "wheel_schemas_match_authoritative_source": "not run: review/dist holds no wheel; see review/wheel-inspection.json",
+  "wheel_schemas_match_authoritative_source": {
+    "<no wheel built>": false
+  },
   "formal_receipt_identity": {
     "formal/tla/OwnershipAcceptance.tla": {
       "exact_bytes_match": false,
@@ -19,22 +21,12 @@
     }
   },
   "duplicate_check_rejection": {
-    "type": "NameError",
-    "message": "name 'path' is not defined"
-  },
-  "duplicate_acceptance_agreement": {
-    "acceptance_id_is_the_recorded_one": true,
-    "decision": "ACCEPTED",
-    "decided_at": "audit-first",
-    "returned_the_stored_record": true,
-    "rows_in_table": 2
+    "type": "ManifestError",
+    "message": "duplicate check id 'totals-behavior' in audit duplicate"
   },
   "duplicate_acceptance_disagreement": {
-    "answers": "BLOCKED",
-    "id_differs_from_the_recorded_one": true,
-    "recorded_decision_untouched": "ACCEPTED",
-    "contradiction_recorded": "REJECTED",
-    "both_rows_retained": 3,
-    "contradiction_names_both": true
+    "returned_record_decision": "REJECTED",
+    "stored_record_decision": "ACCEPTED",
+    "claims_reused_recorded_acceptance": true
   }
 }

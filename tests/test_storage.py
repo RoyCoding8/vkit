@@ -120,6 +120,40 @@ def test_loading_an_unpublished_run_raises(store: Store) -> None:
         store.load("run-1")
 
 
+def test_failing_to_take_the_write_lock_is_a_store_failure(tmp_path: Path) -> None:
+    """A lock the store could not take is not a resource conflict.
+
+    `BEGIN IMMEDIATE` is what makes read-then-write safe, and every writer that
+    matters goes through `store.transaction`. When the lock is already held by
+    another connection, sqlite raises `OperationalError`, which is a driver
+    type. Letting that out would escape the `except StoreError` clauses the CLI,
+    the MCP tools and the console all rely on, and a caller holding a busy
+    database would see "database is locked" instead of a store failure.
+
+    It must also not read as a `ConflictError`, which subclasses `StoreError`:
+    a process that could not take the lock has not been told the resource is
+    unavailable, so showing the user a claim conflict would be a second, wrong
+    answer to a question the store never got to.
+    """
+    from vkit.storage import ConflictError
+
+    holder = Store(tmp_path / "state.sqlite3")
+    with holder.transaction() as conn:
+        conn.execute(
+            "INSERT INTO claim_holders (resource_key, kind, capacity, held,"
+            " task_id, generation, acquired_at) VALUES"
+            " ('key-1', 'exclusive', 1, 1, 't1', 1, '2026-09-29T10:00:00+00:00')"
+        )
+        busy = Store(tmp_path / "state.sqlite3")
+        with pytest.raises(StoreError) as caught:
+            with busy.transaction() as conn:
+                conn.execute("SELECT 1")
+        assert not isinstance(caught.value, ConflictError), (
+            "a lock failure was reported as a resource conflict"
+        )
+        assert "write lock" in str(caught.value)
+
+
 def test_a_terminated_store_keeps_the_report_readable(tmp_path: Path) -> None:
     """The evidence must outlive the process that wrote it."""
     s = Store(tmp_path / "state.sqlite3")

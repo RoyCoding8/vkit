@@ -305,7 +305,12 @@ def _terminal_report(
         },
         "configuration_digest": manifest.digest(),
         "fixture_digest": None,
-        "process": None if process is None else {
+        # A refused launch produces a real result whose pid is None, not a
+        # missing process. Guarding on the object left process.pid = None in the
+        # report, which violates the schema, so publish never ran and the row
+        # stayed 'running' with no result forever. A run that never started has
+        # no process to record.
+        "process": None if process is None or process.pid is None else {
             "pid": process.pid,
             "ownership": process.ownership,
             "exit_code": process.exit_code,

@@ -220,3 +220,27 @@ def test_a_closed_task_refuses_a_new_verdict(store: Store) -> None:
     set_status(store, "t1", "closed")
     with pytest.raises(TaskError):
         record_readiness(store, "t1", result)
+
+
+def test_a_closed_task_cannot_be_reopened(store: Store) -> None:
+    """A closed task is final. Reopening it let a caller resurrect a finished
+    task and then record a verdict on it, and left the row simultaneously
+    'active' and stamped closed."""
+    open_task(store, task_id="t1", contract={"g": "x"}, policy_digest="pd")
+    set_status(store, "t1", "closed")
+    with pytest.raises(TaskError):
+        set_status(store, "t1", "active")
+    assert get_task(store, "t1").status == "closed"
+
+
+def test_a_closed_task_cannot_be_paused_either(store: Store) -> None:
+    open_task(store, task_id="t1", contract={"g": "x"}, policy_digest="pd")
+    set_status(store, "t1", "closed")
+    with pytest.raises(TaskError):
+        set_status(store, "t1", "paused")
+
+
+def test_a_task_can_still_be_paused_and_resumed_before_closing(store: Store) -> None:
+    open_task(store, task_id="t1", contract={"g": "x"}, policy_digest="pd")
+    assert set_status(store, "t1", "paused").status == "paused"
+    assert set_status(store, "t1", "active").status == "active"

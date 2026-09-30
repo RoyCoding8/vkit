@@ -175,10 +175,13 @@ command and is the artifact to rerun before trusting anything here.
 
 ## Known limits
 
-The POSIX path is written from documented semantics and **has not been tested**.
-This milestone was verified on Windows 11 with Python 3.13.14. The POSIX
-boundary is a descendant that calls `setsid` or `setpgid` leaves the process
-group, and no signal reaches it.
+The POSIX path is written from documented semantics and **has not been run on a
+POSIX host**. This milestone was verified on Windows 11 with Python 3.13.14.
+Its timeout and completion control flow is exercised on Windows with the two
+POSIX-only mechanisms stubbed, because an ordinary timeout there used to raise
+`UnboundLocalError` instead of reporting a timeout. Group signalling itself is
+unverified. The boundary is a descendant that calls `setsid` or `setpgid` leaves
+the process group, and no signal reaches it.
 
 A `.cmd` launcher cannot carry a non-ASCII path, because batch file contents are
 read in the active ANSI code page. That is `cmd.exe` behavior, not this

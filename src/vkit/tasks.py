@@ -42,16 +42,6 @@ class TaskRecord:
     readiness: Readiness | None
 
 
-def _connect_write(store: Store):
-    """A connection already inside an immediate transaction.
-
-    Every mutating operation here takes the write lock before it reads, so two
-    clients cannot both read a state and then both act on it. Callers must
-    COMMIT or ROLLBACK; `_write` does that for them.
-    """
-    return store._connect()
-
-
 def _in_transaction(fn):
     """Run `fn(conn, store, ...)` inside one BEGIN IMMEDIATE, committing only on success.
 
@@ -164,6 +154,11 @@ def set_status(conn, store: Store, task_id: str, status: TaskStatus) -> TaskReco
     row = conn.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
     if row is None:
         raise TaskError(f"no such task: {task_id}")
+    if row[0] == "closed":
+        # A closed task retains its reports and its result is final. Reopening it
+        # let a caller resurrect a finished task and then record a verdict on it,
+        # and left the row simultaneously 'active' and stamped closed.
+        raise TaskError(f"task {task_id} is closed and cannot be reopened")
     if status == "closed":
         conn.execute(
             "UPDATE tasks SET status = 'closed', closed_at = ? WHERE task_id = ?",

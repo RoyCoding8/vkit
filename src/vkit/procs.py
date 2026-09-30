@@ -251,10 +251,15 @@ def _run_posix(
                 timed_out = True
                 _kill_process_group(proc.pid)
                 try:
-                    proc.wait(timeout=REAP_TIMEOUT_SECONDS)
+                    # The group was signalled, so this normally succeeds and
+                    # returns the code the kill produced. It must be assigned on
+                    # this path too: leaving it to the except below below made
+                    # every ordinary POSIX timeout raise UnboundLocalError
+                    # instead of reporting a timeout.
+                    exit_code = proc.wait(timeout=REAP_TIMEOUT_SECONDS)
                 except subprocess.TimeoutExpired:
-                    # The group was signalled and the leader has not reaped. The
-                    # command is killed either way; the code is simply unknown.
+                    # Signalled, and the leader has not reaped. The command is
+                    # killed either way; the code is simply unknown.
                     exit_code = None
     except OSError as exc:
         return _launch_failure(argv, cwd, stdout_path, stderr_path, exc, started)

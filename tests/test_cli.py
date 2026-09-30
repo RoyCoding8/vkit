@@ -207,3 +207,34 @@ def test_non_ascii_repository_path_is_read_exactly(tmp_path: Path) -> None:
     # WinError 267 and no JSON at all.
     assert done.returncode == EXIT_OK, done.stderr
     assert json.loads(done.stdout)["project"] == str(repo)
+
+
+def test_a_manifest_naming_a_missing_binary_is_blocked_not_crashed(tmp_path: Path) -> None:
+    """A typo in a manifest command is the most ordinary bad input there is.
+
+    It used to exit 4 (internal error) and leave the run row stuck in 'running'
+    with no result forever, because a refused launch produces a result whose pid
+    is None and the report schema types pid as an integer.
+    """
+    repo = tmp_path / "repo"
+    shutil.copytree(EXAMPLE, repo)
+    manifest = json.loads((repo / "verification" / "manifest.json").read_text(encoding="utf-8"))
+    manifest["checks"][0]["command"] = ["no-such-binary-abc123", "--version"]
+    manifest["checks"][0]["prerequisites"] = []
+    (repo / "verification" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "e"],
+                   cwd=repo, check=True)
+
+    done = vkit("check", "run", "--project", str(repo), "--check", "totals-behavior", "--json")
+    assert done.returncode == EXIT_BLOCKED, done.stdout
+    outcome = json.loads(done.stdout)["outcome"]
+    assert outcome["result"] == "BLOCKED"
+    assert outcome["reason"] == "launch_failed"
+
+    # And the run is terminal, not orphaned mid-flight.
+    run_id = json.loads(done.stdout)["run_id"]
+    shown = vkit("run", "show", "--project", str(repo), "--run", run_id, "--json")
+    assert shown.returncode == EXIT_BLOCKED
+    assert json.loads(shown.stdout)["lifecycle"] == "terminal"

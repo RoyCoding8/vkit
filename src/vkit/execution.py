@@ -122,6 +122,7 @@ class ProcessResult:
     exit_code: int | None
     timed_out: bool
     launch_error: tuple[BlockedReason, str] | None = None
+    creation_time: int | None = None
 
 
 def _derive(
@@ -247,9 +248,12 @@ def run_check(
         exit_code=result.exit_code,
         timed_out=result.timed_out,
         launch_error=None if result.reason is None else (result.reason, result.detail),
+        creation_time=result.creation_time,
     )
     store.mark_running(run_id, {
-        "pid": process.pid, "ownership": process.ownership,
+        "pid": process.pid,
+        "creation_time": process.creation_time,
+        "ownership": process.ownership,
         "exit_code": process.exit_code, "timed_out": process.timed_out,
     })
 
@@ -312,6 +316,8 @@ def _terminal_report(
         # no process to record.
         "process": None if process is None or process.pid is None else {
             "pid": process.pid,
+            **({"creation_time": process.creation_time}
+               if process.creation_time is not None else {}),
             "ownership": process.ownership,
             "exit_code": process.exit_code,
             "timed_out": process.timed_out,

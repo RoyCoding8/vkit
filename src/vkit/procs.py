@@ -112,6 +112,11 @@ class ExecutionResult:
     stderr_path: Path
     ownership: str
     pid: int | None = None
+    # Read from the live process handle at launch. Afterwards every handle is
+    # closed, and a pid whose process has exited may be unopenable, so a later
+    # reader cannot recover this. Without it, a pid alone is all a cancel has,
+    # and pids get recycled.
+    creation_time: int | None = None
     exit_code: int | None = None
     timed_out: bool = False
     reason: BlockedReason | None = None
@@ -295,6 +300,34 @@ def _kill_process_group(pid: int) -> None:
 # --------------------------------------------------------------- Windows
 
 
+def _creation_time(h_process) -> int | None:
+    """The process creation FILETIME, read from a handle that is still open.
+
+    Read here, at launch, because this is the last moment the value is
+    guaranteed available: every handle is closed before the result is returned,
+    and a pid whose process has already exited may be unopenable. A later reader
+    has only a bare pid, and pids are recycled.
+    """
+    if h_process is None or not IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.c_void_p] * 4
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        if not kernel32.GetProcessTimes(
+            ctypes.c_void_p(int(h_process)), ctypes.byref(created), ctypes.byref(exited),
+            ctypes.byref(kernel), ctypes.byref(user),
+        ):
+            return None
+        return (created.dwHighDateTime << 32) | created.dwLowDateTime
+    except Exception:  # noqa: BLE001 - an unreadable identity must not fail a run
+        return None
+
+
 def _open_inheritable(path: Path, access: int, disposition: int):
     """Open a file so the child can inherit the handle.
 
@@ -423,6 +456,11 @@ def _run_windows(
             _terminate_unstarted(h_process)
             return _launch_failure(argv, cwd, stdout_path, stderr_path, exc, started)
 
+        # Read here, while the process is suspended and the handle is open. After
+        # the wait the process may have exited and the handle is closed by the
+        # finally block, so this is the last point the value is guaranteed.
+        creation_time = _creation_time(h_process)
+
         try:
             win32process.ResumeThread(h_thread)
         except pywintypes.error as exc:
@@ -449,6 +487,7 @@ def _run_windows(
         stderr_path=stderr_path,
         ownership=WINDOWS_OWNERSHIP,
         pid=pid,
+        creation_time=creation_time,
         exit_code=exit_code,
         timed_out=timed_out,
         started_at=started,

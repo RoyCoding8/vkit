@@ -115,26 +115,10 @@ def start_run(
         return StartedRun(run_id, outcome_from_report(stored), stored)
 
     source: SourceIdentity = compute_source_identity(project)
-    store.register_run(
-        run_id, check_id, task_id=task_id, attempt=generation,
-        source=source.to_json(), configuration_digest=manifest.digest(),
-        fixture_digest=None,
-    )
-    # The intent is durable before any process exists. If this process dies in
-    # the next instant, `recover` sees a preparing run with no process and knows
-    # the launch was attempted rather than never begun. The command is recorded
-    # now because a run cancelled before finishing still has to describe it.
-    spec = manifest.checks[check_id]
-    store.mark_running(
-        run_id,
-        {"pid": None, "ownership": None, "exit_code": None, "timed_out": False,
-         "launch_intent": _now(), "job_name": job_name_for(run_id),
-         "check_id": check_id,
-         "source": source.to_json(),
-         "configuration_digest": manifest.digest(),
-         "command": {"argv": list(spec.argv), "cwd": str(spec.cwd)}},
-    )
-
+    # Registration, launch intent, and process identity all belong to
+    # `execution.run_check`. Registering here as well meant every call raised
+    # "run is already registered", so the documented entry point for a
+    # background run had never once executed.
     try:
         result = run_check(manifest, check_id, store=store, source=source, run_id=run_id)
     except ExecutionError as exc:

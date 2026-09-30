@@ -192,7 +192,7 @@ and nothing anywhere reports that the gate did not run.
 
 The cause is in the tool name. The host scopes it to the plugin, and this
 plugin's name and its server key are both `vkit`, so the segment between `mcp__`
-and the tool is `vkitee_vkit`, not `vkit`. `_MCP_TOOL` captured that whole
+and the tool is `vkit_vkit`, not `vkit`. `_MCP_TOOL` captured that whole
 segment as the server and compared it to the literal `"vkit"`:
 
 ```
@@ -200,6 +200,12 @@ segment as the server and compared it to the literal `"vkit"`:
     _mcp_tool -> None
     _on_pre_tool_use -> {}
 ```
+
+The fix compares the `plugin_` prefix and the server key as the suffix, and
+accepts the bare `vkit` a `--mcp-config` server gets as an exact match. Both
+ends are checked on purpose: a suffix alone also accepts
+`plugin_other_vkit_extra`, and attaching this plugin's registration to a call
+made against a different server is a guess about whose call it is.
 
 After the fix, the same live delivery:
 

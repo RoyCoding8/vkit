@@ -25,10 +25,15 @@ export PATH="$VENV/bin:$PATH"
 echo "reports: $OUTDIR"
 echo
 
+killed_at=""
 for f in tests/test_*.py; do
     name=$(basename "$f" .py)
     out="$OUTDIR/$name.txt"
     xml="$OUTDIR/$name.xml"
+    if [ -f "$xml" ]; then
+        printf '%-32s already reported; skipping\n' "$name"
+        continue
+    fi
     setsid timeout --signal=KILL 900 \
         "$VENV/bin/python" -u -m pytest "$f" -q -p no:cacheprovider --tb=line \
         --junitxml="$xml" > "$out" 2>&1

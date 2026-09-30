@@ -189,7 +189,9 @@ class Report:
 # --------------------------------------------------------------- liveness
 
 
-def liveness(pid: int | None, *, creation_time: int | None = None) -> Liveness:
+def liveness(
+    pid: int | None, *, creation_time: int | None = None, boot_id: str = ""
+) -> Liveness:
     """Decide whether a pid is alive, dead, or beyond knowing.
 
     Getting this backwards kills a live worker, so each error case names its
@@ -201,6 +203,13 @@ def liveness(pid: int | None, *, creation_time: int | None = None) -> Liveness:
     unrelated one. Judged on the pid alone, that stranger reads DEAD or ALIVE
     with equal confidence, and both are wrong: DEAD releases a run's claims on
     the evidence of a process that never ran the check.
+
+    `boot_id` is the third half on POSIX, where the start time is ticks since
+    boot rather than an absolute instant. It is compared because a tick count is
+    only meaningful within one boot: WSL restarts the init namespace, so a record
+    written before a restart can carry the same tick count as a process running
+    after it. It defaults to empty, which is the Windows case, where an absolute
+    FILETIME needs no boot to be meaningful.
 
     So when a creation time is supplied and the live process disagrees, the
     answer is UNCERTAIN, never DEAD. The claim is retained and the run needs
@@ -248,7 +257,7 @@ def liveness(pid: int | None, *, creation_time: int | None = None) -> Liveness:
         )
     if sys.platform == "win32":
         return _liveness_windows(pid, creation_time)
-    return _liveness_posix(pid, creation_time)
+    return _liveness_posix(pid, creation_time, boot_id)
 
 
 def _liveness_windows(pid: int, creation_time: int | None = None) -> Liveness:
@@ -299,13 +308,22 @@ def _liveness_windows(pid: int, creation_time: int | None = None) -> Liveness:
     )
 
 
-def _creation_time_mismatch(pid: int, recorded: int) -> Liveness | None:
+def _creation_time_mismatch(
+    pid: int, recorded: int, recorded_boot_id: str = ""
+) -> Liveness | None:
     """A Liveness saying the pid is a stranger, or None if the pair matches.
 
     Reached only when a pid opened and answered, so a mismatch means the OS
     handed this number to a different process after ours exited. That is not
     evidence about our process at all, which is why it is UNCERTAIN rather than
     a verdict on it.
+
+    `recorded_boot_id` is compared as well as the tick count, on POSIX. A start
+    time is ticks since boot, so a record written before a restart can carry the
+    same tick count as a process running after it, and WSL restarts the whole
+    init namespace. Comparing the tick count alone would call that pair the same
+    process. It is empty on Windows, where the recorded value is an absolute
+    FILETIME and needs no boot to be meaningful, so the check is skipped there.
     """
     from .procidentity import CannotConfirm, read_identity
 
@@ -317,7 +335,22 @@ def _creation_time_mismatch(pid: int, recorded: int) -> Liveness | None:
             f"pid {pid} is running but its creation time cannot be read, so the "
             "recorded identity cannot be confirmed; the claim is retained",
         )
-    if current is None or current.creation_time == recorded:
+    if current is None:
+        return None
+    # The boot id is part of the comparison, not decoration. A start time is
+    # ticks since boot, so a record written before a restart can carry the same
+    # tick count as a process running after it, and on WSL the whole init
+    # namespace restarts together. Comparing the tick count alone would call that
+    # pair the same process.
+    if current.boot_id and current.boot_id != recorded_boot_id:
+        return Liveness(
+            LivenessState.UNCERTAIN,
+            f"pid {pid} is running under boot {current.boot_id}, not the boot this "
+            f"run was recorded in ({recorded_boot_id or 'none'}), so the number was "
+            "recycled across a restart and this is a different process; the claim is "
+            "retained rather than released on a stranger's evidence",
+        )
+    if current.creation_time == recorded:
         return None
     return Liveness(
         LivenessState.UNCERTAIN,
@@ -326,7 +359,9 @@ def _creation_time_mismatch(pid: int, recorded: int) -> Liveness | None:
         "process; the claim is retained rather than released on a stranger's evidence",
     )
 
-def _liveness_posix(pid: int, creation_time: int | None = None) -> Liveness:
+def _liveness_posix(
+    pid: int, creation_time: int | None = None, boot_id: str = ""
+) -> Liveness:
     """The POSIX probe, plus the identity check the Windows branch performs.
 
     `kill(pid, 0)` says whether a process exists and nothing about which one, so
@@ -361,7 +396,7 @@ def _liveness_posix(pid: int, creation_time: int | None = None) -> Liveness:
         )
     if creation_time is None:
         return Liveness(LivenessState.ALIVE, f"pid {pid} answered the signal-zero probe")
-    return _creation_time_mismatch(pid, creation_time) or Liveness(
+    return _creation_time_mismatch(pid, creation_time, boot_id) or Liveness(
         LivenessState.ALIVE, f"pid {pid} answered the signal-zero probe"
     )
 
@@ -412,6 +447,19 @@ class _Run:
         """
         value = (self.process or {}).get("creation_time")
         return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @property
+    def boot_id(self) -> str:
+        """The boot the recorded identity belongs to, empty on Windows.
+
+        A POSIX start time is ticks since boot, so it is only comparable within
+        one boot. WSL restarts the init namespace, so a record written before a
+        restart can carry the same tick count as a process running after it. The
+        check is skipped when this is empty, which is the Windows case and also a
+        record written before the field existed.
+        """
+        value = (self.process or {}).get("boot_id")
+        return value if isinstance(value, str) else ""
 
 
 def _read_runs(store: Store) -> tuple[_Run, ...]:
@@ -501,7 +549,7 @@ def _unfinished_run_finding(store: Store, run: _Run) -> Finding:
                 "the records, so this is reported and not acted on."
             ),
         )
-    state = liveness(run.pid, creation_time=run.creation_time)
+    state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
     if state.state is LivenessState.ALIVE:
         return Finding(
             kind=FindingKind.RUN_LIVE_PROCESS,
@@ -553,7 +601,7 @@ def _terminal_run_findings(store: Store, run: _Run) -> list[Finding]:
             ),
         ))
     if run.pid is not None:
-        state = liveness(run.pid, creation_time=run.creation_time)
+        state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
         if state.state is LivenessState.ALIVE:
             findings.append(Finding(
                 kind=FindingKind.RUN_TERMINAL_LIVE_PROCESS,
@@ -625,7 +673,7 @@ def _holder_liveness(runs: tuple[_Run, ...], task_id: str, generation: int) -> s
         return "No run of that task has a recorded process to check."
     parts = []
     for run in relevant:
-        state = liveness(run.pid, creation_time=run.creation_time)
+        state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
         parts.append(f"run {run.run_id!r} is {run.lifecycle} at pid {run.pid}, {state.state.value}")
     return "; ".join(parts) + "."
 
@@ -753,7 +801,7 @@ def _live_holder(store: Store, task_id: str) -> str | None:
     for run in _read_runs(store):
         if run.task_id != task_id or run.pid is None:
             continue
-        state = liveness(run.pid, creation_time=run.creation_time)
+        state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
         if state.state is LivenessState.ALIVE:
             return f"run {run.run_id!r} is {run.lifecycle} and its process is alive ({state.detail})"
         if state.state is LivenessState.UNCERTAIN:
@@ -804,8 +852,13 @@ def _mark_run_dead(store: Store, run_id: str, evidence: str) -> None:
         recorded_creation_time = process.get("creation_time") if process else None
         if not isinstance(recorded_creation_time, int) or isinstance(recorded_creation_time, bool):
             recorded_creation_time = None
+        recorded_boot_id = process.get("boot_id") if process else None
+        if not isinstance(recorded_boot_id, str):
+            recorded_boot_id = ""
 
-        state = liveness(pid, creation_time=recorded_creation_time)
+        state = liveness(
+            pid, creation_time=recorded_creation_time, boot_id=recorded_boot_id
+        )
         if state.state is LivenessState.ALIVE:
             raise RecoveryRefused(
                 f"refusing to mark run {run_id!r} dead: {state.detail}. A running process is "

@@ -805,15 +805,29 @@ def test_a_pid_now_held_by_a_stranger_is_uncertain_and_never_dead(alive_pid: int
 
     # The same pid, with a creation time that is not the live process's. This is
     # exactly the record a run written before its process exited now carries.
+    # The boot is passed too, because a POSIX start time is ticks since boot and
+    # is only comparable within one boot. Passing a real identity's tick count
+    # WITHOUT its boot is a record this module cannot fully corroborate, and the
+    # stranger verdict below would then be right for the wrong reason.
     stranger_creation_time = real.creation_time + 1
 
-    state = liveness(alive_pid, creation_time=stranger_creation_time)
+    state = liveness(
+        alive_pid,
+        creation_time=stranger_creation_time,
+        boot_id=real.boot_id,
+    )
 
     assert state.state is LivenessState.UNCERTAIN, (
         "a pid whose creation time does not match is a stranger's process, and "
         "reporting it DEAD releases a claim on the wrong evidence"
     )
+    # The detail has to name WHICH half failed, or a reader cannot tell a
+    # stranger from an unreadable identity.
     assert "creation time" in state.detail
+    assert "boot" not in state.detail, (
+        "the boot matched, so the detail must not blame the boot; if it does, the "
+        "verdict came from the wrong check"
+    )
     assert not state.dead
 
 
@@ -831,13 +845,67 @@ def test_a_matching_creation_time_still_reads_alive(alive_pid: int) -> None:
     real = read_identity(alive_pid)
     assert real is not None
 
-    state = liveness(alive_pid, creation_time=real.creation_time)
+    state = liveness(
+        alive_pid, creation_time=real.creation_time, boot_id=real.boot_id
+    )
 
     assert state.state is LivenessState.ALIVE
     if sys.platform == "win32":
         assert state.exit_code == 259
     else:
         assert state.exit_code is None
+
+
+def test_a_record_from_another_boot_is_a_stranger(alive_pid: int) -> None:
+    """The tick count is only meaningful within one boot.
+
+    WSL restarts the init namespace, so a record written before a restart can
+    carry the same tick count as a process running after it. The pid and the
+    ticks both match and it is still a different process, which is the case a
+    tick-count-only comparison would call a match.
+    """
+    from vkit.procidentity import boot_id, read_identity
+
+    real = read_identity(alive_pid)
+    assert real is not None
+
+    state = liveness(
+        alive_pid,
+        creation_time=real.creation_time,
+        boot_id="a-different-boot",
+    )
+
+    assert state.state is LivenessState.UNCERTAIN, (
+        "a matching pid and tick count under a different boot is a stranger, and "
+        "reading it as our own process is how a claim is released on a stranger"
+    )
+    assert boot_id() in state.detail, "the detail must name the boot that did not match"
+    assert not state.dead
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a Windows FILETIME is absolute and needs no boot to be meaningful, so "
+           "there is no boot half to withhold",
+)
+def test_a_record_carrying_no_boot_is_treated_as_unproven(alive_pid: int) -> None:
+    """A record written before the boot half existed is weaker evidence.
+
+    Whether a tick count with no boot should corroborate a live process is a
+    product decision about what a pre-boot_id record is worth. The direction
+    chosen here is the one that keeps the claim: an uncorroborated record reads
+    UNCERTAIN, so nothing is released on it. Stated here because it is a choice,
+    not a consequence.
+    """
+    from vkit.procidentity import read_identity
+
+    real = read_identity(alive_pid)
+    assert real is not None
+
+    state = liveness(alive_pid, creation_time=real.creation_time)
+
+    assert state.state is LivenessState.UNCERTAIN
+    assert not state.dead
 
 
 @requires_windows

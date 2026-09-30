@@ -167,9 +167,11 @@ nonzero, writes no artifact, and the run is BLOCKED with `artifact_missing`. The
 limit is loud. It never reads as a passing check, so it does not need a detector
 to keep it from being mistaken for evidence.
 
-**Corrected wording for `plans/STATUS.md`.** The current sentence should say the
-non-ASCII path *inside* the batch file mangles, not that the launcher "will
-mangle its arguments". The argument is fine.
+**Corrected wording for `plans/STATUS.md`.** The current sentence conflates two
+things and should be split. The limit that remains is that `cmd.exe` reads a
+batch file's own bytes in the active ANSI code page, so a non-ASCII path written
+*inside* the file mangles. The launcher path and the arguments do not mangle,
+and no longer did, as of `5e714cd`.
 
 ## GAP-9 part 2: the source digest cannot see a reverted edit
 

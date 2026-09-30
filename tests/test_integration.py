@@ -96,18 +96,19 @@ def passing_manifest_only_candidate(repo: Path) -> str:
     baseline are the same commit, and "the checks ran against the candidate"
     would be indistinguishable from "the checks ran against the baseline".
 
-    The comment sits in the driver's own module, after the expectations it
-    holds. A defect this test did not intend would otherwise surface as a
-    rejected candidate and read as the product's decision rather than as a
-    mistake in the fixture.
+    The comment sits in the product module, never in the driver. The driver is
+    the verification code: the policy pins its bytes, and a candidate that edits
+    it is refused rather than verified. That is a different property with its
+    own tests, and putting it in this helper would have made every test that
+    wants an ordinary good candidate depend on an attack.
     """
     fx.checkout_branch(repo, "candidate-only", fx.baseline_revision(repo))
-    literal = f"CASES = {fx.CASES!r}"
+    literal = fx.RAISE_THE_CEILING_OLD
     return fx.replace_in(
-        repo, fx.DRIVER_NAME, literal,
-        literal + "\n# The expectations above are literals, read from this file only.\n"
-                  "# Nothing can ask this driver to report a pass it did not observe.",
-        "note why the expectations are literals",
+        repo, fx.RULES_NAME, literal,
+        literal + "\n# A comment on product code. The candidate owns this file, and\n"
+                  "# changing it must not change what a passing observation means.",
+        "note why a product comment is harmless",
     )
 
 
@@ -389,10 +390,13 @@ def test_the_command_states_that_it_does_not_publish(tmp_path: Path) -> None:
 
     done, record = verify(repo, candidate, target, "@main")
     assert done.returncode == EXIT_OK, record
-    assert record["publishes"] is False
-    assert record["readiness_at_publish"]["target_tested"] == target
-    assert record["readiness_at_publish"]["recheck_before_publish"] == "target"
-    assert "does not push, merge or tag" in record["readiness_at_publish"]["note"]
+    # The publish statement is carried inside a column the acceptances table
+    # persists, so a replayed decision still says it rather than losing it.
+    assert record["manifest"]["publishes"] is False
+    readiness = record["manifest"]["readiness_at_publish"]
+    assert readiness["target_tested"] == target
+    assert readiness["recheck_before_publish"] == "target"
+    assert "does not push, merge or tag" in readiness["note"]
 
     # And the human form says it too, because a human reads the log.
     human = vkit(

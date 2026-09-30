@@ -264,3 +264,23 @@ all on any other. `python -m pytest` does not import `formal/`, and the
 correspondence tests skip cleanly without Hypothesis, which
 `tests/test_optional_toolchain.py` checks by actually hiding the package and
 asserting the skip rather than trusting it.
+
+## A pre-existing flaky test, unrelated to this plan
+
+`tests/test_recover.py::test_an_absent_pid_is_still_dead_with_a_recorded_identity`
+and its sibling `test_liveness_distinguishes_a_real_process_from_an_absent_one`
+fail intermittently in a full-suite run, and pass when the file is run alone.
+
+The cause is in the `dead_pid` fixture. It spawns a process, waits for it to
+be reaped, waits for its pid to stop answering a liveness probe, and returns
+that pid. Between the fixture returning and the test asserting DEAD, Windows
+can hand the same pid to a process another test started, and the assertion
+then reads LIVE. Both tests passed five runs in isolation and failed on
+different runs of the full suite, once each, on a tree with none of this plan's
+files in it. That is a timing race in the fixture, not a defect this plan
+introduced and not something this plan is scoped to fix.
+
+It is recorded here because a reader comparing a full-suite result against this
+file will otherwise see a number that varies and no explanation for it. The
+formal work is unaffected: none of the four harnesses spawns a process or reads
+a pid.

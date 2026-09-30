@@ -856,6 +856,10 @@ def test_a_matching_creation_time_still_reads_alive(alive_pid: int) -> None:
         assert state.exit_code is None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="boot_id is POSIX-only; a Windows FILETIME is absolute and needs no boot",
+)
 def test_a_record_from_another_boot_is_a_stranger(alive_pid: int) -> None:
     """The tick count is only meaningful within one boot.
 
@@ -863,6 +867,13 @@ def test_a_record_from_another_boot_is_a_stranger(alive_pid: int) -> None:
     carry the same tick count as a process running after it. The pid and the
     ticks both match and it is still a different process, which is the case a
     tick-count-only comparison would call a match.
+
+    Skipped on Windows, and the reason is the design rather than an
+    inconvenience: `boot_id` is empty there because a FILETIME is an absolute
+    instant, so there is no boot for a record to disagree with. The Windows
+    equivalent of this property is the creation-time comparison, which
+    `test_a_pid_now_held_by_a_stranger_is_uncertain_and_never_dead` covers on
+    both platforms.
     """
     from vkit.procidentity import boot_id, read_identity
 

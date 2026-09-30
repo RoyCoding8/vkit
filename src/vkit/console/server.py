@@ -10,8 +10,13 @@ machine, and a warning leaves the operator to notice it.
 not a keyword argument and not a hook called after binding; by the time
 `bind_and_activate` returns False, `socket.bind` was never reached.
 
-There is no authentication because there is no remote peer. Do not describe this
-as a network service.
+Binding is not authentication, and stating that is the reason this module
+exists. The loopback bind says no other machine can reach this socket. It does
+not say who is talking to it, and a page the operator has open in a browser on
+this machine is talking to it. Who the caller is, and whether they may change
+anything, is decided once in `api.admit`, before a route is chosen. This module
+hands `admit` what arrived, writes back what it said, and returns from the
+request method the moment it refuses.
 """
 from __future__ import annotations
 
@@ -22,15 +27,11 @@ from pathlib import Path
 from typing import Any
 
 from . import api
+from .api import Request, Session
 from .operations import Context
 from .plan import LOOPBACK_HOST
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-
-#: Bodies are not needed by any route, so a body above this is refused rather
-#: than read. Every argument travels in the query string, which keeps a refused
-#: mutation reproducible from a URL.
-MAX_BODY_BYTES = 64 * 1024
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -55,6 +56,10 @@ class ConsoleServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], context: Context) -> None:
         self.context = context
         super().__init__(address, ConsoleHandler)
+        # Minted after the bind, because the token is bound to the port the
+        # console actually answers on. A port asked for as 0 is the OS's to
+        # choose, and `server_address` is the only place that choice is visible.
+        self.session = Session.mint(port=self.server_address[1])
 
     def bind_and_activate(self) -> bool:
         host = self.server_address[0]
@@ -67,11 +72,11 @@ class ConsoleServer(ThreadingHTTPServer):
 
 
 class ConsoleHandler(BaseHTTPRequestHandler):
-    """Serve the static page, and route `/api/<name>` to one call.
+    """Serve the page, and route `/api/<name>` through one gate.
 
-    Reads a route, calls `api.dispatch`, writes the result. It makes no decision
-    about what is permitted: `api.ROUTES` is the whole surface, and a path this
-    handler does not recognise is a 404 rather than a fallback.
+    The gate is `api.admit`. It raises for every refusal there is, so the two
+    `except` clauses below are the whole of this module's policy and no code
+    after them is reachable by a request the gate turned away.
     """
 
     server_version = "vkit-console"
@@ -79,72 +84,80 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:  # noqa: N802 - the name is fixed by BaseHTTPRequestHandler
-        route, params, query = self._split(self.path)
-        if route is None:
-            self._serve_static()
-            return
-        self._answer(route, params, query)
+        self._handle("GET")
 
     def do_POST(self) -> None:  # noqa: N802 - see do_GET
-        route, params, query = self._split(self.path)
-        if route is None:
-            self._fail(404, {"error": f"no such path: {self.path}"})
-            return
-        self._answer(route, params, query, body=self._read_body())
+        self._handle("POST")
 
     # ------------------------------------------------------------- plumbing
 
-    def _split(self, target: str) -> tuple[str | None, dict[str, str], dict[str, str]]:
-        from urllib.parse import urlsplit
+    def _handle(self, method: str) -> None:
+        from urllib.parse import parse_qsl, urlsplit
 
-        parts = urlsplit(target)
-        if not parts.path.startswith("/api/"):
-            return None, {}, {}
-        route = parts.path[len("/api/"):]
-        query = api.parse_query(parts.query)
-        return route, {"route": route}, query
-
-    def _read_body(self) -> dict[str, Any]:
+        parts = urlsplit(self.path)
+        request = Request(
+            method=method,
+            route=parts.path[len("/api/"):] if parts.path.startswith("/api/") else None,
+            query=dict(parse_qsl(parts.query, keep_blank_values=False)),
+            host=self.headers.get("Host", ""),
+            origin=self.headers.get("Origin"),
+            token=self.headers.get(api.TOKEN_HEADER),
+            length=self.headers.get("Content-Length"),
+            chunked="chunked" in (self.headers.get("Transfer-Encoding") or "").lower(),
+        )
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = 0
-        if length > MAX_BODY_BYTES:
-            self._fail(413, {"error": f"body above {MAX_BODY_BYTES} bytes; send arguments in the query string"})
-            return {}
-        return api.parse_body(self.rfile.read(length) if length else b"")
+            query = api.admit(request, self.server.session, self._body)  # type: ignore[attr-defined]
+        except (api.Rejected, api.BadRequest) as refused:
+            self._refuse(refused)
+            return
+        if query is None:
+            self._serve_static(parts.path)
+            return
+        self._run(request.route, query)
 
-    def _answer(
-        self, route: str, params: dict[str, str], query: dict[str, str],
-        body: dict[str, Any] | None = None,
-    ) -> None:
+    def _body(self, length: int) -> bytes:
+        """The declared body. `admit` calls this only after bounding the length."""
+        return self.rfile.read(length) if length else b""
+
+    def _run(self, route: str, query: Any) -> None:
         context: Context = self.server.context  # type: ignore[attr-defined]
         try:
-            if body:
-                query = {**query, **body}
             payload = api.dispatch(context, route, query)
         except Exception as exc:  # noqa: BLE001 - one response shape for every failure
             status, document = api.error_of(exc)
-            self._fail(status, document)
+            self._json(status, document)
             return
         self._json(200, payload)
 
-    def _serve_static(self) -> None:
-        from urllib.parse import urlsplit
+    def _refuse(self, refused: Exception) -> None:
+        """Answer a request the gate turned away, and end the connection.
 
-        path = urlsplit(self.path).path
+        A refused request had no body read, and the peer's bytes are still in
+        flight. Answering as though the exchange finished would leave the next
+        bytes on this socket parsed as the next request, which is how one
+        oversized POST turned into a second response. Closing instead gives the
+        peer the one response and no chance to send another request on a body
+        this server never accepted.
+        """
+        self.close_connection = True
+        self._json(*api.error_of(refused))
+
+    def _serve_static(self, path: str) -> None:
         name = "index.html" if path in ("/", "") else path.lstrip("/")
         target = (STATIC_DIR / name).resolve()
         # A static server that will read any file the process can read is a file
         # server. Containment is checked after resolution because a prefix test
         # loses to `..`.
         if STATIC_DIR.resolve() not in target.parents or not target.is_file():
-            self._fail(404, {"error": f"no such path: {self.path}"})
+            self._json(404, {"error": f"no such path: {path}"})
             return
-        content_type = _CONTENT_TYPES.get(target.suffix, "application/octet-stream")
         body = target.read_bytes()
+        if target.suffix == ".html":
+            body = body.replace(
+                b"__VKIT_TOKEN__", self.server.session.token.encode("ascii")  # type: ignore[attr-defined]
+            )
         self.send_response(200)
-        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Type", _CONTENT_TYPES.get(target.suffix, "application/octet-stream"))
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -158,9 +171,6 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
-
-    def _fail(self, status: int, document: Any) -> None:
-        self._json(status, document)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         """One line per request on stderr, and never a 500 stack trace to a browser.

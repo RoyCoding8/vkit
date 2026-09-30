@@ -1,16 +1,18 @@
-"""Request and response shapes. Validation happens here and nowhere else.
+"""The request gate. Validation happens here and nowhere else.
 
-This is the boundary the plan names: everything arriving from a browser is
-untrusted text until it has been through this module, and everything leaving is
-a JSON document with a known shape. `server.py` below knows routing and nothing
-else, and `operations.py` above knows nothing about either.
+Everything arriving from a browser is untrusted text until it has been through
+`admit`, and every refusal happens there, before a route is chosen. `server.py`
+below knows the socket and nothing else; `operations.py` above knows nothing
+about either, and is never handed the token.
 
-Two things are worth naming.
+**The route tables are split by what they do.** `READ_ROUTES` answers GET and
+reads. `MUTATIONS` answers POST and needs the session token. A name in one table
+is absent from the other, so no read route can be reached by a method that
+writes and no mutation can be reached by one that does not.
 
 **Refusals keep the core's wording.** `error_of` passes the reason through
-unchanged. The plan requires the console to show the operation's own message
-rather than a friendlier invention, and a paraphrase is exactly the failure
-that requirement exists to catch.
+unchanged, so a refusal the core raised reaches the operator as the core wrote
+it.
 
 **The manifest has no route.** Not one handler below reads a path under
 `verification/` or `schemas/`, and there is no request shape that could name
@@ -20,6 +22,8 @@ against the source rather than against a comment describing the source.
 from __future__ import annotations
 
 import json
+import secrets
+from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from . import operations
@@ -33,10 +37,20 @@ from .plan import (
 )
 from .operations import Context
 
-#: Everything a caller can ask for. Read-only views plus the six operations.
-#: Nothing here takes a path from the request, so nothing here can be pointed at
-#: the repository's committed policy.
-ROUTES: dict[str, Callable[[Context, Mapping[str, Any]], Any]] = {
+#: The only host names that name this machine. The socket is bound to
+#: `LOOPBACK_HOST`, so these resolve here, and a request naming anything else is
+#: a name the console did not serve.
+LOOPBACK_NAMES: tuple[str, ...] = ("127.0.0.1", "localhost")
+
+#: Bodies are not needed by any route, so a body above this is refused rather
+#: than read. Every argument travels in the query string.
+MAX_BODY_BYTES = 64 * 1024
+
+#: The header the page carries its session token in.
+TOKEN_HEADER = "X-Vkit-Token"
+
+#: Everything a caller can read. Nothing here writes.
+READ_ROUTES: dict[str, Callable[[Context, Mapping[str, Any]], Any]] = {
     "project": lambda ctx, q: operations.project_view(ctx),
     "readiness": lambda ctx, q: operations.readiness_view(ctx),
     "checks": lambda ctx, q: operations.checks_view(ctx),
@@ -51,6 +65,11 @@ ROUTES: dict[str, Callable[[Context, Mapping[str, Any]], Any]] = {
     "recovery": lambda ctx, q: operations.recovery_view(ctx),
     "operations": lambda ctx, q: {"operations": operations.writable_surface()},
     "plan": lambda ctx, q: operations.plan_change_set(ctx, _text_param(q, "operation")).to_json(),
+}
+
+#: Everything a caller can change. Each name is on the writable surface, and
+#: each is reachable here and nowhere else.
+MUTATIONS: dict[str, Callable[[Context, Mapping[str, Any]], Any]] = {
     "run_check": lambda ctx, q: operations.run_check(ctx, _text_param(q, "check_id")),
     "cancel_run": lambda ctx, q: operations.cancel_check_run(ctx, _text_param(q, "run_id")),
     # Invoke an operation by name. Every name on the writable surface is
@@ -64,6 +83,115 @@ ROUTES: dict[str, Callable[[Context, Mapping[str, Any]], Any]] = {
 PARAM_NAMES: frozenset[str] = frozenset({
     "limit", "run_id", "check_id", "stream", "max_bytes", "operation", "scope", "accepted",
 })
+
+
+@dataclass(frozen=True)
+class Session:
+    """What makes this console instance this console: its port, and its token.
+
+    The token is minted once, here, and is the only value any mutation accepts.
+    Nothing outside this module reads it, so no operation can be reached with a
+    token it was handed.
+    """
+    port: int
+    token: str
+
+    @classmethod
+    def mint(cls, port: int) -> "Session":
+        return cls(port=port, token=secrets.token_urlsafe(32))
+
+    def authorities(self) -> tuple[str, ...]:
+        """The `Host` values that name this console."""
+        return tuple(f"{name}:{self.port}" for name in LOOPBACK_NAMES)
+
+    def origins(self) -> tuple[str, ...]:
+        return tuple(f"http://{authority}" for authority in self.authorities())
+
+
+@dataclass(frozen=True)
+class Request:
+    """What arrived, before any of it is believed.
+
+    `route` is `None` for a path the console does not route, which the server
+    serves as a page. `length` and `chunked` are the raw framing headers, kept
+    unparsed so this module decides what they mean.
+    """
+    method: str
+    route: str | None
+    query: Mapping[str, str]
+    host: str
+    origin: str | None
+    token: str | None
+    length: str | None
+    chunked: bool
+
+
+class Rejected(Exception):
+    """This boundary will not admit the request. `status` is the answer."""
+
+    def __init__(self, status: int, reason: str) -> None:
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+
+
+class BadRequest(Exception):
+    """The request was malformed. Never about whether the operation is permitted."""
+
+
+def admit(
+    request: Request, session: Session, read_body: Callable[[int], bytes],
+) -> Mapping[str, Any] | None:
+    """The one gate. Returns what `dispatch` should run, or `None` for a page.
+
+    Every refusal below happens before a handler is chosen, so a refused request
+    cannot reach an operation however it was addressed. `read_body` is called
+    only once every check that could refuse has passed, and it is handed a
+    length already proved to be at most `MAX_BODY_BYTES`, so a request refused
+    for any reason above has had no body read at all.
+    """
+    if request.host not in session.authorities():
+        raise Rejected(
+            403, f"refusing Host {request.host!r}; this console answers "
+                 f"{', '.join(session.authorities())} and no other address"
+        )
+    if request.origin is not None and request.origin not in session.origins():
+        raise Rejected(
+            403, f"refusing Origin {request.origin!r}; this console answers its own page "
+                 f"({', '.join(session.origins())}) and nothing else"
+        )
+    if request.route is None:
+        return None
+    if request.method == "GET":
+        if request.route in MUTATIONS:
+            raise Rejected(
+                405, f"{request.route} changes state and is answered by POST only; "
+                     f"the routes GET answers are {', '.join(sorted(READ_ROUTES))}"
+            )
+        if request.route not in READ_ROUTES:
+            raise BadRequest(f"unknown route {request.route!r}")
+        return request.query
+
+    if request.route not in MUTATIONS:
+        raise Rejected(
+            405, f"{request.route} reads and is answered by GET; POST reaches only "
+                 f"{', '.join(sorted(MUTATIONS))}"
+        )
+    if not secrets.compare_digest((request.token or "").encode(), session.token.encode()):
+        raise Rejected(
+            403, "a mutation needs this console page's session token; "
+                 "load the page this console served and use its buttons"
+        )
+    if request.chunked:
+        raise Rejected(400, "send a Content-Length; this console does not read chunked bodies")
+    if request.length and not request.length.isdigit():
+        raise Rejected(400, f"Content-Length is not a length: {request.length!r}")
+    length = int(request.length or 0)
+    if length > MAX_BODY_BYTES:
+        raise Rejected(
+            413, f"body above {MAX_BODY_BYTES} bytes; send arguments in the query string"
+        )
+    return {**request.query, **parse_body(read_body(length))}
 
 
 def _apply(context: Context, query: Mapping[str, Any]) -> dict[str, Any]:
@@ -89,10 +217,6 @@ def _apply(context: Context, query: Mapping[str, Any]) -> dict[str, Any]:
         arguments["accepted"] = _bool_param(query, "accepted")
     result = handler(context, **arguments)
     return {"operation": name, "result": result}
-
-
-class BadRequest(Exception):
-    """The request was malformed. Never about whether the operation is permitted."""
 
 
 def _bool_param(query: Mapping[str, Any], name: str) -> bool:
@@ -145,11 +269,14 @@ def _int_param(query: Mapping[str, Any], name: str, default: int) -> int:
 
 
 def dispatch(context: Context, route: str, query: Mapping[str, Any]) -> dict[str, Any]:
-    """Run one named route. Raises BadRequest, Refused, or NotImplementedInBuild."""
-    handler = ROUTES.get(route)
+    """Run one named route. The gate has already decided the method may reach it.
+
+    Raises BadRequest, Rejected, or NotImplementedInBuild.
+    """
+    handler = READ_ROUTES.get(route) or MUTATIONS.get(route)
     if handler is None:
         raise BadRequest(
-            f"unknown route {route!r}; the console answers {', '.join(sorted(ROUTES))}"
+            f"unknown route {route!r}; the console answers {', '.join(sorted(READ_ROUTES | MUTATIONS))}"
         )
     return handler(context, query)
 
@@ -157,11 +284,14 @@ def dispatch(context: Context, route: str, query: Mapping[str, Any]) -> dict[str
 def error_of(exc: BaseException) -> tuple[int, dict[str, Any]]:
     """The status and body for an exception. The message is never reworded.
 
-    Three statuses because the caller must be able to tell them apart: 400 is a
-    malformed request, 409 is the core declining, and 501 is an operation this
-    build does not have. Collapsing 409 into 400 would tell an operator their
-    typo and the core's refusal were the same event.
+    Five statuses because the caller must be able to tell them apart: 400 is a
+    malformed request, 403 is this boundary refusing the caller, 405 is a method
+    the route does not answer, 409 is the core declining, and 501 is an operation
+    this build does not have. Collapsing 403 into 400 would tell an operator
+    whose page was rejected the same thing as whose request had a typo.
     """
+    if isinstance(exc, Rejected):
+        return exc.status, {"error": exc.reason}
     if isinstance(exc, BadRequest):
         return 400, {"error": str(exc)}
     if isinstance(exc, NotImplementedInBuild):
@@ -172,26 +302,12 @@ def error_of(exc: BaseException) -> tuple[int, dict[str, Any]]:
     return 500, {"error": str(exc)}
 
 
-def parse_query(raw: str) -> dict[str, str]:
-    """Parse a query string, tolerating a malformed one by yielding nothing.
-
-    A browser is the only caller and it will not send a broken query, so
-    refusing the whole request here would be a guard against nothing. The typed
-    validators in `_int_param` and `_text_param` are where a bad value is caught.
-    """
-    from urllib.parse import parse_qsl
-
-    return {key: value for key, value in parse_qsl(raw, keep_blank_values=False)}
-
-
 def parse_body(raw: bytes) -> dict[str, Any]:
     """Decode a JSON object body, or refuse.
 
-    A body is optional for the read routes and optional for the write ones,
-    which also take their arguments from the query so that a refused mutation is
-    reproducible from the URL in a test. A body value is passed through with its
-    JSON type intact, because `accepted=false` has to stay false: a body coerced
-    to strings would make it truthy and enroll a repository nobody accepted.
+    A body value is passed through with its JSON type intact, because
+    `accepted=false` has to stay false: a body coerced to strings would make it
+    truthy and enroll a repository nobody accepted.
     """
     if not raw:
         return {}

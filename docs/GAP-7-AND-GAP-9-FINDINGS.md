@@ -141,10 +141,25 @@ non-ASCII path written *into* the file is read back as different characters.
 `tests/test_procs.py::test_a_non_ascii_path_inside_a_cmd_launcher_is_mangled`
 forces the console to code page 437 and shows the payload never running.
 
-The test forces the code page because this host's console runs at 65001, where
-UTF-8 batch contents are read correctly. That is the honest shape of the limit.
-It depends on the code page the user's shell happens to be running, which is
-precisely why it cannot be detected from inside a repository.
+The test forces the code page to 437 to demonstrate it, because this host's
+console runs at 65001, where the same launcher works.
+
+**What actually decides the outcome, measured.** Not "non-ASCII", and not the
+batch file's own encoding. With the console forced to 437:
+
+| Payload path in the batch file | 437 | 65001 |
+| --- | --- | --- |
+| ASCII (`gen.py`) | ran, exit 0 | ran, exit 0 |
+| containing `é` | **never ran**, exit 2 | ran, exit 0 |
+
+UTF-8 and cp1252 batch contents behave identically at 437. So the limit is
+*the active code page cannot represent the character*. `é` is inside cp1252,
+this machine's ANSI code page, and inside UTF-8; it is outside cp437. The test
+pair states this: the mangling test forces 437 and asserts the failure, and a
+control test runs the identical launcher under the host's own code page and
+asserts it works. Without the control, a reader could take the first test for
+"non-ASCII paths in a `.cmd` always fail", which is not what happens on this
+machine.
 
 Measured stderr under code page 437, showing the mojibake and the ASCII tail
 surviving:
@@ -235,10 +250,14 @@ along with two existing digest tests. Restored, all 22 identity tests pass.
 
 - **No POSIX host.** `_run_posix` was not touched, and nothing here was run
   anywhere but Windows 11. GAP-2 is unaffected by this work and still open.
-- **The `.cmd` behaviour was measured at console code page 437 and at the
-  default 65001.** No host with a Japanese, Chinese, or Korean legacy code page
-  was available, so the mangling was not observed at a code page where an
-  ordinary CJK path is unrepresentable. The mechanism is the same one.
+- **The `.cmd` limit was measured at console code page 437 and at 65001.** The
+  character used is `é`, which is inside cp1252 and inside UTF-8 and outside
+  437. No host with a Japanese, Chinese, or Korean legacy code page was
+  available, so the mangling was not observed at a code page where an ordinary
+  CJK path is unrepresentable, which is the case most users on those systems
+  would hit. The mechanism is the same one, and the measurement above says the
+  variable is representability rather than non-ASCII-ness, but that specific
+  case is inferred rather than observed here.
 - **`lpApplicationName` was measured, not read from documentation.** All six
   launcher paths behave identically whether it is None or names COMSPEC, and
   naming a `.cmd` there fails outright. A host whose CreateProcess differs would

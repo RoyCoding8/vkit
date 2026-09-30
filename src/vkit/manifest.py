@@ -127,9 +127,16 @@ def _resolve_artifact(run_dir: Path, raw: str, check_id: str) -> str:
     return raw
 
 
-def parse_manifest(project: Project, run_dir: Path) -> Manifest:
-    """Read, validate and resolve the project's manifest."""
-    path = project.manifest_path
+def parse_manifest(project: Project, run_dir: Path, path: Path | None = None) -> Manifest:
+    """Read, validate and resolve the project's manifest.
+
+    `path` defaults to the project's own manifest path, which is what every
+    execution caller wants. Plan 06's enrollment needs to parse a *proposal*
+    that has deliberately not been promoted to the policy path, so it passes the
+    proposal's location explicitly. Parsing is the same work either way; only
+    the file differs.
+    """
+    path = path or project.manifest_path
     if not path.is_file():
         raise ManifestError(f"no manifest at {path}")
 

@@ -121,7 +121,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         context: Context = self.server.context  # type: ignore[attr-defined]
         try:
             if body:
-                query = {**query, **{k: v for k, v in body.items() if isinstance(v, str)}}
+                query = {**query, **body}
             payload = api.dispatch(context, route, query)
         except Exception as exc:  # noqa: BLE001 - one response shape for every failure
             status, document = api.error_of(exc)

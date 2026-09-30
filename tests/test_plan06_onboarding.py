@@ -302,21 +302,42 @@ def test_a_missing_prerequisite_yields_blocked_with_that_reason(tmp_path: Path) 
 
     node_directories = _directories_providing("node")
     assert node_directories, "node is on PATH but no directory providing it was identified"
+    # Removing node's directories also removes anything else living beside it.
+    # On Windows node and git are in separate trees and this is a no-op. On Linux
+    # both are /usr/bin, so stripping node took git with it and vkit answered
+    # "not inside a Git repository" instead of the missing prerequisite under
+    # test. Where they share a directory a shim supplies git back, so the only
+    # thing the stripped PATH removes is the executable under test.
+    git_directories = _directories_providing("git")
+    assert git_directories, "git is required by every test in this file"
+    shim = _shim_directory_for(tmp_path, "git-shim", node_directories & git_directories)
     stripped = os.pathsep.join(
-        entry for entry in os.environ["PATH"].split(os.pathsep)
-        if not entry or str(Path(entry).resolve()) not in node_directories
+        [str(shim)] if shim else []
+        + [
+            entry for entry in os.environ["PATH"].split(os.pathsep)
+            if not entry or str(Path(entry).resolve()) not in node_directories
+        ]
     )
     environment = {**os.environ, "PATH": stripped}
 
     # Verified the way vkit resolves it, in a fresh interpreter that has not
-    # already cached anything.
+    # already cached anything. Both halves: node must be gone, or the
+    # prerequisite is not missing and the test measures nothing, and git must
+    # survive, or the run is blocked for a reason that has nothing to do with
+    # the prerequisite.
     probe = subprocess.run(
-        [sys.executable, "-c", "import shutil; print(shutil.which('node') or 'NONE')"],
+        [sys.executable, "-c",
+         "import shutil;print(shutil.which('node') or 'NONE', shutil.which('git') or 'NONE', sep='|')"],
         capture_output=True, text=True, env=environment, check=False,
     )
-    assert probe.stdout.strip() == "NONE", (
-        f"shutil.which still finds node at {probe.stdout.strip()!r} with the stripped "
+    probe_node, probe_git = probe.stdout.strip().split("|")
+    assert probe_node == "NONE", (
+        f"shutil.which still finds node at {probe_node!r} with the stripped "
         "PATH; the prerequisite would not be missing and this test would measure nothing"
+    )
+    assert probe_git != "NONE", (
+        "git was stripped along with node, so the run would be BLOCKED for a "
+        "missing repository rather than for the missing prerequisite"
     )
 
     run = vkit("check", "run", "--project", str(root), "--check", "items-api", "--json", env=environment)
@@ -326,6 +347,30 @@ def test_a_missing_prerequisite_yields_blocked_with_that_reason(tmp_path: Path) 
     assert outcome["result"] == "BLOCKED"
     assert outcome["reason"] == "prerequisite_missing", outcome
     assert "node" in outcome["detail"]
+
+
+def _shim_directory_for(tmp_path: Path, name: str, shared: set[str]) -> Path | None:
+    """A directory holding a working `git` that execs the real one by absolute path.
+
+    Returned only when the directories that must be removed also provide git. A
+    PATH is a list of directories, not a set of executables, so one directory
+    cannot be half on and half off. Where node and git share it, the only way to
+    remove node and keep git is to supply git from somewhere else.
+
+    The shim names the real executable as an absolute path, so the chain resolves
+    regardless of what PATH the thing it launches goes on to see.
+    """
+    if not shared:
+        return None
+    real = shutil.which("git")
+    assert real is not None, "git is on PATH but _directories_providing found none"
+    directory = tmp_path / name
+    directory.mkdir(parents=True, exist_ok=True)
+    script = f'#!/bin/sh\nexec "{real}" "$@"\n'
+    for candidate in (directory / "git", directory / "git.exe"):
+        candidate.write_text(script, encoding="utf-8")
+        candidate.chmod(0o755)
+    return directory
 
 
 def _directories_providing(executable: str) -> set[str]:

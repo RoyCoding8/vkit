@@ -29,7 +29,7 @@ from ..execution import run_check as execute_check
 from ..identity import compute_source_identity
 from ..manifest import Manifest, ManifestError, parse_manifest
 from ..paths import Project, ProjectError, open_project
-from ..procidentity import CannotConfirm, ProcessIdentity, read_identity
+from ..procidentity import CannotConfirm, ProcessIdentity, UnsupportedPlatform, read_identity
 from ..recover import Report as RecoveryReport
 from ..recover import inspect as inspect_recovery
 from ..storage import Store, StoreError
@@ -427,10 +427,15 @@ def cancel_check_run(context: Context, run_id: str) -> dict[str, Any]:
 
     try:
         live = read_identity(int(pid))
-    except CannotConfirm:
+    except (CannotConfirm, UnsupportedPlatform):
         # The pid may be in use and unreadable. That is not the same as gone, and
         # either way ownership is unproven, so the unprovable identity below is
         # the honest thing to hand over rather than a guess.
+        #
+        # UnsupportedPlatform is the same kind of "cannot prove" on a host where
+        # `procidentity` has no verified answer to give at all. Without it here
+        # the exception escaped this boundary and an operator on a POSIX host
+        # cancelling a finished run got a traceback instead of the run's outcome.
         live = None
 
     identity = live if live is not None else ProcessIdentity(pid=int(pid), creation_time=-1)

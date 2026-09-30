@@ -11,6 +11,9 @@ This test is the reason that is now covered rather than merely claimed untested.
 """
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -24,12 +27,25 @@ import vkit.procs as procs  # noqa: E402
 
 
 def _force_posix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[int]:
-    """Stub the two POSIX-only mechanisms and record which pids were signalled."""
+    """Stub the two POSIX-only mechanisms and record which pids were signalled.
+
+    The kill is the real signal, not a shell out to the platform's process
+    killer. An earlier version shelled out to `taskkill`, which exists only on
+    Windows: on a POSIX host the call raised FileNotFoundError, `_kill_process_group`
+    swallowed it as a benign race, and the run reported a launch failure instead
+    of a timeout, so the very regression this file exists to pin was masked by
+    its own fixture. A stub that raises would pin that regression instead of
+    killing the child, and the child is this test's own.
+    """
     killed: list[int] = []
 
     def fake_kill(pid: int) -> None:
         killed.append(pid)
-        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+        # os.killpg and signal.SIGKILL do not exist on Windows, and this file runs
+        # on both hosts. The direct kill is the one that is universal and the one
+        # that matters here: it is what stops this test's own child.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
     monkeypatch.setattr(procs, "IS_WINDOWS", False)
     monkeypatch.setattr(procs, "_kill_process_group", fake_kill)

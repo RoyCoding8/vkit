@@ -146,8 +146,17 @@ def test_artifact_inside_the_run_directory_resolves(store: Store) -> None:
 
 
 def test_absolute_artifact_path_is_refused(store: Store) -> None:
+    """An absolute path escapes the run directory on every host.
+
+    The path is built from this host's own separator. `C:/Windows/...` is an
+    ordinary relative filename to a POSIX resolver, so it was joined onto the run
+    directory, resolved to something inside it, and correctly not refused. The
+    property is about absoluteness, not about which drive letter names one.
+    """
+    absolute = str(Path(sys.executable).anchor or os.sep) + "escape.json"
+
     with pytest.raises(StoreError):
-        store.resolve_artifact("run-1", str(Path("C:/Windows/System32/config")))
+        store.resolve_artifact("run-1", absolute)
 
 
 def test_mark_running_after_terminal_is_refused(store: Store) -> None:

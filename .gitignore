@@ -1,5 +1,6 @@
 .venv/
 .venv08/
+.venv-posix/
 .worktrees/
 __pycache__/
 *.pyc

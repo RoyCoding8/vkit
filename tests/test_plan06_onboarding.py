@@ -23,7 +23,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -303,18 +302,42 @@ def test_a_missing_prerequisite_yields_blocked_with_that_reason(tmp_path: Path) 
 
     node_directories = _directories_providing("node")
     assert node_directories, "node is on PATH but no directory providing it was identified"
-    stripped = _path_without("node")
+    # Removing node's directories also removes anything else living beside it.
+    # On Windows node and git are in separate trees and this is a no-op. On Linux
+    # both are /usr/bin, so stripping node took git with it and vkit answered
+    # "not inside a Git repository" instead of the missing prerequisite under
+    # test. Where they share a directory a shim supplies git back, so the only
+    # thing the stripped PATH removes is the executable under test.
+    git_directories = _directories_providing("git")
+    assert git_directories, "git is required by every test in this file"
+    shim = _shim_directory_for(tmp_path, "git-shim", node_directories & git_directories)
+    stripped = os.pathsep.join(
+        [str(shim)] if shim else []
+        + [
+            entry for entry in os.environ["PATH"].split(os.pathsep)
+            if not entry or str(Path(entry).resolve()) not in node_directories
+        ]
+    )
     environment = {**os.environ, "PATH": stripped}
 
     # Verified the way vkit resolves it, in a fresh interpreter that has not
-    # already cached anything.
+    # already cached anything. Both halves: node must be gone, or the
+    # prerequisite is not missing and the test measures nothing, and git must
+    # survive, or the run is blocked for a reason that has nothing to do with
+    # the prerequisite.
     probe = subprocess.run(
-        [sys.executable, "-c", "import shutil; print(shutil.which('node') or 'NONE')"],
+        [sys.executable, "-c",
+         "import shutil;print(shutil.which('node') or 'NONE', shutil.which('git') or 'NONE', sep='|')"],
         capture_output=True, text=True, env=environment, check=False,
     )
-    assert probe.stdout.strip() == "NONE", (
-        f"shutil.which still finds node at {probe.stdout.strip()!r} with the stripped "
+    probe_node, probe_git = probe.stdout.strip().split("|")
+    assert probe_node == "NONE", (
+        f"shutil.which still finds node at {probe_node!r} with the stripped "
         "PATH; the prerequisite would not be missing and this test would measure nothing"
+    )
+    assert probe_git != "NONE", (
+        "git was stripped along with node, so the run would be BLOCKED for a "
+        "missing repository rather than for the missing prerequisite"
     )
 
     run = vkit("check", "run", "--project", str(root), "--check", "items-api", "--json", env=environment)
@@ -324,6 +347,30 @@ def test_a_missing_prerequisite_yields_blocked_with_that_reason(tmp_path: Path) 
     assert outcome["result"] == "BLOCKED"
     assert outcome["reason"] == "prerequisite_missing", outcome
     assert "node" in outcome["detail"]
+
+
+def _shim_directory_for(tmp_path: Path, name: str, shared: set[str]) -> Path | None:
+    """A directory holding a working `git` that execs the real one by absolute path.
+
+    Returned only when the directories that must be removed also provide git. A
+    PATH is a list of directories, not a set of executables, so one directory
+    cannot be half on and half off. Where node and git share it, the only way to
+    remove node and keep git is to supply git from somewhere else.
+
+    The shim names the real executable as an absolute path, so the chain resolves
+    regardless of what PATH the thing it launches goes on to see.
+    """
+    if not shared:
+        return None
+    real = shutil.which("git")
+    assert real is not None, "git is on PATH but _directories_providing found none"
+    directory = tmp_path / name
+    directory.mkdir(parents=True, exist_ok=True)
+    script = f'#!/bin/sh\nexec "{real}" "$@"\n'
+    for candidate in (directory / "git", directory / "git.exe"):
+        candidate.write_text(script, encoding="utf-8")
+        candidate.chmod(0o755)
+    return directory
 
 
 def _directories_providing(executable: str) -> set[str]:
@@ -339,62 +386,6 @@ def _directories_providing(executable: str) -> set[str]:
         ):
             found.add(str(directory.resolve()))
     return found
-
-
-def _path_without(executable: str) -> str:
-    """A PATH from which `executable` cannot be resolved, with everything else kept.
-
-    Dropping every directory that happens to contain the executable is wrong on a
-    POSIX host, where one directory holds most of the system: removing node's
-    directory also removed git, so `vkit` failed at the repository check with
-    "not inside a Git repository (git is not installed or not on PATH)" and exited
-    2, before it ever evaluated the prerequisite this row is about. Measured on
-    WSL: exit 2 where the row expects 3.
-
-    Prepending a shim does not work either: `which` walks PATH in order, skips the
-    shim because the file is not executable, and finds the real one further along.
-    Measured: `shutil.which` still returned /usr/bin/node.
-
-    So each offending directory is rebuilt without the executable and without its
-    Windows spellings, and the rebuilt directory goes back on PATH in the original
-    position. git, the venv and everything else in a shared directory survive,
-    and the executable is gone. The row's claim is that vkit BLOCKS when a
-    prerequisite is unsatisfiable, and it can only measure that if the rest of
-    the environment still works.
-    """
-    temporary = Path(tempfile.mkdtemp(prefix="path-without-"))
-    rebuilt: list[str] = []
-    for entry in os.environ["PATH"].split(os.pathsep):
-        if not entry:
-            continue
-        directory = Path(entry)
-        if not _directories_providing_in(directory, executable):
-            rebuilt.append(str(entry))
-            continue
-        # A mirror of this directory with the executable omitted. Symlinks are
-        # copied as symlinks, so a directory of links still resolves.
-        mirror = temporary / f"d{len(rebuilt)}"
-        try:
-            mirror.mkdir()
-            for child in directory.iterdir():
-                if child.name == executable or child.stem.lower() == executable.lower():
-                    continue
-                (mirror / child.name).symlink_to(child)
-        except OSError:
-            # If the directory cannot be mirrored, drop it rather than keep the
-            # executable. That is the older behaviour, and the probe below
-            # verifies it worked.
-            continue
-        rebuilt.append(str(mirror))
-    return os.pathsep.join(rebuilt)
-
-
-def _directories_providing_in(directory: Path, executable: str) -> bool:
-    """Whether this one directory holds the named executable."""
-    return any(
-        (directory / f"{executable}{suffix}").is_file()
-        for suffix in ("", ".exe", ".cmd", ".bat", ".com")
-    )
 
 
 # --- features --------------------------------------------------------------

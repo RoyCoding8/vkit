@@ -43,6 +43,15 @@ TOOL_NAMES = [
     "project_inspect", "task_begin", "check_start", "run_get", "run_cancel", "task_finalize",
 ]
 
+# The mechanism that contained the run, by the host it ran on. A job object on
+# Windows and a process group on POSIX are the two names run-report.v1.json
+# admits, and which one is correct depends entirely on where the process was
+# launched. Asserting one of them pins the host rather than the record, and fails
+# on the other platform for a report that was right all along.
+EXPECTED_OWNERSHIP = (
+    "windows_job_object" if sys.platform == "win32" else "posix_process_group"
+)
+
 #: A whole lifecycle launches a process and waits on it, so the bound is generous
 #: enough for a loaded Windows CI box and short enough that a hang fails rather
 #: than sitting forever.
@@ -283,14 +292,7 @@ def test_the_cli_and_the_wire_report_the_same_run(tmp_path: Path) -> None:
     assert report["outcome"] == run["outcome"]
     assert report["process"]["exit_code"] == 0
     assert isinstance(report["process"]["pid"], int)
-    # The ownership value names the mechanism that contained this run, and the
-    # schema admits exactly two. The row's subject is that the CLI and the wire
-    # report the SAME run, so what matters is that both carry the value the run
-    # reported, and that it is the one this host's mechanism produces. Pinning
-    # the Windows value made the row fail wherever the other mechanism ran, which
-    # says nothing about whether the two surfaces agree.
-    expected = "windows_job_object" if sys.platform == "win32" else "posix_process_group"
-    assert report["process"]["ownership"] == expected
+    assert report["process"]["ownership"] == EXPECTED_OWNERSHIP
     assert report["process"]["timed_out"] is False
     assert report["artifacts"] == {"result": "result.json"}
 

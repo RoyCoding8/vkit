@@ -20,7 +20,6 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 cd "$REPO_ROOT"
 . scripts/posix-env.sh
 posix_path
-posix_git_dir
 
 echo "== before =="
 echo "  processes: $(ps -e --no-headers 2>/dev/null | wc -l)"

@@ -10,7 +10,6 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 . scripts/posix-env.sh
 posix_path
-posix_git_dir
 VENV="${VKIT_POSIX_VENV:-$HOME/.venvs/vkit-posix}"
 OUT="$HOME/vkit-posix-reports"
 mkdir -p "$OUT"

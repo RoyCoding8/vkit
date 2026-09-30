@@ -29,7 +29,6 @@ cd "$REPO_ROOT"
 # silently lose a directory. See scripts/posix-env.sh for why each is there.
 . "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
 posix_path
-posix_git_dir
 rm -rf "$OUT"
 mkdir -p "$OUT"
 

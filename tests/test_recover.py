@@ -41,6 +41,30 @@ from vkit.tasks import open_task, set_status, supersede_task  # noqa: E402
 
 EXCLUSIVE = "exclusive"
 
+#: Marks a test whose subject is a value only Windows produces. POSIX identity
+#: IS established, so a test that merely calls `procidentity.read_identity` and
+#: compares a pair runs on both platforms and is NOT marked. These six assert one
+#: of two things a POSIX host cannot produce:
+#:
+#:   * `STILL_ACTIVE` is 259, the constant `GetExitCodeProcess` returns for a
+#:     process that has not exited. On POSIX `kill(pid, 0)` carries no exit code,
+#:     so a live process reports `exit_code is None` and there is no 259 to
+#:     compare. The equivalent POSIX fact, the state character in
+#:     /proc/<pid>/stat, is covered by tests/test_procidentity_posix.py.
+#:   * "no process carries that pid" is the phrase `_liveness_windows` composes.
+#:     `_liveness_posix` reports the kernel's words instead, so an assertion on
+#:     the Windows string is an assertion on Windows. The property behind it,
+#:     which is what matters, is asserted by the `dead_pid` fixture above.
+#:
+#: Per test rather than per module, because most of this file is
+#: platform-neutral and skipping all of it on POSIX would leave the module
+#: unverified there rather than only its Windows-specific corners.
+requires_windows = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="asserts a value only Windows produces: STILL_ACTIVE (259) from "
+           "GetExitCodeProcess, or the Windows wording for a reclaimed pid",
+)
+
 
 @pytest.fixture()
 def db_path(tmp_path: Path) -> Path:
@@ -75,23 +99,30 @@ def dead_pid():
     """A pid that has stopped answering entirely, re-proved at the moment of use.
 
     `liveness` reaches DEAD two ways and both are correct. A process that exited
-    while some handle still opens reports its real exit code; one whose object
-    has been reclaimed reports that no process carries the pid. They are
-    different facts and the callers treat them differently, so this fixture
-    waits for the second, which is the one that cannot decay: a number can be
-    recycled, but an unopenable pid has nothing to be recycled into.
+    while something still holds it open reports its real exit code; one whose
+    object has been reclaimed reports that no process carries the pid, and so has
+    no exit code to report. The second is the one this fixture needs, because it
+    is the one that cannot decay: a number can be recycled, but an unopenable pid
+    has nothing to be recycled into.
 
-    Waiting for `state is DEAD` was not enough, and the tests that assert on
-    `exit_code is None` failed roughly one run in four. DEAD arrives while the
-    process object is still openable, the fixture returned on that, and the
-    assertion then met an exit code where it expected none. The state was
-    DEAD on both sides; the test was checking the stronger of two truths with a
-    fixture that only guaranteed the weaker.
+    **The property asserted is `exit_code is None`, not a message.** A pid that
+    nothing holds has no exit code, and that is the fact these tests need. An
+    earlier version of this fixture matched the English string "no process
+    carries that pid", which is the WINDOWS wording: `_liveness_windows` composes
+    it, `_liveness_posix` reports the kernel's own words instead. So the fixture
+    was asserting a message as though it were the contract, and on a POSIX host
+    it never matched, timing out after 30s and erroring every test that used it
+    (measured: 11 errors, "no pid was fully reclaimed across 6 attempts in 30s").
+
+    The state alone is not enough either. Waiting for `state is DEAD` returned
+    while the process object was still openable, and the tests that assert on
+    `exit_code is None` then failed roughly one run in four: the state was DEAD
+    on both sides, and the test was checking the stronger of two truths with a
+    fixture that guaranteed only the weaker.
 
     A pid that flips back to openable is retired and another minted, because a
     number that names a live process is not what this promised to hand out.
     """
-    reclaimed = "no process carries that pid"
     deadline = time.time() + 30.0
     attempts = 0
     while time.time() < deadline:
@@ -103,12 +134,17 @@ def dead_pid():
         settled = time.time() + 5.0
         while time.time() < settled:
             verdict = liveness(pid)
-            if verdict.state is LivenessState.DEAD and reclaimed in verdict.detail:
+            # DEAD plus no exit code is the property: the kernel is saying no
+            # process carries this number, so there is nothing left to have
+            # exited with a code. Checking the state alone accepts a process that
+            # has exited but is still openable, which is the decayed case.
+            if verdict.state is LivenessState.DEAD and verdict.exit_code is None:
                 return pid
             time.sleep(0.05)
     raise AssertionError(
         f"no pid was fully reclaimed across {attempts} attempts in 30s; this host is "
-        "holding process objects open longer than the fixture allows"
+        "holding process objects open longer than the fixture allows. Looked for a "
+        "DEAD whose exit_code is None, which is a pid nothing holds."
     )
 
 
@@ -248,6 +284,7 @@ def test_a_running_run_whose_process_is_dead_is_reported(store: Store, dead_pid:
     assert finding.actionable is True
 
 
+@requires_windows
 def test_a_live_pid_records_the_still_active_code_as_its_evidence(alive_pid: int) -> None:
     """The check that must not be skipped: anything but STILL_ACTIVE reads a live
     worker as dead, because a process that has not exited has no exit code."""
@@ -275,6 +312,7 @@ def test_a_preparing_run_with_no_process_is_reported_and_never_acted_on(store: S
 # ------------------------------------------------------------- the live process
 
 
+@requires_windows
 def test_a_running_run_whose_process_is_alive_is_not_abandoned(store: Store, alive_pid: int) -> None:
     start_run(store, "r-live", pid=alive_pid, task_id="t1", attempt=1)
 
@@ -459,6 +497,7 @@ def test_a_string_instead_of_a_named_action_is_refused(store: Store) -> None:
     )
 
 
+@requires_windows
 def test_marking_a_live_run_dead_is_refused_however_old_it_looks(store: Store, alive_pid: int) -> None:
     """The safety property. Elapsed time is not evidence, so nothing here ages it out."""
     start_run(store, "r-live", pid=alive_pid, task_id="t1", attempt=1)
@@ -476,6 +515,7 @@ def test_marking_a_live_run_dead_is_refused_however_old_it_looks(store: Store, a
     assert run_row(store_db(store), "r-live") == before
 
 
+@requires_windows
 def test_releasing_a_claim_held_by_a_live_process_is_refused(store: Store, alive_pid: int) -> None:
     open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
@@ -730,6 +770,7 @@ def test_liveness_reports_a_pid_that_is_not_a_pid_as_uncertain() -> None:
         assert "does not name a single process" in state.detail
 
 
+@requires_windows
 def test_liveness_distinguishes_a_real_process_from_an_absent_one(alive_pid: int, dead_pid: int) -> None:
     alive = liveness(alive_pid)
     dead = liveness(dead_pid)
@@ -789,6 +830,7 @@ def test_a_matching_creation_time_still_reads_alive(alive_pid: int) -> None:
     assert state.exit_code == 259
 
 
+@requires_windows
 def test_an_absent_pid_is_still_dead_with_a_recorded_identity(dead_pid: int) -> None:
     """A pid no process carries is DEAD even when a creation time was recorded.
 

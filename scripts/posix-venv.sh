@@ -1,13 +1,21 @@
 #!/bin/bash
-# Create the POSIX virtualenv this repository's POSIX verification runs in.
+# Set up everything a POSIX verification run of this repository needs.
 #
-# The Windows host uses a venv with pywin32. The POSIX host uses the same venv
-# layout minus pywin32, which is declared `sys_platform == 'win32'` in
-# pyproject.toml and is deliberately absent here. Nothing in src/vkit imports it
-# on this path; scripts/check_posix_deps.py asserts that.
+# Three things, and each one exists because a run failed without it:
+#
+#   1. A venv. The Windows host uses one with pywin32. The POSIX host uses the
+#      same layout minus pywin32, which pyproject.toml declares
+#      `sys_platform == 'win32'` and which is deliberately absent here.
+#   2. The venv's bin on PATH, because the example manifests name the
+#      interpreter `python` and a stock Linux ships only `python3`. Without it
+#      every check reported BLOCKED with prerequisite_missing.
+#   3. node, because examples/node-cli and examples/node-http are Node programs.
+#      tests/test_features.py skips honestly when node is missing, but a skipped
+#      suite verifies nothing about them, so node is installed rather than
+#      tolerated.
 #
 # Run:  bash scripts/posix-venv.sh
-# Then: bash scripts/posix-run.sh tests/ -q
+# Then: bash scripts/posix-run.sh -m pytest tests/ -q
 set -euo pipefail
 
 # The venv lives on the WSL-native filesystem by default, not beside the repo.
@@ -34,12 +42,24 @@ fi
 # whichever vkit happens to be importable.
 "$VENV/bin/python" -m pip install --quiet --no-deps -e "$REPO_ROOT"
 
+if ! command -v node > /dev/null; then
+    echo
+    echo "node is not installed; installing it for the Node examples"
+    if [ "$(id -u)" -eq 0 ]; then
+        apt-get update -qq && apt-get install -y -qq nodejs
+    else
+        sudo apt-get update -qq && sudo apt-get install -y -qq nodejs
+    fi
+fi
+
 echo
 echo "== installed =="
 "$VENV/bin/python" -m pip list 2>/dev/null | grep -Ei 'jsonschema|pytest|mcp|anyio|vkit|pywin32' || true
+echo "node:  $(node --version 2>&1 || echo MISSING)"
+echo "python on PATH from the venv: $("$VENV/bin/python" -c 'import sys; print(sys.executable)')"
 echo
 echo "== vkit console script =="
 "$VENV/bin/vkit" --version 2>&1 || true
 echo
 echo "done. Run the suite with:"
-echo "  bash scripts/posix-run.sh tests/ -q"
+echo "  bash scripts/posix-run.sh -m pytest tests/ -q"

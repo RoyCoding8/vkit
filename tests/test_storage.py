@@ -146,8 +146,13 @@ def test_artifact_inside_the_run_directory_resolves(store: Store) -> None:
 
 
 def test_absolute_artifact_path_is_refused(store: Store) -> None:
+    # An absolute path is a containment escape only where the platform has one.
+    # `C:/Windows/System32/config` is an ordinary relative name on POSIX, so
+    # naming it tested nothing there and the row failed for the wrong reason.
+    # `Path("/etc")` is absolute on every platform, so the same invariant is
+    # checked with a value that means what the row says on both.
     with pytest.raises(StoreError):
-        store.resolve_artifact("run-1", str(Path("C:/Windows/System32/config")))
+        store.resolve_artifact("run-1", str(Path("/etc")))
 
 
 def test_mark_running_after_terminal_is_refused(store: Store) -> None:

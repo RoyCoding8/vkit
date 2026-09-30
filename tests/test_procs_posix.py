@@ -8,6 +8,15 @@ rather than crashing.
 The previous shape assigned exit_code only when the second wait ALSO timed out,
 which is the rare case, so an ordinary POSIX timeout raised UnboundLocalError.
 This test is the reason that is now covered rather than merely claimed untested.
+
+**This file is for a Windows host only**, and skips elsewhere. It is a harness
+that reaches the POSIX code by stubbing, so on a POSIX host it would test the
+stubs rather than the mechanism, and its kill stub is itself Windows-only:
+`taskkill` does not exist here, so the run died with
+`FileNotFoundError: 'taskkill'` and reported a timeout that never happened.
+
+On a POSIX host the real path is covered, unstubbed and three levels deep, by
+tests/test_procs_posix_real.py.
 """
 from __future__ import annotations
 
@@ -21,6 +30,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import vkit.procs as procs  # noqa: E402
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="this harness reaches the POSIX branch by stubbing, and its kill stub "
+           "shells out to taskkill; on a POSIX host the real path is covered by "
+           "tests/test_procs_posix_real.py",
+)
 
 
 def _force_posix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[int]:

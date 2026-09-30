@@ -15,8 +15,8 @@ is selected. A condition with no receipt is not met.
 
 | Condition | Why it gates the pilot |
 | --- | --- |
-| GAP-1 closed | The stdio adapter is unexecuted. A pilot agent gets no tools. |
-| GAP-4 closed | `plugin/.mcp.json` starts `vkit mcp serve`, which `build_parser()` does not define. |
+| GAP-1 closed | The stdio adapter is unexecuted. A pilot agent gets no tools even though the subcommand now resolves. |
+| GAP-4 closed | `plugin/.mcp.json` starts `vkit mcp serve`, which now exists and lists its six tools, but `serve_stdio` has still never been driven by a client. |
 | GAP-3 closed | The manifest passes `claude plugin validate --strict`, but no live host session has installed it or run a hook. |
 | GAP-5 and GAP-6 closed | A pilot operator must be able to enroll a repository. The setup console is Plan 05, still being built, and no `enroll` or `integration verify` subcommand exists. |
 | GAP-2 declared | A pilot runs on one named OS. The verified one is Windows 11. |
@@ -142,7 +142,7 @@ plans/CONTRACT.md
 plans/STATUS.md
 docs/RELEASE-CHECKLIST.md
 
-# The plugin manifest whose server command is GAP-4.
+# The plugin manifest whose server command is GAP-1 and GAP-4.
 plugin/.mcp.json
 
 # The two applications a pilot can be rehearsed against.

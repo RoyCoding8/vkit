@@ -141,6 +141,28 @@ def test_nonzero_exit_reports_that_code(tmp_path: Path) -> None:
     assert (tmp_path / "err.log").read_bytes() == b"boom" + LINE
 
 
+def wait_until_dead(pid: int, *, timeout: float = 15.0) -> bool:
+    """Whether a pid stops naming a process, within `timeout`.
+
+    Containment is asynchronous: `TerminateJobObject` asks the kernel to stop
+    the tree, and the processes are gone by the time the request returns on an
+    idle machine and not on a loaded one. A test that asks once is measuring the
+    machine's idle-ness, not the job object's reach, and it fails intermittently
+    for exactly the reason it is most needed -- when six other things are
+    running. So the question is asked until it has an answer.
+
+    The conclusion is the same either way: a process still running after the
+    timeout is a failure, and one that stops is the containment the plan
+    required.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not is_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not is_alive(pid)
+
+
 def test_timeout_kills_child_and_grandchild(tmp_path: Path) -> None:
     pids_file = tmp_path / "pids.json"
     grandchild = write_script(
@@ -167,8 +189,14 @@ def test_timeout_kills_child_and_grandchild(tmp_path: Path) -> None:
 
     recorded = json.loads(pids_file.read_text(encoding="utf-8"))
     assert recorded["grandchild"] != recorded["child"]
-    assert is_alive(recorded["child"]) is False
-    assert is_alive(recorded["grandchild"]) is False
+    assert wait_until_dead(recorded["child"]), (
+        f"the child at pid {recorded['child']} survived the job object that owned it"
+    )
+    assert wait_until_dead(recorded["grandchild"]), (
+        f"the grandchild at pid {recorded['grandchild']} survived: a child-only kill would "
+        "leave it running, so this is the assertion that distinguishes containment "
+        "from killing the direct child"
+    )
 
 
 def test_large_output_on_both_streams_does_not_deadlock(tmp_path: Path) -> None:

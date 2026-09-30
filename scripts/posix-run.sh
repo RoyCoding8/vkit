@@ -24,8 +24,20 @@ if [ ! -x "$VENV/bin/python" ]; then
     exit 1
 fi
 
-export PATH="$VENV/bin:$PATH"
 cd "$REPO_ROOT"
+
+# The PATH and the git directory a POSIX run needs, from one definition, so this
+# entry point cannot drift from the others. See scripts/posix-env.sh.
+#
+# posix_git_dir matters because a worktree's `.git` names a Windows path, which
+# WSL cannot resolve, and every git command then fails to find the repository.
+# Measured: `git cat-file -e` returned 128 for commits that are in the history,
+# the MCP server refused to start with "not inside a Git repository", and four
+# tests reported that a present commit was missing. With the directory pointed at
+# by its /mnt form, all four pass.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
+posix_git_dir
 
 # A leading `-m pytest` unless the caller named a command. Without this the
 # script ran `python tests/test_recover.py -q`, which is not a pytest

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "description": "A small real Node CLI that splits a bill owed in cents between people, verified by running it.",
+  "checks": [
+    {
+      "id": "split-bill-behavior",
+      "description": "Runs the real split-bill CLI and compares actual output with literal expected splits.",
+      "command": [
+        "node",
+        "verify-split.js",
+        "--app",
+        "src/split-bill.js",
+        "--out",
+        "{{run_dir}}/result.json"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 120,
+      "required_scenarios": [
+        "even-two-way",
+        "even-three-way-weights",
+        "single-person",
+        "zero-total",
+        "leftover-cent-goes-to-first",
+        "tip-joins-the-split",
+        "three-way-leftover-two-cents",
+        "four-way-leftover-and-tip"
+      ],
+      "artifact": "result.json",
+      "prerequisites": [
+        {
+          "name": "node",
+          "executable": "node",
+          "args": ["--version"]
+        }
+      ],
+      "inputs": ["src/split-bill.js", "verify-split.js"]
+    }
+  ]
+}

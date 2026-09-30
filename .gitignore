@@ -1,5 +1,12 @@
 .venv/
 .venv08/
+# The POSIX environment, created inside WSL for the GAP-2 run. A virtualenv on
+# a POSIX host is no more a source artifact than one on Windows.
+.venv-posix/
+# Subagent worktrees. These are full checkouts of this repository, one per
+# concurrent worker, and committing them would nest a copy of the source inside
+# the source. `.claude/` holds nothing else that belongs here.
+.claude/
 .worktrees/
 __pycache__/
 *.pyc

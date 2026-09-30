@@ -237,7 +237,7 @@ along with two existing digest tests. Restored, all 22 identity tests pass.
   default 65001.** No host with a Japanese, Chinese, or Korean legacy code page
   was available, so the mangling was not observed at a code page where an
   ordinary CJK path is unrepresentable. The mechanism is the same one.
-- **`lpApplicationName` was measured, not read from documentation.** All four
+- **`lpApplicationName` was measured, not read from documentation.** All six
   launcher paths behave identically whether it is None or names COMSPEC, and
   naming a `.cmd` there fails outright. A host whose CreateProcess differs would
   not be covered.
@@ -253,4 +253,6 @@ along with two existing digest tests. Restored, all 22 identity tests pass.
   runs. On a release host holding a built wheel, it would skip, because there
   would be no second checkout to reach.
 - **The full suite number is at the commit named in the branch**, not a running
-  total. The baseline before any change here was 453 passed, 2 skipped.
+  total. The baseline before any change here was 453 passed, 2 skipped. The
+  branch tip reports 464 passed, 2 skipped, which is 11 added tests and no
+  change to any pre-existing one.

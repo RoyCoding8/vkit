@@ -273,7 +273,21 @@ along with two existing digest tests. Restored, all 22 identity tests pass.
   environment's `vkit` is an install of the tree under test. On this host it
   runs. On a release host holding a built wheel, it would skip, because there
   would be no second checkout to reach.
-- **The full suite number is at the commit named in the branch**, not a running
-  total. The baseline before any change here was 453 passed, 2 skipped. The
-  branch tip reports 464 passed, 2 skipped, which is 11 added tests and no
-  change to any pre-existing one.
+- **The full suite numbers are per-commit, not a running total.** Measured on
+  this host, each commit run on its own tree with nothing else running:
+
+  | Commit | Result |
+  | --- | --- |
+  | `44eb95b` (baseline, extracted to a separate directory) | 455 passed, 1 skipped |
+  | `17154bd` (branch tip) | 467 passed, 1 skipped |
+
+  The delta is +12, which is exactly the 12 tests added here, and no pre-existing
+  test changed behaviour. The one skip is `tests/test_procidentity.py:440`, the
+  POSIX-only case this Windows host cannot exercise, in both runs.
+
+  One caution for whoever records this next. A baseline run taken inside this
+  worktree at the start of the work reported 453 passed, 2 skipped, and that
+  number does not reproduce: re-running the same commit as an extracted tree
+  gives 455 passed, 1 skipped. Nothing in the diff explains it, so treat any
+  count carried across from a narrative rather than re-measured as unverified
+  until it has been run again on its own tree.

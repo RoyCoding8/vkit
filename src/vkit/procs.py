@@ -365,15 +365,19 @@ def _new_job():
 
 
 def _application_name(argv: tuple[str, ...]) -> str | None:
-    """The lpApplicationName for CreateProcess, or None to let it search PATH.
+    """Always None, and the reason is worth stating because it looks wrong.
 
-    A .cmd or .bat is not an executable and CreateProcess cannot run one. The
-    only way to run a batch file is through the command interpreter, so the
-    interpreter is named explicitly here. The argv still leads with the launcher
-    path, which is what the child reports as its own argv[0].
+    `lpApplicationName` is where a `.cmd` could not be named anyway: a batch
+    file is not an executable image, and CreateProcess fails on one. When it is
+    NULL, CreateProcess takes the program from the first token of the command
+    line, and when that token names a `.cmd` or `.bat` it runs the command
+    interpreter itself, on the same command line and with the same quoting.
+
+    Every launcher shape this product accepts therefore needs nothing special:
+    a `.py` or an `.exe` is found normally, and a `.cmd` is routed to the
+    interpreter by the OS rather than by a `/c` prefix that has to be quoted
+    against itself. See `_command_line`.
     """
-    if argv[0].lower().endswith((".cmd", ".bat")):
-        return os.environ.get("COMSPEC") or "cmd.exe"
     return None
 
 
@@ -388,14 +392,27 @@ def _command_line(argv: tuple[str, ...]) -> str:
     The manifest supplies an argument array and never a shell string, so no
     quoting, redirection or expansion is applied here beyond that round trip.
 
-    A batch file needs the interpreter's /c, or cmd.exe ignores the launcher and
-    opens an interactive prompt on the inherited handles instead. /c is prepended
-    rather than appended so the launcher stays argv[0] of the command line that
-    cmd.exe executes.
+    A batch file is named directly rather than through `cmd.exe /c`. The
+    interpreter is the only executable that can run a `.cmd`, and CreateProcess
+    invokes it itself when `lpApplicationName` is NULL and the command names
+    one; wrapping it as `cmd.exe /c <launcher> ...` instead re-quotes the
+    launcher path, and `/c` then strips one layer of those quotes and re-splits
+    the remainder at the first space.
+
+    Measured on this host by running the pre-fix command line through the real
+    launch, against a launcher under six directory names. The `/c` form
+    delivered the argument correctly for `plain`, `withspace`, `répertoire` and
+    `ünïcødé`, and exited 1 for `with space` and `répertoire ünïcødé`, reporting
+    the truncated prefix as an unrecognized command. So the trigger is a space
+    in the launcher path, not a non-ASCII character; the direct form delivered
+    the argument and the working directory exactly in all six cases, and the
+    test that covers it uses seven directory names.
+
+    This is the same reason `lpApplicationName` is left NULL. Naming the
+    interpreter there made no difference to any of the six cases above, and
+    naming a `.cmd` there fails outright, because a batch file is not an
+    executable image.
     """
-    if argv[0].lower().endswith((".cmd", ".bat")):
-        interpreter = os.environ.get("COMSPEC") or "cmd.exe"
-        return subprocess.list2cmdline([interpreter, "/c", *argv])
     return subprocess.list2cmdline(argv)
 
 

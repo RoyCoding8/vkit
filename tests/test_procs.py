@@ -286,11 +286,9 @@ def test_paths_with_space_and_non_ascii_round_trip(tmp_path: Path) -> None:
 def test_cmd_launcher_runs_its_interpreter(tmp_path: Path) -> None:
     """A .cmd is not an executable, and the manifest may still list one.
 
-    Plan 01 calls .cmd launchers a deliberate Windows case, so the interpreter is
-    named explicitly rather than letting CreateProcess fail. The limitation this
-    test pins: a batch file's own text is read in the active ANSI code page, so a
-    non-ASCII path written inside it mangles. That is cmd.exe, not this module,
-    and it is why the launcher and its payload are both ASCII here.
+    Plan 01 calls .cmd launchers a deliberate Windows case, so the interpreter has
+    to be reached somehow. This is the plainest shape: a launcher under an ASCII
+    path with no space in it.
     """
     directory = tmp_path / "launcher dir"
     directory.mkdir()
@@ -315,6 +313,197 @@ def test_cmd_launcher_runs_its_interpreter(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert (directory / "out.log").read_bytes() == b"ran through the launcher" + LINE
+
+
+def test_a_cmd_launcher_works_from_any_repository_path(tmp_path: Path) -> None:
+    """The launcher path is not restricted to ASCII, or no space.
+
+    `procs` used to reach a batch file through `cmd.exe /c <launcher> ...`. That
+    wraps the launcher path in a second pair of quotes which `/c` then strips,
+    leaving the remainder to be re-split at the first space, so any launcher path
+    containing a space was cut in half and reported as an unrecognized command.
+    Naming the launcher directly and letting CreateProcess route it to the
+    interpreter avoids the second quoting layer entirely.
+
+    The space is the trigger. Measured on this host through the pre-fix command
+    line, a non-ASCII directory with no space in it worked, and a plain ASCII
+    directory containing a space did not. Both are below, because a suite that
+    only tested the non-ASCII names would have let the defect through again.
+
+    Every directory name here is one a real repository could have. The payload
+    reports the argument it actually received, so a launcher that ran the wrong
+    thing cannot pass.
+    """
+    non_ascii_argument = "argument ünïcødé"
+    for name in (
+        "plain", "withspace", "répertoire", "ünïcødé",
+        "with space", "répertoire ünïcødé", "ünïcødé with space",
+    ):
+        directory = tmp_path / name
+        directory.mkdir()
+        helper = write_script(
+            directory,
+            "helper.py",
+            "import json, os, pathlib, sys\n"
+            "pathlib.Path('seen.json').write_text(json.dumps(\n"
+            "    {'argv': sys.argv[1:], 'cwd': os.getcwd()}, ensure_ascii=False),\n"
+            "    encoding='utf-8')\n",
+        )
+        launcher = directory / "lancer.cmd"
+        # %~dp0 rather than the payload's own name, so the batch file's bytes are
+        # ASCII and this test is about the launch, not about the batch contents.
+        launcher.write_text(
+            f'@echo off\r\n"{PYTHON}" "%~dp0helper.py" %*\r\n', encoding="ascii", newline=""
+        )
+        seen = directory / "seen.json"
+
+        result = run_command(
+            [str(launcher), non_ascii_argument],
+            cwd=directory,
+            stdout_path=directory / "out.log",
+            stderr_path=directory / "err.log",
+            timeout_seconds=60.0,
+        )
+
+        assert result.exit_code == 0, (
+            f"a launcher under {name!r} exited {result.exit_code}: "
+            f"{(directory / 'err.log').read_text(encoding='utf-8', errors='replace')[:200]!r}"
+        )
+        assert seen.is_file(), f"the payload never ran for {name!r}"
+        observed = json.loads(seen.read_text(encoding="utf-8"))
+        assert observed["argv"] == [non_ascii_argument], (
+            f"from {name!r} the payload received {observed['argv']!r}, not the "
+            f"argument the manifest supplied"
+        )
+        assert observed["cwd"] == str(directory), (
+            f"from {name!r} the working directory was mangled"
+        )
+
+
+def test_a_non_ascii_path_inside_a_cmd_launcher_is_mangled(tmp_path: Path) -> None:
+    """The documented limit, demonstrated rather than restated, and it is real.
+
+    This is the half that cannot be fixed from here. `cmd.exe` reads a batch
+    file's own bytes in the active ANSI code page, so a non-ASCII path written
+    *into* the file is read back as different characters. It is not vkit's
+    command line, which CreateProcess hands over in Unicode and which the
+    previous test proves arrives intact; it is the file `cmd.exe` then parses.
+
+    The code page is forced to 437, whose repertoire is ASCII plus a little.
+    What decides the outcome is whether that code page can represent the
+    character, not whether the path is non-ASCII. Measured on this host with
+    the console at 437:
+
+      ASCII payload path                payload ran, exit 0
+      payload path containing 'é'       payload never ran, exit 2
+
+    'é' is inside cp1252, this machine's ANSI code page, and inside UTF-8,
+    which is what the batch file is written in. It is outside cp437. So the
+    limit is not "non-ASCII mangles" but "a character the active code page
+    cannot represent mangles". The control test beside this one runs the same
+    shape under the host's own code page and passes, so the pair states the
+    limit rather than a correlation.
+
+    The payload therefore never runs. The check exits nonzero, writes no
+    artifact, and the run is BLOCKED with `artifact_missing`. A failed launcher
+    does not read as a passing check, which is what makes this a limit to
+    document rather than a defect to fix.
+    """
+    import ctypes
+
+    directory = tmp_path / "répertoire"
+    directory.mkdir()
+    helper = write_script(
+        directory,
+        "générateur.py",
+        "import pathlib\n"
+        "pathlib.Path('ran.txt').write_text('ran', encoding='utf-8')\n",
+    )
+    launcher = directory / "lancer.cmd"
+    # The non-ASCII payload path is inside the batch file. UTF-8 is what an
+    # editor on this host writes; the question is what cmd.exe then reads.
+    launcher.write_bytes(f'@echo off\r\n"{PYTHON}" "{helper}"\r\n'.encode("utf-8"))
+
+    kernel32 = ctypes.windll.kernel32
+    original = kernel32.GetConsoleOutputCP()
+    if not original:
+        pytest.skip(
+            "no console is attached, so there is no active code page to force "
+            "and nothing here could demonstrate the limit"
+        )
+    # 437 is the OEM code page for the United States. Its repertoire is ASCII
+    # plus a little, so 'é' cannot survive it while an ASCII name can, and
+    # that difference is the measurement. Restored in a finally, because
+    # leaving the console on a legacy code page would corrupt this session's
+    # own output.
+    kernel32.SetConsoleOutputCP(437)
+    try:
+        result = run_command(
+            [str(launcher)],
+            cwd=directory,
+            stdout_path=directory / "out.log",
+            stderr_path=directory / "err.log",
+            timeout_seconds=60.0,
+        )
+        stderr = (directory / "err.log").read_text(encoding="utf-8", errors="replace")
+    finally:
+        kernel32.SetConsoleOutputCP(original)
+
+    assert result.exit_code != 0, "the payload should not have run"
+    assert not (directory / "ran.txt").exists(), "the payload ran after all"
+    assert "can't open file" in stderr, f"expected an interpreter error, got {stderr!r}"
+    # The ASCII tail of the name survives, which is what makes this a code page
+    # round trip rather than a missing file.
+    assert "rateur.py" in stderr, (
+        f"expected the mangled name to keep its ASCII tail, got {stderr!r}"
+    )
+
+
+def test_the_same_launcher_works_under_the_hosts_own_code_page(tmp_path: Path) -> None:
+    """The control, so the test above cannot read as "non-ASCII always fails".
+
+    Identical launcher, identical payload path, the code page this host actually
+    runs. The payload path here is ASCII, because that is the case a maintainer
+    on this machine actually hits.
+
+    An earlier version of this test used the same non-ASCII payload as the test
+    above and asserted it worked, with the reasoning that the host's own code
+    page could represent it. Measured, that is false here: the OEM console code
+    page is 437, which has no `é`. The test failed for the right reason -- the
+    launch is correct and the payload genuinely cannot be named -- and the
+    docstring's claim was the thing that was wrong. A control that cannot run on
+    the host it was written for is not a control, it is a second copy of the
+    failure.
+    """
+    directory = tmp_path / "withspace"
+    directory.mkdir()
+    # Both the directory and the payload are ASCII here. Only the directory was
+    # renamed first, and the test still failed: the payload is named on the same
+    # command line and the code page has to carry the WHOLE thing. A control that
+    # leaves one non-ASCII segment in is a slower copy of the same failure.
+    helper = write_script(
+        directory,
+        "generator.py",
+        "import pathlib\n"
+        "pathlib.Path('ran.txt').write_text('ran', encoding='utf-8')\n",
+    )
+    launcher = directory / "lancer.cmd"
+    launcher.write_bytes(f'@echo off\r\n"{PYTHON}" "{helper}"\r\n'.encode("utf-8"))
+
+    result = run_command(
+        [str(launcher)],
+        cwd=directory,
+        stdout_path=directory / "out.log",
+        stderr_path=directory / "err.log",
+        timeout_seconds=60.0,
+    )
+
+    assert result.exit_code == 0, (
+        f"under a code page that can represent the path the launcher must run; "
+        f"its stderr was "
+        f"{(directory / 'err.log').read_text(encoding='utf-8', errors='replace')[:200]!r}"
+    )
+    assert (directory / "ran.txt").is_file(), "the payload did not run"
 
 
 def test_missing_executable_reports_launch_failure(tmp_path: Path) -> None:

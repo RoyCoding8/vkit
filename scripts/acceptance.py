@@ -14,9 +14,9 @@ this revision does not contain, and a green run would certify the wrong tree.
 
 So the command is resolved from this tree's own sources, and `main` refuses to
 start unless the process it is about to spawn will import exactly `ROOT/src`.
-Refusing is the only honest answer: an installation that cannot be pointed at
-this tree has not tested this tree, and printing `22/22` for it would be the
-false pass this script exists to prevent.
+Refusing is the only honest answer: a script that is not standing beside its own
+sources has not tested this tree, and printing `22/22` for it would be the false
+pass this script exists to prevent.
 
 Run:  .venv/Scripts/python.exe scripts/acceptance.py
 """
@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = Path(__file__).resolve()
 EXAMPLE = ROOT / "examples" / "python-cli"
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
@@ -423,8 +424,9 @@ def main() -> int:
     if Path(resolved).resolve() != expected.resolve():
         print(
             f"these rows would test {resolved}, not {expected}.\n"
-            f"Set PYTHONPATH to {ROOT / 'src'} and run again. Refusing to report a "
-            f"row count for a tree this script is not standing in.",
+            f"This script names its own src tree, so a mismatch means it is not "
+            f"standing beside one. Run it from the checkout it belongs to, with "
+            f"{SCRIPT.name} directly under that checkout's scripts/.",
             file=sys.stderr,
         )
         return 4

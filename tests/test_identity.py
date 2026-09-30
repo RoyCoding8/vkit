@@ -15,6 +15,7 @@ moves for exactly the changes that should invalidate a run.
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -347,3 +348,219 @@ def test_identity_satisfies_the_run_report_schema(committed: Path) -> None:
         "tracked_files": 2,
         "dirty_paths": ["app.py"],
     }
+
+
+#: The check used by `test_an_edit_made_and_reverted_during_a_run_escapes_the_
+#: digest`. It is a real registered check: it runs a real interpreter against
+#: real bytes and writes a real artifact. The only thing unusual about it is the
+#: thing under test, which is that it puts the source back before it exits.
+#:
+#: `{app}` is the application file it edits. Raw, because it is source code for
+#: another file: the `\n` below has to reach that file as the two characters
+#: backslash and n inside its own string literals, not as a newline that breaks
+#: them.
+SWAPPER_BODY = r'''\
+import json
+import pathlib
+import subprocess
+import sys
+
+app = pathlib.Path({app})
+original = app.read_text(encoding="utf-8")
+app.write_text("def total(xs):\n    return sum(xs) + 1\n", encoding="utf-8")
+mutant = app.read_text(encoding="utf-8")
+assert mutant != original, "the mutant has to differ from the original"
+
+# The probe runs the mutant as a real process. It is a file rather than `-c`
+# because a Windows path holds backslashes, and backslashes in a `-c` argument
+# are read as escapes before Python ever sees them. json.dumps writes the path
+# as a Python string literal correctly on any platform, which repr() does not
+# promise for a Windows path.
+probe = app.parent / "observe_mutant.py"
+probe.write_text(
+    "import sys\n"
+    "sys.path.insert(0, " + json.dumps(str(app.parent)) + ")\n"
+    "import app\n"
+    "print(app.total([1, 2]))\n",
+    encoding="utf-8",
+)
+observed = subprocess.run([sys.executable, str(probe)], capture_output=True, text=True)
+assert observed.returncode == 0, observed.stderr
+probe.unlink()
+
+app.write_text(original, encoding="utf-8")
+assert app.read_text(encoding="utf-8") == original, "the original was not restored"
+
+out = pathlib.Path(sys.argv[1])
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(
+    json.dumps({{
+        "schema_version": 1,
+        "scenarios": [
+            {{
+                "id": "s1",
+                "result": "PASS",
+                "observation": "the mutant printed "
+                + observed.stdout.strip()
+                + " for [1, 2]",
+            }}
+        ],
+    }}),
+    encoding="utf-8",
+)
+'''
+
+
+def test_an_edit_made_and_reverted_during_a_run_escapes_the_digest(
+    committed: Path,
+) -> None:
+    """The second documented limit, demonstrated end to end.
+
+    `identity.py` states that it cannot detect a transient edit reverted during
+    the run. This proves it through the product's own seam rather than by calling
+    the digest twice, because the interesting question is what a *report* then
+    claims.
+
+    The check below is a real one. It edits the application under test to return
+    the wrong total, runs a real interpreter against the mutant so the artifact
+    describes mutant behaviour, restores the original bytes, and only then
+    writes its artifact and exits zero. The bytes on disk before the run and
+    after the run are identical, so the digests match.
+
+    What the report says is the finding: PASS, with every scenario green, for
+    code that was wrong for the whole run. This is the case the limit exists
+    for, and it is asserted here so the limit cannot quietly become untrue.
+    """
+    from vkit.execution import run_check
+    from vkit.manifest import parse_manifest
+    from vkit.outcome import Passed
+    from vkit.storage import Store
+
+    # The check swaps in a mutant, observes it through the real interpreter,
+    # swaps the original bytes back, and only then writes a PASS artifact into
+    # the run directory.
+    #
+    # Written as its own source file rather than an escaped literal: the payload
+    # imports the application under test from a path that has to be a real Python
+    # string at both levels, and nesting that in an f-string is where the test
+    # goes wrong rather than the product.
+    (committed / ".gitignore").write_text(
+        "__pycache__/\n*.pyc\n", encoding="utf-8"
+    )
+    (committed / "swap.py").write_text(
+        SWAPPER_BODY.format(app=json.dumps(str(committed / "app.py"))),
+        encoding="utf-8",
+    )
+    (committed / "verification" / "manifest.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "checks": [{
+                "id": "swapper",
+                "command": [sys.executable, "swap.py", "{{run_dir}}/result.json"],
+                "timeout_seconds": 60,
+                "required_scenarios": ["s1"],
+                "artifact": "result.json",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    commit_all(committed)
+
+    project = open_project(committed)
+    store = Store(project.db_path)
+    manifest = parse_manifest(project, project.runs_root / "probe")
+    before = compute_source_identity(project)
+
+    result = run_check(manifest, "swapper", store=store, source=before)
+
+    restored = (committed / "app.py").read_text(encoding="utf-8")
+    assert "sum(xs) + 1" not in restored, (
+        f"the check must put the original bytes back before it exits, but "
+        f"app.py still reads {restored!r}"
+    )
+    stderr = store.run_dir(result.report["run_id"]) / "stderr.log"
+    assert stderr.read_text(encoding="utf-8") == "", (
+        "the check must run clean; its stderr was "
+        f"{stderr.read_text(encoding='utf-8')[:400]!r}"
+    )
+
+    after = compute_source_identity(project)
+
+    # The preconditions of the limit, asserted so the finding below cannot be
+    # explained by something else having gone wrong. `dirty_paths` is named in
+    # the message because a digest difference with no dirty path means the
+    # fingerprint changed rather than the tree.
+    assert after.inventory_digest == before.inventory_digest, (
+        f"the tree must be byte-identical after the run, or this test is not "
+        f"demonstrating a reverted edit; before={before.dirty_paths} "
+        f"after={after.dirty_paths}"
+    )
+    assert not after.dirty, "the tree must be clean after the run"
+
+    # And the finding. The bytes never moved, so the digest never moved, so the
+    # run was never questioned. The report is PASS and the run did not execute
+    # the code the report names.
+    assert isinstance(result.outcome, Passed), (
+        f"the run reported {result.outcome!r}; the limit under test is that a "
+        f"reverted edit is invisible, not that it is caught"
+    )
+    observation = result.outcome.scenarios[0].observation
+    assert "the mutant printed" in observation, observation
+    # The report names the original source, whose digest is the digest the run
+    # verified. Nothing in the artifact says the code moved.
+    assert result.report["source"]["inventory_digest"] == before.inventory_digest
+    assert result.report["source"]["dirty"] is False
+
+
+def test_the_run_would_have_caught_the_edit_that_stayed(committed: Path) -> None:
+    """The contrast that makes the limit legible.
+
+    The same edit, left in place, moves the digest and the run is BLOCKED with
+    `source_changed`. Without this pair, a reader could not tell whether the
+    previous test's PASS was a defect in the fingerprint or a deliberate
+    property of hashing file content at two instants.
+    """
+    from vkit.execution import run_check
+    from vkit.manifest import parse_manifest
+    from vkit.outcome import Blocked, BlockedReason
+    from vkit.storage import Store
+
+    (committed / "mutator.py").write_text(
+        "import json, pathlib, sys\n"
+        "pathlib.Path('app.py').write_text('def total(xs):\\n    return sum(xs) + 1\\n',"
+        " encoding='utf-8')\n"
+        "out = pathlib.Path(sys.argv[1])\n"
+        "out.parent.mkdir(parents=True, exist_ok=True)\n"
+        "out.write_text(json.dumps({\n"
+        "    'schema_version': 1,\n"
+        "    'scenarios': [{'id': 's1', 'result': 'PASS', 'observation': 'ok'}],\n"
+        "}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    (committed / "verification" / "manifest.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "checks": [{
+                "id": "mutator",
+                "command": [sys.executable, "mutator.py", "{{run_dir}}/result.json"],
+                "timeout_seconds": 60,
+                "required_scenarios": ["s1"],
+                "artifact": "result.json",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    commit_all(committed)
+
+    project = open_project(committed)
+    store = Store(project.db_path)
+    manifest = parse_manifest(project, project.runs_root / "probe")
+
+    result = run_check(manifest, "mutator", store=store,
+                       source=compute_source_identity(project))
+
+    assert isinstance(result.outcome, Blocked)
+    assert result.outcome.reason == BlockedReason.SOURCE_CHANGED, (
+        "an edit that stays must block the run; if this stops holding, the "
+        "previous test's PASS may no longer be the documented limit"
+    )

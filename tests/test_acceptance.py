@@ -7,17 +7,21 @@ holds an editable install pointing at somebody else's `src`, so every row could
 pass against code this revision does not contain. Nothing about the output would
 have said so: 22 of 22 rows either way.
 
-The tests here cover the three ways that could still go wrong.
+The tests here cover the four ways that could still go wrong.
 
-  * The script refuses to report a count when its rows would import another
-    tree, so a reviewer running it in the wrong environment is stopped rather
-    than handed a green number.
-  * Reverting the fix really does produce that refusal, which is what makes the
-    guard above evidence rather than a hopeful assertion. The revert is done by
-    editing a copy of the script, so this file proves the property without
-    leaving the working tree broken.
+  * The command the rows run and the path their children are given both name
+    this tree, asked of a real spawned child rather than assumed.
+  * The script names the tree in its own output, so a green count says where it
+    came from rather than asking the reader to trust it.
   * A broken tree produces a failing row, so "the number means this tree" does
     not degenerate into "the number is always 22".
+  * The pre-fix resolution is run directly and shown landing on another tree.
+    That measurement is what makes the three assertions above evidence rather
+    than a description of intent.
+
+The script itself refuses to report a count when its rows would import another
+tree, and the last test covers that refusal. A reviewer running the script in
+the wrong place is stopped rather than handed a green number.
 """
 from __future__ import annotations
 
@@ -34,12 +38,9 @@ SCRIPT = REPO_ROOT / "scripts" / "acceptance.py"
 THIS_CLI = (REPO_ROOT / "src" / "vkit" / "cli.py").resolve()
 EXAMPLE = REPO_ROOT / "examples" / "python-cli"
 
-
 sys.path.insert(0, str(SCRIPT.parent))
 
 import acceptance  # noqa: E402
-
-SCRIPT_DIR = str(SCRIPT.parent)
 
 
 def run_script(script: Path, *, env: dict[str, str] | None = None,
@@ -175,10 +176,6 @@ def test_the_reverted_resolution_reaches_another_tree() -> None:
             f"the virtualenv's vkit is installed from this tree ({THIS_CLI}), so "
             f"there is no second checkout for the old resolution to reach"
         )
-    assert reached_path != THIS_CLI, (
-        "the environment-relative resolution lands on this tree, which is why "
-        "the pre-gap weakness did not reproduce here"
-    )
     # And the fixed script still reports its own tree, which is the difference.
     fixed = run_script(SCRIPT)
     assert str(THIS_CLI) in fixed.stdout

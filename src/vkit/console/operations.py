@@ -154,18 +154,35 @@ def readiness_view(context: Context) -> dict[str, Any]:
 
 
 def checks_view(context: Context) -> dict[str, Any]:
-    """3 and 4. Installation and checks, as far as the manifest records them.
+    """3 and 4. Installation and checks.
 
-    "Installation" is reported honestly as what the manifest declares, because
-    that is all the store holds in this build. There is no installed-plugin
-    record to read, and the console does not get to invent one.
+    The installation is read from the host's own record, because the host is
+    what actually installs a plugin. There is no console-held ledger of what was
+    installed: this reads `installed_plugins.json` and reports what it says, so
+    a second browser and the host always agree.
     """
+    record = _installed_plugin_record(PLUGIN_ID)
+    try:
+        source = str(_plugin_source_dir())
+    except Refused:
+        # A checkout with no package beside it is a fact to show, not a reason to
+        # refuse a read view. install would refuse the same thing with the same
+        # message when the operator asks it to act.
+        source = None
+    installation = {
+        "plugin": PLUGIN_ID,
+        "source": source,
+        "marketplace_registered": _marketplace_registered(),
+        "installed": record is not None,
+        "install_path": record.get("installPath") if record else None,
+        "version": record.get("version") if record else None,
+        "scope": record.get("scope") if record else None,
+    }
     if context.manifest is None:
-        return {"installed": None, "checks": [],
+        return {"installed": installation, "checks": [],
                 "note": context.manifest_error or "the manifest could not be parsed"}
     return {
-        "installed": None,
-        "note": "the core records no installed plugin, skills or hooks yet",
+        "installed": installation,
         "checks": [
             {
                 "id": check.id,
@@ -316,6 +333,21 @@ def plan_change_set(context: Context, name: str) -> ChangeSet:
             Change("runs/<run_id>/report.json",
                    "publish a terminal report, or the outcome already recorded", False),
         ))
+    if op.name == "enroll":
+        if context.manifest is None:
+            raise Refused(context.manifest_error or "no manifest")
+        return ChangeSet(op.name, (
+            Change("verification-kit/enrollment.json",
+                   "record acceptance of the manifest's executable policy", True),
+        ), note="execution stays disabled until this policy is accepted")
+    if op.name in ("install", "repair"):
+        return ChangeSet(op.name, (
+            Change("host plugin directory", f"{op.name} the plugin, skills and hooks via the host CLI", True),
+        ))
+    if op.name == "remove":
+        return ChangeSet(op.name, (
+            Change("host plugin directory", "uninstall the plugin via the host CLI", True),
+        ))
     raise NotImplementedInBuild(op.name)
 
 
@@ -421,24 +453,317 @@ def cancel_check_run(context: Context, run_id: str) -> dict[str, Any]:
     }
 
 
-def install(context: Context, **_ignored: Any) -> None:
-    """Refuse. The core has no install operation."""
-    raise NotImplementedInBuild("install")
+def _host_cli() -> str:
+    """The Claude Code CLI, which owns plugin placement.
+
+    Install, repair and remove all shell out to it rather than copying the
+    package by hand. The host already owns where a plugin lives, how it is
+    enabled, and how its configuration is stored; a second writer would create
+    a second answer that drifts the moment the host changes. If the CLI is not
+    on PATH there is no installation to make, and saying so beats guessing at
+    the host's directory layout.
+    """
+    import shutil
+
+    found = shutil.which("claude")
+    if found is None:
+        raise Refused(
+            "the 'claude' CLI is not on PATH, so the host cannot install the plugin. "
+            "Install Claude Code, or install the plugin with 'claude plugin install' yourself."
+        )
+    return found
 
 
-def repair(context: Context, **_ignored: Any) -> None:
-    """Refuse. The core has no repair operation."""
-    raise NotImplementedInBuild("repair")
+def _run_host(args: list[str]) -> tuple[int, str, str]:
+    """Run a host CLI command and return (returncode, stdout, stderr)."""
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            [_host_cli(), *args], capture_output=True, encoding="utf-8",
+            errors="replace", timeout=180, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ConsoleError(f"'claude {' '.join(args)}' timed out after 180s") from exc
+    except OSError as exc:
+        raise ConsoleError(f"could not run the host CLI: {exc}") from exc
+    return done.returncode, done.stdout, done.stderr
 
 
-def remove(context: Context, **_ignored: Any) -> None:
-    """Refuse. The core has no remove operation."""
-    raise NotImplementedInBuild("remove")
+def _plugin_source_dir() -> Path:
+    """The plugin package this build ships, wherever the package was checked out.
+
+    Resolved relative to this module rather than the working directory, so a
+    console opened anywhere still finds the package it belongs to. The plugin
+    sits beside the Python package (`.../plugin`) in a source checkout and
+    beside the installed package (`.../vkit/../../plugin`) in a wheel, so both
+    are tried before anything is refused.
+    """
+    here = Path(__file__).resolve()
+    candidates = [
+        # Source checkout: <root>/src/vkit/console/operations.py -> <root>/plugin
+        here.parents[3] / "plugin",
+        # Installed wheel: <site-packages>/vkit/console/operations.py -> the bundled copy
+        here.parent / "_plugin",
+    ]
+    for candidate in candidates:
+        if (candidate / ".claude-plugin" / "plugin.json").is_file():
+            return candidate
+    raise Refused(
+        f"the vkit plugin package is not present; looked in "
+        f"{', '.join(str(c) for c in candidates)}. "
+        f"Install operates on a packaged plugin, and this build has none to install."
+    )
 
 
-def enroll(context: Context, **_ignored: Any) -> None:
-    """Refuse. The core has no enroll operation."""
-    raise NotImplementedInBuild("enroll")
+def _installed_plugin_record(plugin_id: str) -> dict | None:
+    """What the host currently has installed for this plugin id, or None.
+
+    Read from the host's own installed_plugins.json. This is a read of the
+    host's state to decide idempotence and to report drift; the host remains
+    the only writer of it.
+    """
+    import json
+    from pathlib import Path as _Path
+
+    record = _Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    if not record.is_file():
+        return None
+    try:
+        document = json.loads(record.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    entries = (document.get("plugins") or {}).get(plugin_id) or []
+    return entries[0] if entries else None
+
+
+def _repo_root() -> Path:
+    """The checkout this build was loaded from, which is also the marketplace root."""
+    return _plugin_source_dir().parent
+
+
+def _marketplace_registered() -> bool:
+    """Whether the host already knows this repository's marketplace."""
+    known = Path.home() / ".claude" / "plugins" / "known_marketplaces.json"
+    if not known.is_file():
+        return False
+    import json
+
+    try:
+        document = json.loads(known.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return _MARKETPLACE in document
+
+
+def _validate(source: Path) -> None:
+    """The package must actually validate before anything is installed.
+
+    Copying bytes and declaring success is how an install "succeeds" and then
+    fails to load. `claude plugin validate --strict` is the host's own check, so
+    running it here means the thing that decides is the same thing that loads.
+    A non-zero exit is refused carrying the validator's own words, because that
+    message is what tells an operator which field is wrong.
+    """
+    code, out, err = _run_host(["plugin", "validate", "--strict", str(source)])
+    if code != 0:
+        detail = (err or out).strip() or "the validator reported no detail"
+        raise Refused(f"the vkit package at {source} did not validate: {detail}")
+
+
+def install(context: Context, scope: str = "user", **_: Any) -> dict[str, Any]:
+    """Install the host plugin, skills, and hooks at a chosen scope.
+
+    Validation first, then the host CLI. The host owns where a plugin lives, how
+    it is enabled, and how its configuration is stored; this never copies the
+    package into the host's directories by hand, because a second writer is a
+    second answer that drifts the moment the host changes. A package that would
+    not load is refused before anything is placed.
+    """
+    if scope != "user":
+        raise Refused(
+            f"scope {scope!r} is not supported; this build installs at 'user' scope only"
+        )
+    source = _plugin_source_dir()
+    _validate(_repo_root())
+
+    # The host installs plugins from a marketplace, so the repository declares
+    # one. Adding it twice is refused by the host rather than duplicated here.
+    if not _marketplace_registered():
+        code, out, err = _run_host(["plugin", "marketplace", "add", str(_repo_root())])
+        if code != 0:
+            detail = (err or out).strip() or "the host CLI reported no detail"
+            raise Refused(f"the host refused to register the vkit marketplace: {detail}")
+
+    code, out, err = _run_host(["plugin", "install", PLUGIN_ID, "--scope", scope])
+    if code != 0:
+        detail = (err or out).strip() or "the host CLI reported no detail"
+        raise Refused(f"the host CLI refused to install {PLUGIN_ID}: {detail}")
+    return {
+        "operation": "install",
+        "scope": scope,
+        "plugin": PLUGIN_ID,
+        "installed_from": str(source),
+        "validated": True,
+        "already_installed": "already installed" in out,
+        "host_output": out.strip(),
+    }
+
+
+def repair(context: Context, scope: str = "user", **_: Any) -> dict[str, Any]:
+    """Re-apply a drifted installation.
+
+    Idempotent: it re-validates and re-installs through the same host call, and
+    the host reports an already-correct installation as already installed rather
+    than stacking a second copy. Running it twice leaves the same state as
+    running it once, which is the property that makes it safe to retry.
+
+    A drifted install is a version or enablement the host knows about but which
+    no longer matches the package. There is no such installation here to repair,
+    so this refuses rather than reporting a success for a no-op.
+    """
+    if scope != "user":
+        raise Refused(
+            f"scope {scope!r} is not supported; this build repairs at 'user' scope only"
+        )
+    _validate(_repo_root())
+    if _installed_plugin_record(PLUGIN_ID) is None:
+        raise Refused(
+            f"{PLUGIN_ID} is not installed for this host, so there is no drifted "
+            f"installation to repair. Use install first."
+        )
+    code, out, err = _run_host(["plugin", "update", PLUGIN_ID])
+    if code != 0:
+        detail = (err or out).strip() or "the host CLI reported no detail"
+        raise Refused(f"the host CLI refused to update {PLUGIN_ID}: {detail}")
+    return {
+        "operation": "repair",
+        "scope": scope,
+        "plugin": PLUGIN_ID,
+        "validated": True,
+        "host_output": out.strip(),
+    }
+
+
+def remove(context: Context, **_: Any) -> dict[str, Any]:
+    """Undo an installation, leaving no orphans.
+
+    Uninstalling is only half of removing. The host keeps the marketplace
+    registration and the cache directory after `plugin uninstall`, so both are
+    taken out here and then verified: `remove` reports success only once the
+    host lists no plugin under this id and no cache directory remains. That
+    check is the difference between "the command succeeded" and "nothing is
+    left behind".
+    """
+    record = _installed_plugin_record(PLUGIN_ID)
+    if record is None:
+        raise Refused(f"{PLUGIN_ID} is not installed for this host, so there is nothing to remove.")
+
+    code, out, err = _run_host(["plugin", "uninstall", PLUGIN_ID])
+    if code != 0:
+        detail = (err or out).strip() or "the host CLI reported no detail"
+        raise Refused(f"the host CLI refused to uninstall {PLUGIN_ID}: {detail}")
+
+    # The host leaves the marketplace registered. Removing it here is what
+    # "no orphans" means; otherwise a later install silently reuses a
+    # registration pointing at a checkout that may be gone.
+    if _marketplace_registered():
+        _code, out2, err2 = _run_host(["plugin", "marketplace", "remove", _MARKETPLACE])
+        if _code != 0:
+            detail = (err2 or out2).strip() or "the host CLI reported no detail"
+            raise Refused(
+                f"the plugin was uninstalled but the {PLUGIN_ID!r} marketplace could not be "
+                f"removed, so a stale registration is left behind: {detail}"
+            )
+
+    remaining = _installed_plugin_record(PLUGIN_ID)
+    if remaining is not None:
+        raise Refused(
+            f"the host still lists the plugin at {remaining.get('installPath')!r} after "
+            f"uninstall; the installation is not fully removed."
+        )
+    cache = Path.home() / ".claude" / "plugins" / "cache" / _MARKETPLACE / _PLUGIN_NAME
+    orphan = cache.is_dir()
+    if orphan:
+        import shutil
+
+        shutil.rmtree(cache, ignore_errors=True)
+        orphan = cache.exists()
+    return {
+        "operation": "remove",
+        "plugin": PLUGIN_ID,
+        "uninstalled": True,
+        # A Path here would reach the browser as a serialisation error, so every
+        # path in a response is a string. The response is JSON and nothing else.
+        "cache_removed": str(cache),
+        "marketplace_removed": _MARKETPLACE,
+        "orphan_cache": orphan,
+        "host_output": out.strip(),
+    }
+
+
+def enroll(context: Context, accepted: bool = False, **_: Any) -> dict[str, Any]:
+    """Register a repository as verified.
+
+    Per Plan 06: execution stays disabled until the user accepts the
+    repository's executable policy. So enroll does two things and records both:
+    it names the policy (the registered checks with their exact argv) and it
+    records the operator's explicit acceptance. Without `accepted`, it reports
+    the policy and writes nothing, so execution stays disabled. A hand-maintained
+    file is never overwritten: acceptance is written only to the shared Git
+    directory, beside the store, and never to the working tree.
+    """
+    import json
+
+    if context.manifest is None:
+        raise Refused(
+            context.manifest_error
+            or "the repository has no manifest to enroll against; create verification/manifest.json first"
+        )
+    policy = [
+        {"id": check.id, "command": list(check.argv), "timeout_seconds": check.timeout_seconds}
+        for check in context.manifest.checks.values()
+    ]
+    if not accepted:
+        # No state change at all. The operator reads the policy and decides.
+        return {
+            "operation": "enroll",
+            "enrolled": False,
+            "accepted": False,
+            "policy": policy,
+            "note": "execution stays disabled until this policy is accepted; re-run with accepted=true",
+        }
+
+    record_path = context.project.state_root / "enrollment.json"
+    record_path.write_text(
+        json.dumps(
+            {
+                "root": str(context.project.root),
+                "configuration_digest": context.manifest.digest(),
+                "accepted": True,
+                "policy": policy,
+            },
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "operation": "enroll",
+        "enrolled": True,
+        "accepted": True,
+        "policy": policy,
+        "record": str(record_path),
+    }
+
+
+#: The host names this plugin by id. The marketplace is the repository's own
+#: `.claude-plugin/marketplace.json`, so the id is vkit@vkit in every operation.
+#: install, repair and remove all resolve it from here, so they cannot drift
+#: onto two different names for one package.
+_PLUGIN_NAME = "vkit"
+_MARKETPLACE = "vkit"
+PLUGIN_ID = f"{_PLUGIN_NAME}@{_MARKETPLACE}"
+
 
 
 #: The writable surface as callables, by name. A router that resolves an

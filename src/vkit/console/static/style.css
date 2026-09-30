@@ -124,9 +124,14 @@ td.actions button + button { margin-left: 4px; }
 .refusal .why { font-weight: 600; }
 .refusal .core { color: var(--dim); margin-top: 4px; white-space: pre-wrap; }
 .note.ok { color: var(--pass); white-space: pre-wrap; }
-.outcome { margin-top: 6px; }
+.outcome { margin-top: 6px; max-width: 46ch; }
+/* A policy line is a check id and the exact command that would run. They are on
+   separate lines because setting them inline ran the id straight into the command
+   with no gap, so the reader saw "totals-behaviorpython verify_totals.py". */
 .policy { margin: 6px 0; padding-left: 18px; }
-.policy li { margin-bottom: 4px; }
+.policy li { margin-bottom: 8px; }
+.policy li > div { overflow-wrap: anywhere; }
+.strong { font-weight: 600; }
 .kv { display: grid; grid-template-columns: 180px 1fr; gap: 4px 12px; }
 .kv dt { color: var(--dim); }
 .kv dd { margin: 0; overflow-wrap: anywhere; }
@@ -151,4 +156,19 @@ pre.log {
      crushed two-column grid is not. */
   .kv { grid-template-columns: 1fr; gap: 0 0; }
   .kv dt { margin-top: 8px; }
+
+  /* Below this width a wide table scrolls sideways inside its panel, which puts
+     the action buttons off the right edge where they cannot be reached or seen.
+     Hiding the columns an operator reads off the row itself — the check id, the
+     timestamp — keeps the actions on screen. The full values are one tap away on
+     the row's own detail panel. */
+  .wide-hide { display: none; }
+}
+
+@media (max-width: 480px) {
+  /* The run id is a 12-character hex prefix, which is the least useful column at
+     this width; the timestamp is unreadable at 8 characters per line. */
+  .narrow-hide { display: none; }
+  td, th { padding: 6px 5px; }
+  table { font-size: 13px; }
 }

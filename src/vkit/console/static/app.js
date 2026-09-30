@@ -58,10 +58,14 @@ function panel(...children) {
 
 /* A table that outgrows its column scrolls inside its own panel. Letting it
    widen the document pushes the header and nav out from under the reader, so
-   the overflow is contained here rather than left to the page. */
+   the overflow is contained here rather than left to the page.
+
+   `hideAt` tags a column that the stylesheet drops on a narrow viewport, so a
+   wide table keeps its actions on screen instead of hiding them behind a
+   horizontal scroll nobody discovers. */
 function table(head, rows) {
   return el("div", { class: "tablewrap" }, el("table", {},
-    el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { text: h })))),
+    el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { class: h.hideAt || "", text: h.label || h })))),
     el("tbody", {}, ...rows),
   ));
 }
@@ -230,15 +234,18 @@ async function showRuns() {
       const cancel = el("button", { class: "act", type: "button" }, "Cancel");
       cancel.addEventListener("click", () => busy(cancel, "cancelling…", () => cancelRun(run.run_id)));
       return el("tr", {},
-        el("td", { class: "mono" }, el("a", { href: "#", onclick: (e) => { e.preventDefault(); showRun(run.run_id); }, text: run.run_id.slice(0, 12) })),
-        el("td", { class: "mono", text: run.check_id }),
+        el("td", { class: "mono" }, el("a", { href: "#", onclick: (e) => { e.preventDefault(); showRun(run.run_id); }, text: run.check_id })),
         el("td", {}, verdict(run.result || (run.lifecycle === "terminal" ? "BLOCKED" : run.lifecycle.toUpperCase()))),
-        el("td", { class: "mono", text: run.reason || "" }),
-        el("td", { class: "mono", text: (run.ended_at || run.registered_at || "").slice(0, 19).replace("T", " ") }),
+        el("td", { class: "mono wide-hide", text: run.reason || "" }),
+        el("td", { class: "mono narrow-hide", text: (run.ended_at || run.registered_at || "").slice(0, 19).replace("T", " ") }),
         el("td", { class: "actions" }, open, " ", cancel),
       );
     });
-    fill("runs-body", panel(table(["run", "check", "result", "reason", "ended", ""], rows)));
+    fill("runs-body", panel(table(
+      ["check", "result",
+        { label: "reason", hideAt: "wide-hide" },
+        { label: "ended", hideAt: "narrow-hide" }, ""],
+      rows)));
   } catch (error) {
     fill("runs-body", refusal(error));
   }
@@ -343,12 +350,14 @@ async function showOperations() {
       return el("tr", {},
         el("td", { class: "mono" }, el("strong", { text: op.name })),
         el("td", { text: op.effect }),
-        el("td", { class: "mono", text: op.writes.join(", ") }),
+        el("td", { class: "mono wide-hide", text: op.writes.join(", ") }),
         cell,
       );
     });
     fill("operations-body",
-      panel(table(["operation", "effect", "may write", "apply from here"], rows)),
+      panel(table(
+        ["operation", "effect", { label: "may write", hideAt: "wide-hide" }, "apply from here"],
+        rows)),
       panel(el("p", { class: "note", text: "verification/manifest.json is committed policy and is not writable from here. Changing it means making a commit." })));
   } catch (error) {
     fill("operations-body", refusal(error));
@@ -369,7 +378,7 @@ function operationButton(op) {
         return;
       }
       const result = await api("apply", { operation: op.name });
-      const done = result.result || {};
+      const done = (result && result.result) || {};
       const said = done.host_output || done.note || `${op.name} applied`;
       toast(`${op.name}: ${said.split("\n")[0]}`);
       outcome.replaceChildren(el("p", { class: "note ok", text: said }));
@@ -387,11 +396,20 @@ function operationButton(op) {
    after the policy has been fetched, so a user cannot accept a policy they were
    never shown. */
 async function runEnroll(outcome) {
-  const preview = await api("apply", { operation: "enroll" });
+  // `apply` wraps the operation's answer as {operation, result}, so the policy
+  // is under `result`. Reading it off the top level is how this rendered
+  // "Cannot read properties of undefined" on a button that visibly did nothing.
+  const envelope = await api("apply", { operation: "enroll" });
+  const policy = envelope.result && envelope.result.policy;
+  if (!policy) {
+    outcome.replaceChildren(refusal(Object.assign(
+      new Error("enroll returned no policy to accept"), { status: 500 })));
+    return;
+  }
   const list = el("ul", { class: "policy" },
-    ...preview.policy.map((p) => el("li", {},
-      el("span", { class: "mono", text: p.id }),
-      el("span", { class: "mono note", text: p.command.join(" ") }))));
+    ...policy.map((p) => el("li", {},
+      el("span", { class: "mono strong", text: p.id }),
+      el("div", { class: "mono note", text: p.command.join(" ") }))));
 
   const accept = el("button", { class: "act", type: "button" }, "Accept this policy");
   accept.addEventListener("click", () => busy(accept, "accepting…", async () => {

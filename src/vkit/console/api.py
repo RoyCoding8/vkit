@@ -53,7 +53,35 @@ ROUTES: dict[str, Callable[[Context, Mapping[str, Any]], Any]] = {
     "plan": lambda ctx, q: operations.plan_change_set(ctx, _text_param(q, "operation")).to_json(),
     "run_check": lambda ctx, q: operations.run_check(ctx, _text_param(q, "check_id")),
     "cancel_run": lambda ctx, q: operations.cancel_check_run(ctx, _text_param(q, "run_id")),
+    # Invoke an operation by name. Every name on the writable surface is
+    # reachable here and nowhere else, and the four the core does not have
+    # refuse with 501 rather than being absent from the list.
+    "apply": lambda ctx, q: _apply(ctx, q),
 }
+
+#: The only request parameters any route reads. None of them is a path, so no
+#: request can name a file the console would then act on.
+PARAM_NAMES: frozenset[str] = frozenset({
+    "limit", "run_id", "check_id", "stream", "max_bytes", "operation",
+})
+
+
+def _apply(context: Context, query: Mapping[str, Any]) -> dict[str, Any]:
+    """Call one operation by name, and nothing else.
+
+    The lookup is through `operations.OPERATIONS`, whose keys are asserted equal
+    to the writable list in a test, so this cannot reach a function that is not
+    on the surface.
+    """
+    name = _text_param(query, "operation")
+    handler = operations.OPERATIONS.get(name)
+    if handler is None:
+        raise BadRequest(
+            f"unknown operation {name!r}; the writable surface is: "
+            f"{', '.join(sorted(operations.OPERATIONS))}"
+        )
+    result = handler(context, **{k: v for k, v in query.items() if k != "operation"})
+    return {"operation": name, "result": result}
 
 
 class BadRequest(Exception):

@@ -24,14 +24,15 @@ from pathlib import Path
 from typing import Any
 
 from ..execution import ExecutionError
-from ..identity import SourceIdentity, compute_source_identity
+from ..execution import run_check as execute_check
+from ..identity import compute_source_identity
 from ..manifest import Manifest, ManifestError, parse_manifest
 from ..paths import Project, ProjectError, open_project
 from ..procidentity import CannotConfirm, ProcessIdentity, read_identity
 from ..recover import Report as RecoveryReport
 from ..recover import inspect as inspect_recovery
 from ..storage import Store, StoreError
-from ..supervisor import StartedRun, SupervisorError, cancel_run, start_run
+from ..supervisor import SupervisorError, cancel_run
 from .plan import (
     DEFAULT_RUN_LIMIT,
     LOOPBACK_HOST,
@@ -207,10 +208,14 @@ def run_detail_view(context: Context, run_id: str) -> dict[str, Any]:
         report = context.store.load(run_id)
     except StoreError as exc:
         raise Refused(str(exc)) from exc
+    logs = (report.get("logs") or {})
     return {
         "run_id": run_id,
         "report": report,
-        "logs": _log_index(context, run_id, report),
+        # Only the streams this run actually recorded. A cancel report names no
+        # log at all, and listing one anyway would send the page looking for a
+        # file the store does not hold.
+        "logs": [stream for stream in ("stdout", "stderr") if logs.get(stream)],
     }
 
 
@@ -317,31 +322,41 @@ def plan_change_set(context: Context, name: str) -> ChangeSet:
 def run_check(context: Context, check_id: str) -> dict[str, Any]:
     """Start a registered check.
 
-    Delegates to the core's supervisor, so the console and the CLI register a
-    run, fingerprint the source and publish a report through exactly one path.
-    The core decides whether the check id exists; this does not pre-validate it,
-    because a second validator is a second opinion that can disagree.
+    Calls `execution.run_check` directly, which is the same call `vkit check run`
+    makes, so the console and the CLI register a run, fingerprint the source and
+    publish a report through exactly one path.
+
+    It deliberately does not go through `supervisor.start_run`. That function
+    registers the run itself and then calls `run_check` with the same id, which
+    the store rejects as a duplicate registration; `start_run` raises
+    `StoreError: run <id> is already registered` before any check executes. That
+    is a defect in the core, not a refusal of the request, so the console uses
+    the working path and reports it rather than wrapping a broken one.
     """
     if not check_id:
         raise Refused("a check id is required; the manifest defines the permitted ones")
 
+    if context.manifest is None:
+        raise Refused(context.manifest_error or "no manifest")
     try:
-        started: StartedRun = start_run(
-            context.project, context.store, check_id, manifest=context.manifest,
-        )
+        context.manifest.require(check_id)
     except ManifestError as exc:
         raise Refused(str(exc)) from exc
-    except SupervisorError as exc:
-        raise Refused(str(exc)) from exc
+
+    try:
+        source = compute_source_identity(context.project)
+        result = execute_check(context.manifest, check_id, store=context.store, source=source)
+    except (StoreError, OSError) as exc:
+        raise ConsoleError(f"the state store could not record the run: {exc}") from exc
     except ExecutionError as exc:
         raise ConsoleError(str(exc)) from exc
 
     return {
         "operation": "run_check",
-        "run_id": started.run_id,
+        "run_id": result.report["run_id"],
         "check_id": check_id,
-        "outcome": started.outcome.to_json(),
-        "launched": started.launched,
+        "outcome": result.outcome.to_json(),
+        "launched": result.report.get("process") is not None,
     }
 
 
@@ -392,11 +407,18 @@ def cancel_check_run(context: Context, run_id: str) -> dict[str, Any]:
         outcome, _report = cancel_run(context.store, run_id, identity=identity)
     except (StoreError, SupervisorError) as exc:
         raise Refused(str(exc)) from exc
+
+    # `cancelled` is a fact about the outcome, and the outcome is a sum type: a
+    # run that already reached PASS or FAIL has no reason at all. Reading
+    # `.reason` off it would raise instead of answering, so the verdict is
+    # carried instead, which is the same value the core published.
+    document = outcome.to_json()
     return {
         "operation": "cancel_run",
         "run_id": run_id,
-        "cancelled": outcome.reason.value == "cancelled",
-        "outcome": outcome.to_json(),
+        "cancelled": document["result"] == "BLOCKED"
+        and document.get("reason") == "cancelled",
+        "outcome": document,
     }
 
 

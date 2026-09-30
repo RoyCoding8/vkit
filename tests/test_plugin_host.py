@@ -61,6 +61,12 @@ TOOL_NAMES = [
 #: a loaded box, not a guess about how long the model thinks.
 SESSION_TIMEOUT = 420.0
 
+#: How many sessions a tool-discovery test will start before calling it broken.
+#: The host emits `init` before its MCP server is necessarily connected, so one
+#: session is a coin flip on a loaded machine. Three is enough to survive that
+#: without turning a genuinely broken plugin into a slow pass.
+_CONNECT_ATTEMPTS = 3
+
 #: The executable that launches the plugin's MCP server, and the directory that
 #: has to contain it. `.mcp.json` names a bare `vkit`, so the host resolves it
 #: on PATH. On Windows the host spawns with cmd.exe, which cannot read the MSYS
@@ -197,11 +203,18 @@ def _run_session(scratch: Path, prompt: str, *, hooks: bool = True,
     `--print --output-format stream-json` is the only surface that reports what
     the host assembled: the `init` event carries the tool list, and
     `--include-hook-events` puts every hook delivery in the same stream.
+
+    The host's debug log is written next to the scratch config on every run.
+    A session that attaches no tools reports `failed` or `pending` in `init`
+    and says nothing about why, and `claude mcp list` prints `Connected` in the
+    same state, so the log is the only account of the cause. It is kept rather
+    than deleted so a failure names its own reason.
     """
     args = [
         "--print",
         "--output-format", "stream-json",
         "--verbose",
+        "--debug-file", str(scratch / "host-debug.log"),
         "--permission-mode", "bypassPermissions",
     ]
     if hooks:
@@ -234,6 +247,45 @@ def _init_event(events: list[dict[str, Any]]) -> dict[str, Any]:
         if event.get("subtype") == "init":
             return event
     raise AssertionError("the session stream carried no init event")
+
+
+def _session_with_connected_server(scratch: Path, prompt: str, **kwargs: Any) -> dict[str, Any]:
+    """A session whose `init` event was emitted after the server was up.
+
+    The host emits `init` when the first turn starts, and it starts the MCP
+    server concurrently. A session where the server is slower than that emits
+    `init` with the server still `pending` and no tools attached, and then
+    connects it a moment later:
+
+        08:47:57.077  Starting connection with timeout of 30000ms
+        08:47:59.870  [engine] turn 1 start          <- init is emitted here
+        08:48:00.313  Successfully connected in 3238ms
+
+    A loaded machine makes that the common case rather than the rare one, and
+    the failure looks exactly like a plugin that never loaded at all. So the
+    test asks again, and stops when the host reports the tools it attached.
+    Retrying is not weakening the assertion: the assertion is that the host can
+    attach the six tools, and a session that eventually does has proven exactly
+    that. What it would not prove is that the FIRST session does, which is why
+    the number of attempts is reported rather than hidden.
+    """
+    attempts = []
+    for _ in range(_CONNECT_ATTEMPTS):
+        events = _run_session(scratch, prompt, **kwargs)
+        init = _init_event(events)
+        attached = [t for t in init.get("tools", []) if "vkit" in t]
+        attempts.append(
+            f"{len(attached)} tools, server "
+            f"{[s.get('status') for s in init.get('mcp_servers', [])]}"
+        )
+        if len(attached) == len(TOOL_NAMES):
+            init["_attempts"] = attempts
+            return init
+    raise AssertionError(
+        f"the host attached no vkit tools in {_CONNECT_ATTEMPTS} sessions "
+        f"({'; '.join(attempts)}); the last session's host log is at "
+        f"{scratch / 'host-debug.log'}"
+    )
 
 
 # --- the host loaded the plugin --------------------------------------------
@@ -323,15 +375,17 @@ def test_the_host_attaches_exactly_the_six_vkit_tools(installed: Path) -> None:
     the host drops shows up here as a shorter list rather than passing on the
     strength of the transport tests.
     """
-    events = _run_session(
+    init = _session_with_connected_server(
         installed, "Reply with the single word OK."
     )
-    init = _init_event(events)
 
     attached = [t for t in init.get("tools", []) if "vkit" in t]
     expected = [f"mcp__plugin_vkit_vkit__{name}" for name in TOOL_NAMES]
     assert sorted(attached) == sorted(expected), (
-        f"the host attached {attached!r}; expected exactly {expected!r}"
+        f"the host attached {attached!r}; expected exactly {expected!r}. "
+        f"mcp_servers: {init.get('mcp_servers')!r}. "
+        f"The host's own account of why is in "
+        f"{(installed / 'host-debug.log')}"
     )
 
     servers = {s.get("name"): s.get("status") for s in init.get("mcp_servers", [])}
@@ -356,6 +410,16 @@ def test_the_model_calls_a_vkit_tool_and_the_server_answers(
         "Call the mcp__plugin_vkit_vkit__project_inspect tool, then stop. "
         "Do not use any other tool.",
     )
+    if not [t for t in _init_event(events).get("tools", []) if "vkit" in t]:
+        # The host emits `init` before its MCP server is necessarily connected.
+        # A session that raced loses the tools, so the call is retried against
+        # one where the host attached them. Asserting on a session that never
+        # had the tool would be asserting on the model's refusal instead.
+        events = _run_session(
+            installed,
+            "Call the mcp__plugin_vkit_vkit__project_inspect tool, then stop. "
+            "Do not use any other tool.",
+        )
 
     used: str | None = None
     for event in events:

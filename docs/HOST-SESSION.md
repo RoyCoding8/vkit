@@ -263,6 +263,38 @@ event reported the same server `failed` and attached no tools. Both are the
 host's own output. That is why the tests read the `init` event and not
 `mcp list`: a health check is a different question from a session.
 
+**The host emits `init` before its MCP server is necessarily connected.** This
+one is a race, and it is the reason the tool-discovery tests start more than one
+session. The host starts the server and the first turn at the same time:
+
+```
+08:47:57.077  Starting connection with timeout of 30000ms
+08:47:59.870  [engine] turn 1 start        <- init is emitted here
+08:48:00.313  Successfully connected in 3238ms
+```
+
+A session that loses that race reports the server as `pending` and attaches no
+tools, and then connects it a moment later. The failure is indistinguishable
+from a plugin that never loaded, which is how it first presented: the six-tools
+test passed every time it ran alone and failed in the full suite, and only
+appeared as a flake because the host log was not being kept.
+
+A retry is what settles it, and it does not weaken the assertion. The claim is
+that the host can attach the six tools, and a session that eventually does has
+proven that. What it would not prove is that the first session does, so the
+number of attempts is in the failure message. Three sessions still fail against
+a server that is genuinely broken, and the two causes report differently:
+
+```
+the host attached no vkit tools in 3 sessions
+(0 tools, server ['failed']; 0 tools, server ['failed']; 0 tools, server ['failed'])
+```
+
+`failed` is a server that cannot start. `pending` is a server that started and
+was not yet connected when the session asked. Every session in this file now
+writes its host log next to the scratch config, so a failure names its own
+cause.
+
 ## What is still open
 
 The gap record, after this run:

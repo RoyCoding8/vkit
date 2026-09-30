@@ -122,13 +122,22 @@ def row_installed_package_drives_example() -> None:
     )
     shown = run("run", "show", "--project", str(repo), "--run", payload["run_id"], "--json")
     report = json.loads(shown.stdout or "{}")
+    # The row's subject is that the report carries REAL provenance: the interpreter
+    # that actually ran, and the mechanism that actually contained the process.
+    # Both are facts about the host, so the expectations are the host's own
+    # values. An earlier version asserted the literal "python" and
+    # "windows_job_object", which made this row fail on every POSIX host for a
+    # reason that had nothing to do with provenance: on POSIX the argv[0] is the
+    # venv's full path and the containment mechanism is a process group.
+    argv0 = report.get("command", {}).get("argv", [""])[0]
+    ownership = report.get("process", {}).get("ownership")
+    expected_ownership = "windows_job_object" if sys.platform == "win32" else "posix_process_group"
     check(
         "  ... with actual command provenance",
-        report.get("command", {}).get("argv", [None])[0] == "python"
+        Path(argv0).name.startswith("python")
         and bool(report.get("source", {}).get("head"))
-        and report.get("process", {}).get("ownership") == "windows_job_object",
-        f"argv0={report.get('command', {}).get('argv', ['?'])[0]} "
-        f"ownership={report.get('process', {}).get('ownership')}",
+        and ownership == expected_ownership,
+        f"argv0={argv0} ownership={ownership}",
     )
 
 

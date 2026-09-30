@@ -27,22 +27,28 @@ fi
 export PATH="$VENV/bin:$PATH"
 cd "$REPO_ROOT"
 
-# A leading `-m pytest` unless the caller named a command. Without this the
-# script ran `python tests/test_recover.py -q`, which is not a pytest
-# invocation: Python tried to import the test file as a module and pytest never
-# ran at all. It exited 0 having written nothing, which read as a passing suite
-# and was the reason the POSIX run looked like it produced no results. Measured
-# before the fix: `bash -x` showed the exec line and the run returned RC=0 with
-# an empty junit file, while the same tests through `python -m pytest` printed
-# 38 dots and a summary.
+# A leading `-m pytest` unless the caller named a runnable script.
+#
+# Without this the script ran `python tests/test_recover.py -q`, which is not a
+# pytest invocation: Python tried to import the test file as a module and pytest
+# never ran at all. It exited 0 having written nothing, which read as a passing
+# suite and was the reason the POSIX run looked like it produced no results.
+# Measured before the fix: `bash -x` showed the exec line, the run returned RC=0
+# with an empty junit file, while the same tests through `python -m pytest`
+# printed 38 dots and a summary.
+#
+# `scripts/` holds pytest files AND plain scripts. Handing a plain script to
+# pytest reports "no tests ran" and exits 5, which is a worse answer than
+# running it, so the target decides.
 if [ $# -eq 0 ]; then
     set -- tests/ -q
+elif [ -f "$1" ] && ! [[ "$1" == test_* ]] && ! [[ "$1" == tests/* ]]; then
+    set -- "$1"
 elif [ "${1#-}" = "$1" ] && [ ! -e "$1" ] && [[ "$1" != */* ]]; then
-    # A bare word with no path and no slash: treat it as a script under
-    # scripts/. The path is added here because `python -m acceptance02` does not
-    # resolve -- scripts/ is not on sys.path -- and the alternative is an error
-    # message that looks like a missing dependency.
-    set -- -m pytest "scripts/$1"
+    # A bare word with no path and no slash: a script under scripts/. `python -m
+    # acceptance02` does not resolve because scripts/ is not on sys.path, and the
+    # alternative is an error that reads like a missing dependency.
+    set -- "scripts/$1"
 else
     set -- -m pytest "$@"
 fi

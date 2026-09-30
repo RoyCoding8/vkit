@@ -16,12 +16,24 @@ mkdir -p tmp/posix-suite
 export PATH="$VENV/bin:$PATH"
 
 if [ "$#" -gt 0 ]; then
-    FILES=$(ls tests/test_$*.py 2>/dev/null)
+    # Arguments are file stems, matched as tests/test_<stem>.py. The glob needs
+    # the prefix spelled out, because `test_$*.py` would expand $1 against the
+    # filesystem and silently select nothing.
+    FILES=""
+    for stem in "$@"; do
+        match=$(ls "tests/test_${stem}.py" 2>/dev/null || true)
+        if [ -z "$match" ]; then
+            echo "no such test file: tests/test_${stem}.py" >&2
+            exit 1
+        fi
+        FILES="$FILES $match"
+    done
 else
     FILES=$(ls tests/test_*.py)
 fi
 
 total_pass=0
+failed_files=""
 died=""
 for f in $FILES; do
     name=$(basename "$f" .py)
@@ -33,20 +45,32 @@ for f in $FILES; do
         "$VENV/bin/python" -u -m pytest "$f" -q -p no:cacheprovider --tb=line \
         > "$out" 2>&1
     status=$?
-    # pytest's -q summary line ends in a count of the slowest test, so the
-    # counts are in the middle. Reading the whole line avoids a grep that
-    # silently matches nothing and reports "<no summary>" for a file that
-    # actually passed.
-    summary=$(grep -E "^[0-9]+ (passed|failed)|passed|failed" "$out" | tail -1 | cut -c1-90)
-    printf '%-34s exit=%-4s %s\n' "$name" "$status" "${summary:-<no output>}"
-    if [ "$status" -ne 0 ] && ! grep -qE "passed|failed|error" "$out"; then
+    # pytest -q writes progress dots to stdout and its summary line ("N passed,
+    # M skipped in Xs") to a separate terminal writer, which is NOT stdout when
+    # stdout is a file. So the file holds the dots and the "[100%]" marker and
+    # nothing else, and grepping it for "passed" finds nothing on a file that in
+    # fact passed. The dot line is therefore the verdict: '.' is a pass, 's' is a
+    # skip, and anything else is an F or an E.
+    flagged=$(tr -d ' \n' < "$out" | tr -cd 'FE')
+    if [ -n "$flagged" ]; then
+        verdict="FAILED (${flagged})"
+        failed_files="$failed_files $name"
+    else
+        verdict="clean"
+    fi
+    printf '%-32s exit=%-3s %s\n' "$name" "$status" "$verdict"
+    if [ "$status" -ne 0 ] && [ ! -s "$out" ]; then
         died="$died $name"
     fi
 done
 
 echo
+if [ -n "$failed_files" ]; then
+    echo "files with failures or errors:$failed_files"
+fi
 if [ -n "$died" ]; then
-    echo "files that died without any pytest summary:$died"
+    echo "files that produced NO output at all, so they died:$died"
     exit 1
 fi
-echo "every file produced a pytest summary"
+[ -n "$failed_files" ] && exit 1
+echo "no file reported a failure or an error"

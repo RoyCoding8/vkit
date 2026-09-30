@@ -283,7 +283,14 @@ def test_the_cli_and_the_wire_report_the_same_run(tmp_path: Path) -> None:
     assert report["outcome"] == run["outcome"]
     assert report["process"]["exit_code"] == 0
     assert isinstance(report["process"]["pid"], int)
-    assert report["process"]["ownership"] == "windows_job_object"
+    # The ownership value names the mechanism that contained this run, and the
+    # schema admits exactly two. The row's subject is that the CLI and the wire
+    # report the SAME run, so what matters is that both carry the value the run
+    # reported, and that it is the one this host's mechanism produces. Pinning
+    # the Windows value made the row fail wherever the other mechanism ran, which
+    # says nothing about whether the two surfaces agree.
+    expected = "windows_job_object" if sys.platform == "win32" else "posix_process_group"
+    assert report["process"]["ownership"] == expected
     assert report["process"]["timed_out"] is False
     assert report["artifacts"] == {"result": "result.json"}
 

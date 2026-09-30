@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -302,10 +303,7 @@ def test_a_missing_prerequisite_yields_blocked_with_that_reason(tmp_path: Path) 
 
     node_directories = _directories_providing("node")
     assert node_directories, "node is on PATH but no directory providing it was identified"
-    stripped = os.pathsep.join(
-        entry for entry in os.environ["PATH"].split(os.pathsep)
-        if not entry or str(Path(entry).resolve()) not in node_directories
-    )
+    stripped = _path_without("node")
     environment = {**os.environ, "PATH": stripped}
 
     # Verified the way vkit resolves it, in a fresh interpreter that has not
@@ -341,6 +339,62 @@ def _directories_providing(executable: str) -> set[str]:
         ):
             found.add(str(directory.resolve()))
     return found
+
+
+def _path_without(executable: str) -> str:
+    """A PATH from which `executable` cannot be resolved, with everything else kept.
+
+    Dropping every directory that happens to contain the executable is wrong on a
+    POSIX host, where one directory holds most of the system: removing node's
+    directory also removed git, so `vkit` failed at the repository check with
+    "not inside a Git repository (git is not installed or not on PATH)" and exited
+    2, before it ever evaluated the prerequisite this row is about. Measured on
+    WSL: exit 2 where the row expects 3.
+
+    Prepending a shim does not work either: `which` walks PATH in order, skips the
+    shim because the file is not executable, and finds the real one further along.
+    Measured: `shutil.which` still returned /usr/bin/node.
+
+    So each offending directory is rebuilt without the executable and without its
+    Windows spellings, and the rebuilt directory goes back on PATH in the original
+    position. git, the venv and everything else in a shared directory survive,
+    and the executable is gone. The row's claim is that vkit BLOCKS when a
+    prerequisite is unsatisfiable, and it can only measure that if the rest of
+    the environment still works.
+    """
+    temporary = Path(tempfile.mkdtemp(prefix="path-without-"))
+    rebuilt: list[str] = []
+    for entry in os.environ["PATH"].split(os.pathsep):
+        if not entry:
+            continue
+        directory = Path(entry)
+        if not _directories_providing_in(directory, executable):
+            rebuilt.append(str(entry))
+            continue
+        # A mirror of this directory with the executable omitted. Symlinks are
+        # copied as symlinks, so a directory of links still resolves.
+        mirror = temporary / f"d{len(rebuilt)}"
+        try:
+            mirror.mkdir()
+            for child in directory.iterdir():
+                if child.name == executable or child.stem.lower() == executable.lower():
+                    continue
+                (mirror / child.name).symlink_to(child)
+        except OSError:
+            # If the directory cannot be mirrored, drop it rather than keep the
+            # executable. That is the older behaviour, and the probe below
+            # verifies it worked.
+            continue
+        rebuilt.append(str(mirror))
+    return os.pathsep.join(rebuilt)
+
+
+def _directories_providing_in(directory: Path, executable: str) -> bool:
+    """Whether this one directory holds the named executable."""
+    return any(
+        (directory / f"{executable}{suffix}").is_file()
+        for suffix in ("", ".exe", ".cmd", ".bat", ".com")
+    )
 
 
 # --- features --------------------------------------------------------------

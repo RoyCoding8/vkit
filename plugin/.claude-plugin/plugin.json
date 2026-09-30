@@ -1,0 +1,25 @@
+{
+  "name": "vkit",
+  "displayName": "Verification Kit",
+  "version": "0.1.0",
+  "description": "Run registered repository checks and keep a durable, trustworthy outcome. Skills and hooks over the vkit core; the selected model stays a host choice.",
+  "author": {
+    "name": "Shashwata Roy"
+  },
+  "keywords": ["verification", "evidence", "checks"],
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "userConfig": {
+    "project_root": {
+      "type": "string",
+      "title": "Project root",
+      "description": "The enrolled repository this plugin operates on. Every vkit MCP tool is bound to this one root; no tool accepts a different one."
+    },
+    "python": {
+      "type": "string",
+      "title": "Python interpreter",
+      "description": "Interpreter that has vkit installed. The hooks read the store through it.",
+      "default": "python"
+    }
+  }
+}

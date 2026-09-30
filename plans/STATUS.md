@@ -1,19 +1,20 @@
 # Implementation status
 
-All plans are written. Plan 01 is implemented and verified on the host named
-below. No other milestone has begun.
+All plans are written. Plans 01, 02, 03, and 04 are implemented and verified on
+the host named below. Plans 05 through 08 have not begun, and Plan 09 has
+produced its release documentation and its pilot entry gate.
 
 | Plan | Status | Evidence |
 | --- | --- | --- |
 | 01 | Implemented and verified on Windows | 52 unit tests, 22/22 acceptance rows, `README.md` |
-| 02 | Waiting for 01 | None |
-| 03 | Waiting for 02 | None |
-| 04 | Waiting for 03 | None |
-| 05 | Waiting for 04; terminal UI assumed pending preference | None |
-| 06 | Waiting for 01; final plugin checks need 04 | None |
-| 07 | Waiting for 02, 04, 06 | None |
-| 08 | Optional; waiting for 02 | None |
-| 09 | Package checks wait for 01-07; pilot also needs repository and live-usage authorization | None |
+| 02 | Implemented; merged to master | Supervisor, claims, recovery; 234 tests pass at this revision |
+| 03 | Tool layer implemented; stdio adapter unexecuted | `src/vkit/mcp/`, six tools tested through `Server.call_tool`; GAP-1 |
+| 04 | Plugin packaged as records | `plugin/` manifest validates under `claude plugin validate --strict`; GAP-3 |
+| 05 | Waiting for the steps above; last in the build order | Not begun. GAP-5 |
+| 06 | Waiting for 01; final plugin checks need 04 | Not begun. GAP-6 |
+| 07 | Waiting for 02, 04, 06 | Not begun |
+| 08 | Optional; waiting for 02 | Not begun |
+| 09 | Release checklist and pilot gate written; release not passing its own checklist | `docs/RELEASE-CHECKLIST.md`, `docs/PILOT.md`, `tests/test_release_docs.py` |
 
 ## Build order agreed with the owner, 2026-09-29
 
@@ -114,6 +115,44 @@ has separate state, and a repository is the unit of ownership.
 
 No other public semantics changed. No caller migration is outstanding, because
 Plan 01 is the first milestone to consume these interfaces.
+
+## Plan 09 evidence
+
+Verified on Windows 11, Python 3.13.14, Git 2.54.0, Claude Code 2.1.285, at
+revision `de96390`.
+
+- `pytest tests/`: 244 passed, 1 skipped. The skip is
+  `tests/test_procidentity.py:440`, a POSIX-only case the Windows host cannot
+  exercise.
+- `scripts/acceptance.py`: 22 of 22 rows pass. GAP-7 qualifies this number.
+- `claude plugin validate --strict plugin`: validation passed.
+- `plugin/scripts/vkit_hook.py SessionStart`: emits the documented JSON
+  response, exit code 0.
+- `pip wheel . --no-deps`: built `vkit-0.1.0-py3-none-any.whl`, with the three
+  schemas present as `vkit/_schemas`.
+- `pytest tests/test_release_docs.py`: 10 passed.
+
+### The release does not pass its own checklist
+
+GAP-1 is that the `mcp` SDK is not installed on this
+host, so the stdio adapter in `src/vkit/mcp/__init__.py` has never been
+executed. GAP-2 is that the POSIX process path is untested. GAP-3 is that no
+live Claude Code host session has installed the plugin or delivered a hook.
+GAP-4 was that `build_parser()` had no `mcp serve` subcommand while
+`plugin/.mcp.json` named one. That is closed by `f45b825` and restated as the
+transport still being unexecuted.
+
+`vkit mcp serve --project . --json` now exits 0 and lists the six tools bound to
+the project, so `plugin/.mcp.json` points at a command that exists. What is
+still unexecuted is the transport: `serve_stdio` has never been driven by a
+client, so no claim of protocol compliance is made. GAP-4 is restated in those
+terms rather than deleted, because the manifest pointing at a real command is
+not the same thing as that command having run. The six MCP tools are
+implemented and covered by `tests/test_mcp.py`, which drives
+`Server.call_tool`, the same entry point an SDK adapter forwards to.
+
+`KIT_ACCEPTANCE.md`, which plan 09 asks to map row by row, is absent. See
+GAP-8 in `docs/RELEASE-CHECKLIST.md`.
 
 ## Known limits carried forward
 

@@ -189,11 +189,29 @@ class Report:
 # --------------------------------------------------------------- liveness
 
 
-def liveness(pid: int | None) -> Liveness:
+def liveness(pid: int | None, *, creation_time: int | None = None) -> Liveness:
     """Decide whether a pid is alive, dead, or beyond knowing.
 
     Getting this backwards kills a live worker, so each error case names its
     direction and the reason for it.
+
+    `creation_time` is the other half of a process identity, and passing it is
+    what makes the DEAD answer trustworthy. Windows recycles process
+    identifiers, so a pid left behind by an exited process eventually names an
+    unrelated one. Judged on the pid alone, that stranger reads DEAD or ALIVE
+    with equal confidence, and both are wrong: DEAD releases a run's claims on
+    the evidence of a process that never ran the check.
+
+    So when a creation time is supplied and the live process disagrees, the
+    answer is UNCERTAIN, never DEAD. The claim is retained and the run needs
+    reconciling, which is the direction that preserves the evidence. A pid that
+    no process carries is still DEAD, because then there is no stranger to
+    confuse it with and calling it UNCERTAIN would strand every crashed run's
+    claims forever.
+
+    Omitting `creation_time` keeps the bare-pid reading. That is correct for a
+    record that never stored an identity, and the detail string says so, because
+    a weaker answer presented as a full one is how this went wrong once already.
 
     A pid that is not a pid at all — None, zero, or negative — is UNCERTAIN. Zero
     on POSIX names a process group rather than a process, and treating it as a
@@ -229,11 +247,11 @@ def liveness(pid: int | None) -> Liveness:
             f"pid {pid!r} does not name a single process, so its liveness cannot be established",
         )
     if sys.platform == "win32":
-        return _liveness_windows(pid)
+        return _liveness_windows(pid, creation_time)
     return _liveness_posix(pid)
 
 
-def _liveness_windows(pid: int) -> Liveness:
+def _liveness_windows(pid: int, creation_time: int | None = None) -> Liveness:
     try:
         handle = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION, False, pid)
     except pywintypes.error as exc:
@@ -265,6 +283,10 @@ def _liveness_windows(pid: int) -> Liveness:
         handle.Close()
 
     if code == STILL_ACTIVE:
+        if creation_time is not None:
+            stranger = _creation_time_mismatch(pid, creation_time)
+            if stranger is not None:
+                return stranger
         return Liveness(
             LivenessState.ALIVE,
             f"pid {pid} opened and reported exit code {code} (STILL_ACTIVE), so it is still running",
@@ -274,6 +296,34 @@ def _liveness_windows(pid: int) -> Liveness:
         LivenessState.DEAD,
         f"pid {pid} opened and reported exit code {code}, so it has exited",
         exit_code=code,
+    )
+
+
+def _creation_time_mismatch(pid: int, recorded: int) -> Liveness | None:
+    """A Liveness saying the pid is a stranger, or None if the pair matches.
+
+    Reached only when a pid opened and answered, so a mismatch means the OS
+    handed this number to a different process after ours exited. That is not
+    evidence about our process at all, which is why it is UNCERTAIN rather than
+    a verdict on it.
+    """
+    from .procidentity import CannotConfirm, read_identity
+
+    try:
+        current = read_identity(pid)
+    except CannotConfirm:
+        return Liveness(
+            LivenessState.UNCERTAIN,
+            f"pid {pid} is running but its creation time cannot be read, so the "
+            "recorded identity cannot be confirmed; the claim is retained",
+        )
+    if current is None or current.creation_time == recorded:
+        return None
+    return Liveness(
+        LivenessState.UNCERTAIN,
+        f"pid {pid} is running with creation time {current.creation_time}, not the "
+        f"recorded {recorded}, so the number was recycled and this is a different "
+        "process; the claim is retained rather than released on a stranger's evidence",
     )
 
 
@@ -332,6 +382,18 @@ class _Run:
     def pid(self) -> int | None:
         pid = (self.process or {}).get("pid")
         return pid if isinstance(pid, int) else None
+
+    @property
+    def creation_time(self) -> int | None:
+        """The other half of the process identity, when the record carries one.
+
+        A run that never recorded one leaves this None and liveness falls back to
+        the bare-pid reading. Every liveness call in this module goes through
+        here rather than reaching into the dict, so a record that starts
+        carrying an identity is picked up without hunting call sites.
+        """
+        value = (self.process or {}).get("creation_time")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _read_runs(store: Store) -> tuple[_Run, ...]:
@@ -421,7 +483,7 @@ def _unfinished_run_finding(store: Store, run: _Run) -> Finding:
                 "the records, so this is reported and not acted on."
             ),
         )
-    state = liveness(run.pid)
+    state = liveness(run.pid, creation_time=run.creation_time)
     if state.state is LivenessState.ALIVE:
         return Finding(
             kind=FindingKind.RUN_LIVE_PROCESS,
@@ -473,7 +535,7 @@ def _terminal_run_findings(store: Store, run: _Run) -> list[Finding]:
             ),
         ))
     if run.pid is not None:
-        state = liveness(run.pid)
+        state = liveness(run.pid, creation_time=run.creation_time)
         if state.state is LivenessState.ALIVE:
             findings.append(Finding(
                 kind=FindingKind.RUN_TERMINAL_LIVE_PROCESS,
@@ -545,7 +607,7 @@ def _holder_liveness(runs: tuple[_Run, ...], task_id: str, generation: int) -> s
         return "No run of that task has a recorded process to check."
     parts = []
     for run in relevant:
-        state = liveness(run.pid)
+        state = liveness(run.pid, creation_time=run.creation_time)
         parts.append(f"run {run.run_id!r} is {run.lifecycle} at pid {run.pid}, {state.state.value}")
     return "; ".join(parts) + "."
 
@@ -662,7 +724,7 @@ def _live_holder(store: Store, task_id: str) -> str | None:
     for run in _read_runs(store):
         if run.task_id != task_id or run.pid is None:
             continue
-        state = liveness(run.pid)
+        state = liveness(run.pid, creation_time=run.creation_time)
         if state.state is LivenessState.ALIVE:
             return f"run {run.run_id!r} is {run.lifecycle} and its process is alive ({state.detail})"
         if state.state is LivenessState.UNCERTAIN:
@@ -710,7 +772,11 @@ def _mark_run_dead(store: Store, run_id: str, evidence: str) -> None:
                 "there is no pid whose death could be confirmed"
             )
 
-        state = liveness(pid)
+        recorded_creation_time = process.get("creation_time") if process else None
+        if not isinstance(recorded_creation_time, int) or isinstance(recorded_creation_time, bool):
+            recorded_creation_time = None
+
+        state = liveness(pid, creation_time=recorded_creation_time)
         if state.state is LivenessState.ALIVE:
             raise RecoveryRefused(
                 f"refusing to mark run {run_id!r} dead: {state.detail}. A running process is "

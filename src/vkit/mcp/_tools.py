@@ -14,9 +14,10 @@ stay in the core: this module converts arguments into core calls and core
 results into responses, and it holds no rule a second implementation could
 disagree with.
 
-**The SDK is absent from this build.** The `mcp` package is not installed, so
-`ToolSurface` is a Protocol that a real adapter can implement later rather than
-a binding that was exercised. Nothing here claims a protocol handshake happened.
+**This module knows nothing about the transport.** It imports no SDK and builds
+no protocol object, so the six tools stay testable and usable in an environment
+with no `mcp` installed. `__init__.serve_stdio` is the only binding, and it
+forwards to `Server.call_tool` below rather than reimplementing any of it.
 """
 from __future__ import annotations
 
@@ -122,10 +123,10 @@ class ToolSpec:
 class ToolSurface(Protocol):
     """What a transport must provide for a client to reach the tools.
 
-    The real `mcp` SDK adapter implements this by forwarding `list_tools` to
-    `Server.list_tools` and `call_tool` to `Server.call_tool`. Until that
-    adapter exists, `Server` is the only implementation and no protocol
-    handshake has been performed.
+    `Server` is the implementation, and `serve_stdio` binds it to the `mcp` SDK
+    by forwarding `list_tools` to `Server.list_tools` and `call_tool` to
+    `Server.call_tool`. Naming the two methods here is what keeps a second
+    transport from growing its own dispatch path.
     """
 
     def list_tools(self) -> list[ToolSpec]:

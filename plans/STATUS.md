@@ -1,20 +1,23 @@
 # Implementation status
 
-All plans are written. Plans 01, 02, 03, and 04 are implemented and verified on
-the host named below. Plans 05 through 08 have not begun, and Plan 09 has
-produced its release documentation and its pilot entry gate.
+All plans are written. Plans 01, 02, and 09 are implemented and verified on
+the host named below. Plans 03 and 04 are implemented but carry unexecuted
+paths. Plans 05, 06, 07, and 08 are in progress; the console exists but four of
+its operations refuse. Counts below are at the revision named in each row, not
+a running total — an earlier number is not evidence about a later one.
 
 | Plan | Status | Evidence |
 | --- | --- | --- |
-| 01 | Implemented and verified on Windows | 52 unit tests, 22/22 acceptance rows, `README.md` |
-| 02 | Implemented; merged to master | Supervisor, claims, recovery; 234 tests pass at this revision |
+| 01 | Implemented and verified on Windows | 22/22 acceptance rows, `README.md` |
+| 02 | Implemented; merged to master | Supervisor, claims, recovery. 14/14 acceptance rows in `scripts/acceptance02.py`, plus 17 tests over the harness itself |
 | 03 | Tool layer implemented; stdio adapter unexecuted | `src/vkit/mcp/`, six tools tested through `Server.call_tool`; GAP-1 |
 | 04 | Plugin packaged as records | `plugin/` manifest validates under `claude plugin validate --strict`; GAP-3 |
-| 05 | Waiting for the steps above; last in the build order | Not begun. GAP-5 |
-| 06 | Waiting for 01; final plugin checks need 04 | Not begun. GAP-6 |
-| 07 | Waiting for 02, 04, 06 | Not begun |
-| 08 | Optional; waiting for 02 | Not begun |
-| 09 | Release checklist and pilot gate written; release not passing its own checklist | `docs/RELEASE-CHECKLIST.md`, `docs/PILOT.md`, `tests/test_release_docs.py` |
+| 05 | Console exists as a view over the core; `install`, `repair`, `remove`, `enroll` refuse | `src/vkit/console/`. The rendered page has never been looked at; GAP-5 |
+| 06 | In progress | GAP-6 |
+| 07 | In progress | — |
+| 08 | In progress | — |
+| 09 | Release checklist and pilot gate merged; the release does not pass its own checklist | `docs/RELEASE-CHECKLIST.md`, `docs/PILOT.md`, `tests/test_release_docs.py` (10 tests) |
+
 
 ## Build order agreed with the owner, 2026-09-29
 
@@ -118,12 +121,14 @@ Plan 01 is the first milestone to consume these interfaces.
 
 ## Plan 09 evidence
 
-Verified on Windows 11, Python 3.13.14, Git 2.54.0, Claude Code 2.1.285, at
-revision `de96390`.
+Verified on Windows 11, Python 3.13.14, Git 2.54.0, Claude Code 2.1.285. The
+revision moves with each merge, so the counts below belong to the commit named
+beside them and are not a claim about a later one.
 
-- `pytest tests/`: 244 passed, 1 skipped. The skip is
+- `pytest tests/`: 244 passed, 1 skipped at the Plan 09 merge. The skip is
   `tests/test_procidentity.py:440`, a POSIX-only case the Windows host cannot
-  exercise.
+  exercise. After the two defect fixes and the acceptance-harness merge the
+  same suite is 320 passed, 1 skipped at `2199355`.
 - `scripts/acceptance.py`: 22 of 22 rows pass. GAP-7 qualifies this number.
 - `claude plugin validate --strict plugin`: validation passed.
 - `plugin/scripts/vkit_hook.py SessionStart`: emits the documented JSON
@@ -154,6 +159,37 @@ implemented and covered by `tests/test_mcp.py`, which drives
 `KIT_ACCEPTANCE.md`, which plan 09 asks to map row by row, is absent. See
 GAP-8 in `docs/RELEASE-CHECKLIST.md`.
 
+## Defects found and fixed after the plans were marked done
+
+Recorded because a status file that lists only completed work reads as a
+product with no known defects, which is the one claim this file must never make
+by omission.
+
+**Recovery judged a process by its pid alone** (`2894252`). `recover.py` asked
+`liveness(run.pid)` in five places while the run record already carried
+`creation_time` and nothing read it. `vkit/procidentity.py` documents at length
+that a pid alone cannot answer liveness, because Windows recycles process
+identifiers. A pid left behind by an exited run eventually names an unrelated
+process, and recovery read that stranger as DEAD and released the claim. That is
+two workers on one checkout. `liveness` now takes the creation time the record
+holds, and a mismatched pair reads UNCERTAIN and never DEAD, so the claim is
+retained. A pid no process carries is still DEAD, or every crashed run's claims
+would be stranded forever.
+
+The reason 295 green tests missed it: the test fixture never wrote
+`creation_time`, so every test exercised the weaker bare-pid path. A fixture
+gap, not a coverage gap.
+
+**A cancellation record with a pid but no creation time** (`7611ada`).
+`cli._identity_of` passed `recorded.get("creation_time")` into a field typed
+`int`, so a partial record produced `creation_time=None`, which fails every
+comparison in `still_the_same_process` and reported `ownership_lost` about a
+process that was genuinely ours. It failed safe, so nothing was released, but
+the report was wrong and the type contract was broken at the one boundary whose
+job is checking the record. Now refused with a message naming the actual
+defect. An audit of every other consumer of a run record's pid found
+`mcp/_tools.py` and the console already correct.
+
 ## Known limits carried forward
 
 - The POSIX process path is untested. Plan 01 was verified on Windows only, and
@@ -162,3 +198,13 @@ GAP-8 in `docs/RELEASE-CHECKLIST.md`.
   read in the active ANSI code page. A check registered as a `.cmd` under a
   non-ASCII repository path will mangle its arguments.
 - The source digest cannot detect an edit made and reverted while a check runs.
+- The check that a pid still names the same process is a read, not a hold. A
+  recycled pid can be handed out between the check and the caller's next act.
+  Cancellation that must be atomic is a job object keyed to a handle, which is
+  what `vkit.procs` creates; identity verification is what makes a reattach
+  safe to *report*, and `procidentity` says so in its own docstring.
+- There is no surviving supervisor process. `supervisor.start_run` executes in
+  the calling process and `execution.run_check` attaches the pid only after the
+  command returns, so an in-flight run names no process a second process could
+  continue. Measured as row 6 of `scripts/acceptance02.py`, not assumed.
+

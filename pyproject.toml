@@ -13,7 +13,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0"]
+
+# `vkit mcp serve` and nothing else. Pinned to the minor line because 2.x
+# rewrote the server API this binding is written against, so a 1.x pin and a
+# 2.x pin are different bindings rather than two builds of one.
+mcp = ["mcp>=2.2,<3"]
+
+# `test` also carries the SDK, because the protocol suite spawns the real
+# server and speaks JSON-RPC to it in this same environment. A test that
+# cannot reach the transport is not testing the transport.
+test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5"]
 
 [project.scripts]
 vkit = "vkit.cli:main"

@@ -21,6 +21,11 @@ plugin/hooks/hooks.json
 plugin/scripts/vkit_hook.py
 plugin/.claude-plugin/plugin.json
 
+# The MCP transport and the client that drives it over the wire. The client
+# imports neither `mcp` nor `vkit`, which is what makes it evidence.
+tests/test_mcp_stdio.py
+tests/mcp_client.py
+
 # The harness, the examples, and the acceptance walker.
 scripts/acceptance.py
 examples/python-cli
@@ -69,7 +74,7 @@ work that closes it has run and left a receipt.
 
 | Gap | What is unverified | Evidence for the claim |
 | --- | --- | --- |
-| GAP-1 | The `mcp` SDK stdio adapter has never been executed. | `import mcp` fails on this host. The adapter is `serve_stdio` in `src/vkit/mcp/__init__.py`. |
+| GAP-1 | Closed. The `mcp` SDK stdio adapter was executed. | `mcp` 2.2.0 installed and `serve_stdio` run as a real subprocess. `tests/test_mcp_stdio.py` drives it with hand-written JSON-RPC frames. |
 | GAP-2 | The POSIX process path is untested. | Verified on Windows 11 with Python 3.13.14 only. No POSIX host has run this package. |
 | GAP-3 | No live Claude Code host session has exercised the plugin. | `claude plugin validate --strict` passed. Install and hook delivery were not exercised. |
 | GAP-4 | The `mcp serve` subcommand exists but has never been run over a real transport. | `vkit mcp serve --project . --json` lists the six tools, exit 0. The command resolves; `serve_stdio` still has not been driven by a client, which is GAP-1. |
@@ -82,12 +87,15 @@ work that closes it has run and left a receipt.
 GAP-4 was a missing command and no longer is. It was the one a user would have
 hit first: `plugin/.mcp.json` starts the server with `vkit mcp serve
 --project`, and `build_parser()` had no such subcommand, so a fresh install of
-the plugin started a host that could not reach the tool surface. The executable
-the manifest named was not the executable that was built. The subcommand now
-exists and `vkit mcp serve --project . --json` lists the six bound tools, so
-the manifest points at something real. What is still unexecuted is the
-transport itself, which is GAP-1: the command resolves, and no client has
-driven it.
+the plugin started a host that could not reach the tool surface. The subcommand
+now exists, and both halves of that surface have since been exercised against
+each other, which is the receipt for GAP-1: the six tools and the stdio
+transport both run on this host.
+
+What no test here covers is the third participant. Nothing in this repository
+starts Claude Code and asks it to load the plugin, so the plugin manifest
+naming `vkit mcp serve` remains unproven as a host integration. That is GAP-3,
+and it is a different claim from the one the protocol suite makes.
 
 ## Build the artifacts
 
@@ -154,6 +162,40 @@ $ vkit doctor --project <repo>
 answer for a repository that has not enrolled a check. The exit code table is
 in `README.md`.
 
+## Verify the MCP protocol
+
+This is the step that closes GAP-1. The transport is an optional dependency, so
+the environment has to ask for it; the protocol suite then drives the shipped
+command as a subprocess.
+
+```console command
+$ <venv>/Scripts/python.exe -m pip install ".[mcp]"
+$ <venv>/Scripts/python.exe -m pytest tests/test_mcp_stdio.py
+```
+
+Observed on this host: `16 passed`. The pinned SDK is `mcp` 2.2.0, and the
+negotiated protocol version on the wire was `2025-06-18`.
+
+What that proves, and it is worth being exact about the boundary. A real client
+process, one that does not import `mcp` or `vkit`, wrote JSON-RPC frames to the
+server's stdin and read frames off its stdout. It listed the six tools, called
+all of them, drove `examples/python-cli` to `READY`, introduced a real defect and
+got `REJECTED`, and confirmed a stored `FAIL` still reads as `FAIL` on a second
+connection. It proved a malformed frame is survivable, an unknown method returns
+`-32601`, a refused request returns `isError: true` rather than a protocol error,
+an internal fault returns `-32603` with no verdict-shaped body, a killed server
+loses no evidence, a 200 KB log comes back one bounded page at a time, and a
+missing SDK exits 5 with a message naming the extra rather than hanging.
+
+What it does not prove is that Claude Code loads the plugin. That is a different
+program and a different question, and it stays GAP-3.
+
+The SDK pin matters to a reader. 2.x rewrote the server API this binding is
+written against, so a 1.x pin and a 2.x pin are different bindings rather than
+two builds of one. `pyproject.toml` names `mcp>=2.2,<3`, and a release inside
+that range has not been verified here. The protocol suite is what would catch a
+contract change rather than leaving it to a user's host.
+
 ## Verify the plugin manifest
 
 ```console command
@@ -165,8 +207,8 @@ Observed on this host: `Validation passed` for
 
 This proves the manifest parses and its fields are well formed. It does not
 prove the plugin runs. It does not start the MCP server named in
-`plugin/.mcp.json`, and it does not deliver a single hook. Those are GAP-1,
-GAP-3, and GAP-4.
+`plugin/.mcp.json`, and it does not deliver a single hook. That host question
+is GAP-3, and nothing here closes it.
 
 ## Verify the hook adapter
 
@@ -203,9 +245,9 @@ file existing.
 | --- | --- | --- |
 | Runs a registered check and records a durable outcome | verified | `scripts/acceptance.py`, 22 of 22 rows. |
 | Installs from a wheel and validates its schemas outside the source tree | verified | Wheel built and installed from this revision. |
-| Exposes six MCP tools to an agent | not verified | The tools are tested. The stdio transport is unexecuted, GAP-1. |
+| Exposes six MCP tools to an agent | verified | Six tools listed and called over real JSON-RPC frames on a real subprocess, `tests/test_mcp_stdio.py`. |
 | Installs into Claude Code as a plugin | not verified | The manifest validates. No live host session ran it, GAP-3. |
-| Supplies the plugin's MCP server | not verified | The subcommand exists and lists the six tools. No client has driven the transport, GAP-1 and GAP-4. |
+| Supplies the plugin's MCP server | not verified | The subcommand exists and speaks the protocol. No Claude Code host session has loaded it, GAP-3. |
 | Works on macOS or Linux | blocked | The POSIX path has never run, GAP-2. |
 | Enrolls a repository through a user flow | blocked | No `enroll` subcommand and no finished console, GAP-5 and GAP-6. |
 | Is ready for a pilot | blocked | See [PILOT.md](PILOT.md). |

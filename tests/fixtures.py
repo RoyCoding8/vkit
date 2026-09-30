@@ -35,6 +35,7 @@ fails everything is not a driver that discriminates.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -312,10 +313,30 @@ def policy_document(
 # ------------------------------------------------------------------ git
 
 
+#: Environment variables that let git be aimed somewhere other than the directory
+#: it is run in. `GIT_DIR` is the dangerous one: it is inherited by every child
+#: process, so an export anywhere in a test run silently redirects EVERY
+#: `git init`, `git config` and `git commit` below into whatever repository it
+#: names. That happened, and it wrote `core.worktree` into the real repository
+#: and killed git on the developer's own machine.
+#:
+#: Stripped rather than overridden. `GIT_CONFIG_GLOBAL` and friends would be a
+#: second way to be wrong, and the point of the fixture is that `git` in a
+#: throwaway directory means that directory.
+_GIT_STEERING = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
 def git(repo: Path, *args: str) -> str:
+    # Stripped, not overridden. Setting GIT_DIR to `repo/.git` looks like a
+    # stronger guarantee and is not: git then refuses operations that need a
+    # work tree ("fatal: this operation must be run in a work tree") because the
+    # variable says "this is a bare-ish git dir" rather than "this is a
+    # repository". Removing the variables lets git do its own discovery from cwd,
+    # which is the behaviour the fixture is written against.
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_STEERING}
     done = subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, encoding="utf-8",
-        errors="replace", timeout=180, check=False,
+        errors="replace", timeout=180, check=False, env=env,
     )
     if done.returncode != 0:
         detail = done.stderr.strip().splitlines()

@@ -54,8 +54,15 @@ def store(db_path: Path) -> Store:
 
 @pytest.fixture()
 def alive_pid():
-    """A real running process, killed on teardown however the test ends."""
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    """A real running process, killed on teardown however the test ends.
+
+    The sleep is long enough that a slow, loaded machine cannot run the clock out
+    during a test, and the teardown kills it whatever happens, so a failure never
+    leaves a 60-second orphan behind. The mirror of `dead_pid`'s problem -- a
+    live process that quietly exits before the assertion -- is avoided the same
+    way, by making the window generous rather than by hoping.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
     try:
         yield proc.pid
     finally:
@@ -65,24 +72,44 @@ def alive_pid():
 
 @pytest.fixture()
 def dead_pid():
-    """A real process that has exited and been reaped.
+    """A pid that has stopped answering entirely, re-proved at the moment of use.
 
-    Reaping is not by itself enough, and the distinction matters. A pid the
-    parent never opened stays openable after the parent drops it, so `kill(pid, 0)`
-    and `GetExitCodeProcess` both keep reporting on a process that no longer runs,
-    and it can hold file locks. This waits for the handle to become unopenable,
-    which is the same proof `liveness` demands before it will call a pid dead.
+    `liveness` reaches DEAD two ways and both are correct. A process that exited
+    while some handle still opens reports its real exit code; one whose object
+    has been reclaimed reports that no process carries the pid. They are
+    different facts and the callers treat them differently, so this fixture
+    waits for the second, which is the one that cannot decay: a number can be
+    recycled, but an unopenable pid has nothing to be recycled into.
+
+    Waiting for `state is DEAD` was not enough, and the tests that assert on
+    `exit_code is None` failed roughly one run in four. DEAD arrives while the
+    process object is still openable, the fixture returned on that, and the
+    assertion then met an exit code where it expected none. The state was
+    DEAD on both sides; the test was checking the stronger of two truths with a
+    fixture that only guaranteed the weaker.
+
+    A pid that flips back to openable is retired and another minted, because a
+    number that names a live process is not what this promised to hand out.
     """
-    proc = subprocess.Popen([sys.executable, "-c", "pass"])
-    proc.wait()
-    pid = proc.pid
-    del proc
-    deadline = time.time() + 15.0
+    reclaimed = "no process carries that pid"
+    deadline = time.time() + 30.0
+    attempts = 0
     while time.time() < deadline:
-        if liveness(pid).state is LivenessState.DEAD:
-            return pid
-        time.sleep(0.05)
-    raise AssertionError(f"pid {pid} never stopped answering a liveness check")
+        attempts += 1
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        pid = proc.pid
+        del proc
+        settled = time.time() + 5.0
+        while time.time() < settled:
+            verdict = liveness(pid)
+            if verdict.state is LivenessState.DEAD and reclaimed in verdict.detail:
+                return pid
+            time.sleep(0.05)
+    raise AssertionError(
+        f"no pid was fully reclaimed across {attempts} attempts in 30s; this host is "
+        "holding process objects open longer than the fixture allows"
+    )
 
 
 # ------------------------------------------------------------- independent reads

@@ -45,8 +45,18 @@ vkit = "vkit.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/vkit"]
 
+# The plugin and its marketplace declaration ship in the wheel for the same
+# reason the schemas do: they are the product's own way of running, and a user
+# who installs `vkit` away from this checkout has no other copy. They are
+# mirrored under one directory that keeps the layout the host expects, because
+# marketplace.json points at `./plugin` and a host that is handed the plugin
+# without its parent cannot resolve that. `pluginres.resolve_plugin_root`
+# reads the packaged form first and the checkout second, so this is the only
+# place the layout is described.
 [tool.hatch.build.targets.wheel.force-include]
 "schemas" = "vkit/_schemas"
+"plugin" = "vkit/_plugin_root/plugin"
+".claude-plugin" = "vkit/_plugin_root/.claude-plugin"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

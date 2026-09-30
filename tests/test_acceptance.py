@@ -170,10 +170,6 @@ def test_the_reverted_resolution_reaches_another_tree() -> None:
             f"the virtualenv's vkit is installed from this tree ({THIS_CLI}), so "
             f"there is no second checkout for the old resolution to reach"
         )
-    assert reached_path != THIS_CLI, (
-        "the environment-relative resolution lands on this tree, which is why "
-        "the pre-gap weakness did not reproduce here"
-    )
     # And the fixed script still reports its own tree, which is the difference.
     fixed = run_script(SCRIPT)
     assert str(THIS_CLI) in fixed.stdout

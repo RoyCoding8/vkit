@@ -1,0 +1,17 @@
+{
+  "status": "PASS",
+  "tool": "Lean",
+  "tool_version": "Lean (version 4.34.1, x86_64-w64-windows-gnu, commit 5045d0056413266e57c625dcd7c365b10e377c52, Release)",
+  "optional": true,
+  "module": "Acceptance.lean",
+  "module_sha256": "01b09a4792adba0be728315c2de94f7b99aa6836e0c758a68eb961eba56717da",
+  "allowed_axioms": [
+    "Classical.choice",
+    "Quot.sound",
+    "propext"
+  ],
+  "forbidden_constructs_found": [],
+  "reason": "compiled clean, no forbidden constructs, axioms within the allowed set, every #eval matched",
+  "finished_at": "2026-09-30T06:37:08.661118+00:00",
+  "scope": "The theorems hold for the Lean model in this file. They say nothing about the Python core."
+}

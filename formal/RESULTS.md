@@ -132,13 +132,73 @@ runs the named test against the copy.
 Both caught. The counterexample for the first is a task that reads
 `readiness is None` against a mutated core that leaves it READY.
 
-## Deliverable B: theorem checking. Optional. See below.
+## Deliverable B: theorem checking. OPTIONAL. Ran. PASS.
 
-The plan labels Deliverable B optional and requires it be labelled so. Lean
-4.32.2 is present on this host. The status of the Lean deliverable is recorded
-in `formal/lean/RESULTS.md`, which states plainly what compiled and what did
-not. It does not block Deliverable A, and an absent Lean blocks nothing at all:
-no ordinary verification path requires it.
+The plan labels Deliverable B optional and requires that it be labelled so.
+Lean 4.32.2 is present on this host, so the deliverable was built rather than
+skipped. It blocks nothing: an absent Lean is a BLOCKED result for this category
+and no effect at all on any other, and no ordinary verification path requires
+it.
+
+`formal/lean/Acceptance.lean`, checked by `formal/run_lean.py`.
+
+**The theorems.** `accept_correct : accept e o ctx = true ↔ AcceptsSpec e o ctx`,
+in both directions, plus `allSatisfied_correct` and `satisfies_correct`. The
+specification `AcceptsSpec` is stated by universal quantification over the
+required checks and separately requires the set to be non-empty.
+
+**Axiom audit, verbatim.**
+
+```text
+'Acceptance.satisfies_correct' depends on axioms: [propext, Quot.sound]
+'Acceptance.allSatisfied_correct' depends on axioms: [propext, Quot.sound]
+'Acceptance.accept_correct' depends on axioms: [propext, Quot.sound]
+```
+
+`Classical.choice` is not used, which is strictly better than the allowed set of
+`propext`, `Classical.choice` and `Quot.sound`. No `sorry`, no `sorryAx`, no
+custom axiom, no `opaque`, no `native_decide`.
+
+**The nine `#eval` cases, verbatim, in file order.**
+
+```text
+true false false false false true true true false
+```
+
+| Case | Result |
+| --- | --- |
+| both required checks pass under the current identity | true |
+| one required check has no record at all | false |
+| one required check passed at a stale generation | false |
+| one required check passed under a superseded revision | false |
+| the required set is empty | false |
+| a required check has a pass and a fail under one identity | true |
+| the same evidence record is listed twice | true |
+| a required check is named twice in the required set | true |
+| a required check has a recorded fail and no pass | false |
+
+**The `sorry` check was verified by injection, not assumed.** Replacing the
+proof of `accept_correct` with `sorry` makes the harness fail twice over: the
+source scan names it, and the axiom audit reports `sorryAx`. Restoring the
+proof returns it to PASS.
+
+### What this does not establish
+
+Nothing about the Python core. The theorems are about a Lean model written
+from the same documented rules, and a misunderstanding shared between that
+model and the specification would be invisible to them, exactly as it is
+invisible to the reference model in the correspondence tests. The `#eval` cases
+use the same frozen records the TLA+ model and `formal/reference.py` use, and
+agreeing on nine cases is a countercheck of nine decisions, not a proof that
+the two agree everywhere.
+
+The duplicate-evidence policy is stated explicitly in the module, and it is
+existential: one matching pass satisfies a required check and a conflicting
+`fail` under the same identity does not veto it. That policy has no recency
+rule, and the Python core does have one: `compute_readiness` takes the most
+recent terminal run per check. On a check re-run under one identity the two
+answer different questions, and that divergence is recorded in the module
+rather than left for the counterchecks to paper over.
 
 ## A finding about the core, not a test failure
 
@@ -177,23 +237,30 @@ The strongest accurate sentence is:
 
 > The ownership and acceptance rules behaved correctly on every case the test
 > suite runs, agreed with an independent reference model over 200 generated
-> operation sequences, and satisfied five safety properties in every one of the
+> operation sequences, satisfied five safety properties in every one of the
 > 207,360 reachable states of a finite model of them at a recorded
 > configuration of two owners, two resources, two checks, two revisions and
-> two generations.
+> two generations, and were shown equivalent to a universally quantified
+> specification in a separate Lean model whose theorems depend on no axiom
+> outside Lean's standard three.
 
-"Formally verified" is not available and is not claimed.
+"Formally verified" is not available and is not claimed. Each sentence above
+names its category: scenario, property, finite model checking, and theorem
+checking, in the four categories `src/vkit/claimkind.py` defines. They do not
+carry the same weight, and a generic PASS over all four is the thing this plan
+exists to prevent.
 
 ## Ordinary verification does not need any of this
 
-Neither `formal/run_tlc.py` nor `formal/run_mutants.py` nor
+None of `formal/run_tlc.py`, `formal/run_mutants.py`, `formal/run_lean.py` or
 `formal/run_python_mutants.py` downloads anything. They look for a JRE and a
-`tla2tools.jar` the operator has already placed under `tmp/formal-tools/`, and
-report BLOCKED when they are absent. `tmp/` is gitignored, so no toolchain is
-committed. No hook and no ordinary MCP check call reaches this code, which is
-what CONTRACT.md requires.
+`tla2tools.jar` the operator has already placed under `tmp/formal-tools/`, or
+for a Lean already on the host, and report BLOCKED when they are absent.
+`tmp/` is gitignored, so no toolchain is committed. No hook and no ordinary MCP
+check call reaches this code, which is what CONTRACT.md requires.
 
 An absent toolchain is a BLOCKED result for its own category and no effect at
-all on any other. `python -m pytest` does not import `formal/` and does not
-need Lean, Java, or Hypothesis for anything except the correspondence tests,
-which skip cleanly if Hypothesis is missing.
+all on any other. `python -m pytest` does not import `formal/`, and the
+correspondence tests skip cleanly without Hypothesis, which
+`tests/test_optional_toolchain.py` checks by actually hiding the package and
+asserting the skip rather than trusting it.

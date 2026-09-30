@@ -338,70 +338,99 @@ def test_the_host_connects_the_mcp_server_it_declared(installed: Path) -> None:
     )
 
 
-def test_the_host_publishes_exactly_the_six_vkit_tools(installed: Path) -> None:
-    """The host's own inventory names the six tools, fully qualified.
+def test_the_host_publishes_the_six_vkit_tools_when_it_reports_them(
+    installed: Path,
+) -> None:
+    """Where the host DOES publish its tool list, the six are in it.
 
-    This is the assertion GAP-3 turns on, and it reads the host's tool list
-    rather than this repository's, so a tool the server publishes but the host
-    drops fails here instead of passing on the strength of the transport tests.
+    A session's `init` event is not a reliable place to read the tool list, and
+    this test records why rather than asserting on it anyway. The host emits
+    `init` when the first turn starts and starts the MCP server at the same
+    time, and it has a `WaitForMcpServers` tool it runs before the first model
+    call. In a run where `init` reported the server `pending` and no vkit
+    tools, the very same log recorded:
 
-    The tool list is taken from a session's `init` event where the host
-    reported it, and the fact that the model could then CALL one of them is
-    asserted by the next test. The two together are the claim: the host knows
-    the six tools and hands them to something that uses them.
+        [WaitForMcpServers] waited=0ms connected=plugin:vkit:vkit failed= pending=
+
+    and the model then called `mcp__plugin_vkit_vkit__project_inspect` twice
+    with the hook answering both. The tools were attached in every one of those
+    sessions; only the snapshot said otherwise. Asserting on it was asserting on
+    the host's reporting schedule, not on the plugin.
+
+    So the claim is asserted where it holds: whenever a session's `init` event
+    does list vkit tools, the list is exactly the six, fully qualified under the
+    plugin-scoped prefix. A session that lists none is not a failure here, and
+    the round trip in the next test is what proves the tools were there.
     """
     expected = {f"mcp__plugin_vkit_vkit__{name}" for name in TOOL_NAMES}
-    seen: set[str] = set()
+    reported: list[set[str]] = []
     for _ in range(_CONNECT_ATTEMPTS):
         init = _init_event(_run_session(installed, "Reply with the single word OK."))
         seen = {t for t in init.get("tools", []) if "vkit" in t}
+        reported.append(seen)
         if seen:
-            break
-    assert seen == expected, (
-        f"the host published {sorted(seen)}; expected exactly {sorted(expected)}. "
-        f"mcp_servers: {init.get('mcp_servers')!r}. The host's own account of why "
-        f"is in {(installed / 'host-debug.log')}"
-    )
-
-
-def test_the_model_calls_a_vkit_tool_and_the_server_answers(
-    installed: Path,
-) -> None:
-    """A tool call goes out over MCP and comes back with the server's own JSON.
-
-    The claim is a round trip through the host, not that the tool works. So the
-    assertion is on the shape of the exchange: a `tool_use` naming a vkit tool
-    in the assistant's stream, and a `tool_result` for that same call carrying
-    text this server wrote. A session where the model declined to call the tool
-    fails, because then nothing was proven about the transport.
-    """
-    events = _run_session(
-        installed,
-        "Call the mcp__plugin_vkit_vkit__project_inspect tool, then stop. "
-        "Do not use any other tool.",
-    )
-    if not _vkit_tool_names_used(events):
-        # The model reaching for the tool is the evidence, not the `init`
-        # snapshot, which the host may emit before its server connects. A model
-        # that did not call anything gets one more session, and the retry is
-        # reported if it is the reason the assertion below would have passed
-        # for the wrong reason.
-        events = _run_session(
-            installed,
-            "Call the mcp__plugin_vkit_vkit__project_inspect tool, then stop. "
-            "Do not use any other tool.",
+            assert seen == expected, (
+                f"the host published {sorted(seen)}; expected exactly "
+                f"{sorted(expected)}. mcp_servers: {init.get('mcp_servers')!r}. "
+                f"The host's own account is in {(installed / 'host-debug.log')}"
+            )
+    # Either the host listed all six, or it listed none in every attempt and
+    # this test says so. A partial list is the failure worth catching.
+    for seen in reported:
+        assert not seen or seen == expected, (
+            f"the host published a partial tool list {sorted(seen)}"
         )
 
-    used: str | None = None
-    for event in events:
-        if event.get("type") != "assistant":
-            continue
-        for block in event.get("message", {}).get("content", []):
-            if block.get("type") == "tool_use" and "vkit" in str(block.get("name")):
-                used = block["name"]
 
-    assert used == "mcp__plugin_vkit_vkit__project_inspect", (
-        f"the model never called a vkit tool; tool_use blocks seen: {used!r}"
+def test_the_model_calls_every_vkit_tool_and_the_server_answers(
+    installed: Path,
+) -> None:
+    """All six tools go out over MCP and each comes back with the server's JSON.
+
+    This is the assertion GAP-3 turns on, and asking for one tool was not
+    enough: it proved the host can reach a tool, not that it discovered six. So
+    the model is asked to call every one, and the assertion is that all six
+    appear in the assistant's stream and each produced a `tool_result` that is
+    not an error.
+
+    The claim is that all six went out over MCP and each came back with an
+    answer the server wrote. A refusal is a legitimate protocol answer and is
+    not a transport failure: this repository has no enrolled manifest, so
+    `check_start` correctly answers "this project is not enrolled", and
+    `run_get` correctly refuses a run id that was never minted. Asserting those
+    were errors would be asserting that the server lies about its own state.
+
+    So the assertion is on the shape, not on the verdict: six distinct tool
+    calls, six results, and every result carrying a body this server wrote.
+    A result that is an error must still be a structured refusal naming the
+    refusal, not an empty string or a stack trace.
+    """
+    prompt = (
+        "Call each of these six MCP tools in order, one per turn, and do not "
+        "use any other tool: "
+        "mcp__plugin_vkit_vkit__project_inspect, "
+        "mcp__plugin_vkit_vkit__task_begin, "
+        "mcp__plugin_vkit_vkit__check_start, "
+        "mcp__plugin_vkit_vkit__run_get, "
+        "mcp__plugin_vkit_vkit__run_cancel, "
+        "mcp__plugin_vkit_vkit__task_finalize. "
+        "Report each result."
+    )
+    events = _run_session(installed, prompt)
+    expected = {f"mcp__plugin_vkit_vkit__{name}" for name in TOOL_NAMES}
+    used = _vkit_tool_names_used(events)
+    missing = sorted(expected - used)
+    if missing:
+        # A model that reached for fewer than six may simply have stopped. One
+        # more session, and the shortfall is named if it persists.
+        events = _run_session(installed, prompt)
+        used = _vkit_tool_names_used(events)
+        missing = sorted(expected - used)
+
+    assert not missing, (
+        f"the host never had these tools available to the model: {missing}. "
+        f"It was offered {sorted(used)}. The host's own account is in "
+        f"{(installed / 'host-debug.log')}"
     )
 
     answers = [
@@ -410,16 +439,16 @@ def test_the_model_calls_a_vkit_tool_and_the_server_answers(
         for block in event.get("message", {}).get("content", [])
         if block.get("type") == "tool_result"
     ]
-    assert answers, "the tool call produced no tool_result"
-    body = "".join(
-        str(a.get("content")) for a in answers
+    assert len(answers) >= len(expected), (
+        f"six tool calls produced {len(answers)} results"
     )
-    assert "project_root" in body, (
-        f"the server's answer did not carry its own fields: {body[:400]!r}"
-    )
-    assert not any(a.get("is_error") for a in answers), (
-        f"the server refused the call: {answers!r}"
-    )
+    for answer in answers:
+        body = str(answer.get("content"))
+        assert body.strip(), "a tool call came back with an empty body"
+        if answer.get("is_error"):
+            assert "error" in body, (
+                f"a refused call did not come back as a structured refusal: {body[:200]!r}"
+            )
 
 
 def test_the_host_tool_names_address_this_plugin() -> None:

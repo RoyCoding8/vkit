@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import http.client
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -489,3 +490,58 @@ def test_the_script_sends_the_token_the_page_carries(console: Console) -> None:
     assert f'<meta name="vkit-token" content="{console.token}">' in page
     assert 'meta[name="vkit-token"]' in script
     assert api.TOKEN_HEADER in script
+
+def test_a_refusal_arrives_even_though_its_body_was_never_read(console: Console) -> None:
+    """The 413 survives the close that sends it.
+
+    A refusal reads no body, so the peer's bytes are still queued when the
+    server closes. Windows answers that with a reset rather than a FIN, and a
+    reset discards the response already buffered for the peer — the client sees
+    a dead socket instead of the reason it was refused. It cost roughly one
+    request in three, so a single exchange is not a test: this sends the same
+    refusal several times with the read deliberately late, which is the window
+    the reset used to land in.
+
+    Without the drain this fails within a few dozen attempts; with it, every
+    attempt gets the same answer. Six was not enough to be a test — the reset
+    landed on roughly a quarter of exchanges, so six attempts would have missed
+    it about four times in five — so the count here is set to make missing it
+    unlikely rather than merely possible.
+    """
+    oversized = b"x" * (api.MAX_BODY_BYTES + 1)
+    for attempt in range(40):
+        conn = http.client.HTTPConnection("127.0.0.1", console.port, timeout=5)
+        try:
+            conn.request("POST", "/api/run_check?check_id=totals-behavior",
+                         body=oversized, headers=console.headers())
+            time.sleep(0.2)  # the server has refused and closed before this read
+            response = conn.getresponse()
+            assert response.status == 413, f"attempt {attempt} got {response.status}"
+            assert json.loads(response.read().decode("utf-8")) == {
+                "error": f"body above {api.MAX_BODY_BYTES} bytes; "
+                         "send arguments in the query string"
+            }
+        finally:
+            conn.close()
+    assert console.dispatched == []
+
+
+def test_a_body_already_read_is_not_read_a_second_time(console: Console) -> None:
+    """A refusal raised after the body was consumed must not wait for more.
+
+    The malformed-body cases are refused by the parser, which runs only after
+    the length is bounded and the bytes are in hand. Draining those would block
+    on a peer that has nothing left to send, so the refusal is written straight
+    away — and the point of this test is that the answer is prompt, not merely
+    eventually correct.
+    """
+    started = time.monotonic()
+    status, document, _ = _wire(
+        console, "POST", "/api/run_check?check_id=totals-behavior",
+        headers=console.headers(), body=b"not json at all",
+    )
+    elapsed = time.monotonic() - started
+    assert status == 400
+    assert "error" in document
+    assert elapsed < 1.0, f"the refusal waited {elapsed:.2f}s on a body it had read"
+    assert console.dispatched == []

@@ -37,10 +37,22 @@ group. No POSIX signal can reach it afterwards. This code does not claim
 containment past that point, and nothing here should be read as saying
 otherwise.
 
-**The POSIX path is UNTESTED.** It was written from the documented semantics of
-`os.setsid`, `os.killpg` and `start_new_session`. The host for this milestone is
-Windows and no POSIX test was run. Plan 01 declares an untested other OS as a
-release limitation. Do not read this as verified.
+**The POSIX path is tested, on a real POSIX host.** Measured on WSL2 Ubuntu
+26.04, kernel 6.18.33.2-microsoft-standard-WSL2, by scripts/measure_posix_group.py
+and by tests/test_procs_posix_real.py, which runs this module's public function
+with nothing stubbed. A 1.5-second timeout against a three-level tree killed the
+child, the grandchild and the great-grandchild, each of which was confirmed dead
+from outside the group, and a walk of /proc found no survivor in the group. The
+run reported `posix_process_group`, `timed_out=True`, and `exit_code=-9`, which
+is the SIGKILL this module sent.
+
+What is still NOT provided, and is a limitation of POSIX rather than of this
+code, is the property the job object gives for free. A Windows tree cannot
+outlive the handle that owns it, because closing the last handle is a kill. A
+process group is a set of pids the kernel keeps after its leader is gone. Measured
+in scripts/measure_supervisor_death.py: a descendant in its own session was still
+running after its owner was SIGKILLed. `vkit.supervisor.terminate_owned_tree`
+refuses on POSIX for that reason and says so.
 """
 from __future__ import annotations
 

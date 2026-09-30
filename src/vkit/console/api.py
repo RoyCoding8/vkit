@@ -62,7 +62,7 @@ ROUTES: dict[str, Callable[[Context, Mapping[str, Any]], Any]] = {
 #: The only request parameters any route reads. None of them is a path, so no
 #: request can name a file the console would then act on.
 PARAM_NAMES: frozenset[str] = frozenset({
-    "limit", "run_id", "check_id", "stream", "max_bytes", "operation",
+    "limit", "run_id", "check_id", "stream", "max_bytes", "operation", "scope", "accepted",
 })
 
 
@@ -71,7 +71,9 @@ def _apply(context: Context, query: Mapping[str, Any]) -> dict[str, Any]:
 
     The lookup is through `operations.OPERATIONS`, whose keys are asserted equal
     to the writable list in a test, so this cannot reach a function that is not
-    on the surface.
+    on the surface. Arguments are coerced to the types the operation declares, so
+    `accepted=true` arrives as a boolean rather than the string "true", which is
+    truthy for `accepted=false` and would enroll a repository nobody accepted.
     """
     name = _text_param(query, "operation")
     handler = operations.OPERATIONS.get(name)
@@ -80,12 +82,36 @@ def _apply(context: Context, query: Mapping[str, Any]) -> dict[str, Any]:
             f"unknown operation {name!r}; the writable surface is: "
             f"{', '.join(sorted(operations.OPERATIONS))}"
         )
-    result = handler(context, **{k: v for k, v in query.items() if k != "operation"})
+    arguments: dict[str, Any] = {}
+    if "scope" in query:
+        arguments["scope"] = _text_param(query, "scope")
+    if "accepted" in query:
+        arguments["accepted"] = _bool_param(query, "accepted")
+    result = handler(context, **arguments)
     return {"operation": name, "result": result}
 
 
 class BadRequest(Exception):
     """The request was malformed. Never about whether the operation is permitted."""
+
+
+def _bool_param(query: Mapping[str, Any], name: str) -> bool:
+    """A boolean from a query string or a JSON body.
+
+    Only the two literals the page sends are accepted. `bool("false")` is True,
+    so anything that stringifies into truthiness would let a caller asking for
+    "false" get "true"; that is the whole reason this is a fixed table.
+    """
+    raw = query.get(name)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in ("true", "1"):
+            return True
+        if lowered in ("false", "0", ""):
+            return False
+    raise BadRequest(f"{name} must be true or false, got {raw!r}")
 
 
 def _text_param(query: Mapping[str, Any], name: str, default: str | None = None) -> str:
@@ -161,9 +187,11 @@ def parse_query(raw: str) -> dict[str, str]:
 def parse_body(raw: bytes) -> dict[str, Any]:
     """Decode a JSON object body, or refuse.
 
-    A body is optional for the read routes and meaningless for the write ones,
-    which take their arguments from the query so that a refused mutation is
-    reproducible from the URL in a test.
+    A body is optional for the read routes and optional for the write ones,
+    which also take their arguments from the query so that a refused mutation is
+    reproducible from the URL in a test. A body value is passed through with its
+    JSON type intact, because `accepted=false` has to stay false: a body coerced
+    to strings would make it truthy and enroll a repository nobody accepted.
     """
     if not raw:
         return {}

@@ -11,6 +11,7 @@
   --fail: #b3341f;
   --blocked: #8a6a12;
   --accent: #2b5fa8;
+  --focus: #2b5fa8;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -23,6 +24,7 @@
     --fail: #ef8070;
     --blocked: #d9b45c;
     --accent: #7aa8e8;
+    --focus: #7aa8e8;
   }
 }
 * { box-sizing: border-box; }
@@ -36,7 +38,14 @@ header { padding: 20px 24px 12px; border-bottom: 1px solid var(--line); }
 h1 { margin: 0; font-size: 19px; letter-spacing: -0.01em; }
 h2 { margin: 0 0 4px; font-size: 15px; }
 .sub, .note { margin: 4px 0 0; color: var(--dim); font-size: 12.5px; }
-nav { display: flex; gap: 2px; padding: 8px 24px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+code {
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 0.94em;
+}
+nav {
+  display: flex; gap: 2px; padding: 8px 24px 0;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap;
+}
 nav button {
   background: none; border: 1px solid transparent; border-bottom: none;
   padding: 6px 12px; color: var(--dim); cursor: pointer; font: inherit;
@@ -46,6 +55,15 @@ nav button:hover { color: var(--ink); }
 nav button.on {
   color: var(--ink); background: var(--panel);
   border-color: var(--line); border-bottom: 1px solid var(--panel); margin-bottom: -1px;
+}
+/* Keyboard focus has to be visible. The UA default is removed by several resets
+   and nothing here replaced it, so every focusable control draws its own ring
+   against both schemes. `:focus-visible` keeps it off mouse clicks, which is
+   what the operator expects from a dense table. */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 main { padding: 20px 24px 60px; max-width: 1100px; }
 .view { display: none; }
@@ -62,27 +80,56 @@ input, select, button.act {
   border: 1px solid var(--line); background: var(--panel); color: var(--ink);
 }
 input[type=number] { width: 72px; }
+#refresh-runs {
+  font: inherit; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+}
 button.act { cursor: pointer; }
-button.act:hover { border-color: var(--accent); color: var(--accent); }
-button.act[disabled] { opacity: 0.45; cursor: not-allowed; }
+button.act:hover:not([disabled]) { border-color: var(--accent); color: var(--accent); }
+button.act[disabled], #refresh-runs[disabled] { opacity: 0.45; cursor: not-allowed; }
+button.act[aria-busy="true"] { cursor: progress; }
+
+/* A table that is wider than the viewport has to scroll, not push the page
+   sideways. Without this the whole document scrolls horizontally and the header
+   and nav slide out from under the reader. */
+.tablewrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--dim); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
 td.mono, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace; font-size: 12.5px; }
 .verdict { font-weight: 600; }
+/* A status word is one token. Letting it wrap made "not implemented" break over
+   two lines and the column read as two separate values. */
+.verdict, .PASS, .FAIL, .BLOCKED, .pill { white-space: nowrap; }
 .PASS { color: var(--pass); }
 .FAIL { color: var(--fail); }
 .BLOCKED { color: var(--blocked); }
 .missing { color: var(--dim); font-style: italic; }
+td.actions { white-space: nowrap; }
+td.actions button + button { margin-left: 4px; }
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid currentColor; font-size: 12px; font-weight: 600;
+}
+.pill.yes { color: var(--pass); }
+.pill.no { color: var(--dim); }
 .refusal {
   border-left: 3px solid var(--fail); background: color-mix(in srgb, var(--fail) 8%, var(--panel));
   padding: 10px 12px; border-radius: 0 6px 6px 0; margin: 10px 0;
 }
+/* A gap in the build is not the same event as the core declining. They were
+   both drawn in the failure colour, which read as "this refused" when the truth
+   was "this does not exist yet". */
+.refusal.gap { border-left-color: var(--blocked); background: color-mix(in srgb, var(--blocked) 8%, var(--panel)); }
 .refusal .why { font-weight: 600; }
-.refusal .core { color: var(--dim); margin-top: 4px; }
+.refusal .core { color: var(--dim); margin-top: 4px; white-space: pre-wrap; }
+.note.ok { color: var(--pass); white-space: pre-wrap; }
+.outcome { margin-top: 6px; }
+.policy { margin: 6px 0; padding-left: 18px; }
+.policy li { margin-bottom: 4px; }
 .kv { display: grid; grid-template-columns: 180px 1fr; gap: 4px 12px; }
 .kv dt { color: var(--dim); }
-.kv dd { margin: 0; }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
 pre.log {
   background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
   padding: 10px; max-height: 380px; overflow: auto; white-space: pre-wrap;
@@ -90,9 +137,18 @@ pre.log {
 }
 .trunc { color: var(--dim); font-size: 12px; margin: 6px 0 0; }
 #toast {
-  position: fixed; right: 18px; bottom: 18px; max-width: 460px;
+  position: fixed; right: 18px; bottom: 18px; max-width: min(460px, calc(100vw - 36px));
   background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
   border-radius: 8px; padding: 10px 14px; box-shadow: 0 6px 24px rgba(0,0,0,0.18);
   white-space: pre-wrap;
 }
 #toast.bad { border-left-color: var(--fail); }
+
+@media (max-width: 720px) {
+  header, nav, main { padding-left: 14px; padding-right: 14px; }
+  /* A 180px label column left almost nothing for the value at this width, so
+     the long paths wrapped one character per line. Stacking is readable; a
+     crushed two-column grid is not. */
+  .kv { grid-template-columns: 1fr; gap: 0 0; }
+  .kv dt { margin-top: 8px; }
+}

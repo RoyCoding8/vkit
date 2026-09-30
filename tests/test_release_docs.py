@@ -70,7 +70,7 @@ GAPS: list[tuple[str, tuple[str, ...]]] = [
     ("GAP-1", ("mcp", "SDK", "unexecuted")),
     ("GAP-2", ("POSIX", "Windows", "unverified")),
     ("GAP-3", ("validate", "host session")),
-    ("GAP-4", ("mcp serve", "build_parser")),
+    ("GAP-4", ("mcp serve", "serve_stdio")),
     ("GAP-5", ("console", "Plan 05")),
     ("GAP-6", ("enroll", "integration verify")),
     ("GAP-7", ("acceptance.py", "editable install")),
@@ -80,7 +80,13 @@ GAPS: list[tuple[str, tuple[str, ...]]] = [
 
 # Commands named in prose as missing. Listing one of these as a runnable step
 # would be the exact failure this file exists to prevent.
-ABSENT_COMMANDS = ("mcp serve", "hook", "task begin", "setup")
+#
+# "mcp serve" is deliberately absent from this list. It was here while the
+# subcommand did not exist, and the check passed while the plugin shipped a
+# config pointing at nothing. A command whose existence has changed must be
+# removed from the list, not left behind by a stale entry: the test would
+# otherwise go on defending a falsehood.
+ABSENT_COMMANDS = ("hook", "task begin", "setup")
 
 
 # --------------------------------------------------------------------- reading

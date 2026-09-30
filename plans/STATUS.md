@@ -134,18 +134,22 @@ revision `de96390`.
 
 ### The release does not pass its own checklist
 
-Four gaps are blockers. GAP-1 is that the `mcp` SDK is not installed on this
+GAP-1 is that the `mcp` SDK is not installed on this
 host, so the stdio adapter in `src/vkit/mcp/__init__.py` has never been
 executed. GAP-2 is that the POSIX process path is untested. GAP-3 is that no
 live Claude Code host session has installed the plugin or delivered a hook.
-GAP-4 is that `plugin/.mcp.json` starts `vkit mcp serve`, and `build_parser()`
-at this revision defines `doctor`, `check run`, and `run show` only.
+GAP-4 was that `build_parser()` had no `mcp serve` subcommand while
+`plugin/.mcp.json` named one. That is closed by `f45b825` and restated as the
+transport still being unexecuted.
 
-`vkit mcp serve --project .` exits 2 with
-`invalid choice: 'mcp'`. The six MCP tools are implemented and covered by
-`tests/test_mcp.py`, which drives `Server.call_tool`, the same entry point an
-SDK adapter forwards to. What is unexecuted is the transport, so no claim of
-protocol compliance is made.
+`vkit mcp serve --project . --json` now exits 0 and lists the six tools bound to
+the project, so `plugin/.mcp.json` points at a command that exists. What is
+still unexecuted is the transport: `serve_stdio` has never been driven by a
+client, so no claim of protocol compliance is made. GAP-4 is restated in those
+terms rather than deleted, because the manifest pointing at a real command is
+not the same thing as that command having run. The six MCP tools are
+implemented and covered by `tests/test_mcp.py`, which drives
+`Server.call_tool`, the same entry point an SDK adapter forwards to.
 
 `KIT_ACCEPTANCE.md`, which plan 09 asks to map row by row, is absent. See
 GAP-8 in `docs/RELEASE-CHECKLIST.md`.

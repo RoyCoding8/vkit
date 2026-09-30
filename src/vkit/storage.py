@@ -302,6 +302,31 @@ class Store:
                 (task_id, attempt, run_id),
             )
 
+    def attach_job_name(self, run_id: str, job_name: str) -> None:
+        """Name the job object that owns this run's tree.
+
+        Written beside the process record rather than inside the report, because
+        the report is already published by the time a caller knows which process
+        ran the check. The two are read together when a second process cancels
+        the run, so the name has to live where that read happens.
+        """
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT process_json FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise StoreError(f"cannot attach a job name: run {run_id} is unknown")
+            process = json.loads(row[0]) if row[0] else {}
+            if not process.get("pid"):
+                raise StoreError(
+                    f"cannot attach a job name to run {run_id}: it records no process"
+                )
+            process["job_name"] = job_name
+            conn.execute(
+                "UPDATE runs SET process_json = ? WHERE run_id = ?",
+                (_dumps(process), run_id),
+            )
+
     def publish(self, run_id: str, report: dict) -> None:
         """Put the report where a reader expects it, atomically, and exactly once.
 

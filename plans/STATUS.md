@@ -11,7 +11,7 @@ a running total — an earlier number is not evidence about a later one.
 | 01 | Implemented and verified on Windows | 22/22 acceptance rows, `README.md` |
 | 02 | Implemented; merged to master | Supervisor, claims, recovery. 14/14 acceptance rows in `scripts/acceptance02.py`, plus 17 tests over the harness itself |
 | 03 | Tool layer implemented; stdio transport verified on the wire | `src/vkit/mcp/`, six tools through `Server.call_tool` plus 23 protocol tests driving a real subprocess; GAP-1 closed |
-| 04 | Plugin packaged as records | `plugin/` manifest validates under `claude plugin validate --strict`; GAP-3 |
+| 04 | Plugin installed and driven in a real Claude Code host | `docs/HOST-SESSION.md` transcript, 16 host tests against a scratch config; GAP-3 closed |
 | 05 | Console exists as a view over the core; `install`, `repair`, `remove`, `enroll` refuse | `src/vkit/console/`. The rendered page has never been looked at; GAP-5 |
 | 06 | In progress | GAP-6 |
 | 07 | In progress | — |
@@ -159,15 +159,28 @@ The binding was wrong and not merely untested. The code assumed a decorator API
 that `mcp` 2.x removed in a rewrite, so `serve_stdio` would not have imported at
 all. It was rewritten against the real API rather than the test weakened.
 
-GAP-2 is that the POSIX process path is untested. GAP-3 is that no live Claude
-Code host session has installed the plugin or delivered a hook — a different
+GAP-2 is that the POSIX process path is untested. GAP-3 was that no live Claude
+Code host session had installed the plugin or delivered a hook — a different
 program from an MCP client that agrees with the server, so GAP-1 being closed
-says nothing about it. GAP-4 was that `build_parser()` had no `mcp serve`
+said nothing about it. GAP-3 is now closed for the three surfaces it named:
+`docs/HOST-SESSION.md` is the verbatim transcript of a real Claude Code
+2.1.285 host installing the plugin, attaching all six tools, and delivering
+SessionStart, PreToolUse and Stop. `tests/test_host_session_doc.py` checks that
+transcript against the code, so a record that drifts fails rather than reading
+as a run someone did. GAP-4 was that `build_parser()` had no `mcp serve`
 subcommand while `plugin/.mcp.json` named one, closed by `f45b825`.
 
 `vkit mcp serve --project . --json` exits 0 and lists the six tools bound to the
-project, and the transport runs. Neither claim is a claim that Claude Code
-loads the plugin: that is GAP-3, and it stays open.
+project, the transport runs, and a real host now attaches all six. Still not
+claimed anywhere: a subagent inheriting tool access, and a BLOCKED run actually
+blocking a turn. Both need their own live sessions.
+
+Three host behaviours are recorded because each silently disables something.
+Installing without `--config` attaches zero tools and reports only `pending`.
+`claude mcp list` can print `Status: Connected` while a real session's `init`
+reports the same server `failed`, which is why the tests read `init`. And `PATH`
+must be in the form `cmd.exe` reads, since Git Bash exports `/d/...` and
+`cmd.exe` does not search it.
 
 `mcp` is a pinned optional extra rather than an install requirement, because the
 six tools are useful without a transport and a missing optional package must not

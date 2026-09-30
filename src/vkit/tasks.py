@@ -213,18 +213,26 @@ def compute_readiness(
         if run["lifecycle"] == "terminal" and run["result"]:
             by_check.setdefault(run["check_id"], []).append(run)
 
-    # A run counts as evidence for this attempt only if it belongs to this
-    # attempt. `supersede_task` advances the generation to invalidate the
+    # A run counts as PASSING evidence for this attempt only if it belongs to
+    # this attempt. `supersede_task` advances the generation to invalidate the
     # previous attempt's authority, and a retry is a new run linked to its
     # predecessor rather than a continuation of it. Without this filter a
     # reassigned task was handed its own READY: generation 2 had produced no
     # runs at all and inherited every pass from generation 1.
     #
+    # A stale run still counts as a FAILURE. CONTRACT says to preserve the
+    # original failure, flag the instability, and never overwrite it with the
+    # later pass. A first draft filtered stale runs out entirely, which is the
+    # blunt reading, and the property test caught it on its first ever
+    # execution: `record FAIL` then `crash` reported BLOCKED where the answer is
+    # REJECTED. A superseded attempt's failure is still a failure, and a retry
+    # that has not yet re-run the check is not a repair of it.
+    #
     # A run recorded before attempts existed carries no attempt number. CONTRACT
     # says such a report stays readable as standalone evidence and that migration
-    # must not invent task acceptance for it, so it is excluded from acceptance
-    # rather than assumed to belong to whichever generation is current now.
+    # must not invent task acceptance for it, so it cannot pass acceptance.
     stale: list[str] = []
+    stale_failures: list[str] = []
     by_check = {}
     for run in runs:
         if run["lifecycle"] != "terminal" or not run["result"]:
@@ -235,6 +243,12 @@ def compute_readiness(
                 f"{run['attempt'] if run['attempt'] is not None else 'none'}, not the current "
                 f"attempt {task.generation}"
             )
+            if run["result"] == "FAIL":
+                stale_failures.append(
+                    f"check {run['check_id']!r} FAILED at attempt {run['attempt']} and has not "
+                    f"been re-run at attempt {task.generation}; the original failure is "
+                    f"preserved rather than replaced by a later pass"
+                )
             continue
         by_check.setdefault(run["check_id"], []).append(run)
 
@@ -255,10 +269,20 @@ def compute_readiness(
             gaps.append(f"required check {check_id!r} has no usable result")
 
     # A stale run is not silently dropped. It is reported, so a reader who can
-    # see a passing run for a required check is told why it does not count
+    # see a passing run for a required check is told why it does not count,
     # rather than left to conclude the check never ran.
     gaps = tuple(dict.fromkeys(gaps)) + tuple(dict.fromkeys(stale))
 
+    if stale_failures:
+        # REJECTED, and the reason says the failure is a preserved earlier one
+        # rather than a fresh verdict, so nobody reads REJECTED as "this attempt
+        # just failed" when the truth is "the earlier one did and nothing has
+        # re-run it since".
+        return ReadinessResult(
+            "REJECTED",
+            tuple(dict.fromkeys(gaps)) + tuple(dict.fromkeys(stale_failures)),
+            {"generation": task.generation, "policy_digest": task.policy_digest},
+        )
     if rejected:
         return ReadinessResult(
             "REJECTED", gaps,

@@ -115,8 +115,13 @@ def test_a_broken_tree_yields_a_failing_row() -> None:
     the row that watches for a defect has to fail rather than pass.
     """
     broken_root = REPO_ROOT.parent / f"vkit-acceptance-broken-{os.getpid()}"
+    # Every virtualenv, not just the Windows one. `.venv-posix` is created by
+    # the GAP-2 run and carries a `lib64 -> lib` symlink, which `copytree`
+    # cannot resolve on Windows and which has nothing to do with the example
+    # being broken. Ignoring the directory by prefix is also the right shape:
+    # a new venv should not silently become a test failure.
     shutil.copytree(REPO_ROOT, broken_root, ignore=shutil.ignore_patterns(
-        ".git", ".venv", "tmp", "formal", ".pytest_cache", "__pycache__",
+        ".git", ".venv*", "tmp", "formal", ".pytest_cache", "__pycache__",
     ))
     try:
         totals = broken_root / "examples" / "python-cli" / "src" / "totals.py"

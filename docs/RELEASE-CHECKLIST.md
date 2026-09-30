@@ -5,10 +5,14 @@ release record. A step you did not run is a step you did not do, and the
 release is described by what ran, never by what the checklist says can run.
 
 The commands here are the ones that exist in this repository at revision
-`de96390`. `tests/test_release_docs.py` resolves every command below against
+`5087624`. `tests/test_release_docs.py` resolves every command below against
 `build_parser()` and the working tree, so a step that stops existing fails the
-suite instead of quietly misleading a maintainer. When that test fails, the
-document is the wrong thing to edit. Change the code, or delete the step.
+suite instead of quietly misleading a maintainer. It also resolves every file
+this document cites as evidence *at that revision*, so a pin left behind HEAD
+fails the gate rather than describing a build nobody can check out. That check
+caught this pin itself: it named `de96390`, fifty-nine commits back, at which
+three of the cited files did not exist. When the test fails, the document is
+the wrong thing to edit. Change the code, or delete the step.
 
 These are the files this document relies on. The gate checks each one.
 
@@ -38,8 +42,13 @@ schemas/run-report.v1.json
 src/vkit/schemas.py
 tests/test_claims.py
 
-# The suite's one skip, and this document's own gate.
+# The suite's skips, Plan 08's property tests, and this document's own gate.
+# The correspondence file skips at import time without hypothesis, so it is
+# listed here rather than described only in prose: a path this document names
+# but no block checks is a path nothing verifies.
 tests/test_procidentity.py
+tests/test_formal_correspondence.py
+formal/reference.py
 tests/test_release_docs.py
 README.md
 ```
@@ -79,7 +88,7 @@ work that closes it has run and left a receipt.
 | GAP-3 | No live Claude Code host session has exercised the plugin. | `claude plugin validate --strict` passed. Install and hook delivery were not exercised. |
 | GAP-4 | The `mcp serve` subcommand exists but has never been run over a real transport. | `vkit mcp serve --project . --json` lists the six tools, exit 0. The command resolves; `serve_stdio` still has not been driven by a client, which is GAP-1. |
 | GAP-5 | The setup console is incomplete. | Plan 05 is the last build step and is still being built in parallel. |
-| GAP-6 | Guided enrollment and integration verification are not built. | No `enroll` or `integration verify` subcommand exists. |
+| GAP-6 | Guided enrollment and integration verification exist, but a pilot operator has no finished flow to drive them. | `vkit project enroll` and `vkit integration verify` are defined in `src/vkit/cli.py` and carry 29 tests. What is missing is the surface: a console that walks an operator through it, which is GAP-5. |
 | GAP-7 | The acceptance script proves less than it appears to. | It resolves `vkit` from the environment, which is an editable install. |
 | GAP-8 | There is no acceptance table to map. | `KIT_ACCEPTANCE.md` is absent from this repository. |
 | GAP-9 | Two documented limits have no check behind them. | A `.cmd` launcher mangles a non-ASCII path. A reverted edit escapes the source digest. |
@@ -100,7 +109,7 @@ and it is a different claim from the one the protocol suite makes.
 ## Build the artifacts
 
 Every command below was run on Windows 11 with Python 3.13.14 at revision
-`de96390`.
+`5087624`.
 
 ```console command
 $ uv venv --seed <venv>
@@ -123,12 +132,25 @@ host that blocks network access cannot build the wheel with this command.
 
 ## Verify the test suite
 
+Install the test extra first. Without it the suite is still green, and that is
+the problem this section exists to make visible.
+
 ```console command
+$ <venv>/Scripts/python.exe -m pip install -e ".[test]"
 $ <venv>/Scripts/python.exe -m pytest tests/
 ```
 
-Observed on this host: `404 passed, 1 skipped`. The skip is
-`tests/test_procidentity.py:440`, which the Windows host cannot exercise.
+Observed on this host: `444 passed, 2 skipped`. Both skips are named, because
+"1 skipped" reads as one excluded POSIX case and hid the second. One is the
+POSIX-only case in `tests/test_procidentity.py`. The other is a module-level
+`importorskip("hypothesis")` at the top of
+`tests/test_formal_correspondence.py`, which meant Plan 08's property tests had
+never executed on this host while the suite still read green. The test extra
+carries `hypothesis`, so the step above runs them; a bare `pip install vkit`
+still skips, which is what CONTRACT.md requires of formal tooling.
+
+A skip count is not a rounding error. Two tests that never run and two that run
+and pass are the same green.
 
 That count is evidence about the code in this repository, and only that. It is
 not evidence about the gaps below, because the tests that would cover them are
@@ -249,7 +271,7 @@ file existing.
 | Installs into Claude Code as a plugin | not verified | The manifest validates. No live host session ran it, GAP-3. |
 | Supplies the plugin's MCP server | not verified | The subcommand exists and speaks the protocol. No Claude Code host session has loaded it, GAP-3. |
 | Works on macOS or Linux | blocked | The POSIX path has never run, GAP-2. |
-| Enrolls a repository through a user flow | blocked | No `enroll` subcommand and no finished console, GAP-5 and GAP-6. |
+| Enrolls a repository through a user flow | blocked | The command exists and the console operation exists, but no finished flow walks an operator through it, GAP-5 and GAP-6. |
 | Is ready for a pilot | blocked | See [PILOT.md](PILOT.md). |
 
 ## Release gate

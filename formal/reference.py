@@ -185,34 +185,60 @@ class Model:
 
     # --- the decision -----------------------------------------------------
 
-    def _latest_by_check(self, owner: str) -> dict[str, Outcome]:
+    def _latest_by_check(self, owner: str, generation: int | None = None) -> dict[str, Outcome]:
         """The most recent terminal result per check for this owner.
 
         This mirrors the core's `compute_readiness`, which reads every run
-        attached to the task, takes them newest-first, and uses the first
-        result it finds for each required check. It does NOT filter by
-        revision: the core keys evidence on the task, not on the source and
-        policy pair. The reference deliberately does the same, so a divergence
-        about revision filtering shows up as a disagreement rather than being
-        hidden by a stricter model. A consequence is recorded as a known
-        divergence: the core does not invalidate a task's readiness when the
-        project moves to a new revision, which is exactly what the TLA+ model's
-        Property4 forbids. The two genuinely disagree, and the tests record
-        which one is which.
+        attached to the task, keeps the ones recorded at the task's CURRENT
+        attempt generation, takes them newest-first, and uses the first result it
+        finds for each required check.
+
+        It does NOT filter by revision: the core keys evidence on the task, not on
+        the source and policy pair. The reference deliberately does the same, so
+        a divergence about revision filtering shows up as a disagreement rather
+        than being hidden by a stricter model. A consequence is recorded as a
+        known divergence: the core does not invalidate a task's readiness when
+        the project moves to a new revision, which is exactly what the TLA+
+        model's Property4 forbids. The two genuinely disagree there, and the
+        tests record which one is which.
+
+        `generation=None` deliberately ignores the generation, which is what
+        `decide` used to do before the readiness fix. It stays available because
+        the FAIL-over-BLOCKED ordering has to be observable independently of which
+        generation the run belongs to -- a stale FAIL still decides REJECTED,
+        because a recorded failure is an answer rather than an absence.
         """
         latest: dict[str, Outcome] = {}
         for record in self.evidence:
-            if record.owner == owner:
-                latest[record.check] = record.outcome  # later run wins
+            if record.owner != owner:
+                continue
+            if generation is not None and record.generation != generation:
+                continue
+            latest[record.check] = record.outcome  # later run wins
         return latest
 
     def acceptable(self, owner: str, generation: int, revision: str) -> bool:
-        """The documented condition, as the core implements it: every required
-        check has a passing most-recent result for this owner. The generation
-        and revision arguments are accepted so the caller reads the way the
-        model does, but the core does not consult them when deciding, and
-        neither does this."""
-        latest = self._latest_by_check(owner)
+        """The documented condition, as the core now implements it.
+
+        Every required check needs a passing most-recent result recorded for this
+        owner AT THIS GENERATION. A superseded generation's evidence does not
+        count: `supersede_task` advances the generation precisely to invalidate
+        the previous attempt's authority, and CONTRACT.md says a retry is a new
+        run linked to its predecessor rather than a continuation of it.
+
+        An earlier version of this method accepted the generation argument and
+        ignored it, with a comment saying the core ignored it too. That was true
+        until the readiness fix, and then it was not, and the model was encoding
+        the bug as the specification. The property test found it on its first
+        execution -- `record FAIL` then `crash` gives core=BLOCKED and
+        reference=REJECTED -- because it had never run before. Hypothesis being
+        absent from the environment is what kept the disagreement invisible.
+
+        The revision is still not consulted. The core does not invalidate a
+        task's readiness when the project moves to a new revision either, so the
+        two agree about that and the known divergence is narrower than it was.
+        """
+        latest = self._latest_by_check(owner, generation=generation)
         return all(latest.get(check) == "PASS" for check in REQUIRED_CHECKS)
 
     def accept(self, owner: str, generation: int, revision: str) -> "Model":
@@ -237,7 +263,30 @@ class Model:
         A recorded FAIL is an answer, not an absence, so it decides REJECTED
         immediately and outranks a missing check. This ordering is the core's
         and is deliberate: a failing check is not "incomplete".
+
+        A FAIL is also preserved across a generation change, which is the
+        subtler half. CONTRACT says to keep the original failure, flag the
+        instability, and never overwrite it with the later pass, so a retry that
+        has re-run one check is not a repair of a failure in another. The core
+        reaches that verdict by reporting a stale failure among its gaps and
+        deciding REJECTED on it; an earlier version of this model filtered
+        evidence by generation here as well, read the re-run PASS, and answered
+        BLOCKED. Hypothesis found the divergence on its first ever execution.
+
+        A stale BLOCKED does not carry across the same way: an interrupted run
+        that was never re-run is a gap in the current attempt, not a verdict
+        about it, and a retry that re-runs it is exactly the repair that case
+        calls for.
         """
+        stale_failures = [
+            record
+            for record in self.evidence
+            if record.owner == owner
+            and record.generation != generation
+            and record.outcome == "FAIL"
+        ]
+        if stale_failures:
+            return "REJECTED"
         latest = self._latest_by_check(owner)
         if any(outcome == "FAIL" for outcome in latest.values()):
             return "REJECTED"

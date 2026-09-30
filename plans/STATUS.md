@@ -12,7 +12,7 @@ a running total — an earlier number is not evidence about a later one.
 | 02 | Implemented; merged to master | Supervisor, claims, recovery. 14/14 acceptance rows in `scripts/acceptance02.py`, plus 17 tests over the harness itself |
 | 03 | Tool layer implemented; stdio transport verified on the wire | `src/vkit/mcp/`, six tools through `Server.call_tool` plus 23 protocol tests driving a real subprocess; GAP-1 closed |
 | 04 | Plugin installed and driven in a real Claude Code host | `docs/HOST-SESSION.md` transcript, 16 host tests against a scratch config; GAP-3 closed |
-| 05 | Console exists as a view over the core; `install`, `repair`, `remove`, `enroll` refuse | `src/vkit/console/`. The rendered page has never been looked at; GAP-5 |
+| 05 | Console exists as a view over the core; all four setup operations implemented; page driven and layout repaired | `src/vkit/console/`. Driven with headless Chrome at 1440/1024/768/480/360px; eight defects found and fixed. **The layout fixes live only in `app.js` and `style.css` and no test pins them, so a regression is silent** — that is GAP-5's real shape, and it is stronger than "never been looked at" |
 | 06 | In progress | GAP-6 |
 | 07 | In progress | — |
 | 08 | In progress | — |

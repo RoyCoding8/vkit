@@ -22,7 +22,19 @@ mcp = ["mcp>=2.2,<3"]
 # `test` also carries the SDK, because the protocol suite spawns the real
 # server and speaks JSON-RPC to it in this same environment. A test that
 # cannot reach the transport is not testing the transport.
-test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5"]
+#
+# hypothesis is here for the same reason, and its absence was a real hole:
+# tests/test_formal_correspondence.py skips the whole module at import time
+# without it, so the property tests that check the core against its reference
+# model -- including the stale-generation guard -- silently did not run on a
+# host that lacked the package, while the suite still read green. Hypothesis
+# stays optional for ordinary USERS, per CONTRACT.md, and mandatory for anyone
+# running the test suite.
+test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5", "hypothesis>=6.100"]
+
+# Optional for a user, required to verify. Plan 08's property tests import
+# this at module scope, so a host without it skips them rather than failing.
+formal = ["hypothesis>=6.100"]
 
 [project.scripts]
 vkit = "vkit.cli:main"

@@ -18,7 +18,7 @@ is selected. A condition with no receipt is not met.
 | GAP-1 closed | Met. The stdio adapter runs, and `tests/test_mcp_stdio.py` drives it with real JSON-RPC frames. |
 | GAP-4 closed | Met. `plugin/.mcp.json` starts `vkit mcp serve`, and `build_parser()` defines it. `serve_stdio` is the adapter that command reaches. |
 | GAP-3 closed | The manifest passes `claude plugin validate --strict`, but no live host session has installed it or run a hook. |
-| GAP-5 and GAP-6 closed | A pilot operator must be able to enroll a repository. The setup console is Plan 05, still being built, and no `enroll` or `integration verify` subcommand exists. |
+| GAP-5 and GAP-6 closed | A pilot operator must be able to enroll a repository. `vkit project enroll` and `vkit integration verify` exist with 29 tests behind them, so the commands are not the obstacle; the console that walks an operator through them is Plan 05, and no finished flow drives them yet. |
 | GAP-2 declared | A pilot runs on one named OS. The verified one is Windows 11. |
 | GAP-7 and GAP-8 handled | The pilot baseline and report are written around a missing acceptance table. |
 | An owner-approved repository | The implementation worker does not pick this. |

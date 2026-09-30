@@ -35,14 +35,27 @@ from pathlib import Path
 
 import pytest
 
-# Hypothesis is an optional test dependency. Plan 08 is optional, and CONTRACT.md
-# requires that formal tooling not be needed for ordinary use, so a host without
-# it skips these tests rather than failing the suite. The two tests that do NOT
-# need Hypothesis, at the bottom of this file, still run and still cover the
-# stale-generation guard, because that guard is the one this plan asks to be
-# mutation-checked and it must not go unchecked just because a package is
-# missing.
-hypothesis = pytest.importorskip("hypothesis", reason="Plan 08 is optional")
+# Hypothesis is an optional dependency for a USER and required to VERIFY. Plan
+# 08 is optional and CONTRACT.md requires that formal tooling not be needed for
+# ordinary use, so a host without it skips rather than failing the suite.
+#
+# An earlier version of this comment claimed that "the two tests that do NOT
+# need Hypothesis, at the bottom of this file, still run". That was false: both
+# tests in this file are decorated `@given`, and `importorskip` at module scope
+# skips the whole module. On a host without the package nothing here ran, and
+# the stale-generation guard this plan asks to be mutation-checked went unchecked
+# while the suite still read green. The audit that found it put the count at two
+# skips covering three test functions, none of them executing.
+#
+# The skip is kept, because an ordinary user must not be made to install a
+# property-testing library. The hole is closed from the other side: hypothesis
+# is in the `test` extra in pyproject.toml, so anyone running the suite gets it,
+# and the release checklist names this skip rather than counting the suite's
+# total and implying the formal evidence ran here.
+hypothesis = pytest.importorskip(
+    "hypothesis",
+    reason="Plan 08 is optional; hypothesis is in the `test` extra, install it to run these",
+)
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 

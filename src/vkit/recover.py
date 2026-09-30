@@ -248,7 +248,7 @@ def liveness(pid: int | None, *, creation_time: int | None = None) -> Liveness:
         )
     if sys.platform == "win32":
         return _liveness_windows(pid, creation_time)
-    return _liveness_posix(pid)
+    return _liveness_posix(pid, creation_time)
 
 
 def _liveness_windows(pid: int, creation_time: int | None = None) -> Liveness:
@@ -326,10 +326,24 @@ def _creation_time_mismatch(pid: int, recorded: int) -> Liveness | None:
         "process; the claim is retained rather than released on a stranger's evidence",
     )
 
+def _liveness_posix(pid: int, creation_time: int | None = None) -> Liveness:
+    """The POSIX probe, plus the identity check the Windows branch performs.
 
-def _liveness_posix(pid: int) -> Liveness:
+    `kill(pid, 0)` says whether a process exists and nothing about which one, so
+    on its own it cannot tell our process from a stranger that inherited the
+    number. The identity check is what closes that, and it was missing here:
+    `liveness` passed `creation_time` to the Windows branch and dropped it on
+    this one, so a run record naming a recycled pid read ALIVE instead of
+    UNCERTAIN. Measured before the fix: `liveness(pid)` and
+    `liveness(pid, creation_time=133000000000000000)` returned byte-identical
+    detail on a live pid.
+
+    The stranger case is UNCERTAIN, not DEAD, and not ALIVE. DEAD would release a
+    claim on the evidence of a process that never ran the check; ALIVE would
+    report our run as healthy on the strength of someone else's process. The
+    claim is retained either way, which is the direction that preserves evidence.
+    """
     import errno
-    import signal
 
     try:
         os.kill(pid, 0)
@@ -345,7 +359,11 @@ def _liveness_posix(pid: int) -> Liveness:
             LivenessState.UNCERTAIN,
             f"probing pid {pid} failed with {type(exc).__name__}: {exc}, which does not prove death",
         )
-    return Liveness(LivenessState.ALIVE, f"pid {pid} answered the signal-zero probe")
+    if creation_time is None:
+        return Liveness(LivenessState.ALIVE, f"pid {pid} answered the signal-zero probe")
+    return _creation_time_mismatch(pid, creation_time) or Liveness(
+        LivenessState.ALIVE, f"pid {pid} answered the signal-zero probe"
+    )
 
 
 # ---------------------------------------------------------------- reading

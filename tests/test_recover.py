@@ -818,7 +818,14 @@ def test_a_pid_now_held_by_a_stranger_is_uncertain_and_never_dead(alive_pid: int
 
 
 def test_a_matching_creation_time_still_reads_alive(alive_pid: int) -> None:
-    """The pair must not make a genuinely running process look uncertain."""
+    """The pair must not make a genuinely running process look uncertain.
+
+    The exit code is asserted only where one exists. STILL_ACTIVE (259) comes
+    from `GetExitCodeProcess`; `kill(pid, 0)` carries no exit code, so a live
+    POSIX process reports None. Asserting 259 everywhere would be asserting a
+    Windows value on both platforms, which is what the `requires_windows` tests
+    beside it do.
+    """
     from vkit.procidentity import read_identity
 
     real = read_identity(alive_pid)
@@ -827,7 +834,10 @@ def test_a_matching_creation_time_still_reads_alive(alive_pid: int) -> None:
     state = liveness(alive_pid, creation_time=real.creation_time)
 
     assert state.state is LivenessState.ALIVE
-    assert state.exit_code == 259
+    if sys.platform == "win32":
+        assert state.exit_code == 259
+    else:
+        assert state.exit_code is None
 
 
 @requires_windows

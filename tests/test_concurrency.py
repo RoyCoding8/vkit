@@ -191,8 +191,31 @@ def test_a_held_slot_keeps_the_peak_at_the_bound_while_clients_still_ask(
          "task-holder", "0"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    time.sleep(0.4)
-    assert holder(store, WRITER_POOL).held == 1
+    # Wait for the holder rather than sleeping and hoping. The client acquires,
+    # prints and exits, so there is a window in which it holds nothing and the
+    # row would read None; `time.sleep(0.4)` bet that a Python interpreter
+    # starts in under 0.4s, which holds on Windows and did not on WSL, where the
+    # interpreter and the repository are both on /mnt/d. Measured there: still
+    # None at 0.2s, 0.4s and 0.8s, present at 1.5s, by which point the client had
+    # already exited. Raising the constant only moves the bet, so the condition
+    # is polled instead, and the failure names what was never observed.
+    deadline = time.monotonic() + 60.0
+    held = None
+    while time.monotonic() < deadline:
+        held = holder(store, WRITER_POOL)
+        if held is not None and held.held == 1:
+            break
+        if holder_proc.poll() is not None:
+            # The client is gone and never held the slot. Its output says why.
+            out, err = holder_proc.communicate(timeout=30)
+            raise AssertionError(
+                f"the holder client exited (status {holder_proc.returncode}) without "
+                f"ever holding {WRITER_POOL}; it said: {out!r} {err.strip()[-300:]!r}"
+            )
+        time.sleep(0.02)
+    assert held is not None and held.held == 1, (
+        f"the holder client never acquired {WRITER_POOL} within 60s; last read {held}"
+    )
 
     # The bound is two and the holder has one, so exactly one slot is free. A
     # burst of twenty therefore produces one winner and nineteen refusals --

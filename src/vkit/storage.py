@@ -178,6 +178,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# The columns `list_runs` returns, in the order its query selects them. Named
+# once beside the query that fills them, because a positional zip against a
+# separate key tuple is a mapping that can silently reorder.
+_RUN_COLUMNS = (
+    "run_id", "check_id", "task_id", "attempt", "lifecycle", "result", "reason",
+    "registered_at", "ended_at", "source_json", "configuration_digest", "fixture_digest",
+)
+
+
+def open_task(conn: sqlite3.Connection, task_id: str, contract: dict, policy_digest: str) -> None:
+    """Write one task row, on a connection the caller already owns.
+
+    Takes a connection rather than the store because admission must write this
+    row and the task's claims in the same transaction, and `claims.acquire`
+    opens its own. The SQL lives here so the insert has exactly one site: two
+    writers of the tasks table is two places a rule can be missed.
+    """
+    conn.execute(
+        "INSERT INTO tasks (task_id, contract_json, policy_digest, status, generation, opened_at)"
+        " VALUES (?, ?, ?, 'active', 1, ?)",
+        (task_id, _dumps(contract), policy_digest, _now()),
+    )
+
+
 def _dumps(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -213,7 +237,17 @@ class _Transaction:
 
     def __enter__(self) -> sqlite3.Connection:
         self._conn = self._cm.__enter__()
-        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            # The lock is taken here, so this is the only place that can say a
+            # caller failed to get it. Adapters report a StoreError as a store
+            # failure rather than showing the user "database is locked": a
+            # process that could not take the lock has not been told the
+            # resource is unavailable, so it is not a conflict.
+            self._cm.__exit__(None, None, None)
+            self._conn = None
+            raise StoreError(f"could not take the write lock: {exc}") from exc
         return self._conn
 
     def __exit__(self, exc_type, exc, tb) -> bool:
@@ -469,9 +503,17 @@ class Store:
         order between equal values, so "the most recent run" would be whichever
         row the query happened to return first. rowid is monotonic with
         insertion, so the ordering is total and the answer is reproducible.
+
+        The three identity columns come back with every row because acceptance
+        cannot decide without them: a pass is only a pass against the source,
+        policy and fixtures it actually ran under. A reader that had to ask for
+        them separately would be free to forget, and that is how evidence
+        produced under one identity came to satisfy a contract written under
+        another.
         """
         sql = ("SELECT run_id, check_id, task_id, attempt, lifecycle, result, reason,"
-               " registered_at, ended_at FROM runs")
+               " registered_at, ended_at, source_json, configuration_digest,"
+               " fixture_digest FROM runs")
         params: list[object] = []
         if task_id is not None:
             sql += " WHERE task_id = ?"
@@ -480,18 +522,17 @@ class Store:
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        keys = ("run_id", "check_id", "task_id", "attempt", "lifecycle", "result", "reason",
-                "registered_at", "ended_at")
-        return [dict(zip(keys, row)) for row in rows]
-
-    def run_process_identity(self, run_id: str) -> dict | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT process_json FROM runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
-        if not row or not row[0]:
-            return None
-        return json.loads(row[0])
+        out: list[dict] = []
+        for row in rows:
+            record = dict(zip(_RUN_COLUMNS, row))
+            # The source column is a JSON document and the only field acceptance
+            # compares is the inventory digest inside it. Parsing it here, rather
+            # than in each caller, is what stops two callers picking two
+            # different fields out of the same document.
+            source = json.loads(record.pop("source_json") or "{}")
+            record["source_inventory_digest"] = source.get("inventory_digest")
+            out.append(record)
+        return out
 
     # The acceptance record's own storage, beside the runs it summarises. One
     # module owns the durable shape of both, so a reader never has to decide

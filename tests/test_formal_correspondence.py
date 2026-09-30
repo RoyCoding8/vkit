@@ -98,7 +98,23 @@ class Core:
         self.store = store
         if open_owners:
             for owner in reference.OWNERS:
-                open_task(store, task_id=owner, contract={"owner": owner}, policy_digest="pd")
+                # A contract the core can read back, floored on exactly the
+                # checks this model records. The model is about generations and
+                # claims, but `compute_readiness` unions the pinned floor with
+                # whatever it is asked for, so a floor naming a check this model
+                # never produces would be a permanent BLOCKED on every owner.
+                open_task(
+                    store, task_id=owner,
+                    contract={
+                        "repository": {"root": ".", "git_common_dir": "."},
+                        "policy_digest": "pd",
+                        "required_checks": list(reference.REQUIRED_CHECKS),
+                        "scope": f"owner {owner}",
+                        "resources": [],
+                        "declared": {"owner": owner},
+                    },
+                    policy_digest="pd",
+                )
 
     def generations(self, owner: str) -> int:
         return current_generation(self.store, owner)

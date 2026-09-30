@@ -1,39 +1,189 @@
-"""Task attempts, their generations, and the readiness computed from evidence.
+"""One validated contract, one admission decision, one readiness decision.
 
-An attempt is `active`, `paused`, `superseded`, or `closed`. Modelling those as
-four variants rather than a status string plus a null owner means "superseded
-but still holding resources" cannot be half-written by accident: the resources
-each state implies are the state.
+`admit` and `finalize` are the authority. Every adapter — CLI, MCP, hooks,
+console enrollment — calls them and translates the answer into its own response
+shape. None of them holds a rule of its own, because the moment two of them hold
+one, a caller can pick the laxer adapter and get the laxer answer.
 
-`readiness` is the only place that decides whether a task is READY, and it is a
-pure function of recorded evidence. It is never a client-supplied verdict, and
-it is never merge permission: READY means local requirements were satisfied
-under the recorded contract, nothing more.
+**Admission derives; it does not accept.** A caller names what it wants and
+this module derives what is actually true: which repository and checkout this
+is, which policy is approved, what the mandatory floor is, whether the claims
+are free. A caller-supplied `policy_digest` and a caller-supplied `checkout_ref`
+were both accepted at face value, which is how a task bound to
+`a-nonexistent-ref` executed a real check and then compared its evidence
+against the string it had supplied itself.
+
+**The floor is frozen at admission and can only grow.** `required_checks` is
+the approved mandatory set at the moment the task opened. Because it is derived
+from the policy that is actually in force rather than from a list the caller
+carried, deleting the policy file cannot shrink it, and a caller that selects
+fewer checks cannot subtract from it. A task with no mandatory checks is
+refused: there would be nothing for it to prove.
+
+**A claim conflict is a refusal, not a note.** The required resources are taken
+inside the transaction that writes the task row, so there is no state in which
+a task exists as admitted and does not hold what it declared. `admitted: true`
+printed beside a `claim_conflict` was that state, and it is what let two
+workers write one checkout.
+
+**Acceptance compares identity, and history is not a verdict.** A run recorded
+which source, policy and fixtures it actually tested. `finalize` compares those
+against the identities in force now; a mismatch is a gap for THIS attempt and
+no other. Earlier attempts are returned as `history`, never erased and never
+treated as the current attempt's answer, so a repaired attempt can be READY
+while its predecessor's failure is still on the record and still visible.
+
+An identity a run did not record is reported in `unverified_identities` rather
+than compared, because "recorded as nothing" is not the same claim as
+"recorded as something different" and only the second one is a gap.
 """
 from __future__ import annotations
 
-import enum
 import json
-from dataclasses import dataclass
+import sqlite3
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Literal
 
-from .storage import ConflictError, Store, StoreError
+from .claims import ResourceSpec, acquire_in, holders
+from .identity import compute_source_identity
+from .paths import Project
+from .storage import ConflictError, Store, open_task as insert_task_row
 
 TaskStatus = Literal["active", "paused", "closed"]
 Readiness = Literal["READY", "REJECTED", "BLOCKED"]
+
+#: The first generation an admitted task opens at.
+FIRST_GENERATION = 1
 
 
 class TaskError(Exception):
     """The requested task operation is not valid for the recorded state."""
 
 
+class AdmissionRefused(TaskError):
+    """The task cannot be admitted, and the reason names what would fix it.
+
+    Separate from `TaskError` because both are refusals an adapter shows the
+    user, but only one means "the thing you asked for cannot be true here".
+    The distinction is what lets an adapter answer BLOCKED for a missing
+    required check while answering INVALID for a malformed request, without
+    either of them deciding the question itself.
+    """
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------- the contract
+
+
+@dataclass(frozen=True)
+class TaskContract:
+    """What a task is, in the form every guarantee is derived from.
+
+    Each field here is a fact the rest of the system compares against. The
+    caller supplied none of them: `repository`, `policy_digest` and
+    `required_checks` are measured at admission, and a task able to carry a
+    caller's string instead would let acceptance compare the task against
+    itself and find nothing wrong.
+    """
+
+    #: The repository root and shared Git directory this attempt is bound to.
+    repository: dict[str, str]
+    #: The manifest digest approved for this attempt, measured at admission.
+    policy_digest: str
+    #: The frozen mandatory floor. Never empty, and never reduced afterwards.
+    required_checks: tuple[str, ...]
+    #: What the task is for. Declarative: it records intent, it sandboxes
+    #: nothing, and `required_checks` is what the decision is made against.
+    scope: str
+    #: The resources this attempt requires. Taken atomically with the row.
+    resources: tuple[dict[str, Any], ...]
+    #: What the caller supplied that is not one of the above, preserved so an
+    #: adapter can round-trip its own request without the core endorsing it.
+    declared: dict[str, Any]
+
+    def resource_specs(self) -> tuple[ResourceSpec, ...]:
+        """The declared resources as `claims` takes them.
+
+        Constructed from the stored declarations rather than kept alongside
+        them, so there is one representation in the contract and a caller
+        cannot record the same resource twice under two spellings.
+        """
+        specs = []
+        for entry in self.resources:
+            key, kind = entry["key"], entry["kind"]
+            if kind == "exclusive":
+                specs.append(ResourceSpec(key=key, kind="exclusive"))
+            else:
+                capacity = entry.get("capacity")
+                if not isinstance(capacity, int) or capacity < 1:
+                    raise AdmissionRefused(
+                        f"resource {key!r} is capacity-kind and needs a positive capacity"
+                    )
+                specs.append(ResourceSpec(key=key, kind="capacity", capacity=capacity))
+        return tuple(specs)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "repository": dict(self.repository),
+            "policy_digest": self.policy_digest,
+            "required_checks": list(self.required_checks),
+            "scope": self.scope,
+            "resources": [dict(entry) for entry in self.resources],
+            "declared": dict(self.declared),
+        }
+
+    @classmethod
+    def from_json(cls, document: Any) -> "TaskContract":
+        """Read a contract back, refusing one that cannot be the contract pinned.
+
+        A row written by an older build, or edited by hand, can hold a document
+        this shape does not describe. Recovering with a best-effort default is
+        how an empty floor reaches acceptance, so a malformed contract raises
+        and the caller reports BLOCKED rather than deciding.
+        """
+        if not isinstance(document, dict):
+            raise AdmissionRefused("a task contract must be a JSON object")
+        required = document.get("required_checks")
+        if not isinstance(required, list) or not required:
+            raise AdmissionRefused(
+                "this task was admitted without a mandatory check floor, so there is "
+                "nothing to accept it against. Reopen it with an explicit contract"
+            )
+        if any(not isinstance(check, str) or not check for check in required):
+            raise AdmissionRefused(
+                "this task recorded a required_checks floor containing something "
+                "other than a check id"
+            )
+        for key in ("policy_digest", "scope"):
+            if not isinstance(document.get(key), str):
+                raise AdmissionRefused(f"this task recorded a malformed {key}")
+        repository = document.get("repository")
+        if not isinstance(repository, dict) or not repository.get("root"):
+            raise AdmissionRefused(
+                "this task recorded no repository binding, so its checkout cannot "
+                "be verified. Reopen it against this repository"
+            )
+        resources = document.get("resources")
+        if not isinstance(resources, list):
+            raise AdmissionRefused("this task recorded a malformed required-resources list")
+        return cls(
+            repository=dict(repository),
+            policy_digest=document["policy_digest"],
+            required_checks=tuple(required),
+            scope=document["scope"],
+            resources=tuple(dict(entry) for entry in resources),
+            declared=dict(document.get("declared") or {}),
+        )
+
+
 @dataclass(frozen=True)
 class TaskRecord:
+    """A task as stored. Reading it proves nothing about whether it is valid."""
+
     task_id: str
     status: TaskStatus
     generation: int
@@ -41,47 +191,28 @@ class TaskRecord:
     policy_digest: str
     readiness: Readiness | None
 
-
-def _in_transaction(fn):
-    """Run `fn(conn, store, ...)` inside one BEGIN IMMEDIATE, committing only on success.
-
-    Read-then-write without holding the write lock is the race this whole module
-    exists to prevent, so the lock is taken before the first read every time.
-    The decorated function takes the store first at the call site; it is
-    unpacked here so the body sees both the connection and the store.
-    """
-    def wrapped(store: Store, *args, **kwargs):
-        with store._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                result = fn(conn, store, *args, **kwargs)
-                conn.execute("COMMIT")
-                return result
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-    return wrapped
+    def pinned(self) -> TaskContract:
+        """The validated contract this attempt was admitted against."""
+        return TaskContract.from_json(self.contract)
 
 
-def _row_to_task(conn, task_id: str) -> TaskRecord:
+# --------------------------------------------------------------- persistence
+
+_TASK_COLUMNS = "task_id, status, generation, contract_json, policy_digest, readiness"
+
+
+def _row_to_task(conn: sqlite3.Connection, task_id: str) -> TaskRecord:
     """Read a task on the caller's connection.
 
     Every read inside a transaction must use that connection. Opening a second
-    one returns the pre-commit state, which made a successful `set_status`
-    report the old status; the write was right and the answer was a lie.
+    one returns the pre-commit state, which is how a successful `set_status`
+    reported the old status: the write was right and the answer was a lie.
     """
     row = conn.execute(
         f"SELECT {_TASK_COLUMNS} FROM tasks WHERE task_id = ?", (task_id,)
     ).fetchone()
     if row is None:
         raise TaskError(f"no such task: {task_id}")
-    return _row_to_task_row(row)
-
-
-_TASK_COLUMNS = "task_id, status, generation, contract_json, policy_digest, readiness"
-
-
-def _row_to_task_row(row) -> TaskRecord:
     return TaskRecord(
         task_id=row[0],
         status=row[1],
@@ -92,34 +223,44 @@ def _row_to_task_row(row) -> TaskRecord:
     )
 
 
-@_in_transaction
-def open_task(conn, store: Store, *, task_id: str, contract: dict, policy_digest: str) -> TaskRecord:
-    """Open a task at generation 1, pinning its contract and policy.
-
-    The contract and policy digest are pinned here, not read at finalize time, so
-    a later policy change cannot retroactively satisfy this task, and a task
-    cannot quietly run against a weaker contract than the one reviewed.
-    """
-    if not isinstance(contract, dict) or not contract:
-        raise TaskError("a task contract must be a non-empty object")
-    try:
-        conn.execute(
-            "INSERT INTO tasks (task_id, status, generation, contract_json, policy_digest, opened_at)"
-            " VALUES (?, 'active', 1, ?, ?, ?)",
-            (task_id, json.dumps(contract, sort_keys=True), policy_digest, _now()),
-        )
-    except Exception as exc:
-        raise TaskError(f"task {task_id} already exists") from exc
-    return _row_to_task(conn, task_id)
-
-
 def get_task(store: Store, task_id: str) -> TaskRecord:
     with store._connect() as conn:
         return _row_to_task(conn, task_id)
 
 
-@_in_transaction
-def supersede_task(conn, store: Store, task_id: str) -> TaskRecord:
+def current_generation(store: Store, task_id: str) -> int:
+    return get_task(store, task_id).generation
+
+
+def open_task(store: Store, *, task_id: str, contract: dict, policy_digest: str) -> TaskRecord:
+    """Write a task row, validating the contract first.
+
+    The storage primitive, not the admission decision: it derives nothing and
+    takes no claim, so a caller that reached it directly would hold a task with
+    no resources. `admit` is the decision, and every adapter calls that.
+
+    It still validates. Its callers — the formal model's harness and the audit
+    probes — build a store without a repository, and the contract they write has
+    to be one `pinned()` can read back, or acceptance would have no floor and no
+    policy to compare a pass against. Storing an unreadable contract and letting
+    the failure surface at acceptance is the defect this refuses.
+
+    Kept because those callers need a task row and no repository. A second
+    writer of task rows would be worse than one narrow primitive that admits
+    what it is given.
+    """
+    TaskContract.from_json(contract)
+    with store.transaction() as conn:
+        if conn.execute("SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)).fetchone():
+            raise TaskError(f"task {task_id} already exists")
+        insert_task_row(conn, task_id, contract, policy_digest)
+        return _row_to_task(conn, task_id)
+
+
+# ------------------------------------------------------------------- lifecycle
+
+
+def supersede_task(store: Store, task_id: str) -> TaskRecord:
     """Advance the generation, invalidating the previous attempt's authority.
 
     The generation advances only here, and only while the task is not closed.
@@ -128,59 +269,405 @@ def supersede_task(conn, store: Store, task_id: str) -> TaskRecord:
     resources vanished under it is how a stale worker clobbers a live one.
     Reconciliation is an explicit recovery action with evidence behind it.
     """
-    row = conn.execute("SELECT status, generation FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-    if row is None:
-        raise TaskError(f"no such task: {task_id}")
-    status, generation = row
-    if status == "closed":
-        raise TaskError(f"task {task_id} is closed and cannot be reassigned")
-    conn.execute(
-        "UPDATE tasks SET generation = ?, status = 'active' WHERE task_id = ?",
-        (generation + 1, task_id),
-    )
-    return _row_to_task(conn, task_id)
+    with store.transaction() as conn:
+        row = conn.execute(
+            "SELECT status, generation FROM tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            raise TaskError(f"no such task: {task_id}")
+        status, generation = row
+        if status == "closed":
+            raise TaskError(f"task {task_id} is closed and cannot be reassigned")
+        conn.execute(
+            "UPDATE tasks SET generation = ?, status = 'active' WHERE task_id = ?",
+            (generation + 1, task_id),
+        )
+        return _row_to_task(conn, task_id)
 
 
-@_in_transaction
-def set_status(conn, store: Store, task_id: str, status: TaskStatus) -> TaskRecord:
+def set_status(store: Store, task_id: str, status: TaskStatus) -> TaskRecord:
     """Pause or close a task.
 
     Paused does not mean the resources are safe to release. A paused attempt's
     process may still be running, so the claims stay held and the state records
     that the owner is idle rather than gone.
+
+    A closed task retains its reports and its result is final. Reopening one
+    let a caller resurrect a finished task and then record a verdict on it, and
+    left the row simultaneously active and stamped closed.
     """
     if status not in ("active", "paused", "closed"):
         raise TaskError(f"unknown task status {status!r}")
-    row = conn.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-    if row is None:
-        raise TaskError(f"no such task: {task_id}")
-    if row[0] == "closed":
-        # A closed task retains its reports and its result is final. Reopening it
-        # let a caller resurrect a finished task and then record a verdict on it,
-        # and left the row simultaneously 'active' and stamped closed.
-        raise TaskError(f"task {task_id} is closed and cannot be reopened")
-    if status == "closed":
-        conn.execute(
-            "UPDATE tasks SET status = 'closed', closed_at = ? WHERE task_id = ?",
-            (_now(), task_id),
+    with store.transaction() as conn:
+        row = conn.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise TaskError(f"no such task: {task_id}")
+        if row[0] == "closed":
+            raise TaskError(f"task {task_id} is closed and cannot be reopened")
+        if status == "closed":
+            conn.execute(
+                "UPDATE tasks SET status = 'closed', closed_at = ? WHERE task_id = ?",
+                (_now(), task_id),
+            )
+        else:
+            conn.execute("UPDATE tasks SET status = ? WHERE task_id = ?", (status, task_id))
+        return _row_to_task(conn, task_id)
+
+
+# ------------------------------------------------------------------- admission
+
+
+@dataclass(frozen=True)
+class AcceptanceContext:
+    """The repository and policy an admission and an acceptance are decided against.
+
+    This is what "the current acceptance context" means: not the identities a run
+    recorded, and not what a caller asserts, but what is actually true of this
+    checkout and this policy right now.
+
+    A policy that is missing, malformed, registers nothing, or declares an input
+    that cannot be read lands in `refusal` and blocks. It never yields an empty
+    floor that nothing can ever satisfy and that would read as success.
+    """
+
+    project: Project
+    policy_digest: str
+    source_inventory_digest: str
+    fixture_digest: str | None
+    #: Why the context is unusable, when it is.
+    refusal: str | None = None
+
+    @property
+    def usable(self) -> bool:
+        return self.refusal is None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "repository": str(self.project.root),
+            "policy_digest": self.policy_digest,
+            "source_inventory_digest": self.source_inventory_digest,
+            "fixture_digest": self.fixture_digest,
+            "refusal": self.refusal,
+        }
+
+
+def acceptance_context(project: Project, manifest_loader) -> AcceptanceContext:
+    """Read the policy now and measure the identities acceptance compares against.
+
+    `manifest_loader()` parses the registered policy and raises when it cannot.
+    It takes no argument because every caller that has one has already resolved
+    the project — a bound `Server._registered_policy`, a lambda over `parse_manifest`
+    — and asking each of them to accept a project they already hold is the kind of
+    small friction that produces two loader shapes. It must not swallow the parse
+    failure: "the policy is unreadable" and "there is no policy" are the same
+    refusal here, and a loader that returns None for both would leave this unable
+    to say which happened.
+    """
+    blocked = lambda policy_digest, source, refusal: AcceptanceContext(
+        project, policy_digest, source, None, refusal
+    )
+
+    try:
+        manifest = manifest_loader()
+    except Exception as exc:  # noqa: BLE001 - every parse failure is one refusal
+        return blocked("", "", f"there is no usable policy at {project.manifest_path}: {exc}")
+    policy_digest = manifest.digest()
+    if not manifest.checks:
+        return blocked(
+            policy_digest, "",
+            f"the policy at {project.manifest_path} registers no checks, so there is "
+            "nothing to admit against",
         )
-    else:
-        conn.execute("UPDATE tasks SET status = ? WHERE task_id = ?", (status, task_id))
-    return _row_to_task(conn, task_id)
+    try:
+        source = compute_source_identity(project)
+    except Exception as exc:  # noqa: BLE001
+        return blocked(
+            policy_digest, "",
+            f"the source identity of {project.root} could not be computed: {exc}",
+        )
+    fixture = manifest.fixture_identity()
+    if fixture is None:
+        # An unresolved measurement is an unresolved measurement. Recording null
+        # and continuing would imply the fixtures had been measured when nothing
+        # was read at all.
+        return blocked(
+            policy_digest, source.inventory_digest,
+            f"the policy at {project.manifest_path} declares an input that cannot be "
+            "read, so the fixture identity it would test against is unresolved",
+        )
+    return AcceptanceContext(
+        project, policy_digest, source.inventory_digest, fixture.digest
+    )
 
 
-def current_generation(store: Store, task_id: str) -> int:
-    return get_task(store, task_id).generation
+@dataclass(frozen=True)
+class AdmittedTask:
+    """A task that exists, holds what it declared, and knows what it must prove."""
+
+    task: TaskRecord
+    contract: TaskContract
+
+    @property
+    def task_id(self) -> str:
+        return self.task.task_id
+
+    @property
+    def generation(self) -> int:
+        return self.task.generation
+
+
+def _resources(raw: Any) -> tuple[dict[str, Any], ...]:
+    """The required-resource declarations, validated into one shape.
+
+    A list of objects is the wire form an agent can write; a mapping is accepted
+    because an MCP client naturally has one. Both normalise here so the contract
+    stores one representation.
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, dict):
+        raw = [{"key": key, **value} for key, value in raw.items()]
+    if not isinstance(raw, list):
+        raise AdmissionRefused("required_resources must be a list of resource objects")
+    parsed: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise AdmissionRefused("each required resource must be an object")
+        unknown = sorted(set(entry) - {"key", "kind", "capacity"})
+        if unknown:
+            raise AdmissionRefused(
+                f"a required resource has unsupported key(s) {', '.join(unknown)}; "
+                "a resource declares key, kind and capacity"
+            )
+        key = entry.get("key")
+        if not isinstance(key, str) or not key.strip():
+            raise AdmissionRefused("a required resource needs a nonempty key")
+        if key in seen:
+            raise AdmissionRefused(f"resource {key!r} is required twice in one contract")
+        seen.add(key)
+        kind = entry.get("kind", "exclusive")
+        capacity = entry.get("capacity")
+        if kind not in ("exclusive", "capacity"):
+            raise AdmissionRefused(
+                f"resource {key!r} has unknown kind {kind!r}; use exclusive or capacity"
+            )
+        if kind == "exclusive" and capacity is not None:
+            raise AdmissionRefused(
+                f"resource {key!r} is exclusive and cannot declare a capacity"
+            )
+        parsed.append({"key": key, "kind": kind, "capacity": capacity})
+    return tuple(parsed)
+
+
+def admit(
+    store: Store,
+    task_id: str,
+    *,
+    context: AcceptanceContext,
+    required_checks: Iterable[str] | None = None,
+    scope: str = "",
+    resources: Any = None,
+    declared: dict[str, Any] | None = None,
+) -> AdmittedTask:
+    """Validate a contract, take what it requires, and open the task at generation 1.
+
+    The row and the claims are written in one transaction. That is the whole of
+    the ownership guarantee: there is no window in which a task exists as
+    admitted but does not hold the resource it declared, and a refused claim
+    leaves no task behind at all.
+
+    `required_checks` is the caller's selection. The frozen floor is the union
+    of it with every check the approved policy registers, so a caller may add to
+    the floor and cannot subtract from it — and because the floor is derived
+    here, deleting the policy file cannot shrink it either.
+    """
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise AdmissionRefused("a task id is required")
+    if not context.usable:
+        raise AdmissionRefused(context.refusal or "the acceptance context is not usable")
+
+    resources = _resources(resources)
+    # The floor is derived before the contract is built rather than patched into
+    # it afterwards, so there is never a TaskContract in hand that has not been
+    # validated. A malformed declaration raises here, before any transaction
+    # opens, and so cannot reach SQL and leave a rolled-back row behind.
+    contract = TaskContract(
+        repository={"root": str(context.project.root),
+                    "git_common_dir": str(context.project.git_common_dir)},
+        policy_digest=context.policy_digest,
+        required_checks=_floor(context, required_checks),
+        scope=scope if isinstance(scope, str) else "",
+        resources=resources,
+        declared=dict(declared or {}),
+    )
+    specs = contract.resource_specs()
+
+    with store.transaction() as conn:
+        if conn.execute("SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)).fetchone():
+            raise TaskError(f"task {task_id} already exists")
+        # Claims first, inside this transaction, so a conflict rolls the whole
+        # admission back rather than leaving a task that believes it owns a
+        # resource another task holds.
+        acquire_in(conn, task_id, FIRST_GENERATION, specs)
+        insert_task_row(conn, task_id, contract.to_json(), contract.policy_digest)
+        record = _row_to_task(conn, task_id)
+    return AdmittedTask(task=record, contract=contract)
+
+
+def _floor(context: AcceptanceContext, selected: Iterable[str] | None) -> tuple[str, ...]:
+    """The mandatory checks this attempt is frozen against.
+
+    Read from the policy in force, so the floor survives the policy file
+    disappearing and grows when the policy gains a check. A selection naming a
+    check the policy does not register is refused rather than dropped: silently
+    ignoring it would admit a task that looks like it was asked for something it
+    is not.
+    """
+    from .manifest import parse_manifest
+
+    manifest = parse_manifest(context.project, context.project.runs_root)
+    chosen = tuple(selected or ())
+    for check_id in chosen:
+        if not isinstance(check_id, str) or not check_id.strip():
+            raise AdmissionRefused("a required check id must be a nonempty string")
+        if check_id not in manifest.checks:
+            known = ", ".join(sorted(manifest.checks)) or "<none>"
+            raise AdmissionRefused(
+                f"unknown check {check_id!r}; the approved policy defines: {known}"
+            )
+    floor = tuple(sorted(set(manifest.checks) | set(chosen)))
+    if not floor:
+        raise AdmissionRefused(
+            "a task with no mandatory checks cannot be admitted: there would be "
+            "nothing for it to prove"
+        )
+    return floor
+
+
+def verify_ownership(store: Store, task_id: str, generation: int) -> None:
+    """Confirm this generation still holds every resource its contract requires.
+
+    Called before a launch. A conflict found at admission cannot stay found: a
+    resource can be released by recovery while the attempt is still open, and
+    an attempt whose resources vanished under it must not go on to run.
+    """
+    record = get_task(store, task_id)
+    if record.generation != generation:
+        raise ConflictError(
+            f"task {task_id} was reassigned from generation {generation} to "
+            f"{record.generation}; this attempt no longer owns anything"
+        )
+    specs = record.pinned().resource_specs()
+    if not specs:
+        return
+    held = {claim.resource_key: claim for claim in holders(store, task_id)}
+    for spec in specs:
+        current = held.get(spec.key)
+        if current is None or current.generation != generation:
+            raise ConflictError(
+                f"resource {spec.key!r} required by task {task_id} is no longer held at "
+                f"generation {generation}; the attempt cannot proceed until "
+                "reconciliation establishes who owns it"
+            )
+
+
+# ------------------------------------------------------------------ readiness
 
 
 @dataclass(frozen=True)
 class ReadinessResult:
+    """The verdict, and everything a reader needs to act on it.
+
+    `gaps` blocks THIS attempt. `history` does not: it is what earlier attempts
+    reached, kept because erasing a failure in order to reach READY would make
+    the record a lie, and kept separate because a superseded attempt's failure
+    is not this attempt's verdict.
+    """
+
     readiness: Readiness
     gaps: tuple[str, ...]
     context: dict[str, Any]
+    history: tuple[str, ...] = ()
+    #: The identities the decision was made against, so a reader can see what was
+    #: compared rather than being told only that it matched.
+    tested: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
-        return {"readiness": self.readiness, "gaps": list(self.gaps), "context": self.context}
+        return {
+            "readiness": self.readiness,
+            "gaps": list(self.gaps),
+            "context": dict(self.context),
+            "history": list(self.history),
+            "tested": dict(self.tested),
+        }
+
+
+def finalize(
+    store: Store,
+    task_id: str,
+    *,
+    context: AcceptanceContext,
+    additional_checks: Iterable[str] = (),
+) -> ReadinessResult:
+    """Decide READY, REJECTED or BLOCKED, and record it. The only such decision.
+
+    The order encodes the domain:
+
+    1. A recorded FAIL at this attempt is an answer, and REJECTED outranks
+       BLOCKED. A failing check is not "incomplete".
+    2. A missing required check, a blocked one, or an identity that no longer
+       matches is BLOCKED. Absent or stale evidence is never success.
+    3. Only evidence eligible for this attempt, under this contract and these
+       identities, reaches READY.
+
+    A run recorded with no attempt number stays readable as standalone evidence
+    and cannot satisfy acceptance, because nothing establishes which contract it
+    was produced under.
+    """
+    record = get_task(store, task_id)
+    if record.status == "closed":
+        raise TaskError(f"task {task_id} is closed; its result is final")
+    if not context.usable:
+        # Refused at the boundary the caller controls. A context with no policy
+        # has no identity to require a pass to have been produced under, so
+        # there is nothing here that could be compared and no verdict to reach.
+        return _blocked_result(record, context.refusal or "the acceptance context is unusable")
+
+    contract = record.pinned()
+    # The pinned floor, plus whatever this call adds. Union, never subtraction.
+    required = tuple(sorted(set(contract.required_checks) | set(additional_checks)))
+    verdict = _decide(store, record, required, expected_identities(record, context))
+    record_readiness(store, task_id, verdict)
+    return verdict
+
+
+def expected_identities(
+    record: TaskRecord, context: AcceptanceContext
+) -> dict[str, Any]:
+    """The identities a passing run must have been produced under.
+
+    The policy is compared against the digest pinned at admission, not against
+    the policy in force: the question is whether the evidence answers the
+    contract this attempt was admitted under, and re-reading the current policy
+    here would make the answer move underneath the run it is judging. Source and
+    fixtures are compared against the live measurement, because those are what
+    "the code that ran is the code that is here now" means.
+    """
+    return {
+        "source_inventory_digest": context.source_inventory_digest,
+        "policy_digest": record.pinned().policy_digest,
+        "fixture_digest": context.fixture_digest,
+    }
+
+
+def _blocked_result(record: TaskRecord, gap: str) -> ReadinessResult:
+    """BLOCKED, with the recorded generation so the verdict can still be stored."""
+    return ReadinessResult(
+        "BLOCKED",
+        (gap,),
+        {"generation": record.generation, "policy_digest": record.policy_digest},
+    )
 
 
 def compute_readiness(
@@ -188,134 +675,176 @@ def compute_readiness(
     task_id: str,
     *,
     required_check_ids: Iterable[str],
+    context: AcceptanceContext | None = None,
 ) -> ReadinessResult:
-    """Decide READY, REJECTED, or BLOCKED from recorded evidence only.
+    """Readiness decided from recorded evidence and the task's pinned contract.
 
-    Order matters and encodes the domain:
-      1. A recorded FAIL or BLOCKED decides immediately. A failing check is not
-         "incomplete", it is an answer, and REJECTED outranks BLOCKED.
-      2. A missing required check is BLOCKED, not READY. Absent evidence is
-         never success, which is the rule the whole product rests on.
-      3. Only a complete set of passing runs under the current contract and
-         policy reaches READY.
+    `finalize` is the authority and is what every adapter that can reach the
+    repository calls. This is the same decision over one task, without recording
+    it, and it takes an `AcceptanceContext` when the caller has one — pass it and
+    the identity comparison runs; omit it and only the frozen floor and the
+    evidence decide, which is all a caller with no repository can honestly know.
 
-    The generation is re-read inside the same transaction that records the
-    result, so an attempt that was superseded while this was computing cannot
-    publish READY for a contract it no longer holds.
+    A caller may add to `required_check_ids` and never subtract: the pinned floor
+    is unioned in unconditionally.
     """
-    required = tuple(dict.fromkeys(required_check_ids))
-    gaps: list[str] = []
-    task = get_task(store, task_id)
-
-    runs = store.list_runs(task_id=task_id, limit=1000)
-    by_check: dict[str, list[dict]] = {}
-    for run in runs:
-        if run["lifecycle"] == "terminal" and run["result"]:
-            by_check.setdefault(run["check_id"], []).append(run)
-
-    # A run counts as PASSING evidence for this attempt only if it belongs to
-    # this attempt. `supersede_task` advances the generation to invalidate the
-    # previous attempt's authority, and a retry is a new run linked to its
-    # predecessor rather than a continuation of it. Without this filter a
-    # reassigned task was handed its own READY: generation 2 had produced no
-    # runs at all and inherited every pass from generation 1.
-    #
-    # A stale run still counts as a FAILURE. CONTRACT says to preserve the
-    # original failure, flag the instability, and never overwrite it with the
-    # later pass. A first draft filtered stale runs out entirely, which is the
-    # blunt reading, and the property test caught it on its first ever
-    # execution: `record FAIL` then `crash` reported BLOCKED where the answer is
-    # REJECTED. A superseded attempt's failure is still a failure, and a retry
-    # that has not yet re-run the check is not a repair of it.
-    #
-    # A run recorded before attempts existed carries no attempt number. CONTRACT
-    # says such a report stays readable as standalone evidence and that migration
-    # must not invent task acceptance for it, so it cannot pass acceptance.
-    stale: list[str] = []
-    stale_failures: list[str] = []
-    by_check = {}
-    for run in runs:
-        if run["lifecycle"] != "terminal" or not run["result"]:
-            continue
-        if run["attempt"] != task.generation:
-            stale.append(
-                f"check {run['check_id']!r} was recorded at attempt "
-                f"{run['attempt'] if run['attempt'] is not None else 'none'}, not the current "
-                f"attempt {task.generation}"
-            )
-            if run["result"] == "FAIL":
-                stale_failures.append(
-                    f"check {run['check_id']!r} FAILED at attempt {run['attempt']} and has not "
-                    f"been re-run at attempt {task.generation}; the original failure is "
-                    f"preserved rather than replaced by a later pass"
-                )
-            continue
-        by_check.setdefault(run["check_id"], []).append(run)
-
-    rejected = False
-    for check_id in required:
-        outcomes = by_check.get(check_id, [])
-        if not outcomes:
-            gaps.append(f"no completed run for required check {check_id!r}")
-            continue
-        latest = outcomes[0]
-        if latest["result"] == "FAIL":
-            rejected = True
-        elif latest["result"] == "BLOCKED":
-            gaps.append(
-                f"required check {check_id!r} is BLOCKED: {latest['reason'] or 'no reason recorded'}"
-            )
-        elif latest["result"] != "PASS":
-            gaps.append(f"required check {check_id!r} has no usable result")
-
-    # A stale run is not silently dropped. It is reported, so a reader who can
-    # see a passing run for a required check is told why it does not count,
-    # rather than left to conclude the check never ran.
-    gaps = tuple(dict.fromkeys(gaps)) + tuple(dict.fromkeys(stale))
-
-    if stale_failures:
-        # REJECTED, and the reason says the failure is a preserved earlier one
-        # rather than a fresh verdict, so nobody reads REJECTED as "this attempt
-        # just failed" when the truth is "the earlier one did and nothing has
-        # re-run it since".
-        return ReadinessResult(
-            "REJECTED",
-            tuple(dict.fromkeys(gaps)) + tuple(dict.fromkeys(stale_failures)),
-            {"generation": task.generation, "policy_digest": task.policy_digest},
+    record = get_task(store, task_id)
+    if not context or not context.usable:
+        required = tuple(
+            sorted(set(record.pinned().required_checks) | set(required_check_ids))
         )
-    if rejected:
-        return ReadinessResult(
-            "REJECTED", gaps,
-            {"generation": task.generation, "policy_digest": task.policy_digest},
-        )
-    if gaps:
-        return ReadinessResult("BLOCKED", gaps,
-                               {"generation": task.generation, "policy_digest": task.policy_digest})
-    return ReadinessResult(
-        "READY", (),
-        {"generation": task.generation, "policy_digest": task.policy_digest},
+        return _decide(store, record, required)
+    return _decide(
+        store, record,
+        tuple(sorted(set(record.pinned().required_checks) | set(required_check_ids))),
+        expected_identities(record, context),
     )
 
 
-@_in_transaction
-def record_readiness(conn, store: Store, task_id: str, result: ReadinessResult) -> TaskRecord:
+def _decide(
+    store: Store,
+    record: TaskRecord,
+    required: tuple[str, ...],
+    expected: dict[str, Any] | None = None,
+) -> ReadinessResult:
+    """The decision rule, over a required set already resolved.
+
+    One function, used by both entry points, because two copies of a verdict rule
+    is how the laxer adapter comes to disagree with the strict one.
+    """
+    eligible: dict[str, dict] = {}
+    history: list[str] = []
+    for run in store.list_runs(task_id=record.task_id, limit=1000):
+        if run["lifecycle"] != "terminal" or not run["result"]:
+            continue
+        if run["attempt"] != record.generation:
+            history.append(
+                f"check {run['check_id']!r} was recorded at attempt "
+                f"{run['attempt'] if run['attempt'] is not None else 'none'}, not this "
+                f"attempt {record.generation}"
+            )
+            continue
+        # `list_runs` is newest-first, so the first row seen for a check is the
+        # latest one and a re-run supersedes the pass before it.
+        eligible.setdefault(run["check_id"], run)
+
+    gaps: list[str] = []
+    rejected = False
+    tested: dict[str, Any] = {}
+    for check_id in required:
+        run = eligible.get(check_id)
+        if run is None:
+            gaps.append(f"no completed run for required check {check_id!r}")
+            continue
+        result = run["result"]
+        if result == "FAIL":
+            rejected = True
+        elif result == "BLOCKED":
+            gaps.append(
+                f"required check {check_id!r} is BLOCKED: "
+                f"{run['reason'] or 'no reason recorded'}"
+            )
+        elif result != "PASS":
+            gaps.append(f"required check {check_id!r} has no usable result")
+            continue
+        else:
+            # Identity is compared only for a pass. A FAIL and a BLOCKED are
+            # already answers about this attempt, and re-deciding them against an
+            # identity would turn a decided result into a different one.
+            recorded = {
+                "source_inventory_digest": run["source_inventory_digest"],
+                "policy_digest": run["configuration_digest"],
+                "fixture_digest": run["fixture_digest"],
+            }
+            tested[check_id] = recorded
+            if expected is not None:
+                gaps.extend(_identity_gaps(check_id, recorded, expected))
+
+    readiness: Readiness = "REJECTED" if rejected else "BLOCKED" if gaps else "READY"
+    return ReadinessResult(
+        readiness,
+        tuple(dict.fromkeys(gaps)),
+        {
+            "generation": record.generation,
+            "required_checks": list(required),
+            "identities": expected,
+            # Named rather than left silent. An identity a passing run never
+            # recorded cannot be shown to describe what is in force now, and a
+            # reader who is not told that is being told the pass covers it.
+            "unverified_identities": sorted(
+                label
+                for key, label in COMPARED_IDENTITIES
+                for run in eligible.values()
+                if run["result"] == "PASS" and run.get(key) is None
+            ),
+        },
+        tuple(dict.fromkeys(history)),
+        tested,
+    )
+
+
+#: The identities acceptance compares, and what it calls each one. `source` and
+#: `policy` are recorded on every run today; `fixtures` is measured from the
+#: policy but not yet recorded on the run (see `_identity_gaps`).
+COMPARED_IDENTITIES = (
+    ("source_inventory_digest", "source"),
+    ("policy_digest", "policy"),
+    ("fixture_digest", "fixtures"),
+)
+
+def _identity_gaps(
+    check_id: str, recorded: dict[str, Any], expected: dict[str, Any]
+) -> list[str]:
+    """Why a passing run no longer describes what is here now.
+
+    A gap is a *disagreement*: the run recorded an identity and it is not the one
+    this attempt is bound to. That is evidence of change, and change is what
+    blocks.
+
+    An identity the run never recorded is not a disagreement — it is an absence,
+    and `execution` writes a null fixture digest on every run in this build.
+    Gating on that would block every task in the repository over a fact about the
+    recording path rather than about the fixtures. Such an identity is named in
+    the decision context as unverified, so what is not covered is stated instead
+    of assumed, and the moment `execution` records a real fixture digest the
+    comparison starts applying with no change here.
+    """
+    gaps: list[str] = []
+    for key, label in COMPARED_IDENTITIES:
+        actual, wanted = recorded.get(key), expected.get(key)
+        if actual is None or wanted is None or actual == wanted:
+            continue
+        gaps.append(
+            f"required check {check_id!r} passed against a different {label} "
+            f"({actual}) than the one this attempt is bound to ({wanted}); the {label} "
+            "changed since that run, so re-run it"
+        )
+    return gaps
+
+
+def record_readiness(store: Store, task_id: str, result: ReadinessResult) -> TaskRecord:
     """Store a readiness verdict, refusing if the attempt was superseded.
 
-    The generation is compared inside this transaction. A client that began
+    The generation is re-read inside the transaction. A client that began
     finalizing at generation 1 and was reassigned mid-computation must not be
     able to record READY at generation 2.
     """
-    row = conn.execute("SELECT generation, status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-    if row is None:
-        raise TaskError(f"no such task: {task_id}")
-    generation, status = row
-    if status == "closed":
-        raise TaskError(f"task {task_id} is closed; its result is final")
-    if result.context.get("generation") != generation:
-        raise ConflictError(
-            f"task {task_id} was reassigned from generation "
-            f"{result.context.get('generation')} to {generation}; refusing to record "
-            "readiness for a superseded attempt"
+    with store.transaction() as conn:
+        row = conn.execute(
+            "SELECT generation, status FROM tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            raise TaskError(f"no such task: {task_id}")
+        generation, status = row
+        if status == "closed":
+            raise TaskError(f"task {task_id} is closed; its result is final")
+        decided_at = result.context.get("generation")
+        if decided_at != generation:
+            raise ConflictError(
+                f"task {task_id} was reassigned from generation {decided_at} to "
+                f"{generation}; refusing to record readiness for a superseded attempt"
+            )
+        conn.execute(
+            "UPDATE tasks SET readiness = ? WHERE task_id = ?", (result.readiness, task_id)
         )
-    conn.execute("UPDATE tasks SET readiness = ? WHERE task_id = ?", (result.readiness, task_id))
-    return _row_to_task(conn, task_id)
+        return _row_to_task(conn, task_id)

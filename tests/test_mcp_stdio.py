@@ -116,10 +116,15 @@ def cli_json(argv: list[str]) -> dict:
 
 
 def begin_task(client: StdioClient, request_id: str = "req-begin-1", **extra) -> str:
+    """Open a task over the wire and return its id.
+
+    The policy digest and checkout reference are absent because admission derives
+    them from the repository. A caller that supplied its own was binding the
+    attempt to a string it chose, and the wire schema now refuses both rather
+    than accepting a binding the core cannot check.
+    """
     result = client.call("task_begin", {
         "contract": {"scope": "totals"},
-        "policy_digest": "policy-sha-0001",
-        "checkout_ref": "refs/heads/main",
         "owner": "protocol-suite",
         "request_id": request_id,
         **extra,
@@ -459,8 +464,6 @@ def test_one_request_id_naming_two_contracts_is_refused_on_the_wire(tmp_path: Pa
         first = begin_task(client, request_id="req-conflict", contract={"scope": "one"})
         clash = client.call("task_begin", {
             "contract": {"scope": "two"},
-            "policy_digest": "policy-sha-0001",
-            "checkout_ref": "refs/heads/main",
             "request_id": "req-conflict",
         })
         assert clash["isError"] is True
@@ -554,8 +557,6 @@ def test_an_internal_fault_never_comes_back_as_a_verdict(tmp_path: Path) -> None
             "name": "task_begin",
             "arguments": {
                 "contract": {"scope": "totals"},
-                "policy_digest": "p",
-                "checkout_ref": "refs/heads/main",
                 "request_id": "req-fault",
             },
         })

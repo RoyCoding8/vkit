@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 
 from vkit.console import api, operations, plan, server
+from vkit.enroll import read_enrollment
 from vkit.console.plan import (
     MAX_LOG_BYTES,
     Refused,
@@ -175,7 +176,12 @@ def test_no_setup_operation_touches_a_hand_maintained_file(
 
     before = fingerprint()
     assert operations.enroll(context)["enrolled"] is False
-    assert operations.enroll(context, accepted=True)["enrolled"] is True
+    # A repository that already ships a hand-maintained manifest cannot be
+    # "accepted" over it: the core refuses to overwrite committed policy, so
+    # the whole setup surface runs with the acceptance refused rather than
+    # skipped.
+    with pytest.raises(Refused):
+        operations.enroll(context, accepted=True)
     operations.install(context)
     operations.repair(context)
     operations.remove(context)
@@ -624,10 +630,13 @@ def test_enroll_over_http_records_acceptance(context: operations.Context) -> Non
             data=json.dumps({"operation": "enroll", "accepted": True}).encode(),
             headers={"Content-Type": "application/json"}, method="POST",
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            accepted = json.loads(response.read().decode("utf-8"))
-        assert accepted["result"]["enrolled"] is True
-        assert (context.project.state_root / "enrollment.json").is_file()
+        # 409, not 200: the core refuses to accept a proposal the console never
+        # wrote, and the console carries that refusal through as a conflict
+        # rather than reporting a receipt it did not earn.
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=30)
+        assert caught.value.code == 409
+        assert read_enrollment(context.project).state.value == "not_enrolled"
     finally:
         bound.shutdown()
         bound.server_close()
@@ -690,7 +699,10 @@ def test_enroll_leaves_execution_disabled_until_the_policy_is_accepted(
     declined = operations.enroll(context)
     assert declined["enrolled"] is False
     assert declined["accepted"] is False
-    assert not (context.project.state_root / "enrollment.json").exists()
+    # Reporting the policy writes nothing at all, so the repository's
+    # enrollment state is exactly what it was before the call.
+    assert declined["enrolled"] is False
+    assert read_enrollment(context.project).state.value == "not_enrolled"
     # The policy shown is the manifest's own executable command, not a summary.
     assert declined["policy"] == [{
         "id": CHECK_ID,
@@ -699,23 +711,51 @@ def test_enroll_leaves_execution_disabled_until_the_policy_is_accepted(
         "timeout_seconds": 120.0,
     }]
 
-    accepted = operations.enroll(context, accepted=True)
-    assert accepted["enrolled"] is True
-    record_path = Path(accepted["record"])
-    record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert record["accepted"] is True
-    assert record["configuration_digest"] == context.manifest.digest()
-    # The record lives under the Git common directory beside the store, so it is
-    # state rather than a working-tree file: it is never tracked, never appears
-    # in a diff, and survives the checkout. `git status` is asked rather than
-    # assumed, because that is the property a reviewer would rely on.
-    assert record_path.is_relative_to(context.project.git_common_dir)
+    # This repository ships a hand-maintained manifest, so accepting would mean
+    # overwriting committed policy with the proposal. The core refuses, and the
+    # refusal is the guarantee: a console that could do this would let an
+    # operator weaken the contract with no diff to review.
+    committed = context.project.manifest_path.read_text(encoding="utf-8")
+    with pytest.raises(Refused) as caught:
+        operations.enroll(context, accepted=True)
+    # "No proposal" rather than "hand-maintained": the console never writes a
+    # proposal, so that is the first thing missing either way.
+    assert "no proposal" in str(caught.value)
+    assert context.project.manifest_path.read_text(encoding="utf-8") == committed
+
+
+def test_acceptance_needs_a_proposal_the_console_did_not_write(
+    tmp_path: Path,
+) -> None:
+    """The console accepts a proposal a person made, and writes the tree nothing.
+
+    Proposing is the CLI's job (`vkit project enroll`), which is what keeps this
+    package from touching committed policy. So acceptance here is refused until
+    a proposal exists, and no acceptance is ever recorded into the working tree:
+    the record, when there is one, lives under the Git common directory beside
+    the store, never tracked and never in a diff.
+    """
+    root = tmp_path / "copy"
+    shutil.copytree(EXAMPLE, root)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "app"],
+        cwd=root, check=True,
+    )
+    context = operations.open_context(root)
+
+    with pytest.raises(Refused) as caught:
+        operations.enroll(context, accepted=True)
+    assert "no proposal" in str(caught.value)
+    assert read_enrollment(context.project).state.value == "not_enrolled"
+
     untracked = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=context.project.root,
+        ["git", "status", "--porcelain"], cwd=root,
         capture_output=True, encoding="utf-8", timeout=60,
     ).stdout
     assert "enrollment" not in untracked, untracked
-    assert "manifest.json" not in untracked, untracked
+    assert "proposed-manifest" not in untracked, untracked
 
 
 def test_an_enrollment_is_impossible_without_a_manifest(tmp_path: Path) -> None:
@@ -745,8 +785,12 @@ def test_the_api_will_not_read_accepted_false_as_accepted(
         assert result["result"]["accepted"] is False, query
     assert not (context.project.state_root / "enrollment.json").exists()
 
-    result = api.dispatch(context, "apply", {"operation": "enroll", "accepted": "true"})
-    assert result["result"]["enrolled"] is True
+    # `accepted=true` is read as an acceptance request, and the core refuses it:
+    # the result is the refusal, not a record of enrollment.
+    with pytest.raises(Refused) as caught:
+        api.dispatch(context, "apply", {"operation": "enroll", "accepted": "true"})
+    assert "no proposal" in str(caught.value) or "hand-maintained" in str(caught.value)
+    assert read_enrollment(context.project).state.value == "not_enrolled"
 
     with pytest.raises(api.BadRequest) as caught:
         api.dispatch(context, "apply", {"operation": "enroll", "accepted": "maybe"})

@@ -40,10 +40,6 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 # existing record and never a guess. A contract without it is unbound, which is
 # the safe direction: the hook then has no task to gate.
 HOST_BINDING_KEY = "host"
-# Key naming the check ids the contract requires. A task contract that does not
-# declare them has no declared evidence requirement, so the hook has nothing to
-# enforce and says so rather than inventing a policy.
-REQUIRED_CHECKS_KEY = "required_checks"
 
 # The six MCP tools Plan 03 exposes. This is the whole supported operation set;
 # a hook that parsed arbitrary shell text would be a second, divergent policy.
@@ -160,57 +156,63 @@ def _open_store(project: str | None, payload: dict[str, Any]):
     return storage.Store(resolved.db_path), paths
 
 
-def _bound_task_id(store, payload: dict[str, Any]) -> str | None:
-    """The task this payload is registered against, or None.
+def _bindings(store) -> list[tuple[str, dict[str, Any]]]:
+    """Every open task's host binding, as (task_id, host) pairs.
 
-    A payload with an `agent_id` only ever matches a binding that names that
-    same agent, so one worker's completion gate can never be applied to a
-    sibling subagent. A payload without one is a main-session event.
+    The binding lives in the contract's `declared` block, which is where
+    admission puts everything the caller supplied that the core did not derive.
+    Reading it from the top level instead would read a field no validated
+    contract has, and every task would read as unbound.
+
+    Read through one connection because the answer is a question about all
+    bindings at once, and reading them one at a time is how two of them come to
+    disagree about which session is registered.
     """
-    session_id = payload.get("session_id")
-    if not isinstance(session_id, str) or not session_id:
-        return None
-    agent_id = payload.get("agent_id")
-
-    # Store has no public task listing yet; this is the same connection factory
-    # `vkit.tasks` uses. Plan 03 owns a session-binding tool, and the listing
-    # belongs there.
     with store._connect() as conn:
         rows = conn.execute(
-            "SELECT task_id, status, contract_json FROM tasks"
+            "SELECT task_id, contract_json FROM tasks WHERE status != 'closed'"
         ).fetchall()
 
-    for task_id, status, contract_json in rows:
-        if status == "closed":
-            continue
+    bindings: list[tuple[str, dict[str, Any]]] = []
+    for task_id, contract_json in rows:
         try:
             contract = json.loads(contract_json)
         except ValueError:
             continue
         if not isinstance(contract, dict):
             continue
-        host = contract.get(HOST_BINDING_KEY)
-        if not isinstance(host, dict) or host.get("session_id") != session_id:
-            continue
-        if agent_id is not None and host.get("agent_id") != agent_id:
-            continue
-        return task_id
-    return None
+        declared = contract.get("declared")
+        host = declared.get(HOST_BINDING_KEY) if isinstance(declared, dict) else None
+        if isinstance(host, dict):
+            bindings.append((task_id, host))
+    return bindings
 
 
-def _required_checks(contract: dict[str, Any]) -> tuple[str, ...] | None:
-    """The check ids the contract requires, or None when it declares none.
+def _bound_task_id(store, payload: dict[str, Any]) -> str | None:
+    """The one task this payload is registered against, or None.
 
-    None is not "no checks required", it is "no requirement was ever declared".
-    The two produce different answers, and conflating them would let a contract
-    that failed to record its checks read as a task with nothing to prove.
+    A main-session event and a subagent event are matched against disjoint sets of
+    bindings, not against one set with a filter. The earlier version filtered only
+    when the payload carried an `agent_id`, so a main-session `Stop` could match a
+    subagent's binding and inherit its gate; and it returned the first match, so
+    two bindings for one session resolved by table order rather than by anything
+    recorded.
+
+    Both are now refusals rather than guesses. A session with two matching
+    bindings, or a subagent whose binding names a different agent, reports what
+    registration is required — CONTRACT.md forbids resolving a task from
+    recency, and a binding that is ambiguous or absent is not resolved at all.
     """
-    declared = contract.get(REQUIRED_CHECKS_KEY)
-    if not isinstance(declared, list) or not declared:
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
         return None
-    if not all(isinstance(item, str) and item for item in declared):
-        return None
-    return tuple(declared)
+    agent_id = payload.get("agent_id")
+
+    matches = [
+        task_id for task_id, host in _bindings(store)
+        if host.get("session_id") == session_id and host.get("agent_id") == agent_id
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _failing_runs(store, task_id: str, result: str) -> list[dict[str, Any]]:
@@ -263,6 +265,19 @@ def _with_context(event: str, response: dict[str, Any], text: str) -> dict[str, 
         "hookEventName": event, "additionalContext": text,
     }
     return response
+
+
+def _note_response(event: str, text: str) -> dict[str, Any]:
+    """A response that says something and never withholds the stop.
+
+    `TaskCompleted` is documented with a `systemMessage` and no
+    `additionalContext` field, so a message for that event has nowhere else to go.
+    Every event also gets the message, which is what makes a reader's log show
+    the same note in the same place whichever event delivered it. This is the
+    field `degraded` reports through, for the same reason.
+    """
+    response: dict[str, Any] = {"systemMessage": text}
+    return _with_context(event, response, text)
 
 
 # --- event handlers --------------------------------------------------------
@@ -335,13 +350,17 @@ def _completion_response(
     decides whether to withhold the stop and, when it does, what to say.
     """
     task = tasks_mod.get_task(store, task_id)
-    required = _required_checks(task.contract)
-    if required is None:
+    # The core owns the floor. A contract this build cannot validate is reported
+    # as what it is — an attempt with no provable requirement — rather than
+    # reduced to a caller-selected set here, which is the rule this adapter used
+    # to keep alongside the core's.
+    try:
+        required = task.pinned().required_checks
+    except tasks_mod.AdmissionRefused as exc:
         return _with_context(
             event, {},
-            f"Managed task {task_id} declares no required checks, so there is no "
-            "recorded-evidence gate to apply. Reopen it with an explicit contract "
-            "rather than treating this as a pass.",
+            f"Managed task {task_id} has no readable mandatory check floor ({exc}). "
+            "Reopen it with an explicit contract rather than treating this as a pass.",
         )
 
     readiness = tasks_mod.compute_readiness(store, task_id, required_check_ids=required)
@@ -369,8 +388,29 @@ def _completion_response(
 def _on_completion(event: str, store, payload: dict[str, Any], tasks_mod: Any) -> dict[str, Any]:
     task_id = _bound_task_id(store, payload)
     if task_id is None:
-        return {}
+        # An absent binding is not a pass and not a gate: it is a session that was
+        # never registered, or one whose registration is ambiguous. Both are
+        # reported, because a silent response here is indistinguishable from a
+        # registered session whose evidence was never checked.
+        return _note_response(event, _registration_note(payload))
     return _completion_response(event, store, payload, tasks_mod, task_id)
+
+
+def _registration_note(payload: dict[str, Any]) -> str:
+    """What a session must register before this gate can judge it."""
+    agent_id = payload.get("agent_id")
+    who = "this subagent" if agent_id else "this session"
+    identified = f"agent {agent_id!r} in " if agent_id else ""
+    return (
+        f"No single managed task is registered for {who}, so no recorded-evidence "
+        f"gate could be applied. Either nothing has been registered for "
+        f"{identified}this session, or more than one task claims it and the "
+        f"binding is ambiguous. A task is registered by task_begin recording a "
+        f"'host' binding naming this session"
+        + (f" and agent_id {agent_id!r}" if agent_id else "")
+        + ", with no other task claiming the same binding. Until then this stop is "
+        "not evidence of acceptance."
+    )
 
 
 # --- dispatch --------------------------------------------------------------
@@ -409,8 +449,7 @@ def degraded(event: str, detail: str) -> dict[str, Any]:
     a clean pass.
     """
     message = f"{DEGRADED_PREFIX} - {detail}"
-    response: dict[str, Any] = {"systemMessage": message}
-    return _with_context(event, response, message)
+    return _note_response(event, message)
 
 
 def respond(event: str, payload: Any, project: str | None = None) -> tuple[dict[str, Any], int]:

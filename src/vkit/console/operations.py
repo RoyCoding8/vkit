@@ -27,6 +27,11 @@ from typing import Any
 from ..execution import ExecutionError
 from ..execution import run_check as execute_check
 from ..identity import compute_source_identity
+# The console reads and writes the enrollment record through the core, which is
+# the only module that owns its format. It did not before, and wrote a second
+# one, so `enroll(accepted=True)` here and the same call from the CLI disagreed
+# about whether a repository was enrolled.
+from .. import enroll as core_enroll
 from ..manifest import Manifest, ManifestError, parse_manifest
 from ..paths import Project, ProjectError, open_project
 from ..procidentity import CannotConfirm, ProcessIdentity, UnsupportedPlatform, read_identity
@@ -749,56 +754,51 @@ def _remove_cache(cache: Path) -> str | None:
 
 
 def enroll(context: Context, accepted: bool = False, **_: Any) -> dict[str, Any]:
-    """Register a repository as verified.
+    """Register a repository as verified, through the core enrollment record.
 
-    Per Plan 06: execution stays disabled until the user accepts the
-    repository's executable policy. So enroll does two things and records both:
-    it names the policy (the registered checks with their exact argv) and it
-    records the operator's explicit acceptance. Without `accepted`, it reports
-    the policy and writes nothing, so execution stays disabled. A hand-maintained
-    file is never overwritten: acceptance is written only to the shared Git
-    directory, beside the store, and never to the working tree.
+    This used to write its own `enrollment.json` with keys the rest of the system
+    does not read — `accepted` and `configuration_digest`, where
+    `enroll.read_enrollment` expects `state` and `policy_digest`. Two formats for
+    one fact is how a repository came to read as enrolled here and not enrolled
+    everywhere else. There is one record now, written by `vkit.enroll`, and the
+    state reported here is read back from it rather than assumed from the call.
+
+    Without `accepted` this reports the policy and changes nothing at all, so
+    execution stays disabled until a person accepts. The proposal the core
+    writes beside the manifest is deliberately not written from here: this
+    package must leave the working tree byte-identical, and a proposal is a
+    file in it.
     """
-    import json
-
     if context.manifest is None:
         raise Refused(
             context.manifest_error
-            or "the repository has no manifest to enroll against; create verification/manifest.json first"
+            or "the repository has no manifest to enroll against; create "
+               "verification/manifest.json first"
         )
-    policy = [
-        {"id": check.id, "command": list(check.argv), "timeout_seconds": check.timeout_seconds}
-        for check in context.manifest.checks.values()
-    ]
-    if not accepted:
-        # No state change at all. The operator reads the policy and decides.
-        return {
-            "operation": "enroll",
-            "enrolled": False,
-            "accepted": False,
-            "policy": policy,
-            "note": "execution stays disabled until this policy is accepted; re-run with accepted=true",
-        }
+    if accepted:
+        try:
+            core_enroll.accept(context.project)
+        except core_enroll.EnrollmentError as exc:
+            raise Refused(str(exc)) from exc
 
-    record_path = context.project.state_root / "enrollment.json"
-    record_path.write_text(
-        json.dumps(
-            {
-                "root": str(context.project.root),
-                "configuration_digest": context.manifest.digest(),
-                "accepted": True,
-                "policy": policy,
-            },
-            indent=2,
-        ) + "\n",
-        encoding="utf-8",
-    )
+    state = core_enroll.read_enrollment(context.project)
     return {
         "operation": "enroll",
-        "enrolled": True,
-        "accepted": True,
-        "policy": policy,
-        "record": str(record_path),
+        "enrolled": state.state is core_enroll.State.ACCEPTED,
+        "accepted": state.state is core_enroll.State.ACCEPTED,
+        "state": state.state.value,
+        "policy": [
+            {"id": check.id, "command": list(check.argv),
+             "timeout_seconds": check.timeout_seconds}
+            for check in context.manifest.checks.values()
+        ],
+        "policy_digest": state.policy_digest,
+        "record": str(core_enroll.record_path(context.project)),
+        "note": (
+            "execution stays disabled until this policy is accepted; re-run with "
+            "accepted=true" if state.state is not core_enroll.State.ACCEPTED else
+            "this repository's policy is accepted; its registered checks may run"
+        ),
     }
 
 

@@ -12,6 +12,7 @@ them without re-checking.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from dataclasses import dataclass, replace
@@ -26,6 +27,19 @@ from .schemas import MANIFEST, SCHEMA_VERSION, SchemaValidationError, validate
 MAX_TIMEOUT_SECONDS = 86400.0
 
 
+def _digest_of(value: Any) -> str:
+    """One sha256 over a canonical JSON encoding of `value`.
+
+    `sort_keys` fixes field order and the compact separators mean no two
+    distinct values can share an encoding, so the digest identifies the
+    structure and not a serialization of it. A digest built by joining fields
+    with a delimiter is the same arithmetic with the property removed: two
+    different policies whose text happens to join the same are one digest.
+    """
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class ManifestError(Exception):
     """The manifest is unusable, or names something that cannot be run safely."""
 
@@ -35,6 +49,23 @@ class Prerequisite:
     name: str
     executable: str
     args: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FixtureIdentity:
+    """What the declared inputs were when the evidence was produced.
+
+    `digest` is the value stored on the run and compared at acceptance.
+    `inputs` is the measured list it came from, kept so a reader who sees a
+    fixture digest change can see which file changed rather than being told
+    only that something did.
+    """
+
+    digest: str
+    inputs: tuple[dict[str, str], ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {"digest": self.digest, "inputs": [dict(i) for i in self.inputs]}
 
 
 @dataclass(frozen=True)
@@ -110,27 +141,114 @@ class Manifest:
         }
         return replace(self, project=project, checks=checks)
 
+    def canonical_form(self) -> dict[str, Any]:
+        """The whole policy as plain data, with no absolute path in it.
+
+        This is the single description of what the policy *is*, and both the
+        digest and the fixture identity are computed from it. Two callers
+        deriving facts from it therefore cannot disagree about what a policy
+        contains, which is the failure a hand-maintained second copy has.
+
+        Every field that can change what executes is present: argv, the
+        repository-relative cwd, the timeout, required scenarios, the artifact
+        name, prerequisites and declared inputs. Nothing is omitted as
+        "derived", because a derived value is only as trustworthy as the
+        derivation and the omission is invisible at the call site.
+        """
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "description": self.description,
+            "checks": [
+                {
+                    "id": check.id,
+                    "description": check.description,
+                    # A list, never a joined string. `['a b', 'c']` and
+                    # `['a', 'b c']` are different argument vectors and
+                    # produce different argument vectors in the child process;
+                    # joining them with a space made the two policies
+                    # indistinguishable to the fingerprint that decides whether
+                    # old evidence is still valid.
+                    "argv": list(check.argv),
+                    "cwd": _relative(check.cwd, self.project.root),
+                    "timeout_seconds": check.timeout_seconds,
+                    "required_scenarios": list(check.required_scenarios),
+                    "artifact": check.artifact_name,
+                    "prerequisites": [
+                        {"name": p.name, "executable": p.executable, "args": list(p.args)}
+                        for p in check.prerequisites
+                    ],
+                    "inputs": list(check.inputs),
+                }
+                for check in sorted(self.checks.values(), key=lambda c: c.id)
+            ],
+        }
+
     def digest(self) -> str:
-        """Identity of the configuration, not of the file's bytes. Two manifests
-        that select the same command with different whitespace are the same
-        policy, and should not invalidate each other's evidence.
+        """Identity of the configuration, not of the file's bytes.
 
-        The project root is deliberately excluded. A manifest is policy, and
-        policy is the same whichever checkout is being tested, so the resolved
-        working directory is recorded as the repository-relative path the
-        manifest declared rather than as the absolute path it resolved to.
-        Leaving the absolute path in would make the digest of one candidate's
-        approved manifest differ from another's for no reason a policy reviewer
-        could see, which is the opposite of what an integration comparison
-        needs."""
-        import hashlib
+        Two manifests that declare the same policy in different whitespace are
+        the same policy and must not invalidate each other's evidence, so this
+        hashes the parsed structure rather than the file. It is a hash over
+        `canonical_form`, whose canonical JSON is a serialization of the data
+        and not a concatenation of it: field order and separators cannot make
+        two different policies collide, and no value can be smuggled across a
+        delimiter.
 
-        parts = sorted(
-            f"{c.id}|{' '.join(c.argv)}|{c.cwd}|{c.timeout_seconds}"
-            f"|{','.join(c.required_scenarios)}|{c.artifact_name}"
-            for c in self.checks.values()
-        )
-        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+        The repository root is absent from that structure by construction,
+        because the cwd is recorded as the repository-relative path the manifest
+        declared. Policy is the same whichever checkout is being tested, and a
+        digest that varied by absolute path would make two candidates' approved
+        policies compare unequal for a reason no reviewer could see.
+        """
+        return _digest_of(self.canonical_form())
+
+    def fixture_identity(self) -> FixtureIdentity | None:
+        """What the declared inputs actually are, measured now.
+
+        A check declares `inputs`; the report's `fixture_digest` is what the
+        evidence was produced against. Writing null there implied the fixture
+        had been measured when nothing had been read, and a report that claims
+        an identity it does not have is worse than one that admits it has none.
+
+        Only declared inputs are hashed, and only for checks this policy runs.
+        A check with no declared inputs contributes the empty list rather than
+        a missing one: no declared fixture and an unreadable fixture are
+        different facts, and only the second one can block.
+
+        Returns None when a declared input cannot be read or escapes the
+        repository. That is not an empty identity: it is an unresolved
+        measurement, and the caller blocks rather than proceeding without one.
+        """
+        measured: list[dict[str, str]] = []
+        root = self.project.root.resolve()
+        for check in sorted(self.checks.values(), key=lambda c: c.id):
+            for raw in check.inputs:
+                try:
+                    relative, digest = _measure_input(root, raw)
+                except ManifestError:
+                    return None
+                measured.append({"check": check.id, "input": relative, "sha256": digest})
+        return FixtureIdentity(_digest_of(measured), tuple(measured))
+
+
+def _measure_input(root: Path, raw: str) -> tuple[str, str]:
+    """One declared input's repository-relative path and content hash.
+
+    Containment is checked after resolution, for the reason every other path in
+    this codebase takes one: a prefix test loses to `..` and to an absolute
+    path, and a manifest naming a path outside the repository is naming a file
+    the repository's own identity cannot describe.
+    """
+    if Path(raw).is_absolute():
+        raise ManifestError(f"declared input {raw!r} must be a repository-relative path")
+    resolved = (root / raw).resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ManifestError(f"declared input {raw!r} escapes the repository root")
+    if not resolved.is_file():
+        raise ManifestError(f"declared input {raw!r} does not exist")
+    return resolved.relative_to(root).as_posix(), hashlib.sha256(
+        resolved.read_bytes()
+    ).hexdigest()
 
 
 def _resolve_cwd(root: Path, raw: str | None, check_id: str) -> Path:
@@ -236,7 +354,7 @@ def parse_manifest_bytes(
     for entry in raw["checks"]:
         check_id = entry["id"]
         if check_id in checks:
-            raise ManifestError(f"duplicate check id {check_id!r} in {path}")
+            raise ManifestError(f"duplicate check id {check_id!r} in {origin}")
 
         argv = tuple(entry["command"])
         if any(not isinstance(part, str) or not part for part in argv):

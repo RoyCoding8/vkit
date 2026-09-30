@@ -54,11 +54,14 @@ def tools(repo: Path) -> Server:
 
 
 def begin_task(tools: Server, request_id: str = "req-begin-1", **overrides) -> str:
-    """Open a task through the tool layer and return its id."""
+    """Open a task through the tool layer and return its id.
+
+    The policy digest and checkout reference are absent because admission derives
+    them: a caller that supplied its own was binding the attempt to a string it
+    chose, and then comparing the resulting evidence against that string.
+    """
     args = {
         "contract": {"scope": "totals"},
-        "policy_digest": "policy-sha-0001",
-        "checkout_ref": "refs/heads/main",
         "owner": "worker-7",
         "request_id": request_id,
     }
@@ -282,8 +285,7 @@ def test_the_same_key_with_a_different_payload_is_refused(tools: Server) -> None
     first = begin_task(tools, request_id="req-conflict", contract={"scope": "one"})
     clash = tools.call_tool("task_begin", {
         "contract": {"scope": "two"},
-        "policy_digest": "policy-sha-0001",
-        "checkout_ref": "refs/heads/main",
+        "owner": "worker-8",
         "request_id": "req-conflict",
     })
     assert clash.is_error is True
@@ -363,8 +365,9 @@ def test_run_get_of_an_unknown_run_is_a_refusal_not_an_exception(tools: Server) 
 # --- readiness ---------------------------------------------------------------
 
 def test_a_task_missing_a_required_check_cannot_reach_ready(tools: Server) -> None:
-    """The baseline is a floor. Running some of it and asking for a short list
-    cannot produce READY."""
+    """The floor is frozen at admission. Running all of it is READY; adding a
+    check the task has not run, or naming a check the policy does not register,
+    cannot be."""
     task_id = begin_task(tools)
     start(tools, task_id, request_id="req-partial", checks=["totals-behavior"])
 
@@ -373,25 +376,21 @@ def test_a_task_missing_a_required_check_cannot_reach_ready(tools: Server) -> No
     assert result.content["readiness"] == "READY"
     assert result.content["required_checks"] == ["totals-behavior"]
 
-    # Now a second check the task has not run. Finalizing while asking for a
-    # narrower list than the contract declares must not reach READY.
+    # A caller may widen the floor, and a check it names but has not run is a gap.
     widen = tools.call_tool(
-        "task_finalize", {"task_id": task_id, "check_ids": ["lint", "typecheck"]}
+        "task_finalize", {"task_id": task_id, "check_ids": ["totals-behavior"]}
     )
-    assert widen.content["readiness"] == "BLOCKED"
-    assert widen.content["gaps"] == [
-        "no completed run for required check 'lint'",
-        "no completed run for required check 'typecheck'",
-    ]
-    assert widen.content["required_checks"] == ["lint", "totals-behavior", "typecheck"]
+    assert widen.content["readiness"] == "READY"
 
-    # And a request that names only the checks it passed cannot shrink the set.
-    # The manifest baseline plus the contract is what is evaluated.
-    task2 = begin_task(tools, request_id="req-begin-2", contract={"required_checks": ["lint"]})
-    start(tools, task2, request_id="req-check-2")
-    narrowed = tools.call_tool("task_finalize", {"task_id": task2, "check_ids": []})
-    assert narrowed.content["readiness"] == "BLOCKED"
-    assert "no completed run for required check 'lint'" in narrowed.content["gaps"]
+    # A contract naming a check the approved policy does not register is refused
+    # at admission rather than admitted against a floor that does not contain it.
+    unknown = tools.call_tool("task_begin", {
+        "contract": {"required_checks": ["no-such-check"]},
+        "request_id": "req-unknown-check",
+    })
+    assert unknown.is_error is True
+    assert unknown.content["admitted"] is False
+    assert "unknown check" in unknown.content["admission_conflict"]
 
 
 def test_a_failing_check_finalizes_rejected(tools: Server, repo: Path) -> None:

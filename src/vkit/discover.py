@@ -252,7 +252,7 @@ class Inspection:
 # ------------------------------------------------------------------ helpers
 
 
-def _read_text(root: Path, relative: str, seen: list[str]) -> str | None:
+def _read_text(root: Path, relative: str) -> str | None:
     """Read a repository file as text, or None when it is not there.
 
     A file larger than a megabyte is treated as not-a-config-file. It is a real
@@ -361,7 +361,7 @@ def _npm_script_kind(name: str) -> str | None:
 
 
 def _read_package_json(root: Path, inspection: Inspection) -> None:
-    text = _read_text(root, "package.json", inspection.files_read)
+    text = _read_text(root, "package.json")
     if text is None:
         return
     # The ecosystem is a fact about the file, established before anything is
@@ -501,7 +501,7 @@ def _has_test_configuration(root: Path) -> bool:
     if (root / "pytest.ini").is_file() or (root / "tox.ini").is_file():
         return True
     for name in ("pyproject.toml", "setup.cfg"):
-        text = _read_text(root, name, [])
+        text = _read_text(root, name)
         if text and _PYTEST_SECTION.search(text):
             return True
     return False
@@ -519,7 +519,7 @@ _PYTEST_SECTION = re.compile(r"^\[(?:tool:pytest|tool\.pytest|pytest)\]", re.MUL
 
 
 def _read_python_config(root: Path, inspection: Inspection) -> None:
-    pyproject = _read_text(root, "pyproject.toml", inspection.files_read)
+    pyproject = _read_text(root, "pyproject.toml")
     if pyproject is not None:
         try:
             document = tomllib.loads(pyproject)
@@ -569,7 +569,7 @@ def _read_python_config(root: Path, inspection: Inspection) -> None:
         ("tox.ini", "tox", "tox.ini"),
         ("setup.cfg", "pytest", "setup.cfg [tool:pytest]"),
     ):
-        text = _read_text(root, name, inspection.files_read)
+        text = _read_text(root, name)
         if text is None:
             continue
         if "ecosystem" not in inspection.ecosystem:
@@ -811,7 +811,7 @@ def _declared_test_runners(root: Path) -> set[str]:
     if (root / "tox.ini").is_file():
         runners.add("tox")
     for name in ("pyproject.toml", "setup.cfg"):
-        text = _read_text(root, name, [])
+        text = _read_text(root, name)
         if text and _PYTEST_SECTION.search(text):
             runners.add("pytest")
         if text and re.search(r"^\[testenv", text, re.MULTILINE):

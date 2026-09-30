@@ -3,11 +3,7 @@
   "inputs_ignored": true,
   "prerequisites_ignored": true,
   "checkout_path_changes_policy_digest": true,
-  "wheel_schemas_match_authoritative_source": {
-    "check-artifact.v1.json": true,
-    "manifest.v1.json": true,
-    "run-report.v1.json": true
-  },
+  "wheel_schemas_match_authoritative_source": "not run: review/dist holds no wheel; see review/wheel-inspection.json",
   "formal_receipt_identity": {
     "formal/tla/OwnershipAcceptance.tla": {
       "exact_bytes_match": false,
@@ -26,9 +22,19 @@
     "type": "NameError",
     "message": "name 'path' is not defined"
   },
+  "duplicate_acceptance_agreement": {
+    "acceptance_id_is_the_recorded_one": true,
+    "decision": "ACCEPTED",
+    "decided_at": "audit-first",
+    "returned_the_stored_record": true,
+    "rows_in_table": 2
+  },
   "duplicate_acceptance_disagreement": {
-    "returned_record_decision": "REJECTED",
-    "stored_record_decision": "ACCEPTED",
-    "claims_reused_recorded_acceptance": true
+    "answers": "BLOCKED",
+    "id_differs_from_the_recorded_one": true,
+    "recorded_decision_untouched": "ACCEPTED",
+    "contradiction_recorded": "REJECTED",
+    "both_rows_retained": 3,
+    "contradiction_names_both": true
   }
 }

@@ -38,6 +38,12 @@ from .gitidentity import GitError
 
 CHECKOUTS_DIRNAME = "checkouts"
 
+# Where approved verification code is materialized for a run. It is a sibling of
+# the checkouts rather than a directory inside one, because a checkout is
+# asserted clean against its commit and a tree holding verifier-owned bytes would
+# be dirty by construction.
+ORACLE_DIRNAME = "approved"
+
 
 class CheckoutError(Exception):
     """A candidate checkout could not be created, verified, or retired."""
@@ -66,6 +72,48 @@ def checkouts_root(project: Project) -> Path:
     it.
     """
     return project.state_root / "integration" / CHECKOUTS_DIRNAME
+
+
+def materialize_approved(
+    project: Project, revision: str, scripts: dict[str, str], run_dir: Path
+) -> Path:
+    """Write the approved revision's verification code into a verifier-owned tree.
+
+    The approved check names a script by repository-relative path, and the
+    candidate checkout holds the candidate's copy of that path. Executing the
+    name resolves to the candidate, so this writes the approved bytes to
+    `<run_dir>/approved/<script>` and returns that directory to run them from,
+    while the working directory stays in the candidate checkout. The verification
+    code and the expectations are therefore the approved ones, and the product
+    under test is still the candidate's.
+
+    A path the approved revision does not ship is a refusal, not a silent
+    fallback to the candidate's copy: a check whose approved script is missing
+    has no approved oracle to run, and running the candidate's would be exactly
+    the substitution this exists to prevent.
+
+    Nothing is returned but the directory, because the digests of what was written
+    are already measured from the commit in `oracle.approved_oracle`. Measuring
+    them twice would be a second authority for one fact, and one that reads the
+    tree rather than the revision the policy pinned.
+    """
+    root = run_dir / ORACLE_DIRNAME
+    missing: list[str] = []
+    for script in sorted(set(scripts.values())):
+        try:
+            blob = gits.git_blob(project, revision, script)
+        except GitError:
+            missing.append(script)
+            continue
+        target = root / script
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob)
+    if missing:
+        raise CheckoutError(
+            f"the approved revision {revision[:12]} does not ship {', '.join(missing)}, "
+            f"so the check that runs it has no approved verification code to execute"
+        )
+    return root
 
 
 def create(project: Project, commit: str, integration_id: str) -> CandidateCheckout:

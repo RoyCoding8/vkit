@@ -263,9 +263,9 @@ event reported the same server `failed` and attached no tools. Both are the
 host's own output. That is why the tests read the `init` event and not
 `mcp list`: a health check is a different question from a session.
 
-**The host emits `init` before its MCP server is necessarily connected.** This
-one is a race, and it is the reason the tool-discovery tests start more than one
-session. The host starts the server and the first turn at the same time:
+**The host emits `init` before its MCP server is connected, so `init` is not
+where to look for the tool list.** The host starts the server and the first turn
+at the same time:
 
 ```
 08:47:57.077  Starting connection with timeout of 30000ms
@@ -273,27 +273,44 @@ session. The host starts the server and the first turn at the same time:
 08:48:00.313  Successfully connected in 3238ms
 ```
 
-A session that loses that race reports the server as `pending` and attaches no
-tools, and then connects it a moment later. The failure is indistinguishable
-from a plugin that never loaded, which is how it first presented: the six-tools
-test passed every time it ran alone and failed in the full suite, and only
-appeared as a flake because the host log was not being kept.
+This cost a day of the wrong answer and is worth stating precisely. The first
+reading was a race: a session where the server is slower reports `pending` and
+attaches no tools, so the test was made to retry. That did not hold up. Timings
+taken from the run that actually failed in the full suite show the server
+connecting in 1938ms to 3563ms, and in several of those sessions it finished
+*before* `turn 1 start`, and the tool list was still empty.
 
-A retry is what settles it, and it does not weaken the assertion. The claim is
-that the host can attach the six tools, and a session that eventually does has
-proven that. What it would not prove is that the first session does, so the
-number of attempts is in the failure message. Three sessions still fail against
-a server that is genuinely broken, and the two causes report differently:
+The `init` event is a snapshot, not a gate. The host has a `WaitForMcpServers`
+tool it runs before the first model call and logs the result, and in the very
+sessions whose `init` reported `pending` it logged:
 
 ```
-the host attached no vkit tools in 3 sessions
-(0 tools, server ['failed']; 0 tools, server ['failed']; 0 tools, server ['failed'])
+[WaitForMcpServers] waited=0ms connected=plugin:vkit:vkit failed= pending=
+[WaitForMcpServers] waited=6ms connected=plugin:vkit:vkit failed= pending=
 ```
 
-`failed` is a server that cannot start. `pending` is a server that started and
-was not yet connected when the session asked. Every session in this file now
-writes its host log next to the scratch config, so a failure names its own
-cause.
+and the model then called the tool and the hook answered it:
+
+```
+tool_dispatch_start tool=mcp_tool
+"Hook PreToolUse:mcp__plugin_vkit_vkit__project_inspect (PreToolUse) success:
+ {\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"additionalContext\": ...
+```
+
+So the tools were attached in every one of those sessions and only the `init`
+snapshot said otherwise. The tests now assert on what the model actually
+invoked, which is the claim, and on the host's published list where the host
+reported one. A retry remains, for the case where the model reaches for nothing
+at all, and the count is in the failure message. Against a server that is
+genuinely broken both tests still fail:
+
+```
+the host published []; expected exactly ['mcp__plugin_vkit_vkit__check_start', ...]
+the model never called a vkit tool; tool_use blocks seen: None
+```
+
+Every session writes its host log next to the scratch config, so a failure names
+its own cause rather than an empty tool list.
 
 ## What is still open
 
@@ -313,6 +330,27 @@ The gap record, after this run:
   real turn. `claude plugin validate --strict` implying any of this. Those need
   their own live sessions and are not covered by any test in
   `tests/test_plugin_host.py`.
+
+## Two corrections that landed in master before they were corrected here
+
+This branch's first version of the tool-discovery test was wrong, and it was
+wrong in a way that merged. `9a2093a` in master, "Retry the host session that
+lost the connection race", is that version: it retries up to three sessions
+waiting for the server to attach the six tools. That theory was wrong, and
+master's `test_the_host_attaches_exactly_the_six_vkit_tools` still asserts on
+the `init` tool list.
+
+It fails in a full suite. Timings from the run that failed it show the server
+connecting in 1938ms to 3563ms, and in several sessions finishing before
+`turn 1 start` with the tool list still empty, because `init` is a snapshot on
+a different schedule from the connection. In the same sessions the host logged
+`connected=plugin:vkit:vkit` and the model called the tool.
+
+Master's `test_the_model_calls_a_vkit_tool_and_the_server_answers` also asks for
+one tool, which proves the host can reach a tool and not that it discovered six.
+
+Both are corrected in `8595953` and `5043135`, which are **not yet in master**.
+Until they land, master's copy of this file is the version that fails under load.
 
 ## Repeating it
 

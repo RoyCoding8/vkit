@@ -62,6 +62,16 @@
       "additionalProperties": false,
       "properties": {
         "pid": { "type": "integer" },
+        "creation_time": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Windows process creation FILETIME. Together with the pid this identifies the process beyond pid reuse. A value near 1.34e17 exceeds 2^53, so a JSON reader that parses numbers as floats will corrupt it; read it as an integer."
+        },
+        "job_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the Windows job object owning this run's tree, so another process can terminate it. Unguessable: anyone who can open it can kill the run."
+        },
         "ownership": { "enum": ["windows_job_object", "posix_process_group"] },
         "exit_code": { "type": ["integer", "null"] },
         "timed_out": { "type": "boolean" }

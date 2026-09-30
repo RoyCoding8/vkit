@@ -258,14 +258,31 @@ class Store:
             except sqlite3.IntegrityError as exc:
                 raise StoreError(f"run {run_id} is already registered") from exc
 
-    def mark_running(self, run_id: str, process: dict) -> None:
-        """Attach process identity. A terminal run never returns to running: a retry
-        is a new run, and the first result must survive it."""
+    def run_process_identity(self, run_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT process_json FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if not row or not row[0]:
+            return None
+        return json.loads(row[0])
+
+    def mark_running(self, run_id: str, process: dict, *, command: dict | None = None) -> None:
+        """Attach process identity, and the command that was launched.
+
+        The command is recorded here rather than only in the final report because
+        a run cancelled before it finished still has to describe what it was
+        going to run. The report schema requires a non-empty argv, so a cancel
+        report with nothing to put there would be rejected as invalid.
+        """
+        payload = dict(process)
+        if command is not None:
+            payload["command"] = command
         with self._connect() as conn:
             cursor = conn.execute(
                 "UPDATE runs SET lifecycle = 'running', process_json = ?"
                 " WHERE run_id = ? AND lifecycle != 'terminal'",
-                (_dumps(process), run_id),
+                (_dumps(payload), run_id),
             )
             if cursor.rowcount == 0:
                 raise StoreError(f"cannot mark running: {run_id} is unknown or already terminal")

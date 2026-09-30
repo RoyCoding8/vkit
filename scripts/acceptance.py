@@ -1,14 +1,29 @@
-"""Walk the Plan 01 acceptance table against the real installed command.
+"""Walk the Plan 01 acceptance table against the real command.
 
 This is the artifact a reviewer reruns instead of trusting a narrative. Every row
 runs `vkit` as a subprocess against a throwaway repository, and every assertion is
 a literal expected value observed from that process.
+
+## The command under test is this checkout's
+
+The rows are evidence about the tree they live in, so the command has to come
+from that tree. `Path(sys.executable).parent / "vkit.exe"` is not it: that is the
+virtualenv, and a virtualenv shared with another worker holds an editable
+install pointing at somebody else's `src`. Every row would then pass against code
+this revision does not contain, and a green run would certify the wrong tree.
+
+So the command is resolved from this tree's own sources, and `main` refuses to
+start unless the process it is about to spawn will import exactly `ROOT/src`.
+Refusing is the only honest answer: an installation that cannot be pointed at
+this tree has not tested this tree, and printing `22/22` for it would be the
+false pass this script exists to prevent.
 
 Run:  .venv/Scripts/python.exe scripts/acceptance.py
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -18,15 +33,50 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "python-cli"
-VKIT = Path(sys.executable).parent / "vkit.exe"
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 results: list[tuple[str, str, str]] = []
 
 
+def _this_checkout() -> dict[str, str]:
+    """The environment a child must see to import this tree's `vkit` and nothing else.
+
+    Only `PYTHONPATH` is load-bearing here. It is placed ahead of the site-packages
+    entries the interpreter adds at startup, which is what the editable install is:
+    a `.pth` line naming another checkout's `src`. Naming the interpreter's own
+    directory would be no better, because the console script beside it is a
+    launcher for that same other checkout.
+    """
+    return {**os.environ, "PYTHONPATH": str(ROOT / "src"), "PYTHONNOUSERSITE": "1"}
+
+
+#: The exact argv every row runs. `[python, "-m", "vkit.cli"]` rather than the
+#: console script, because the console script is a launcher whose shebang names
+#: whichever `vkit` is installed next to it. `-m` names this tree's module and
+#: cannot be diverted by PATH, VIRTUAL_ENV, or an installed entry point.
+COMMAND = [sys.executable, "-m", "vkit.cli"]
+
+CHILD_ENV = _this_checkout()
+
+
+def _tree_under_test() -> str | None:
+    """The `vkit` a row would import, or None if this environment cannot say.
+
+    Asked of a real child process rather than of this one, because a child is
+    what the rows actually run and the two can disagree about a shared
+    environment.
+    """
+    probe = subprocess.run(
+        [sys.executable, "-c", "import vkit.cli; print(vkit.cli.__file__)"],
+        capture_output=True, text=True, timeout=120, env=CHILD_ENV,
+    )
+    return probe.stdout.strip() or None
+
+
 def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(VKIT), *args], capture_output=True, text=True, timeout=300, cwd=cwd
+        [*COMMAND, *args], capture_output=True, text=True, timeout=300, cwd=cwd,
+        env=CHILD_ENV,
     )
 
 
@@ -65,7 +115,7 @@ def row_installed_package_drives_example() -> None:
     expected = {"empty-cart", "single-positive", "several-positives",
                 "mixed-sign", "negatives-only", "cancels-to-zero"}
     check(
-        "Installed package drives the example",
+        "This checkout drives the example",
         done.returncode == 0 and payload.get("outcome", {}).get("result") == "PASS" and scenarios == expected,
         f"rc={done.returncode} scenarios={len(scenarios)}/6",
     )
@@ -362,9 +412,23 @@ def row_interrupted_report_write() -> None:
 
 
 def main() -> int:
-    if not VKIT.is_file():
-        print(f"vkit is not installed at {VKIT}", file=sys.stderr)
+    resolved = _tree_under_test()
+    expected = ROOT / "src" / "vkit" / "cli.py"
+    if resolved is None:
+        print(
+            f"cannot import vkit at all, so no row can run against {expected}",
+            file=sys.stderr,
+        )
         return 4
+    if Path(resolved).resolve() != expected.resolve():
+        print(
+            f"these rows would test {resolved}, not {expected}.\n"
+            f"Set PYTHONPATH to {ROOT / 'src'} and run again. Refusing to report a "
+            f"row count for a tree this script is not standing in.",
+            file=sys.stderr,
+        )
+        return 4
+    print(f"command under test: {' '.join(COMMAND)}\n  imports {resolved}\n")
     for row in (
         row_installed_package_drives_example, row_introduced_defect, row_tool_missing,
         row_zero_exit_no_artifact, row_malformed_artifact, row_unknown_check_and_schema,

@@ -1,0 +1,12 @@
+'Acceptance.satisfies_correct' depends on axioms: [propext, Quot.sound]
+'Acceptance.allSatisfied_correct' depends on axioms: [propext, Quot.sound]
+'Acceptance.accept_correct' depends on axioms: [propext, Quot.sound]
+true
+false
+false
+false
+false
+true
+true
+true
+false

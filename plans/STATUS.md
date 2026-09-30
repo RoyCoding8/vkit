@@ -10,7 +10,7 @@ a running total — an earlier number is not evidence about a later one.
 | --- | --- | --- |
 | 01 | Implemented and verified on Windows | 22/22 acceptance rows, `README.md` |
 | 02 | Implemented; merged to master | Supervisor, claims, recovery. 14/14 acceptance rows in `scripts/acceptance02.py`, plus 17 tests over the harness itself |
-| 03 | Tool layer implemented; stdio adapter unexecuted | `src/vkit/mcp/`, six tools tested through `Server.call_tool`; GAP-1 |
+| 03 | Tool layer implemented; stdio transport verified on the wire | `src/vkit/mcp/`, six tools through `Server.call_tool` plus 23 protocol tests driving a real subprocess; GAP-1 closed |
 | 04 | Plugin packaged as records | `plugin/` manifest validates under `claude plugin validate --strict`; GAP-3 |
 | 05 | Console exists as a view over the core; `install`, `repair`, `remove`, `enroll` refuse | `src/vkit/console/`. The rendered page has never been looked at; GAP-5 |
 | 06 | In progress | GAP-6 |
@@ -139,22 +139,35 @@ beside them and are not a claim about a later one.
 
 ### The release does not pass its own checklist
 
-GAP-1 is that the `mcp` SDK is not installed on this
-host, so the stdio adapter in `src/vkit/mcp/__init__.py` has never been
-executed. GAP-2 is that the POSIX process path is untested. GAP-3 is that no
-live Claude Code host session has installed the plugin or delivered a hook.
-GAP-4 was that `build_parser()` had no `mcp serve` subcommand while
-`plugin/.mcp.json` named one. That is closed by `f45b825` and restated as the
-transport still being unexecuted.
+GAP-1 is closed. The `mcp` SDK 2.2.0 is installed and `serve_stdio` has been run
+as a real subprocess, spoken to with hand-written JSON-RPC frames by
+`tests/mcp_client.py`, which imports neither `vkit` nor `mcp` and therefore
+disagrees with the server rather than agreeing with it by construction.
 
-`vkit mcp serve --project . --json` now exits 0 and lists the six tools bound to
-the project, so `plugin/.mcp.json` points at a command that exists. What is
-still unexecuted is the transport: `serve_stdio` has never been driven by a
-client, so no claim of protocol compliance is made. GAP-4 is restated in those
-terms rather than deleted, because the manifest pointing at a real command is
-not the same thing as that command having run. The six MCP tools are
-implemented and covered by `tests/test_mcp.py`, which drives
-`Server.call_tool`, the same entry point an SDK adapter forwards to.
+The binding was wrong and not merely untested. The code assumed a decorator API
+that `mcp` 2.x removed in a rewrite, so `serve_stdio` would not have imported at
+all. It was rewritten against the real API rather than the test weakened.
+
+GAP-2 is that the POSIX process path is untested. GAP-3 is that no live Claude
+Code host session has installed the plugin or delivered a hook — a different
+program from an MCP client that agrees with the server, so GAP-1 being closed
+says nothing about it. GAP-4 was that `build_parser()` had no `mcp serve`
+subcommand while `plugin/.mcp.json` named one, closed by `f45b825`.
+
+`vkit mcp serve --project . --json` exits 0 and lists the six tools bound to the
+project, and the transport runs. Neither claim is a claim that Claude Code
+loads the plugin: that is GAP-3, and it stays open.
+
+`mcp` is a pinned optional extra rather than an install requirement, because the
+six tools are useful without a transport and a missing optional package must not
+break the CLI, the console or the hook. The suite is 23 protocol tests plus
+`tests/test_mcp.py`, which drives `Server.call_tool`, the one entry point an SDK
+adapter forwards to.
+
+A full-suite run without the extra installed reports the protocol suite as
+errors rather than skips. That is a defensible shape — a test that cannot reach
+the transport is not testing the transport — but it means a missing optional
+dependency reads as a red suite rather than an unmet extra.
 
 `KIT_ACCEPTANCE.md`, which plan 09 asks to map row by row, is absent. See
 GAP-8 in `docs/RELEASE-CHECKLIST.md`.

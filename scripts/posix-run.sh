@@ -24,8 +24,12 @@ if [ ! -x "$VENV/bin/python" ]; then
     exit 1
 fi
 
-export PATH="$VENV/bin:$PATH"
 cd "$REPO_ROOT"
+
+# The PATH and the git directory a POSIX run needs, from one definition, so this
+# entry point cannot drift from the other four. See scripts/posix-env.sh.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
 
 # A leading `-m pytest` unless the caller named a runnable script.
 #

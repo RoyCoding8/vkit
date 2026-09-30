@@ -536,6 +536,14 @@ def _identity_of(recorded: dict[str, Any]) -> ProcessIdentity:
     mismatched one with `ownership_lost`, which BLOCKED. A run that launched
     nothing has no pid and is not recoverable by anyone, so it is reported as
     invalid here and `cancel_run` never sees an invented pid.
+
+    The creation time is checked as carefully as the pid. A record carrying a
+    pid but no creation time is not a partial identity that can be completed
+    later, it is a record that cannot prove ownership of anything: a bare pid
+    fails every comparison, so passing `None` through would reach
+    `still_the_same_process` as a value that never matches and the user would be
+    told the process is not theirs when it is. Refusing here names the actual
+    defect instead of a downstream symptom of it.
     """
     pid = recorded.get("pid")
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
@@ -544,7 +552,15 @@ def _identity_of(recorded: dict[str, Any]) -> ProcessIdentity:
             "so there is no verified owner to cancel",
             EXIT_INVALID,
         )
-    return ProcessIdentity(pid=pid, creation_time=recorded.get("creation_time"))
+    creation_time = recorded.get("creation_time")
+    if not isinstance(creation_time, int) or isinstance(creation_time, bool) or creation_time <= 0:
+        raise Refused(
+            f"run {recorded.get('check_id', '<unknown>')!r} recorded pid {pid} without the "
+            "creation time that identifies it, so ownership cannot be proven. Cancelling on "
+            "a bare pid is refused because pids are recycled; reconcile this run instead",
+            EXIT_INVALID,
+        )
+    return ProcessIdentity(pid=pid, creation_time=creation_time)
 
 
 def cmd_task_finalize(args: argparse.Namespace) -> int:

@@ -446,7 +446,15 @@ def test_the_model_calls_every_vkit_tool_and_the_server_answers(
         body = str(answer.get("content"))
         assert body.strip(), "a tool call came back with an empty body"
         if answer.get("is_error"):
-            assert "error" in body, (
+            # A refusal may be named by whichever key the tool uses to say it --
+            # `error` for a malformed request, `admission_conflict` for a task
+            # the core would not admit. What must hold is that the tool said no
+            # in its own words rather than failing the call: an exception
+            # escaping to the host arrives as a body with no reason in it, and
+            # the caller cannot tell that refusal from a crash.
+            assert any(
+                key in body for key in ('"error"', "admission_conflict", "conflict")
+            ), (
                 f"a refused call did not come back as a structured refusal: {body[:200]!r}"
             )
 

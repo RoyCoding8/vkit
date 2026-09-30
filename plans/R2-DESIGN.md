@@ -158,12 +158,14 @@ Every row is a deletion, not a deprecation. Leaving any of these in place is a s
 | --- | --- | --- |
 | A1 | R1 adds no column to `runs` that migration 5 must read; `run_intents` is not duplicated by a `runs.task_generation` column | fold the new column into migration 5 and delete `run_intents` |
 | A2 | R1's contract field naming: `required_resources` (list of `ResourceSpec`-shaped entries) and `required_checks` | change the §3 step 1 validator; no other part moves |
-| A3 | R1 exposes `task_owner_verified(store, task_id, generation, keys) -> (bool, reason)` inside one transaction, so R2 does not re-implement generation checks | if R1's check lives inside `get_task` only, R2 needs a second read and step 1 becomes a read-then-write race |
+| A3 | R1 exposes an ownership check R2 does not re-implement. **Checked 2026-09-30, and the name is not the one guessed here:** the function is `tasks.verify_ownership(store, task_id, generation)`, which raises `ConflictError` rather than returning `(bool, reason)`. Its *intent* holds — R2 calls this instead of re-deriving generation and claim predicates — but its *shape* does not: it reads the task through `get_task` and then the claims through `holders`, on two separate connections | either catch `ConflictError` at the §3 step-1 call site, or add a `conn`-taking form of `verify_ownership` so the generation read and the claim read share one transaction. The second is the one this spec wanted; the first leaves the read-then-write window A3 was written to close |
 | A4 | R1's admission is atomic with claims, so a `check_start` refusal leaves no claim to release | if R1 leaves the current behaviour (claim conflict reported, `admitted: true`), §3 step 1 must also refuse |
 | A5 | R1 stores a per-task `generation` that advances only on supersede, unchanged from `tasks.supersede_task` | `run_intents.generation` becomes wrong; §9's stale-holder query needs R1's new predicate |
 | A6 | `open_task`/`get_task` in R1 still raise `TaskError` with the same message shape | trivial |
 
 Re-check before writing the step-1 validator. Everything else in this spec is independent of R1's internals.
+
+**Result of that re-check (2026-09-30, against merged master):** A1, A2, A4, A5 and A6 hold as written. A1 — R1 added no `runs` column, so `run_intents` is not a duplicate. A2 — the contract carries `resources` and `required_checks`; only the wire key the caller sends is still `required_resources`, and §3's validator reads the wire form. A4 — `tasks.admit` takes claims through `claims.acquire_in` inside the same `store.transaction()` that writes the task row, so a refused claim leaves no task. A5 — `supersede_task` is still the only writer of `generation`. A6 — `TaskError` and its messages are unchanged. Only A3 needs the correction recorded above, and it is a shape difference, not a missing capability.
 
 ## 8. Storage API
 

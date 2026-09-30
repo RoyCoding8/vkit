@@ -76,6 +76,32 @@ def store(db_path: Path) -> Store:
     return Store(db_path)
 
 
+def a_task(store: Store, task_id: str = "t1", policy_digest: str = "pd") -> None:
+    """Write a task row these tests can own claims under.
+
+    `open_task` validates the contract before storing it, so a contract
+    without a mandatory floor is refused rather than written. Nothing here
+    reaches acceptance -- the subject is which claim recovery reports on --
+    so the floor is named and nothing else is. What the check is must be
+    a real one, though: a floor of `[]` is the shape `from_json` exists to
+    reject, and a floor of invented ids would test a contract no
+    admission could have produced.
+    """
+    where = store_db(store).parent
+    open_task(
+        store, task_id=task_id,
+        contract={
+            "repository": {"root": str(where), "git_common_dir": str(where)},
+            "policy_digest": policy_digest,
+            "required_checks": ["build"],
+            "scope": "build",
+            "resources": [],
+            "declared": {},
+        },
+        policy_digest=policy_digest,
+    )
+
+
 @pytest.fixture()
 def alive_pid():
     """A real running process, killed on teardown however the test ends.
@@ -332,7 +358,7 @@ def test_a_running_run_whose_process_is_alive_is_not_abandoned(store: Store, ali
 
 
 def test_a_live_run_holds_its_resources_and_reports_no_stale_claim(store: Store, alive_pid: int) -> None:
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
     start_run(store, "r-live", pid=alive_pid, task_id="t1", attempt=1)
 
@@ -347,7 +373,7 @@ def test_a_live_run_holds_its_resources_and_reports_no_stale_claim(store: Store,
 
 def test_inspect_changes_nothing(store: Store, db_path: Path, alive_pid: int, dead_pid: int) -> None:
     """A read that writes is not a read. Compared on the file, not the object."""
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
     start_run(store, "r-live", pid=alive_pid, task_id="t1", attempt=1)
     start_run(store, "r-dead", pid=dead_pid, task_id="t1", attempt=1)
@@ -402,7 +428,7 @@ def test_a_terminal_run_missing_its_report_is_the_publish_crash_window(store: St
 def test_a_claim_at_a_stale_generation_is_reported_and_named_explicitly(
     store: Store, db_path: Path
 ) -> None:
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
     supersede_task(store, "t1")
 
@@ -421,7 +447,7 @@ def test_a_claim_at_a_stale_generation_is_reported_and_named_explicitly(
 
 
 def test_a_current_generation_claim_is_not_reported(store: Store) -> None:
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
 
     assert inspect(store).of(FindingKind.CLAIM_STALE_GENERATION) == ()
@@ -467,7 +493,7 @@ def test_an_action_naming_an_unknown_run_is_refused(store: Store) -> None:
 
 
 def test_an_action_naming_an_unknown_resource_is_refused(store: Store) -> None:
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
 
     with pytest.raises(RecoveryRefused) as raised:
@@ -517,7 +543,7 @@ def test_marking_a_live_run_dead_is_refused_however_old_it_looks(store: Store, a
 
 @requires_windows
 def test_releasing_a_claim_held_by_a_live_process_is_refused(store: Store, alive_pid: int) -> None:
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
     start_run(store, "r-live", pid=alive_pid, task_id="t1", attempt=1)
     supersede_task(store, "t1")
@@ -540,7 +566,7 @@ def test_releasing_a_claim_held_by_a_live_process_is_refused(store: Store, alive
 
 def test_releasing_a_current_generation_claim_is_refused(store: Store) -> None:
     """A claim nobody superseded is not stale, and is not recovery's to take."""
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
 
     with pytest.raises(RecoveryRefused) as raised:
@@ -629,7 +655,7 @@ def test_marking_a_dead_run_dead_twice_is_refused_as_nothing_to_decide(
 
 
 def test_releasing_a_stale_claim_with_no_live_holder_succeeds(store: Store) -> None:
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
     acquire(store, "t1", 2, [ResourceSpec("publish", EXCLUSIVE)])
     supersede_task(store, "t1")
@@ -652,7 +678,7 @@ def test_releasing_a_stale_claim_with_no_live_holder_succeeds(store: Store) -> N
 def test_releasing_a_claim_whose_holder_run_is_dead_succeeds(
     store: Store, dead_pid: int
 ) -> None:
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
     start_run(store, "r-old", pid=dead_pid, task_id="t1", attempt=1)
     supersede_task(store, "t1")
@@ -687,7 +713,7 @@ def test_a_recycled_pid_does_not_release_its_claim(store: Store, alive_pid: int)
     stranger = read_identity(alive_pid)
     assert stranger is not None
 
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
     # The recorded identity is one this pid has never had, standing in for a
     # process that exited and left its number behind.
@@ -737,7 +763,7 @@ def test_marking_a_run_dead_refuses_when_its_pid_was_recycled(
 
 def test_a_paused_task_keeps_its_claims_and_reports_no_finding(store: Store) -> None:
     """Paused records that the owner is idle, not gone. Nothing here infers otherwise."""
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
     set_status(store, "t1", "paused")
 
@@ -746,7 +772,7 @@ def test_a_paused_task_keeps_its_claims_and_reports_no_finding(store: Store) -> 
 
 
 def test_a_claim_whose_task_vanished_is_reported(store: Store) -> None:
-    open_task(store, task_id="t1", contract={"goal": "build"}, policy_digest="pd")
+    a_task(store)
     acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
     with store._connect() as conn:
         conn.execute("BEGIN IMMEDIATE")

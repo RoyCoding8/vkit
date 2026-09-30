@@ -331,6 +331,27 @@ The gap record, after this run:
   their own live sessions and are not covered by any test in
   `tests/test_plugin_host.py`.
 
+## Two corrections that landed in master before they were corrected here
+
+This branch's first version of the tool-discovery test was wrong, and it was
+wrong in a way that merged. `9a2093a` in master, "Retry the host session that
+lost the connection race", is that version: it retries up to three sessions
+waiting for the server to attach the six tools. That theory was wrong, and
+master's `test_the_host_attaches_exactly_the_six_vkit_tools` still asserts on
+the `init` tool list.
+
+It fails in a full suite. Timings from the run that failed it show the server
+connecting in 1938ms to 3563ms, and in several sessions finishing before
+`turn 1 start` with the tool list still empty, because `init` is a snapshot on
+a different schedule from the connection. In the same sessions the host logged
+`connected=plugin:vkit:vkit` and the model called the tool.
+
+Master's `test_the_model_calls_a_vkit_tool_and_the_server_answers` also asks for
+one tool, which proves the host can reach a tool and not that it discovered six.
+
+Both are corrected in `8595953` and `5043135`, which are **not yet in master**.
+Until they land, master's copy of this file is the version that fails under load.
+
 ## Repeating it
 
 ```

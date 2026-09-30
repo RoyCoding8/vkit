@@ -67,7 +67,9 @@ _FENCE_RE = re.compile(r"^```(console command|text files|text absent)\s*$")
 # A gap that loses its evidence loses the ability to be reported honestly, so
 # the test fails on a rewording that drops the substance.
 GAPS: list[tuple[str, tuple[str, ...]]] = [
-    ("GAP-1", ("mcp", "SDK", "unexecuted")),
+    # GAP-1 is closed, so its tokens are the receipt rather than the absence:
+    # a reword that drops the evidence has to fail here.
+    ("GAP-1", ("mcp", "SDK", "test_mcp_stdio.py")),
     ("GAP-2", ("POSIX", "Windows", "unverified")),
     ("GAP-3", ("validate", "host session")),
     ("GAP-4", ("mcp serve", "serve_stdio")),

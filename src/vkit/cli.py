@@ -32,6 +32,10 @@ EXIT_CHECK_FAILED = 1
 EXIT_INVALID = 2
 EXIT_BLOCKED = 3
 EXIT_INTERNAL = 4
+# A capability this build cannot provide, such as a transport whose optional
+# dependency is absent. Distinct from EXIT_INTERNAL, which says the code is
+# at fault, and from EXIT_INVALID, which says the request was.
+EXIT_UNAVAILABLE = 5
 
 # The operation names an idempotency key is filed under. They are part of the
 # stored interface: a key recorded under one name never answers a request made
@@ -666,7 +670,7 @@ def cmd_mcp_serve(args: argparse.Namespace) -> int:
     The root is fixed at startup and no tool accepts another, so an agent cannot
     steer the server at a different repository.
     """
-    from .mcp import Server, serve_stdio, tool_definitions
+    from .mcp import MCPUnavailable, Server, serve_stdio, tool_definitions
 
     try:
         project = open_project(args.project)
@@ -688,7 +692,13 @@ def cmd_mcp_serve(args: argparse.Namespace) -> int:
         )
         return EXIT_OK
 
-    return serve_stdio(project.root)
+    try:
+        return serve_stdio(project.root)
+    except MCPUnavailable as exc:
+        # The transport is an optional dependency. A host that starts this
+        # command and gets silence cannot tell a missing SDK from a broken
+        # server, so the absence is reported on stderr with its own exit code.
+        return _fail(str(exc), False, EXIT_UNAVAILABLE)
 
 
 def cmd_integration_verify(args: argparse.Namespace) -> int:

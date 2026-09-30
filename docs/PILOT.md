@@ -15,8 +15,8 @@ is selected. A condition with no receipt is not met.
 
 | Condition | Why it gates the pilot |
 | --- | --- |
-| GAP-1 closed | The stdio adapter is unexecuted. A pilot agent gets no tools even though the subcommand now resolves. |
-| GAP-4 closed | `plugin/.mcp.json` starts `vkit mcp serve`, which now exists and lists its six tools, but `serve_stdio` has still never been driven by a client. |
+| GAP-1 closed | Met. The stdio adapter runs, and `tests/test_mcp_stdio.py` drives it with real JSON-RPC frames. |
+| GAP-4 closed | Met. `plugin/.mcp.json` starts `vkit mcp serve`, and `build_parser()` defines it. `serve_stdio` is the adapter that command reaches. |
 | GAP-3 closed | The manifest passes `claude plugin validate --strict`, but no live host session has installed it or run a hook. |
 | GAP-5 and GAP-6 closed | A pilot operator must be able to enroll a repository. The setup console is Plan 05, still being built, and no `enroll` or `integration verify` subcommand exists. |
 | GAP-2 declared | A pilot runs on one named OS. The verified one is Windows 11. |
@@ -24,16 +24,19 @@ is selected. A condition with no receipt is not met.
 | An owner-approved repository | The implementation worker does not pick this. |
 | Authorized live-model usage | A pilot spends tokens. The limit is set before the run. |
 
-None of these are met at revision `de96390`. The list is the entry gate, not a
-progress report.
+GAP-1 and GAP-4 are met, and their receipts are in `RELEASE-CHECKLIST.md`. The
+rest are not. The list is the entry gate, not a progress report, and a met row
+is as much a claim to re-check as an unmet one.
 
 ## The two gates, and why a pilot needs both
 
 A pilot can proceed while GAP-2 stays open, because a pilot can be run on the
-one operating system that was verified. It cannot proceed while GAP-1, GAP-3,
-GAP-4, GAP-5, or GAP-6 stay open, because each of those removes the pilot's
-subject: the agent has no tools, the plugin never loads, enrollment does not
-exist, and the operator cannot set the pilot up through a real flow.
+one operating system that was verified. It cannot proceed while GAP-3, GAP-5,
+or GAP-6 stay open, because each of those removes the pilot's subject: the
+plugin is never shown to load in a live host, enrollment does not exist, and
+the operator cannot set the pilot up through a real flow. The tool surface the
+pilot agent would call is now reachable; whether the host reaches it is GAP-3,
+and that is the question a pilot exists to answer.
 
 The POSIX gap is a release limitation, because the POSIX process path is
 unverified and the whole package was exercised on Windows 11 only. The rest
@@ -144,6 +147,10 @@ docs/RELEASE-CHECKLIST.md
 
 # The plugin manifest whose server command is GAP-1 and GAP-4.
 plugin/.mcp.json
+
+# The receipt that GAP-1 is met, and the client that produced it.
+tests/test_mcp_stdio.py
+tests/mcp_client.py
 
 # The two applications a pilot can be rehearsed against.
 examples/python-cli

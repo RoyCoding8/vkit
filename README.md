@@ -19,6 +19,16 @@ $ /tmp/venv/Scripts/python.exe -m pip install "D:/AI/Poteto's Style"
 Successfully installed attrs-26.1.0 jsonschema-4.26.0 ... vkit-0.1.0
 ```
 
+That install covers the CLI, the console, and the hook. The MCP server needs
+the SDK, which is an extra rather than a hard dependency because the six tools
+are useful without a transport and a missing optional package must not break
+anything else.
+
+```console
+$ /tmp/venv/Scripts/python.exe -m pip install "D:/AI/Poteto's Style[mcp]"
+Successfully installed mcp-2.2.0 ... vkit-0.1.0
+```
+
 Initialize a repository holding a real check. The example ships its own
 manifest and a driver that runs the actual application.
 
@@ -164,7 +174,7 @@ so it cannot agree with the application by construction.
 
 ```console
 $ .venv/Scripts/python.exe -m pytest tests/
-52 passed
+404 passed, 1 skipped
 
 $ .venv/Scripts/python.exe scripts/acceptance.py
 22/22 acceptance rows pass
@@ -172,6 +182,18 @@ $ .venv/Scripts/python.exe scripts/acceptance.py
 
 The second command walks the Plan 01 acceptance table against the installed
 command and is the artifact to rerun before trusting anything here.
+
+The MCP transport has its own suite, and it is separate on purpose. It spawns
+the shipped `vkit mcp serve` as a subprocess and speaks JSON-RPC to it over
+stdin and stdout, so it needs the extra installed to run at all.
+
+```console
+$ .venv/Scripts/python.exe -m pytest tests/test_mcp_stdio.py
+```
+
+`tests/mcp_client.py` holds the client, and it imports neither this package
+nor the SDK. That is deliberate: a client built from the same SDK would agree
+with the server about a changed contract instead of disagreeing with it.
 
 ## Known limits
 
@@ -195,3 +217,13 @@ a known gap.
 Dirty trees are reported honestly and are not integration evidence. A report
 says whether the tree was dirty at run time so nobody mistakes development
 evidence for a clean integration result.
+
+The MCP transport is pinned to the `mcp` 2.x server API. That line is a
+rewrite rather than an increment, so handlers are constructor arguments
+rather than decorators and a tool call returns a `CallToolResult`. A release
+outside the pin in `pyproject.toml` has not been verified here. Without the
+extra installed, `vkit mcp serve` exits 5 and says which package to install;
+it does not hang, and it does not write to the protocol channel.
+
+The protocol suite proves a real client and this server agree on the wire. It
+proves nothing about whether Claude Code loads the plugin that starts it.

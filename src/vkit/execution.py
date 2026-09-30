@@ -199,6 +199,8 @@ def run_check(
     store: Store,
     source: SourceIdentity,
     run_id: str | None = None,
+    task_id: str | None = None,
+    attempt: int | None = None,
 ) -> RunOutcome:
     """Register, execute, and publish one run of one registered check.
 
@@ -212,9 +214,13 @@ def run_check(
 
     # Register before anything else can conclude. A missing prerequisite is a
     # real answer about this run and has to be recorded as one, and a report can
-    # only be published against a row that exists.
+    # only be published against a row that exists. The task and attempt are
+    # carried here rather than left to a later `attach_task`, because the caller
+    # that knows them is the one that decides whether this run counts as
+    # evidence for the attempt, and leaving the column null would silently
+    # remove the run from that attempt's readiness.
     store.register_run(
-        run_id, check.id, task_id=None, attempt=None,
+        run_id, check.id, task_id=task_id, attempt=attempt,
         source=source.to_json(), configuration_digest=manifest.digest(),
         fixture_digest=None,
     )

@@ -35,7 +35,7 @@ from .manifest import Manifest, parse_manifest
 from .outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
 from .paths import Project
 from .procidentity import ProcessIdentity, read_identity, still_the_same_process
-from .storage import Store, StoreError
+from .storage import REPORT_NAME, Store, StoreError
 
 
 class SupervisorError(Exception):
@@ -101,29 +101,57 @@ def start_run(
     manifest: Manifest | None = None,
     run_id: str | None = None,
 ) -> StartedRun:
-    """Register and execute one check, recording launch intent before launching.
+    """Register and execute one check, recording the identity that ran it.
 
     `run_id` lets a caller retry into the same run. A retry of a run that already
     finished returns the recorded outcome instead of executing a second time.
+
+    A run id is minted only when the caller names none. One that is registered
+    without a report was interrupted between registering and publishing, and
+    that is refused rather than re-executed, because re-executing would put a
+    second execution under one identity.
     """
     manifest = manifest or parse_manifest(project, project.runs_root / "probe")
     manifest.require(check_id)
 
     run_id = run_id or uuid.uuid4().hex
-    if (store.run_dir(run_id) / "report.json").is_file():
-        stored = store.load(run_id)
-        return StartedRun(run_id, outcome_from_report(stored), stored)
+    if _is_registered(store, run_id):
+        if (store.run_dir(run_id) / REPORT_NAME).is_file():
+            stored = store.load(run_id)
+            return StartedRun(run_id, outcome_from_report(stored), stored)
+        raise SupervisorError(
+            f"run {run_id} is registered but has published no report, so its outcome is "
+            f"unknown. Executing it again would be a second run under one id. Read the run's "
+            f"artifacts and reconcile it with `vkit recover`."
+        )
 
-    source: SourceIdentity = compute_source_identity(project)
-    # Registration, launch intent, and process identity all belong to
-    # `execution.run_check`. Registering here as well meant every call raised
-    # "run is already registered", so the documented entry point for a
-    # background run had never once executed.
+    # `execution.run_check` owns registration and writes its report while the
+    # check is running, so this function cannot record launch intent before the
+    # launch without registering the row twice. What it does own is the identity
+    # afterwards: the report's `process` object describes the check's process, and
+    # the row is where a second process reads the owner from.
+    source = compute_source_identity(project)
+
     try:
-        result = run_check(manifest, check_id, store=store, source=source, run_id=run_id)
+        result = run_check(manifest, check_id, store=store, source=source, run_id=run_id,
+                           task_id=task_id, attempt=generation)
     except ExecutionError as exc:
         raise SupervisorError(f"run {run_id} could not be published: {exc}") from exc
+
+    executed = store.run_process_identity(run_id) or {}
+    if executed.get("pid") == os.getpid():
+        # Nothing was launched as a separate process, so the process that ran the
+        # check is this one. Recording the job name beside its identity is what
+        # lets another process terminate a run of this shape.
+        store.attach_job_name(run_id, job_name_for(run_id))
     return StartedRun(run_id, result.outcome, result.report)
+
+
+def _is_registered(store: Store, run_id: str) -> bool:
+    """Whether a row for this run id exists, without loading its report."""
+    with store._connect() as conn:
+        row = conn.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    return row is not None
 
 
 def cancel_run(

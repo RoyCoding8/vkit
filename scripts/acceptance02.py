@@ -886,8 +886,8 @@ def row_parent_exits() -> None:
         "it named no process": read["identity_pid"] is None,
         "no report had been published": read["report_exists"] is False,
         "the retry found the dead parent's subject": client["subject"] == run_id,
-        "a second client could not execute beside it": start_run_rejected.startswith("StoreError")
-        and "is already registered" in start_run_rejected,
+        "a second client could not execute beside it": start_run_rejected.startswith("SupervisorError")
+        and "registered but has published no report" in start_run_rejected,
         "the cancel was refused, not honoured": client["cancel"]["result"] == "BLOCKED"
         and client["cancel"]["reason"] == "ownership_lost",
         "the run ended BLOCKED and never reported a result":
@@ -901,7 +901,8 @@ def row_parent_exits() -> None:
         f"pid={read['identity_pid']}, and no report on disk; a retry of the same "
         f"request id returned the same subject {client['subject'][:12]}..., so the dead "
         f"parent's request cannot be re-executed; a second client trying to start the "
-        f"same run was refused with {start_run_rejected.split(':')[0]}; its cancel was "
+        f"same run was refused because {start_run_rejected.split('registered but')[1].split(',')[0].strip()!r} "
+        f"rather than executed beside it; its cancel was "
         f"refused as {client['cancel']['reason']} and published a terminal "
         f"{final[0]['result']}. "
         f"No result was ever reported for the check and none was invented. Measured "

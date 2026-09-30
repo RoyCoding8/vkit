@@ -115,7 +115,7 @@ ROW_TITLES = {
     9: "Old owner submits after supersession",
     10: "Changed contract or policy",
     11: "All checks pass but one required check is absent",
-    12: "Client requests fewer checks than policy requires",
+    12: "Client requests fewer checks than approved policy requires",
     13: "Disk/locking failure",
     14: "Stateful operation sequences",
 }

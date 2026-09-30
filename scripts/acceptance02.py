@@ -1001,7 +1001,7 @@ def row_cancel_repeated() -> None:
 SUPERVISOR_THAT_DIES = """
     project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
     run_id = os.environ["ACCEPTANCE02_RUN_ID"]
-    tasks.open_task(store, task_id="t8", contract={{"goal": "ship"}},
+    tasks.open_task(store, task_id="t8", contract={"goal": "ship"},
                     policy_digest="d8")
     claims.acquire(store, "t8", 1, [ResourceSpec("w:checkout", "exclusive")])
     store.register_run(run_id, "hangs", task_id="t8", attempt=1,

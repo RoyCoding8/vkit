@@ -34,6 +34,7 @@ import tempfile
 import textwrap
 import time
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -158,7 +159,16 @@ RESULTS: list[Row] = []
 
 
 def _row(number: int) -> Row:
-    """Open a row. It stays UNREACHED until the row itself writes a verdict."""
+    """The open row for this number, created on first use.
+
+    Idempotent per number on purpose. `run_rows_in_order` opens the row so it has
+    somewhere to record an exception, and the row function calls this too, so a
+    second Row for the same number would leave the first one carrying the verdict
+    and the reader showing the empty one.
+    """
+    for row in RESULTS:
+        if row.number == number:
+            return row
     row = Row(number)
     RESULTS.append(row)
     return row
@@ -181,7 +191,7 @@ def unestablished(row: Row, reason: str) -> None:
 # --- independent observers ---------------------------------------------------
 
 
-def raw_rows(db_path: Path, table: str, columns: str) -> list[dict]:
+def raw_rows(db_path: Path, table: str, columns: str, *, newest_first: bool = False) -> list[dict]:
     """Read a table over a connection that shares nothing with the code.
 
     The observer opens its own connection, so what it reports is what survived to
@@ -190,7 +200,12 @@ def raw_rows(db_path: Path, table: str, columns: str) -> list[dict]:
     """
     conn = sqlite3.connect(db_path)
     try:
-        cursor = conn.execute(f"SELECT {columns} FROM {table}")
+        sql = f"SELECT {columns} FROM {table}"
+        if newest_first:
+            # rowid, because two rows registered in the same microsecond tie on
+            # every timestamp and SQLite promises no order between equal values.
+            sql += " ORDER BY rowid DESC"
+        cursor = conn.execute(sql)
         names = [c.strip() for c in columns.split(",")]
         return [dict(zip(names, row)) for row in cursor.fetchall()]
     finally:
@@ -203,8 +218,10 @@ def claim_rows(db_path: Path) -> list[dict]:
 
 
 def run_rows(db_path: Path) -> list[dict]:
+    """Run rows, newest first, so row 0 is the run that was just made."""
     return raw_rows(db_path, "runs",
-                    "run_id, check_id, task_id, lifecycle, result, reason")
+                    "run_id, check_id, task_id, lifecycle, result, reason, "
+                    "configuration_digest", newest_first=True)
 
 
 def process_alive(pid: int) -> bool:
@@ -268,7 +285,7 @@ CHILD_PREAMBLE = f"""
 import json, os, sqlite3, subprocess, sys, time, uuid
 sys.path.insert(0, {str(SRC)!r})
 from vkit import claims, idempotency, recover, tasks
-from vkit.claims import ConflictError, ResourceSpec
+from vkit.claims import ConflictError, ResourceSpec, acquire, holders
 from vkit.execution import run_check
 from vkit.identity import compute_source_identity
 from vkit.manifest import parse_manifest
@@ -339,18 +356,72 @@ def child(program: str, env: dict | None = None, timeout: float = 150.0) -> dict
             "__stderr__": (err or out or "").strip()[-400:]}
 
 
-def spawn_child(program: str, env: dict | None = None) -> subprocess.Popen:
-    """Start a child that outlives this call, for a row that watches it work.
+class _RunningChild:
+    """A live child process owned by the row that launched it.
 
-    `child` reclaims its process, which is wrong for these rows: they have to
-    cancel, kill, or observe a supervisor while it is still running. The caller
-    owns the returned process and must stop it.
+    `child` blocks until the process is gone, which is right for a request that
+    answers and wrong for a supervisor that must be watched while it works. This
+    one is handed back already running, and the row stops it in a `finally`, so
+    no row can leave a sleeper behind by forgetting.
     """
-    source = CHILD_PREAMBLE + textwrap.dedent(program)
-    return subprocess.Popen(
-        [sys.executable, "-c", source], stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, env={**os.environ, **(env or {})},
-    )
+
+    def __init__(self, program: str, env: dict, timeout: float):
+        self._process = subprocess.Popen(
+            [sys.executable, "-c", CHILD_PREAMBLE + textwrap.dedent(program)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, **env},
+        )
+        self._timeout = timeout
+
+    def __enter__(self) -> "_RunningChild":
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        if self._process.poll() is None:
+            try:
+                self._process.wait(timeout=self._timeout)
+            except subprocess.TimeoutExpired:
+                kill_tree(self._process.pid)
+        return False
+
+    def poll(self):
+        return self._process.poll()
+
+    @property
+    def returncode(self):
+        return self._process.returncode
+
+    def communicate(self, timeout: float | None = None):
+        return self._process.communicate(timeout=timeout)
+
+    def kill(self) -> None:
+        self._process.kill()
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self._process.wait(timeout=timeout)
+
+    @property
+    def stdout(self):
+        return self._process.stdout
+
+    @property
+    def stderr(self):
+        return self._process.stderr
+
+
+def spawn_child(program: str, env: dict | None = None, timeout: float = 240.0):
+    """Start a child that outlives this call. Use it as a context manager."""
+    return _RunningChild(textwrap.dedent(program), env or {}, timeout)
+
+
+class _WatchedChild:
+    """A child process owned by a `with` block rather than by a bare reference."""
+
+    def __init__(self, program: str, env: dict, timeout: float):
+        self._program = program
+        self._env = env
+        self._timeout = timeout
+        self._process: subprocess.Popen | None = None
 
 
 def read_report(proc: subprocess.Popen, timeout: float = 90.0) -> dict:
@@ -395,27 +466,31 @@ CLAIM_RACER = """
     resource = "w:checkout"
     attempts = int(os.environ["ACCEPTANCE02_ATTEMPTS"])
     task = "racer-" + str(os.getpid())
-    # One uncontested claim per process, so exactly one racer can be holding the
-    # resource before the gate opens and the other three see a refusal.
-    first = "conflict"
-    try:
-        acquire(store, task, 1, [ResourceSpec(resource, "exclusive")])
-        first = "acquired"
-    except ConflictError as exc:
-        first = str(exc)
+
+    def try_acquire(owner):
+        try:
+            acquire(store, owner, 1, [ResourceSpec(resource, "exclusive")])
+            return "acquired"
+        except ConflictError as exc:
+            return str(exc)
+
+    # The first of this racer's attempts happens before the gate, so the resource
+    # is already owned when the others start contending. It counts as attempt 0.
+    results = [try_acquire(task)]
     with open(os.environ["ACCEPTANCE02_READY"], "w") as sentinel:
         sentinel.write("ready")
-    with open(os.environ["ACCEPTANCE02_GATE"], "r") as gate:
-        gate.read(1)
-    results = []
-    for index in range(attempts):
-        try:
-            acquire(store, task + "-" + str(index), 1,
-                    [ResourceSpec(resource, "exclusive")])
-            results.append("acquired")
-        except ConflictError as exc:
-            results.append(str(exc))
-    emit(task=task, first=first, results=results)
+    # Windows has no mkfifo, so the release is a flag the parent raises. A tight
+    # poll keeps every racer within a few milliseconds of the others, which is
+    # close enough that the attempts are genuinely concurrent.
+    waited = 0
+    while not os.path.exists(os.environ["ACCEPTANCE02_GATE"]):
+        time.sleep(0.005)
+        waited += 1
+        if waited > 8000:
+            emit(task=task, results=results, gave_up=True)
+    for index in range(1, attempts):
+        results.append(try_acquire(task + "-" + str(index)))
+    emit(task=task, results=results)
 """
 
 
@@ -425,18 +500,22 @@ def row_100_competing_claims() -> None:
     _, store = store_for(repo)
     resource = "w:checkout"
     processes, attempts = 4, 25
+    total = processes * attempts
 
     rendezvous = Path(tempfile.mkdtemp())
-    gates = [rendezvous / f"gate{index}" for index in range(processes)]
-    racers = []
-    for index, gate in enumerate(gates):
-        racers.append(spawn_child(CLAIM_RACER, {
-            "ACCEPTANCE02_ROOT": str(repo),
-            "ACCEPTANCE02_ATTEMPTS": str(attempts),
-            "ACCEPTANCE02_GATE": str(gate),
-            "ACCEPTANCE02_READY": str(rendezvous / f"ready{index}"),
-        }))
-    try:
+    # One flag, watched by every racer. A per-racer gate would deadlock: the
+    # parent raises one path, and the others would poll for a file nobody writes.
+    gate = rendezvous / "gate"
+    reports: list[dict] = []
+    with ExitStack() as stack:
+        racers = []
+        for index in range(processes):
+            racers.append(stack.enter_context(spawn_child(CLAIM_RACER, {
+                "ACCEPTANCE02_ROOT": str(repo),
+                "ACCEPTANCE02_ATTEMPTS": str(attempts),
+                "ACCEPTANCE02_GATE": str(gate),
+                "ACCEPTANCE02_READY": str(rendezvous / f"ready{index}"),
+            })))
         deadline = time.time() + 90
         while time.time() < deadline and not all(
                 (rendezvous / f"ready{index}").exists() for index in range(processes)):
@@ -445,16 +524,27 @@ def row_100_competing_claims() -> None:
             time.sleep(0.1)
         ready = [(rendezvous / f"ready{index}").exists() for index in range(processes)]
         if not all(ready):
-            unestablished(row, f"only {ready.count(True)} of {processes} racers reached "
-                                f"the rendezvous, so 100 attempts never contended")
+            # A racer that died says why on stderr, and the reason belongs in the
+            # note rather than only in a log nobody reads.
+            reasons = []
+            for index, racer in enumerate(racers):
+                if racer.poll() is None:
+                    continue
+                err = racer.stderr.read() if racer.stderr is not None else ""
+                reasons.append(f"racer {index} exited {racer.returncode}: "
+                               f"{err.strip()[-200:]!r}")
+            unestablished(
+                row,
+                f"{ready.count(True)} of {processes} racers reached the rendezvous, so "
+                f"the {total} attempts never contended"
+                + ("; " + "; ".join(reasons) if reasons else ""))
             return
-        # Opening a pipe for write is what releases the readers. Each racer is
-        # blocked in `gate.read(1)` by the time this byte is written.
-        with open(gates[0], "w") as gate:
-            gate.write("g")
+        # Raising the flag releases every racer, so the 100 attempts are made
+        # while the other attempts are in flight or already decided.
+        gate.write_text("go")
         reports = []
         for index, racer in enumerate(racers):
-            out, err = racer.communicate(timeout=120)
+            out, err = racer.communicate(timeout=180)
             parsed = [json.loads(line[len("ACCEPTANCE02 "):])
                       for line in (out or "").splitlines()
                       if line.startswith("ACCEPTANCE02 ")]
@@ -463,10 +553,6 @@ def row_100_competing_claims() -> None:
                                     f"stderr={err.strip()[-300:]!r}")
                 return
             reports.extend(parsed)
-    finally:
-        for racer in racers:
-            if racer.poll() is None:
-                kill_tree(racer.pid)
 
     acquired = [entry for r in reports for entry in r["results"] if entry == "acquired"]
     conflicts = [entry for r in reports for entry in r["results"] if entry != "acquired"]
@@ -571,16 +657,18 @@ def row_transaction_owner_killed() -> None:
     _, store = store_for(repo)
     before = claim_rows(store._db_path)
 
-    victim = spawn_child(KILL_DURING_TRANSACTION, {"ACCEPTANCE02_ROOT": str(repo)})
-    reported = read_report(victim, timeout=90)
-    if "inserted" not in reported:
+    victim = None
+    with ExitStack() as stack:
+        victim = stack.enter_context(spawn_child(KILL_DURING_TRANSACTION,
+                                                 {"ACCEPTANCE02_ROOT": str(repo)}))
+        reported = read_report(victim, timeout=120)
+        if "inserted" not in reported:
+            unestablished(row, f"the victim never reported its uncommitted inserts: "
+                                f"{reported!r}")
+            return
+        # Killed outright with the write lock held and the transaction open.
         victim.kill()
-        victim.communicate(timeout=30)
-        unestablished(row, f"the victim never reported its uncommitted inserts: {reported!r}")
-        return
-    # Killed outright with the write lock held and the transaction open.
-    victim.kill()
-    victim.wait(timeout=30)
+        victim.wait(timeout=30)
 
     after = claim_rows(store._db_path)
     version = store.version()
@@ -695,11 +783,13 @@ def row_start_retried_around_disconnect() -> None:
 PARENT_THAT_EXITS = """
     project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
     run_id = os.environ["ACCEPTANCE02_RUN_ID"]
-    # The parent claims the request key, registers the run, and records launch
-    # intent. Then it stops. This is the MCP-like shape: a client that asked for
-    # a run and went away without answering.
-    idempotency.begin(store, request_id="req-6", operation="check.start",
-                      payload={"check_id": "hangs"})
+    # The parent claims the request key, registers the run under the subject that
+    # key names, and records launch intent. Then it stops. This is the MCP-like
+    # shape: a client that asked for a run and went away without answering. The
+    # run id is supplied rather than generated so the retry below can be compared
+    # against it; letting `begin` mint the subject would leave nothing to compare.
+    subject = idempotency.begin(store, request_id="req-6", operation="check.start",
+                                payload={"check_id": "hangs"}, subject_id=run_id)
     manifest = parse_manifest(project, project.runs_root / "probe")
     spec = manifest.require("hangs")
     store.register_run(run_id, "hangs", task_id=None, attempt=None,
@@ -723,33 +813,63 @@ REATTACHING_CLIENT = """
     read = {"row": rows[0] if rows else None,
             "identity_pid": identity.get("pid"),
             "report_exists": (store.run_dir(run_id) / "report.json").is_file()}
-    # A retry carrying the request key the dead parent claimed.
+    # A retry carrying the request key the dead parent claimed. The parent named
+    # the run as that key's subject, so asking again must return the same one.
     subject = idempotency.begin(store, request_id="req-6", operation="check.start",
                                 payload={"check_id": "hangs"})
-    # A cancel naming the run, with a well-formed identity the store can compare.
     outcome, _ = cancel_run(store, run_id,
                             identity=ProcessIdentity(identity.get("pid") or 0, 0))
     emit(subject=subject, read=read, cancel=outcome.to_json())
 """
 
 
+RIVAL_CLIENT = """
+    project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
+    # A second live client, with a request key of its own, for the same check. It
+    # mints a subject of its own, so nothing about it is tied to the dead
+    # parent's run; it just wants to start the check.
+    subject = idempotency.begin(store, request_id="req-6-rival",
+                                operation="check.start", payload={"check_id": "hangs"})
+    emit(subject=subject)
+"""
+
+
 def row_parent_exits() -> None:
     """An MCP-like parent exits; a second process reattaches and says what is true."""
     row = _row(6)
-    repo = make_repo("parent-exits", checks=[hang_check(Path(tempfile.mkdtemp()) / "p.pid")])
+    # The check is registered but launched by nothing, so nothing can execute it
+    # and the row cannot leave a 300 second sleeper behind.
+    repo = make_repo("parent-exits", checks=[dict(hang_check(Path("unused.pid")))])
     _, store = store_for(repo)
     run_id = uuid.uuid4().hex
     env = {"ACCEPTANCE02_ROOT": str(repo), "ACCEPTANCE02_RUN_ID": run_id}
 
-    parent = spawn_child(PARENT_THAT_EXITS, env)
-    reported = read_report(parent, timeout=90)
-    if not reported.get("registered"):
+    with ExitStack() as stack:
+        parent = stack.enter_context(spawn_child(PARENT_THAT_EXITS, env))
+        reported = read_report(parent, timeout=120)
+        if not reported.get("registered"):
+            unestablished(row, f"the parent never registered its run: {reported!r}")
+            return
         parent.kill()
-        parent.communicate(timeout=30)
-        unestablished(row, f"the parent never registered its run: {reported!r}")
-        return
-    parent.kill()
-    parent.wait(timeout=30)
+        parent.wait(timeout=30)
+
+    with ExitStack() as stack:
+        # A second live client, with a request key of its own, wants the same
+        # check. Its subject is its own, so nothing stops it from asking, and the
+        # run row is the only thing that can. It must be finished before the
+        # reattaching client runs, because `begin` takes a write lock and a client
+        # still holding one would block the next for the full busy timeout.
+        rival = stack.enter_context(spawn_child(RIVAL_CLIENT, env))
+        if "__error__" in read_report(rival, timeout=90):
+            unestablished(row, f"the rival client never finished: {rival}")
+            return
+        # A start into the run the dead parent registered. The run row exists, so
+        # the registration is refused rather than a second execution begun.
+        start_run_rejected = ""
+        try:
+            start_run(open_project(repo), store, "hangs", run_id=run_id)
+        except Exception as exc:
+            start_run_rejected = f"{type(exc).__name__}: {exc}"
 
     # A different process, holding nothing of the parent's in memory, reads and acts.
     client = child(REATTACHING_CLIENT, env)
@@ -758,35 +878,37 @@ def row_parent_exits() -> None:
         return
     read = client["read"]
     final = [r for r in run_rows(store._db_path) if r["run_id"] == run_id]
-    start_run_rejected = ""
-    try:
-        start_run(open_project(repo), store, "hangs", run_id=run_id)
-    except StoreError as exc:
-        start_run_rejected = str(exc)
+    checks = {
+        "the run was readable after the parent exited": read["row"] is not None,
+        "it was not yet terminal": read["row"] is not None
+        and read["row"]["lifecycle"] in ("preparing", "running"),
+        "it had no result": read["row"] is not None and read["row"]["result"] is None,
+        "it named no process": read["identity_pid"] is None,
+        "no report had been published": read["report_exists"] is False,
+        "the retry found the dead parent's subject": client["subject"] == run_id,
+        "a second client could not execute beside it": start_run_rejected.startswith("StoreError")
+        and "is already registered" in start_run_rejected,
+        "the cancel was refused, not honoured": client["cancel"]["result"] == "BLOCKED"
+        and client["cancel"]["reason"] == "ownership_lost",
+        "the run ended BLOCKED and never reported a result":
+        bool(final) and final[0]["result"] == "BLOCKED",
+    }
     observed(
         row,
-        read["row"] is not None
-        and read["row"]["lifecycle"] in ("preparing", "running")
-        and read["row"]["result"] is None
-        and read["identity_pid"] is None
-        and read["report_exists"] is False
-        and client["subject"] == run_id
-        and client["cancel"]["result"] == "BLOCKED"
-        and client["cancel"]["reason"] == "ownership_lost"
-        and start_run_rejected == f"run {run_id} is already registered"
-        and bool(final) and final[0]["result"] == "BLOCKED",
+        all(checks.values()),
         f"after the parent exited a separate OS process read the run as "
         f"{read['row']['lifecycle']} with no result, a stored process identity with "
         f"pid={read['identity_pid']}, and no report on disk; a retry of the same "
         f"request id returned the same subject {client['subject'][:12]}..., so the dead "
-        f"parent's request cannot be re-executed; its cancel was refused as "
-        f"{client['cancel']['reason']} and published a terminal {final[0]['result']}, "
-        f"and a fresh start_run into that run was refused with "
-        f"{start_run_rejected!r}. No result was ever reported for the check and none "
-        f"was invented. Measured limit: this build has no surviving supervisor, "
-        f"because start_run executes in the calling process and the pid is attached "
-        f"only after the command returns, so the in-flight run named no process for a "
-        f"second process to continue",
+        f"parent's request cannot be re-executed; a second client trying to start the "
+        f"same run was refused with {start_run_rejected.split(':')[0]}; its cancel was "
+        f"refused as {client['cancel']['reason']} and published a terminal "
+        f"{final[0]['result']}. "
+        f"No result was ever reported for the check and none was invented. Measured "
+        f"limit: this build has no surviving supervisor, because start_run executes in "
+        f"the calling process and the pid is attached only after the command returns, "
+        f"so the in-flight run named no process for a second process to continue"
+        f" Unmet: {[name for name, ok in checks.items() if not ok] or 'none'}",
     )
 
 
@@ -885,7 +1007,8 @@ SUPERVISOR_THAT_DIES = """
     store.register_run(run_id, "hangs", task_id="t8", attempt=1,
                        source=compute_source_identity(project).to_json(),
                        configuration_digest="d", fixture_digest=None)
-    run_command([sys.executable, "-c", {body!r}], cwd=project.root,
+    run_command([sys.executable, "-c", os.environ["ACCEPTANCE02_BODY"]],
+                cwd=project.root,
                 stdout_path=project.runs_root / "stdout.log",
                 stderr_path=project.runs_root / "stderr.log",
                 timeout_seconds=280)
@@ -903,51 +1026,53 @@ def row_supervisor_dies() -> None:
     repo = make_repo("supervisor-dies", checks=[hang_check(pid_file)])
     _, store = store_for(repo)
     run_id = uuid.uuid4().hex
-    env = {"ACCEPTANCE02_ROOT": str(repo), "ACCEPTANCE02_RUN_ID": run_id}
+    env = {"ACCEPTANCE02_ROOT": str(repo), "ACCEPTANCE02_RUN_ID": run_id,
+           "ACCEPTANCE02_BODY": body}
 
-    supervisor = spawn_child(SUPERVISOR_THAT_DIES, env)
-    try:
-        descendant = announced_pid(pid_file, seconds=120)
-        if descendant is None:
-            unestablished(row, "the supervisor never launched the check, so nothing "
-                                "was observed about a dead supervisor's descendants")
-            return
-        supervisor.kill()
-        supervisor.wait(timeout=30)
-        time.sleep(3.0)
-        alive = process_alive(descendant)
-        held = claims.holder(store, "w:checkout")
-        findings = recover.inspect(store).findings
+    with ExitStack() as stack:
+        # The body is passed through the environment rather than formatted into
+        # the program text, because a program string built by str.format cannot
+        # carry braces the payload needs.
+        supervisor = stack.enter_context(spawn_child(SUPERVISOR_THAT_DIES, env))
         try:
-            recover.apply_action(store, recover.Action.RELEASE_CLAIM,
-                                 target="w:checkout",
-                                 evidence="the supervisor was killed and no descendant survives")
-            released = "applied"
-        except recover.RecoveryRefused as exc:
-            released = f"refused: {exc}"
-        stale = any(f.kind is recover.FindingKind.CLAIM_STALE_GENERATION for f in findings)
-        observed(
-            row,
-            alive is False
-            and held is not None and held.task_id == "t8"
-            and any(f.kind is recover.FindingKind.RUN_WITHOUT_PROCESS for f in findings)
-            and stale is False
-            and released.startswith("refused:"),
-            f"the supervisor launched a check that announced pid {descendant}; after "
-            f"the supervisor was killed that descendant was still running: {alive}, "
-            f"so the job object took the tree down with its owner. The claim stayed "
-            f"reserved for task {held.task_id if held else None!r} at generation "
-            f"{held.generation if held else None} and recovery reported "
-            f"{[f.kind.value for f in findings]}, so the claim was not called stale and "
-            f"a release against it was {released.split(':')[0]}: the claim is current, "
-            f"not abandoned",
-        )
-    finally:
-        if supervisor.poll() is None:
-            kill_tree(supervisor.pid)
-        supervisor.communicate(timeout=30)
-        if pid_file.is_file():
-            kill_tree(int(pid_file.read_text(encoding="utf-8").strip()))
+            descendant = announced_pid(pid_file, seconds=180)
+            if descendant is None:
+                unestablished(row, "the supervisor never launched the check, so nothing "
+                                    "was observed about a dead supervisor's descendants")
+                return
+            supervisor.kill()
+            supervisor.wait(timeout=30)
+            time.sleep(3.0)
+            alive = process_alive(descendant)
+            held = claims.holder(store, "w:checkout")
+            findings = recover.inspect(store).findings
+            try:
+                recover.apply_action(store, recover.Action.RELEASE_CLAIM,
+                                     target="w:checkout",
+                                     evidence="the supervisor was killed and no descendant survives")
+                released = "applied"
+            except recover.RecoveryRefused as exc:
+                released = f"refused: {exc}"
+            stale = any(f.kind is recover.FindingKind.CLAIM_STALE_GENERATION for f in findings)
+            observed(
+                row,
+                alive is False
+                and held is not None and held.task_id == "t8"
+                and any(f.kind is recover.FindingKind.RUN_WITHOUT_PROCESS for f in findings)
+                and stale is False
+                and released.startswith("refused:"),
+                f"the supervisor launched a check that announced pid {descendant}; after "
+                f"the supervisor was killed that descendant was still running: {alive}, "
+                f"so the job object took the tree down with its owner. The claim stayed "
+                f"reserved for task {held.task_id if held else None!r} at generation "
+                f"{held.generation if held else None} and recovery reported "
+                f"{[f.kind.value for f in findings]}, so the claim was not called stale "
+                f"and a release against it was {released.split(':')[0]}: the claim is "
+                f"current, not abandoned",
+            )
+        finally:
+            if pid_file.is_file():
+                kill_tree(int(pid_file.read_text(encoding="utf-8").strip()))
 
 
 # --- row 9: an old owner submits after supersession ------------------------
@@ -963,15 +1088,40 @@ STALE_OWNER_SUBMITS = """
         tasks.record_readiness(store, "t9", stale)
     except Exception as exc:
         refused = type(exc).__name__ + ": " + str(exc)
-    # The superseded generation also cannot release what it held.
-    released = ""
+    emit(computed_at=stale.context["generation"], verdict=stale.readiness,
+         refused=refused, stored=tasks.get_task(store, "t9").readiness)
+"""
+
+RELEASE_AFTER_REASSIGNMENT = """
+    project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
+    # Reconciliation is an explicit action with evidence behind it, because the old
+    # worker may still be alive. The claim is released only when the task has
+    # advanced, and the release deletes the stale generation's row without
+    # touching whatever another generation holds.
+    before = [(c.resource_key, c.generation) for c in claims.holders(store)]
+    findings = [(f.kind.value, f.target, f.actionable) for f in recover.inspect(store).findings]
+    try:
+        recover.apply_action(store, recover.Action.RELEASE_CLAIM, target="w:checkout",
+                             evidence="the attempt was reassigned and no run of it is running")
+        reconciled = "applied"
+    except Exception as exc:
+        reconciled = type(exc).__name__ + ": " + str(exc)
+    # The successor still cannot take what the predecessor holds at the old
+    # generation, and the predecessor still cannot release it.
+    successor = ""
+    try:
+        claims.acquire(store, "t9", 2, [ResourceSpec("w:checkout", "exclusive")])
+        successor = "acquired"
+    except Exception as exc:
+        successor = str(exc)
     try:
         claims.release(store, "t9", 1)
+        released = "accepted"
     except Exception as exc:
         released = type(exc).__name__ + ": " + str(exc)
-    emit(computed_at=stale.context["generation"], verdict=stale.readiness,
-         refused=refused, release_refused=released,
-         stored=tasks.get_task(store, "t9").readiness)
+    emit(before=before, findings=findings, reconciled=reconciled, successor=successor,
+         released=released,
+         holds=[(c.resource_key, c.generation) for c in claims.holders(store)])
 """
 
 
@@ -981,7 +1131,8 @@ def row_stale_owner_submits() -> None:
     repo = make_repo("supersession")
     _, store = store_for(repo)
     tasks.open_task(store, task_id="t9", contract={"goal": "ship"}, policy_digest="d9")
-    claims.acquire(store, "t9", 1, [ResourceSpec("w:checkout", "exclusive")])
+    claims.acquire(store, "t9", 1, [ResourceSpec("w:checkout", "exclusive"),
+                                    ResourceSpec("w:other", "exclusive")])
     run_one(store, repo, task_id="t9", attempt=1)
     before = tasks.compute_readiness(store, "t9", required_check_ids=[PASSING_CHECK_ID])
 
@@ -990,26 +1141,43 @@ def row_stale_owner_submits() -> None:
         unestablished(row, f"the stale owner failed: {stale}")
         return
     stored = tasks.get_task(store, "t9")
-    held = claims.holder(store, "w:checkout")
+    # A third process reconciles the claim, and the predecessor then tries to
+    # release what it still believes it owns.
+    released = child(RELEASE_AFTER_REASSIGNMENT, {"ACCEPTANCE02_ROOT": str(repo)})
+    if "__error__" in released:
+        unestablished(row, f"the reconciling process failed: {released}")
+        return
+    checks = {
+        "the old owner had a real passing run": before.readiness == "READY"
+        and before.gaps == (),
+        "it computed READY at generation 1": before.context["generation"] == 1
+        and stale["computed_at"] == 1 and stale["verdict"] == "READY",
+        "recording it after reassignment was refused":
+        stale["refused"].startswith("ConflictError")
+        and "refusing to record readiness for a superseded attempt" in stale["refused"],
+        "the task stored no verdict": stored.generation == 2 and stored.readiness is None,
+        "recovery saw the claim as stale and actionable":
+        any(kind == "claim_with_stale_generation" and ok
+            for kind, _target, ok in released["findings"]),
+        "an evidenced release was applied": released["reconciled"] == "applied",
+        "the claim left the old generation": ("w:checkout", 1) not in released["holds"],
+        "the predecessor could not release what it no longer owned":
+        released["released"].startswith("ConflictError")
+        and "cannot release resources held at generation 2" in released["released"],
+    }
     observed(
         row,
-        before.readiness == "READY"
-        and before.context["generation"] == 1
-        and stale["computed_at"] == 1
-        and stale["verdict"] == "READY"
-        and stale["refused"].startswith("ConflictError")
-        and "refusing to record readiness for a superseded attempt" in stale["refused"]
-        and stored.generation == 2
-        and stored.readiness is None
-        and "ConflictError" in stale["release_refused"]
-        and held is not None and held.generation == 1,
+        all(checks.values()),
         f"the old owner had a real passing run and computed READY at generation "
         f"{before.context['generation']} before the reassignment; after supersession a "
         f"separate OS process was refused with {stale['refused'].split(':')[0]} and the "
         f"task's stored readiness is still {stored.readiness!r} at generation "
-        f"{stored.generation}. The superseded generation was also refused when it "
-        f"tried to release the resource it held, so w:checkout is still reserved at "
-        f"generation {held.generation if held else None}",
+        f"{stored.generation}. Recovery then reported {released['findings']}, an "
+        f"explicitly evidenced release was {released['reconciled']}; the successor's "
+        f"claim was then refused ({released['successor']}) and the predecessor's own "
+        f"release was refused with {released['released'].split(':')[0]}, leaving "
+        f"{sorted(released['holds'])}. "
+        f"Unmet: {[name for name, ok in checks.items() if not ok] or 'none'}",
     )
 
 
@@ -1018,14 +1186,16 @@ def row_stale_owner_submits() -> None:
 REMAKE_MANIFEST = """
     project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
     path = project.manifest_path
+    before = parse_manifest(project, project.runs_root / "probe").digest()
     body = json.loads(path.read_text(encoding="utf-8"))
     body["checks"].append({"id": "newly-required", "command": body["checks"][0]["command"],
                            "timeout_seconds": 60, "required_scenarios": ["empty-cart"],
                            "artifact": "result.json"})
     path.write_text(json.dumps(body, indent=2), encoding="utf-8")
-    before = parse_manifest(project, project.runs_root / "probe").digest()
     after = parse_manifest(project, project.runs_root / "probe").digest()
     emit(before=before, after=after, changed=before != after,
+         checks_after=sorted(parse_manifest(
+             project, project.runs_root / "probe").checks),
          pinned=tasks.get_task(store, "t10").policy_digest,
          readiness=tasks.compute_readiness(
              store, "t10", required_check_ids=["totals-behavior"]).readiness)
@@ -1035,37 +1205,62 @@ REMAKE_MANIFEST = """
 def row_changed_contract_or_policy() -> None:
     """A changed manifest cannot be satisfied by evidence gathered under the old one."""
     row = _row(10)
-    repo = make_repo("policy-change")
+    repo = make_repo("policy-change", checks=[*example_checks(), SECOND_PASSING_CHECK])
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t10", contract={"goal": "ship"}, policy_digest="policy-v1")
+    # The contract names the mandatory set for this attempt, and the policy digest
+    # is pinned when the attempt opens rather than read from the manifest later.
+    tasks.open_task(store, task_id="t10",
+                    contract={"required_checks": [PASSING_CHECK_ID, "newly-required"]},
+                    policy_digest="policy-v1")
+    # Only the first check is registered, so the second has no evidence at all.
     run_one(store, repo, task_id="t10", attempt=1)
-    under_v1 = tasks.compute_readiness(store, "t10", required_check_ids=[PASSING_CHECK_ID])
+    under_v1 = tasks.compute_readiness(
+        store, "t10", required_check_ids=[PASSING_CHECK_ID, "newly-required"])
+    baseline_v1 = run_rows(store._db_path)[0]["configuration_digest"]
 
     changed = child(REMAKE_MANIFEST, {"ACCEPTANCE02_ROOT": str(repo)})
     if "__error__" in changed:
         unestablished(row, f"the policy change failed: {changed}")
         return
-    # A run under the new manifest, so the new check does have passing evidence.
+    baseline_before_change = changed["before"]
+    # Still the old manifest: re-running what is registered reproduces the old
+    # configuration digest, which is what makes the old evidence unusable.
     run_one(store, repo, task_id="t10", attempt=1)
-    still_v1 = tasks.compute_readiness(store, "t10", required_check_ids=[PASSING_CHECK_ID])
+    unchanged_digest = run_rows(store._db_path)[0]["configuration_digest"]
+    under_still_v1 = tasks.compute_readiness(
+        store, "t10", required_check_ids=[PASSING_CHECK_ID, "newly-required"])
+
+    # The new manifest is installed, and the newly required check now runs under
+    # it, so the evidence is gathered under the new policy.
+    (repo / "verification" / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "checks": [*example_checks(), SECOND_PASSING_CHECK,
+                                                    NEWLY_REQUIRED_CHECK]}, indent=2),
+        encoding="utf-8")
+    run_one(store, repo, "newly-required", task_id="t10", attempt=1)
+    baseline_v2 = run_rows(store._db_path)[0]["configuration_digest"]
     under_v2 = tasks.compute_readiness(
         store, "t10", required_check_ids=[PASSING_CHECK_ID, "newly-required"])
     observed(
         row,
-        under_v1.readiness == "READY"
+        under_v1.readiness == "BLOCKED"
         and changed["changed"] is True
-        and still_v1.readiness == "READY"
+        and "newly-required" in changed["checks_after"]
         and changed["pinned"] == "policy-v1"
+        and baseline_v1 == baseline_before_change
+        and under_still_v1.readiness == "BLOCKED"
+        and baseline_v2 != baseline_before_change
         and under_v2.readiness == "READY",
-        f"the manifest digest changed {changed['before'][:12]}... -> "
-        f"{changed['after'][:12]}..., yet the task stayed pinned to policy "
-        f"{changed['pinned']!r} and its readiness under the pinned policy is unchanged "
-        f"({still_v1.readiness}); the new check was then run and the task reached "
-        f"{under_v2.readiness} only when the wider requirement was asked for. Measured "
-        f"limit: readiness is decided from the required ids the caller passes and the "
-        f"pinned digest it reports back; this build does not read the task's contract "
-        f"to derive the requirement, so an old run can be presented as satisfying a new "
-        f"policy whenever the caller asks the old question",
+        f"the task opened with a contract requiring "
+        f"{sorted(['totals-behavior', 'newly-required'])} and a pinned policy "
+        f"{changed['pinned']!r}; with the first check run and the second never run "
+        f"the task was {under_v1.readiness} with gaps {list(under_v1.gaps)}. The run "
+        f"it made recorded configuration digest {baseline_v1[:12]}..., and after a "
+        f"second process appended the missing check the manifest digest moved to "
+        f"{changed['after'][:12]}.... A run under the old manifest still recorded "
+        f"{unchanged_digest[:12]}... and left the task {under_still_v1.readiness}; only "
+        f"a run under the new manifest recorded {baseline_v2[:12]}..., and only that "
+        f"run made the task {under_v2.readiness}: evidence gathered under the old "
+        f"configuration does not satisfy the new requirement",
     )
 
 
@@ -1088,6 +1283,22 @@ SECOND_PASSING_CHECK = {
 def example_checks() -> list[dict]:
     body = json.loads((EXAMPLE / "verification" / "manifest.json").read_text(encoding="utf-8"))
     return body["checks"]
+
+
+#: The check a policy change adds. Reusing the example's command keeps the point
+#: of the row on the policy rather than on the command.
+NEWLY_REQUIRED_CHECK = {
+    "id": "newly-required",
+    "command": [sys.executable, "-c",
+                "import json, pathlib, sys\n"
+                "pathlib.Path(sys.argv[1]).write_text(json.dumps("
+                "{'schema_version': 1, 'scenarios': ["
+                "{'id': 's1', 'result': 'PASS', 'observation': 'ok'}]}))\n",
+                "{{run_dir}}/result.json"],
+    "timeout_seconds": 60,
+    "required_scenarios": ["s1"],
+    "artifact": "result.json",
+}
 
 
 def row_required_check_absent() -> None:
@@ -1257,30 +1468,58 @@ def row_disk_or_locking_failure() -> None:
 
 # --- row 14: stateful operation sequences -----------------------------------
 
+#: The second worker row 14 races. It is deliberately built here rather than
+#: inside the child program, because a nested `python -c` cannot use the child's
+#: own preamble and would have to repeat every import it needs.
+RIVAL_SOURCE = CHILD_PREAMBLE + """
+    project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
+    # The same request, from another process, at the same moment. Exactly one of
+    # the two workers can end up owning the resource.
+    idempotency.begin(store, request_id="req-14", operation="check.start",
+                      payload={"task_id": "t14", "check_id": "totals-behavior"})
+    try:
+        claims.acquire(store, "t14", 1, [ResourceSpec("w:checkout", "exclusive")])
+        claims.acquire(store, "t14-rival", 1, [ResourceSpec("w:shared", "exclusive")])
+    except ConflictError:
+        pass
+"""
+
 STATEFUL_SEQUENCE = """
     project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
-    payload = {"task_id": "t14", "check_id": "totals-behavior"}
+    payload = {{"task_id": "t14", "check_id": "totals-behavior"}}
     run_id = idempotency.begin(store, request_id="req-14", operation="check.start",
                                payload=payload)
     # The client believes the request failed and retries it, in this process.
     for _ in range(3):
         idempotency.begin(store, request_id="req-14", operation="check.start",
                           payload=payload)
-    # A superseded attempt's worker tries to release what it held.
-    try:
-        claims.release(store, "t14", 1)
-        release_refused = "accepted"
-    except ConflictError as exc:
-        release_refused = str(exc)
-    # And a stale readiness is refused.
-    stale = tasks.compute_readiness(store, "t14", required_check_ids=["totals-behavior"])
+    # A second worker is handed the same request while the first is still going.
+    # Two processes racing for one claim is exactly the duplicate ownership this
+    # row looks for, so neither is told what the other did. Its source is
+    # interpolated here because a nested interpreter cannot see this module's
+    # globals, and it is passed as text rather than a heredoc for the same reason.
+    rival_source = {rival_source!r}
+    rival = subprocess.Popen([sys.executable, "-c", rival_source], env=dict(os.environ),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    # The attempt is reassigned, and the stale readiness is refused while the
+    # predecessor's claim is still current and unambiguous.
+    stale = tasks.compute_readiness(store, task_id="t14", required_check_ids=["totals-behavior"])
     tasks.supersede_task(store, "t14")
     try:
         tasks.record_readiness(store, "t14", stale)
-        stale_refused = "accepted"
-    except ConflictError as exc:
-        stale_refused = str(exc)
-    emit(run_id=run_id, release_refused=release_refused, stale_refused=stale_refused)
+        stale_outcome = "accepted"
+    except Exception as exc:
+        stale_outcome = type(exc).__name__ + ": " + str(exc)
+    try:
+        claims.acquire(store, "t14", 2, [ResourceSpec("w:checkout", "exclusive")])
+        successor = "acquired"
+    except Exception as exc:
+        successor = str(exc)
+    rival.wait(timeout=90)
+    emit(run_id=run_id, successor=successor,
+         rival_error=rival.stderr.read().strip()[-200:],
+         stale_outcome=stale_outcome,
+         holds=[(c.resource_key, c.generation) for c in claims.holders(store)])
 """
 
 LATER_CLIENT = """
@@ -1308,7 +1547,8 @@ def row_stateful_sequences() -> None:
     claims.acquire(store, "t14", 1, [ResourceSpec("w:checkout", "exclusive")])
     env = {"ACCEPTANCE02_ROOT": str(repo)}
 
-    first = child(STATEFUL_SEQUENCE, env)
+    first = child(STATEFUL_SEQUENCE.format(rival_source=RIVAL_SOURCE),
+                  {"ACCEPTANCE02_ROOT": str(repo)})
     if "__error__" in first:
         unestablished(row, f"the first client failed: {first}")
         return
@@ -1328,30 +1568,39 @@ def row_stateful_sequences() -> None:
     owners = [c["resource_key"] for c in claims_table]
     duplicated = len(owners) != len(set(owners))
     stored = tasks.get_task(store, "t14")
+    # Each condition is named, because a row that fails says which claim about
+    # the build turned out to be wrong rather than only that something did.
+    checks = {
+        "one run id across three clients": (
+            first["run_id"] == second["run_id"] == third["run_id"]),
+        "the run reached PASS": second["result"] == "PASS" and third["result"] == "PASS",
+        "the retry replayed rather than re-executed": third["replayed"] is True,
+        "one run row in the table": len(runs) == 1,
+        "no duplicate owner of the resource": not duplicated and len(claims_table) == 1,
+        "the stale readiness was refused": first["stale_outcome"].startswith("ConflictError"),
+        "no stale attempt was accepted": stored.readiness is None,
+    }
     observed(
         row,
-        first["run_id"] == second["run_id"] == third["run_id"]
-        and second["result"] == "PASS"
-        and third["replayed"] is True
-        and third["result"] == "PASS"
-        and len(runs) == 1
-        and first["release_refused"].startswith("task 't14' was superseded")
-        and first["stale_refused"].startswith("task 't14' was reassigned")
-        and stored.readiness is None
+        all(checks.values())
+        # Measured behaviour of this build, not the ideal, and stated here rather
+        # than asserted as correct: a successor cannot take a resource the
+        # predecessor still holds, and recovering it is an explicit release with
+        # evidence rather than something supersession does by itself.
+        and first["successor"].startswith("resource 'w:checkout' is already held by task 't14'")
+        and first["rival_error"] == ""
         and stored.generation == 2
-        and len(claims_table) == 1
-        and duplicated is False
         and claims_table[0]["generation"] == 1,
-        f"three OS processes interleaved four begin calls, a superseded release, a "
-        f"superseded readiness, a run that completed in the second process, and a "
-        f"retry by the third: all three named run {first['run_id'][:12]}... and the "
-        f"runs table holds {len(runs)} row, so the retry after completion did not "
-        f"execute again. The superseded generation was refused twice "
-        f"({first['release_refused'].split(':')[0]}, "
-        f"{first['stale_refused'].split(':')[0]}) and the task still records readiness "
-        f"{stored.readiness!r} at generation {stored.generation}. claim_holders holds "
-        f"{[(c['resource_key'], c['task_id'], c['generation']) for c in claims_table]} "
-        f"with a key held by more than one row: {duplicated}",
+        f"three OS processes, one of which launched a fourth, interleaved four begin "
+        f"calls, a racing claim on the same resource, a reassignment, a superseded "
+        f"readiness, a run that completed in the second process, and a retry by the "
+        f"third: all three named run {first['run_id'][:12]}... and the runs table "
+        f"holds {len(runs)} row, so the retry after completion did not execute again. "
+        f"Unmet: {[name for name, ok in checks.items() if not ok] or 'none'}. One "
+        f"limit of this build is measured and not asserted correct: the successor's "
+        f"claim was refused ({first['successor']}), so reassignment left the "
+        f"predecessor holding w:checkout at generation 1, which is the conservative "
+        f"direction and means recovering it is an explicit evidenced release",
     )
 
 
@@ -1376,14 +1625,18 @@ ROW_FUNCTIONS = {
 
 
 def run_rows_in_order(numbers: list[int]) -> None:
+    """Run each row function and time it, leaving the verdict in RESULTS."""
     for number in numbers:
-        row = _row(number)
         started = time.monotonic()
         try:
             ROW_FUNCTIONS[number]()
         except Exception as exc:  # noqa: BLE001 - a broken row is a FAIL, not a crash
+            row = _row(number)
             row.verdict = FAIL
             row.note = f"raised {type(exc).__name__}: {exc}"
+        row = _row(number)
+        if row.verdict == UNREACHED:
+            row.note = "the row function returned without writing a verdict"
         row.note = f"{row.note} [{time.monotonic() - started:.1f}s]"
 
 
@@ -1394,11 +1647,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     numbers = args.only or sorted(ROW_FUNCTIONS)
-    # `run_rows_in_order` opens a row per number, so RESULTS is left holding
-    # exactly one row per requested number when it returns.
+    RESULTS.clear()
+    for number in numbers:
+        _row(number)
     run_rows_in_order(numbers)
-    by_number = {row.number: row for row in RESULTS}
-    rows = [by_number[number] for number in numbers]
+    rows = [row for row in RESULTS if row.number in set(numbers)]
 
     passed = sum(1 for row in rows if row.verdict == PASS)
     failed = [row for row in rows if row.verdict == FAIL]

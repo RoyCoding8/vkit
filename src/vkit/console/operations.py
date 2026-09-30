@@ -326,12 +326,11 @@ def run_check(context: Context, check_id: str) -> dict[str, Any]:
     makes, so the console and the CLI register a run, fingerprint the source and
     publish a report through exactly one path.
 
-    It deliberately does not go through `supervisor.start_run`. That function
-    registers the run itself and then calls `run_check` with the same id, which
-    the store rejects as a duplicate registration; `start_run` raises
-    `StoreError: run <id> is already registered` before any check executes. That
-    is a defect in the core, not a refusal of the request, so the console uses
-    the working path and reports it rather than wrapping a broken one.
+    It calls `run_check` rather than `supervisor.start_run`. The console wants
+    the run to happen before the HTTP response returns, and `run_check` is the
+    call that actually executes a check. `start_run` is the entry point for a
+    caller that owns a run's lifecycle across a client disconnect, which the
+    console is not.
     """
     if not check_id:
         raise Refused("a check id is required; the manifest defines the permitted ones")

@@ -154,3 +154,39 @@ def test_mark_running_after_terminal_is_refused(store: Store) -> None:
     store.publish("run-1", make_report("run-1"))
     with pytest.raises(StoreError):
         store.mark_running("run-1", {"pid": 1})
+
+
+def test_transaction_commits_its_work(tmp_path: Path) -> None:
+    """Regression: transaction() opened BEGIN IMMEDIATE and then let the
+    connection close in autocommit mode, which rolled the write back and left the
+    lock held. Every call looked correct and discarded its change."""
+    s = Store(tmp_path / "state.sqlite3")
+    s.register_run("r1", "c", task_id=None, attempt=None, source={},
+                   configuration_digest="c", fixture_digest=None)
+    assert s.list_runs()[0]["lifecycle"] == "preparing"
+    with s.transaction() as conn:
+        conn.execute("UPDATE runs SET lifecycle = 'running' WHERE run_id = 'r1'")
+    assert s.list_runs()[0]["lifecycle"] == "running"
+
+
+def test_transaction_rolls_back_on_an_exception(tmp_path: Path) -> None:
+    s = Store(tmp_path / "state.sqlite3")
+    s.register_run("r1", "c", task_id=None, attempt=None, source={},
+                   configuration_digest="c", fixture_digest=None)
+    with pytest.raises(RuntimeError):
+        with s.transaction() as conn:
+            conn.execute("UPDATE runs SET lifecycle = 'running' WHERE run_id = 'r1'")
+            raise RuntimeError("boom")
+    assert s.list_runs()[0]["lifecycle"] == "preparing"
+
+
+def test_transaction_releases_the_write_lock(tmp_path: Path) -> None:
+    """A held lock would make every later write block for the busy timeout."""
+    s = Store(tmp_path / "state.sqlite3")
+    s.register_run("r1", "c", task_id=None, attempt=None, source={},
+                   configuration_digest="c", fixture_digest=None)
+    with s.transaction() as conn:
+        conn.execute("UPDATE runs SET lifecycle = 'running' WHERE run_id = 'r1'")
+    with s.transaction() as conn:
+        conn.execute("UPDATE runs SET result = 'BLOCKED' WHERE run_id = 'r1'")
+    assert s.list_runs()[0]["result"] == "BLOCKED"

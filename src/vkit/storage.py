@@ -11,6 +11,7 @@ with the software that produced it.
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import os
@@ -132,28 +133,34 @@ class _Transaction:
 
     The write lock is taken before the caller's first read. That is the whole
     point: read-then-write without it is the race two processes both win.
+
+    The commit is explicit. Closing the connection in autocommit mode rolls an
+    open transaction back, so an earlier version that simply let `_connect` close
+    discarded every write and left the lock held. It looked correct and silently
+    was not, which is worse than not existing.
     """
 
-    __slots__ = ("_conn",)
+    __slots__ = ("_cm", "_conn")
 
     def __init__(self, store: "Store"):
-        self._conn = store._connect()
+        self._cm = store._connect()
+        self._conn: sqlite3.Connection | None = None
 
     def __enter__(self) -> sqlite3.Connection:
-        conn = self._conn.__enter__()
-        conn.execute("BEGIN IMMEDIATE")
-        return conn
+        self._conn = self._cm.__enter__()
+        self._conn.execute("BEGIN IMMEDIATE")
+        return self._conn
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         try:
-            if exc_type is None:
-                self._conn.__exit__(None, None, None)
-            else:
-                try:
-                    self._conn.execute("ROLLBACK")
-                finally:
-                    self._conn.__exit__(None, None, None)
+            if self._conn is not None:
+                if exc_type is None:
+                    self._conn.execute("COMMIT")
+                else:
+                    with contextlib.suppress(sqlite3.OperationalError):
+                        self._conn.execute("ROLLBACK")
         finally:
+            self._cm.__exit__(None, None, None)
             self._conn = None
         return False
 

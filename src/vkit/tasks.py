@@ -751,11 +751,7 @@ def _decide(
             # Identity is compared only for a pass. A FAIL and a BLOCKED are
             # already answers about this attempt, and re-deciding them against an
             # identity would turn a decided result into a different one.
-            recorded = {
-                "source_inventory_digest": run["source_inventory_digest"],
-                "policy_digest": run["configuration_digest"],
-                "fixture_digest": run["fixture_digest"],
-            }
+            recorded = {key: run.get(_RUN_COLUMN[label]) for label, key in COMPARED_IDENTITIES}
             tested[check_id] = recorded
             if expected is not None:
                 gaps.extend(_identity_gaps(check_id, recorded, expected))
@@ -773,9 +769,9 @@ def _decide(
             # reader who is not told that is being told the pass covers it.
             "unverified_identities": sorted(
                 label
-                for key, label in COMPARED_IDENTITIES
+                for label in _UNRECORDED_ON_RUN
                 for run in eligible.values()
-                if run["result"] == "PASS" and run.get(key) is None
+                if run["result"] == "PASS" and run.get(_RUN_COLUMN[label]) is None
             ),
         },
         tuple(dict.fromkeys(history)),
@@ -783,14 +779,37 @@ def _decide(
     )
 
 
-#: The identities acceptance compares, and what it calls each one. `source` and
-#: `policy` are recorded on every run today; `fixtures` is measured from the
-#: policy but not yet recorded on the run (see `_identity_gaps`).
+#: The identities acceptance compares, and what it calls each one.
+#:
+#: `source` and `policy` are recorded on every run today; `fixtures` is measured
+#: from the policy but not yet recorded on the run (see `_identity_gaps`). The
+#: pair is (label, name-in-the-recorded-map), and `_RUN_COLUMN` is the only
+#: place the run row's own column names are spelled: the recorded map calls the
+#: policy digest `policy_digest` because that is what a contract means by it,
+#: while the run row calls it `configuration_digest` because that is what the
+#: column is. Two spellings of one fact is exactly the drift a single map
+#: removes, and reading the wrong one silently reports a compared identity as
+#: unverified.
 COMPARED_IDENTITIES = (
-    ("source_inventory_digest", "source"),
-    ("policy_digest", "policy"),
-    ("fixture_digest", "fixtures"),
+    ("source", "source_inventory_digest"),
+    ("policy", "policy_digest"),
+    ("fixtures", "fixture_digest"),
 )
+
+#: Where each compared identity lives on a run row. Present for every identity
+#: above: the reason a label appears in `unverified_identities` is that its
+#: column is null on a passing run, never that this map lacks it.
+_RUN_COLUMN = {
+    "source": "source_inventory_digest",
+    "policy": "configuration_digest",
+    "fixtures": "fixture_digest",
+}
+
+#: The identities a run cannot have recorded in this build. Only these are ever
+#: reported unverified; an identity that IS recorded is either compared or
+#: already named as a gap, and saying "unverified" about it would be a claim
+#: about the record that is false.
+_UNRECORDED_ON_RUN = ("fixtures",)
 
 def _identity_gaps(
     check_id: str, recorded: dict[str, Any], expected: dict[str, Any]
@@ -810,7 +829,7 @@ def _identity_gaps(
     comparison starts applying with no change here.
     """
     gaps: list[str] = []
-    for key, label in COMPARED_IDENTITIES:
+    for label, key in COMPARED_IDENTITIES:
         actual, wanted = recorded.get(key), expected.get(key)
         if actual is None or wanted is None or actual == wanted:
             continue

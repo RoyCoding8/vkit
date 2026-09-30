@@ -1,0 +1,23 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 23 and seed -277873706824506912 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 13108] (Windows 11 10.0 amd64, Eclipse Adoptium 17.0.20.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file D:\AI\Poteto's Style\.claude\worktrees\agent-a273de3f7e911ab1b\formal\tla\OwnershipAcceptance.tla
+Parsing file C:\Users\roysh\AppData\Local\Temp\Naturals.tla
+Parsing file C:\Users\roysh\AppData\Local\Temp\FiniteSets.tla
+Parsing file C:\Users\roysh\AppData\Local\Temp\Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module OwnershipAcceptance
+Starting... (2026-09-30 01:47:11)
+Computing initial states...
+Finished computing initial states: 2 distinct states generated at 2026-09-30 01:47:11.
+Progress(10) at 2026-09-30 01:47:14: 466,088 states generated (466,088 s/min), 58,252 distinct states found (58,252 ds/min), 22,926 states left on queue.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 1.9E-8
+  based on the actual fingerprints:  val = 7.2E-9
+1935362 states generated, 207360 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 19.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 14 and the 95th percentile is 3).
+Finished in 12s at (2026-09-30 01:47:23)

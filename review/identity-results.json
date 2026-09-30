@@ -1,0 +1,34 @@
+{
+  "argv_boundary_collision": true,
+  "inputs_ignored": true,
+  "prerequisites_ignored": true,
+  "checkout_path_changes_policy_digest": true,
+  "wheel_schemas_match_authoritative_source": {
+    "check-artifact.v1.json": true,
+    "manifest.v1.json": true,
+    "run-report.v1.json": true
+  },
+  "formal_receipt_identity": {
+    "formal/tla/OwnershipAcceptance.tla": {
+      "exact_bytes_match": false,
+      "normalized_lf_matches": true
+    },
+    "formal/tla/OwnershipAcceptance.cfg": {
+      "exact_bytes_match": false,
+      "normalized_lf_matches": true
+    },
+    "formal/lean/Acceptance.lean": {
+      "exact_bytes_match": false,
+      "normalized_lf_matches": true
+    }
+  },
+  "duplicate_check_rejection": {
+    "type": "NameError",
+    "message": "name 'path' is not defined"
+  },
+  "duplicate_acceptance_disagreement": {
+    "returned_record_decision": "REJECTED",
+    "stored_record_decision": "ACCEPTED",
+    "claims_reused_recorded_acceptance": true
+  }
+}

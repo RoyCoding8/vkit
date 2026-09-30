@@ -1,0 +1,34 @@
+{
+  "console_receipt": {
+    "operation": "enroll",
+    "enrolled": true,
+    "accepted": true,
+    "policy": [
+      {
+        "id": "totals-behavior",
+        "command": [
+          "python",
+          "verify_totals.py",
+          "--app",
+          "src/totals.py",
+          "--out",
+          "{{run_dir}}/result.json"
+        ],
+        "timeout_seconds": 120.0
+      }
+    ],
+    "record": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-m5tf1a4i\\http\\.git\\verification-kit\\enrollment.json"
+  },
+  "core_read": {
+    "schema_version": 1,
+    "command": "project enroll",
+    "project": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-m5tf1a4i\\http",
+    "state": "not_enrolled",
+    "execution_permitted": false,
+    "policy_digest": null,
+    "accepted_at": null,
+    "proposed_at": null,
+    "manifest_path": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-m5tf1a4i\\http\\verification\\manifest.json",
+    "proposal_path": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-m5tf1a4i\\http\\verification\\proposed-manifest.json"
+  }
+}

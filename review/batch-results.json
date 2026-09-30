@@ -1,0 +1,20 @@
+[
+  {
+    "case": "ascii",
+    "result": "ExecutionResult(argv=('C:\\\\Users\\\\roysh\\\\AppData\\\\Local\\\\Temp\\\\vkit-batch-audit-dakgu9tl\\\\ascii\\\\echo-args.cmd', 'x y'), cwd=WindowsPath('C:/Users/roysh/AppData/Local/Temp/vkit-batch-audit-dakgu9tl/ascii'), stdout_path=WindowsPath('C:/Users/roysh/AppData/Local/Temp/vkit-batch-audit-dakgu9tl/ascii/out.log'), stderr_path=WindowsPath('C:/Users/roysh/AppData/Local/Temp/vkit-batch-audit-dakgu9tl/ascii/err.log'), ownership='windows_job_object', pid=31096, creation_time=134352475100029055, boot_id='', exit_code=0, timed_out=False, reason=None, detail='', started_at=1297399.5337959, ended_at=1297399.7047563)",
+    "stdout": "hello\n",
+    "stderr": ""
+  },
+  {
+    "case": "space path",
+    "result": "ExecutionResult(argv=('C:\\\\Users\\\\roysh\\\\AppData\\\\Local\\\\Temp\\\\vkit-batch-audit-dakgu9tl\\\\space path\\\\echo-args.cmd', 'x y'), cwd=WindowsPath('C:/Users/roysh/AppData/Local/Temp/vkit-batch-audit-dakgu9tl/space path'), stdout_path=WindowsPath('C:/Users/roysh/AppData/Local/Temp/vkit-batch-audit-dakgu9tl/space path/out.log'), stderr_path=WindowsPath('C:/Users/roysh/AppData/Local/Temp/vkit-batch-audit-dakgu9tl/space path/err.log'), ownership='windows_job_object', pid=7192, creation_time=134352475101805743, boot_id='', exit_code=0, timed_out=False, reason=None, detail='', started_at=1297399.726409, ended_at=1297399.8059785)",
+    "stdout": "hello\n",
+    "stderr": ""
+  },
+  {
+    "case": "unicode-caf\u00e9",
+    "result": "ExecutionResult(argv=('C:\\\\Users\\\\roysh\\\\AppData\\\\Local\\\\Temp\\\\vkit-batch-audit-dakgu9tl\\\\unicode-caf\u00e9\\\\echo-args.cmd', 'x y'), cwd=WindowsPath('C:/Users/roysh/AppData/Local/Temp/vkit-batch-audit-dakgu9tl/unicode-caf\u00e9'), stdout_path=WindowsPath('C:/Users/roysh/AppData/Local/Temp/vkit-batch-audit-dakgu9tl/unicode-caf\u00e9/out.log'), stderr_path=WindowsPath('C:/Users/roysh/AppData/Local/Temp/vkit-batch-audit-dakgu9tl/unicode-caf\u00e9/err.log'), ownership='windows_job_object', pid=26984, creation_time=134352475102623374, boot_id='', exit_code=0, timed_out=False, reason=None, detail='', started_at=1297399.8236873, ended_at=1297399.8776257)",
+    "stdout": "hello\n",
+    "stderr": ""
+  }
+]

@@ -1,0 +1,10 @@
+console 127.0.0.1 - "GET /api/run_check?check_id=totals-behavior HTTP/1.1" 200 -
+source_changed_after_pass READY -> READY
+unenrolled_zero_checks READY []
+claim_conflict_still_executes admitted= True conflict= True result= PASS
+fresh_attempt_after_old_pass BLOCKED ["check 'totals-behavior' was recorded at attempt 1, not the current attempt 2"]
+check_start_is_synchronous 3.22 PASS
+foreign_origin_get_mutation {'http_status': 200, 'body': {'witness': 'mutation route invoked', 'check_id': 'totals-behavior'}, 'calls': ['totals-behavior']}
+console_and_core_enrollment_disagree console= True core= not_enrolled
+Evidence: D:\AI\Poteto's Style\review\probe-results.json
+Disposable repositories retained: C:\Users\roysh\AppData\Local\Temp\vkit-audit-3yv4v15i

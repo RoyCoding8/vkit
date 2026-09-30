@@ -1,0 +1,161 @@
+....s................................................................... [ 15%]
+.......................................................F................ [ 30%]
+........................................................................ [ 46%]
+........................................................................ [ 61%]
+......................................ssssssssssss.............sssss.... [ 76%]
+..............................ss........................................ [ 92%]
+.....................................                                    [100%]
+================================== FAILURES ===================================
+_________________ test_the_core_and_the_reference_model_agree _________________
+
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x0000020FB7F7C510>, _basetemp=WindowsPath('C:/Users/roysh/AppData/Local/Temp/pytest-of-roysh/pytest-3007'), _retention_count=3, _retention_policy='all')
+
+    @given(sequence=st.lists(ops, min_size=1, max_size=25))
+>   @SETTINGS
+              
+
+tests\test_formal_correspondence.py:210: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x0000020FB7F7C510>, _basetemp=WindowsPath('C:/Users/roysh/AppData/Local/Temp/pytest-of-roysh/pytest-3007'), _retention_count=3, _retention_policy='all')
+sequence = [('record', 'w1', 'unit', 'rev1', 'PASS'), ('crash', 'w1'), ('record', 'w1', 'unit', 'rev1', 'PASS'), ('record', 'w1', 'lint', 'rev1', 'PASS')]
+
+    @given(sequence=st.lists(ops, min_size=1, max_size=25))
+    @SETTINGS
+    def test_the_core_and_the_reference_model_agree(tmp_path_factory, sequence) -> None:
+        """Both models see the same operations and must answer the same questions.
+    
+        Each step is compared, not only the end state, because a pair of models can
+        reach the same place by different routes and one of those routes can be
+        wrong.
+        """
+        store = Store(tmp_path_factory.mktemp("corr") / "state.sqlite3")
+        real = Core(store)
+        ideal = _reference_init()
+    
+        for step_number, op in enumerate(sequence):
+            kind = op[0]
+            before = f"after {step_number - 1} steps, before {op}"
+    
+            if kind == "acquire":
+                _, owner, resource = op
+                acquired_real = real.acquire(owner, resource)
+                ideal = ideal.acquire(owner, resource)
+                assert real.holder(resource) == ideal.holder(resource), (
+                    f"ownership of {resource} diverged {before}: "
+                    f"core={real.holder(resource)} reference={ideal.holder(resource)} "
+                    f"(core acquire returned {acquired_real})"
+                )
+    
+            elif kind == "record":
+                _, owner, check, revision, outcome = op
+                real.record(owner, check, revision, outcome)
+                ideal = ideal.record(owner, check, revision, outcome)
+    
+            elif kind == "release":
+                _, owner, resource = op
+                real.release(owner, resource)
+                ideal = ideal.release(owner, resource)
+                assert real.holder(resource) == ideal.holder(resource), (
+                    f"ownership of {resource} diverged {before}: "
+                    f"core={real.holder(resource)} reference={ideal.holder(resource)}"
+                )
+    
+            elif kind == "crash":
+                _, owner = op
+                real.crash(owner)
+                # The core's supersede stops the attempt AND advances its
+                # generation, so the reference takes both steps in that order.
+                ideal = ideal.crash(owner)
+                ideal = ideal.reconcile(owner)
+                assert real.generations(owner) == ideal.generations[owner], (
+                    f"generation of {owner} diverged {before}"
+                )
+    
+            elif kind == "reconcile":
+                _, owner = op
+                real.reconcile(owner)
+                ideal = ideal.reconcile(owner)
+                assert real.generations(owner) == ideal.generations[owner], (
+                    f"generation of {owner} diverged {before}"
+                )
+    
+            elif kind == "set_revision":
+                _, revision = op
+                ideal = ideal.set_revision(revision)
+    
+            elif kind == "accept":
+                _, owner, generation, revision = op
+                ideal = ideal.accept(owner, generation, revision)
+    
+            # The acceptance decision. This is the claim the plan cares about, so
+            # it is compared on every step rather than only at the end of a run.
+            for owner in reference.OWNERS:
+                current = real.generations(owner)
+                core_verdict = real.decide(owner, ideal.revision)
+                reference_verdict = ideal.decide(owner, current, ideal.revision)
+>               assert core_verdict == reference_verdict, (
+                    f"readiness for {owner} diverged {before}: "
+                    f"core={core_verdict} reference={reference_verdict} "
+                    f"(core generation {current}, reference generation "
+                    f"{ideal.generations[owner]})"
+                )
+E               AssertionError: readiness for w1 diverged after 2 steps, before ('record', 'w1', 'lint', 'rev1', 'PASS'): core=BLOCKED reference=READY (core generation 2, reference generation 2)
+E               assert 'BLOCKED' == 'READY'
+E                 
+E                 - READY
+E                 + BLOCKED
+E               Failing test case: test_the_core_and_the_reference_model_agree(
+E                   # The test always failed when commented parts were varied together.
+E                   tmp_path_factory=TempPathFactory(_given_basetemp=None,
+E                    _trace=<pluggy._tracing.TagTracerSub object at 0x0000020FB7F7C510>,
+E                    _basetemp=WindowsPath('C:/Users/roysh/AppData/Local/Temp/pytest-of-roysh/pytest-3007'),
+E                    _retention_count=3,
+E                    _retention_policy='all'),
+E                   sequence=[(
+E                        'record',
+E                        'w1',
+E                        'unit',  # or any other generated value
+E                        'rev1',  # or any other generated value
+E                        'PASS',
+E                    ), ('crash', 'w1'), (
+E                        'record',
+E                        'w1',
+E                        'unit',
+E                        'rev1',  # or any other generated value
+E                        'PASS',
+E                    ), (
+E                        'record',
+E                        'w1',
+E                        'lint',
+E                        'rev1',  # or any other generated value
+E                        'PASS',
+E                    )],
+E               )
+E               Explanation:
+E                   These lines were always and only run by failing test cases:
+E                       D:\AI\Poteto's Style\tests\test_formal_correspondence.py:284
+E                       D:\AI\Poteto's Style\tests\test_formal_correspondence.py:288
+
+tests\test_formal_correspondence.py:283: AssertionError
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_acceptance.py:175: the virtualenv's vkit is installed from this tree (D:\AI\Poteto's Style\src\vkit\cli.py), so there is no second checkout for the old resolution to reach
+SKIPPED [1] tests\test_procidentity.py:440: exercised by the Windows host
+SKIPPED [1] tests\test_procidentity_posix.py:63: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [1] tests\test_procidentity_posix.py:83: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [1] tests\test_procidentity_posix.py:104: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [1] tests\test_procidentity_posix.py:122: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [1] tests\test_procidentity_posix.py:137: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [2] tests\test_procidentity_posix.py:142: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [1] tests\test_procidentity_posix.py:155: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [1] tests\test_procidentity_posix.py:212: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [1] tests\test_procidentity_posix.py:226: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [1] tests\test_procidentity_posix.py:247: this covers the POSIX identity; the Windows FILETIME pair is covered by tests/test_procidentity.py
+SKIPPED [1] tests\test_procs_posix_real.py:136: the ownership mechanism under test here is the POSIX process group; the job object is covered by tests/test_procs.py
+SKIPPED [1] tests\test_procs_posix_real.py:195: the ownership mechanism under test here is the POSIX process group; the job object is covered by tests/test_procs.py
+SKIPPED [1] tests\test_procs_posix_real.py:222: the ownership mechanism under test here is the POSIX process group; the job object is covered by tests/test_procs.py
+SKIPPED [1] tests\test_procs_posix_real.py:238: the ownership mechanism under test here is the POSIX process group; the job object is covered by tests/test_procs.py
+SKIPPED [1] tests\test_procs_posix_real.py:264: the ownership mechanism under test here is the POSIX process group; the job object is covered by tests/test_procs.py
+SKIPPED [1] tests\test_recover.py:859: boot_id is POSIX-only; a Windows FILETIME is absolute and needs no boot
+SKIPPED [1] tests\test_recover.py:897: a Windows FILETIME is absolute and needs no boot to be meaningful, so there is no boot half to withhold
+FAILED tests/test_formal_correspondence.py::test_the_core_and_the_reference_model_agree

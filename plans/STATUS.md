@@ -79,11 +79,22 @@ Later plans must code against these, not against a guess.
 | --- | --- |
 | `execution.run_check(manifest, check_id, store=..., source=...) -> RunOutcome` | `src/vkit/execution.py` |
 | `outcome.Passed` / `Failed` / `Blocked`, `BlockedReason` | `src/vkit/outcome.py` |
-| `manifest.parse_manifest(project, run_dir) -> Manifest`, `CheckSpec` | `src/vkit/manifest.py` |
+| `manifest.parse_manifest(project, run_dir, path=None) -> Manifest`, `CheckSpec` | `src/vkit/manifest.py` |
+| `manifest.parse_manifest_bytes(blob, *, project, run_dir, origin) -> Manifest` | `src/vkit/manifest.py` |
+| `tasks.compute_readiness(store, task_id, *, required_check_ids) -> ReadinessResult` | `src/vkit/tasks.py` |
 | `identity.compute_source_identity(project)`, `source_unchanged(a, b)` | `src/vkit/identity.py` |
 | `procs.run_command(argv, *, cwd, stdout_path, stderr_path, timeout_seconds)` | `src/vkit/procs.py` |
 | `storage.Store(db_path)` with `register_run`, `mark_running`, `publish`, `load` | `src/vkit/storage.py` |
 | `paths.open_project(path) -> Project` | `src/vkit/paths.py` |
+
+Later plans added to this table rather than changing what Plan 01 froze.
+`parse_manifest` gained an optional `path` so a proposal can be parsed for
+review without ever being readable as policy, and every existing caller is
+unaffected. `parse_manifest_bytes` exists so approved bytes read out of a commit
+go through the one parser instead of a second implementation free to disagree
+about the same rules. `compute_readiness` is listed because the attempt
+generation is part of its contract, not an implementation detail: a caller
+cannot obtain an acceptance that ignores staleness.
 
 `run_check` is the seam Plan 02's per-run supervisor calls. It never invokes the
 CLI, and neither should Plan 02.
@@ -202,6 +213,52 @@ the report was wrong and the type contract was broken at the one boundary whose
 job is checking the record. Now refused with a message naming the actual
 defect. An audit of every other consumer of a run record's pid found
 `mcp/_tools.py` and the console already correct.
+
+**A capacity pool leaked every slot but the first holder's** (`2aaab2d`), found
+by the Plan 07 worker. `claim_holders` has `resource_key` as its primary key, so
+a pool is one row with a counter, and `release` deleted that row scoped by
+`task_id` — which only ever matched the task that acquired the pool first.
+Measured: capacity 3, three holders, `release(t2)` left `held=3`. The
+single-holder test passed throughout, because with one holder the first holder
+is the only holder.
+
+A decrement was tried and measured before settling: it fails eight tests, three
+of which predate that work, because a counter cannot say which tasks hold slots.
+A task holding nothing could then free someone else's, and a task releasing
+twice could take a slot it never paid for. `claim_members` now records
+`(resource_key, task_id, generation)` and `held` is the count of those rows,
+recomputed on every release, so a drifted counter cannot be laundered.
+
+Fixing it exposed a second defect before it shipped: `recover.py` deleted from
+`claim_holders` directly, which with membership frees the resource key while
+the member row survives — a second task acquires an exclusive resource the first
+still holds. Recovery now delegates to one shared function.
+
+**A reassigned task inherited its predecessor's acceptance** (`b3c52d5`), found
+by the Plan 08 worker. `compute_readiness` filtered runs on `task_id` alone,
+never on the attempt generation, so superseding a task handed its successor a
+free READY: generation 2 had produced nothing and inherited every pass.
+
+The TLA+ model forbids this in Properties 3 and 4, so the specification and the
+implementation disagreed and one of them had to be wrong. CONTRACT.md settles
+it — advancing the generation invalidates the previous attempt's authority, and
+a retry is a new run linked to its predecessor rather than a continuation of
+it. A guard already stopped a superseded attempt publishing a verdict it had
+*already computed*; it did not stop a new attempt computing one from the old
+attempt's evidence, which is the case that mattered.
+
+**A test fixture guaranteed less than its tests asserted** (`44eb95b`). The
+`dead_pid` fixture waited for `liveness` to report DEAD, but DEAD has two
+correct shapes: a process that exited while a handle still opens reports its
+exit code, and one whose object has been reclaimed reports that no process
+carries the pid. The fixture accepted the first; two tests asserted the second.
+Roughly one run in four failed.
+
+The first diagnosis was wrong. I read it as pid recycling, and a 60-trial probe
+under deliberate load reproduced it zero times. The failure message named both
+shapes, and reading it would have answered the question immediately. Two
+workers had also reported it as a pid-reuse flake, which made the wrong story
+more likely rather than less.
 
 ## Known limits carried forward
 

@@ -123,6 +123,10 @@ class ProcessResult:
     timed_out: bool
     launch_error: tuple[BlockedReason, str] | None = None
     creation_time: int | None = None
+    #: POSIX only, empty on Windows. Part of the recorded identity, because a
+    #: start time is ticks since boot and is therefore only comparable within
+    #: one boot. See vkit.procidentity.
+    boot_id: str = ""
 
 
 def _derive(
@@ -301,10 +305,12 @@ def run_check(
         timed_out=result.timed_out,
         launch_error=None if result.reason is None else (result.reason, result.detail),
         creation_time=result.creation_time,
+        boot_id=result.boot_id,
     )
     store.mark_running(run_id, {
         "pid": process.pid,
         "creation_time": process.creation_time,
+        **({"boot_id": process.boot_id} if process.boot_id else {}),
         "ownership": process.ownership,
         "exit_code": process.exit_code, "timed_out": process.timed_out,
     })
@@ -433,6 +439,7 @@ def _terminal_report(
             "pid": process.pid,
             **({"creation_time": process.creation_time}
                if process.creation_time is not None else {}),
+            **({"boot_id": process.boot_id} if process.boot_id else {}),
             "ownership": process.ownership,
             "exit_code": process.exit_code,
             "timed_out": process.timed_out,

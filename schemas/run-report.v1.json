@@ -65,7 +65,12 @@
         "creation_time": {
           "type": "integer",
           "minimum": 0,
-          "description": "Windows process creation FILETIME. Together with the pid this identifies the process beyond pid reuse. A value near 1.34e17 exceeds 2^53, so a JSON reader that parses numbers as floats will corrupt it; read it as an integer."
+          "description": "The process's start time, which together with the pid identifies it beyond pid reuse. On Windows this is the creation FILETIME as 100ns ticks since 1601, a value near 1.34e17, so a JSON reader that parses numbers as floats will corrupt it; read it as an integer. On POSIX it is /proc/<pid>/stat field 22, ticks since boot, which is small and is only meaningful alongside boot_id. The two are not interchangeable, so a record written on one platform does not verify on the other, which is the safe direction."
+        },
+        "boot_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "POSIX only, and absent on Windows. The kernel's per-boot identifier, compared as part of the identity because a start time is ticks since boot: WSL restarts the init namespace, so a record written before a restart must read as a stranger rather than as a match."
         },
         "job_name": {
           "type": "string",

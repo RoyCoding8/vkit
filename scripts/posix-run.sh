@@ -1,16 +1,29 @@
-#!/bin/sh
-# Run something in the WSL Ubuntu instance against this checkout.
+#!/bin/bash
+# Run something from this checkout against the POSIX virtualenv.
 #
-# MSYS_NO_PATHCONV is the whole point of this script. Git Bash rewrites any
-# argument that looks like an absolute POSIX path before wsl.exe ever sees it,
-# so `/mnt/d/AI` arrives as `C:/Program Files/Git/mnt/d/AI` and every call fails
-# with a path that has nothing to do with the repository. A worker lost a whole
-# cycle to this and reported it as a quoting problem; the apostrophe and space in
-# the directory name are a red herring.
+# Wraps the interpreter path so a POSIX run never silently falls back to the
+# system python3, which has no pytest and no mcp. Everything after the script
+# name goes to pytest, or to any other command, unchanged.
 #
-# The glob below is deliberate too: it avoids quoting the space entirely, so
-# there is exactly one layer of quoting to get wrong instead of three.
-set -eu
-REPO=$(echo /mnt/d/AI/Poteto*Style)
-cd "$REPO"
-exec ./.venv-posix/bin/python -m pytest "${@:-tests/ -q}"
+# The venv's bin directory goes on PATH as well, because the example manifests
+# and several acceptance rows name the interpreter `python` and this host ships
+# only `python3`. Measured without it: every check run reported BLOCKED with
+# `prerequisite_missing: python: 'python' is not on PATH`, which is a missing
+# name rather than a product defect. The venv provides `python`, so putting it
+# on PATH is the environment being set up, not a test being relaxed.
+#
+# Run:  bash scripts/posix-run.sh tests/ -q
+#       bash scripts/posix-run.sh scripts/acceptance02.py
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+VENV="${VKIT_POSIX_VENV:-$HOME/.venvs/vkit-posix}"
+
+if [ ! -x "$VENV/bin/python" ]; then
+    echo "no POSIX venv at $VENV; run: bash scripts/posix-venv.sh" >&2
+    exit 1
+fi
+
+export PATH="$VENV/bin:$PATH"
+cd "$REPO_ROOT"
+exec "$VENV/bin/python" "$@"

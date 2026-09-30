@@ -33,10 +33,20 @@ def node_executable() -> str:
 
     The example is a Node application. Without node there is nothing to verify,
     and reporting that honestly beats a silent pass.
+
+    `subprocess.run` raises FileNotFoundError when the program is absent, so
+    checking the return code alone never reached the skip on a host with no node
+    at all: measured on WSL, every test that asked this question failed with
+    `FileNotFoundError: [Errno 2] No such file or directory: 'node'` instead of
+    reporting the missing prerequisite. Both arms are handled, so an absent node
+    reads as the honest skip it was written to be.
     """
-    done = subprocess.run(
-        ["node", "--version"], capture_output=True, text=True, timeout=30, check=False,
-    )
+    try:
+        done = subprocess.run(
+            ["node", "--version"], capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (FileNotFoundError, NotADirectoryError, PermissionError) as exc:
+        pytest.skip(f"node is not installed on this host: {type(exc).__name__}: {exc}")
     if done.returncode != 0:
         pytest.skip(f"node is not on PATH: {done.stderr.strip() or 'node --version failed'}")
     return "node"

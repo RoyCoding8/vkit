@@ -37,10 +37,22 @@ group. No POSIX signal can reach it afterwards. This code does not claim
 containment past that point, and nothing here should be read as saying
 otherwise.
 
-**The POSIX path is UNTESTED.** It was written from the documented semantics of
-`os.setsid`, `os.killpg` and `start_new_session`. The host for this milestone is
-Windows and no POSIX test was run. Plan 01 declares an untested other OS as a
-release limitation. Do not read this as verified.
+**The POSIX path is tested, on a real POSIX host.** Measured on WSL2 Ubuntu
+26.04, kernel 6.18.33.2-microsoft-standard-WSL2, by scripts/measure_posix_group.py
+and by tests/test_procs_posix_real.py, which runs this module's public function
+with nothing stubbed. A 1.5-second timeout against a three-level tree killed the
+child, the grandchild and the great-grandchild, each of which was confirmed dead
+from outside the group, and a walk of /proc found no survivor in the group. The
+run reported `posix_process_group`, `timed_out=True`, and `exit_code=-9`, which
+is the SIGKILL this module sent.
+
+What is still NOT provided, and is a limitation of POSIX rather than of this
+code, is the property the job object gives for free. A Windows tree cannot
+outlive the handle that owns it, because closing the last handle is a kill. A
+process group is a set of pids the kernel keeps after its leader is gone. Measured
+in scripts/measure_supervisor_death.py: a descendant in its own session was still
+running after its owner was SIGKILLed. `vkit.supervisor.terminate_owned_tree`
+refuses on POSIX for that reason and says so.
 """
 from __future__ import annotations
 
@@ -112,11 +124,16 @@ class ExecutionResult:
     stderr_path: Path
     ownership: str
     pid: int | None = None
-    # Read from the live process handle at launch. Afterwards every handle is
+    # Read from the live process at launch. Afterwards every handle is
     # closed, and a pid whose process has exited may be unopenable, so a later
     # reader cannot recover this. Without it, a pid alone is all a cancel has,
     # and pids get recycled.
     creation_time: int | None = None
+    # POSIX only, and empty on Windows where a FILETIME is absolute. A start
+    # time is ticks since boot, so it is only meaningful within one boot, and
+    # WSL restarts the whole init namespace. Compared as part of the identity so
+    # a record from before a restart reads as a stranger rather than as a match.
+    boot_id: str = ""
     exit_code: int | None = None
     timed_out: bool = False
     reason: BlockedReason | None = None
@@ -233,7 +250,13 @@ def _run_posix(
     timeout_seconds: float,
 ) -> ExecutionResult:
     """POSIX ownership. The process group is the unit; see the module docstring for
-    the boundary this covers and the one it does not. UNTESTED on this host."""
+    the boundary this covers and the one it does not.
+
+    Verified on WSL2 Ubuntu 26.04, kernel 6.18.33.2-microsoft-standard-WSL2, by
+    scripts/measure_posix_group.py and tests/test_procs_posix_real.py: a timeout
+    signalled the group and the child, the grandchild and the great-grandchild
+    were all dead afterwards, with no survivor anywhere in the group.
+    """
     started = time.monotonic()
     try:
         with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
@@ -248,6 +271,13 @@ def _run_posix(
                 )
             except OSError as exc:
                 return _launch_failure(argv, cwd, stdout_path, stderr_path, exc, started)
+
+            # Read the identity here, while the process is certainly alive. After
+            # the wait it may have exited and its /proc entry may be gone, and
+            # afterwards this module holds nothing that identifies it. A run
+            # record without this is a bare pid, and a bare pid is what a
+            # cancellation must refuse to act on because pids get recycled.
+            creation_time, boot_id = _posix_identity(proc.pid)
 
             try:
                 exit_code: int | None = proc.wait(timeout=timeout_seconds)
@@ -276,11 +306,38 @@ def _run_posix(
         stderr_path=stderr_path,
         ownership=POSIX_OWNERSHIP,
         pid=proc.pid,
+        creation_time=creation_time,
+        boot_id=boot_id,
         exit_code=exit_code,
         timed_out=timed_out,
         started_at=started,
         ended_at=time.monotonic(),
     )
+
+
+def _posix_identity(pid: int) -> tuple[int | None, str]:
+    """The launched process's (start-time, boot-id), or (None, "") if unreadable.
+
+    Read once, here, while the process is alive. This is the POSIX counterpart of
+    the FILETIME read from a suspended handle on Windows, and it exists for the
+    same reason: afterwards this module holds no handle and no /proc entry, so a
+    later reader has a bare pid, and a bare pid is not an identity.
+
+    A failure to read is not a launch failure. The process is running and the
+    command is owned either way; what is missing is the evidence that would let
+    somebody else cancel it safely. So the run proceeds and records no creation
+    time, and `vkit.cli` refuses a cancel on a record that lacks one, which is
+    the correct outcome: ownership unproven is not the same as process gone.
+    """
+    from .procidentity import CannotConfirm, read_identity
+
+    try:
+        identity = read_identity(pid)
+    except (CannotConfirm, OSError):
+        return None, ""
+    if identity is None:
+        return None, ""
+    return identity.creation_time, identity.boot_id
 
 
 def _kill_process_group(pid: int) -> None:

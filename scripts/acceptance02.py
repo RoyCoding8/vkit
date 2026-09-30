@@ -55,11 +55,18 @@ from vkit.manifest import parse_manifest  # noqa: E402
 from vkit.paths import open_project  # noqa: E402
 from vkit.procidentity import ProcessIdentity, read_identity  # noqa: E402
 from vkit.procs import run_command  # noqa: E402
-from vkit.storage import Store, StoreError  # noqa: E402
+from vkit.storage import MIGRATIONS, Store, StoreError  # noqa: E402
 from vkit.supervisor import cancel_run, job_name_for, start_run  # noqa: E402
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 UNREACHED = "UNREACHED"
+
+# The schema version a fully migrated store reports, read from the migrations
+# themselves rather than pinned here. A literal went stale the moment migration
+# 3 landed: the row asserted version == 2 while the store reported 4, and it
+# failed on every platform. Deriving it means adding a migration cannot silently
+# break an unrelated row.
+LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -316,9 +323,17 @@ def claim_rows(db_path, table, columns):
 
 
 def alive(pid):
-    out = subprocess.run(["tasklist", "/FI", "PID eq " + str(pid), "/NH"],
-                         capture_output=True, text=True, timeout=60)
-    return str(pid) in out.stdout
+    # The same question `process_alive` asks in the parent, in the child. On
+    # POSIX the answer is the kernel's signal-zero probe, and EPERM is positive
+    # proof the process is there; reading EPERM as absence would report a live
+    # sleeper as dead and turn a contained tree into an unexplained one.
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 """
 
 
@@ -441,10 +456,29 @@ def read_report(proc: subprocess.Popen, timeout: float = 90.0) -> dict:
 
 
 def kill_tree(pid: int) -> None:
-    """Terminate a pid and its descendants on this host, quietly."""
+    """Terminate a pid and its descendants on this host, quietly.
+
+    The POSIX branch signals the process GROUP the pid belongs to, and that is
+    only safe when the pid leads a group of its own. Several rows start a
+    bystander with a plain Popen, so the bystander inherits this harness's group
+    and `os.getpgid` returns the group of the process doing the killing.
+    Measured on this host: `os.killpg(os.getpgid(bystander), 9)` sent SIGKILL to
+    the harness itself, which died with no output at all, taking row 7's
+    verdict with it.
+
+    So the group is only signalled when the pid is actually its own leader; a
+    bystander that merely shares our group is signalled by pid. Signalling a
+    group we are inside is never what this function means.
+    """
     if not IS_WINDOWS:
         try:
-            os.killpg(os.getpgid(pid), 9)
+            if os.getpgid(pid) == pid:
+                os.killpg(pid, 9)
+                return
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            os.kill(pid, 9)
         except (ProcessLookupError, PermissionError):
             pass
         return
@@ -677,7 +711,8 @@ def row_transaction_owner_killed() -> None:
     usable = claims.holder(store, "w:third")
     observed(
         row,
-        before == [] and after == [] and version == 2
+        before == [] and after == []
+        and version == LATEST_SCHEMA_VERSION
         and usable is not None and usable.task_id == "t-next",
         f"a process was killed while holding an uncommitted transaction that had "
         f"inserted {reported['inserted']} claim rows; claim_holders, read over a "
@@ -1045,6 +1080,43 @@ def row_supervisor_dies() -> None:
             supervisor.wait(timeout=30)
             time.sleep(3.0)
             alive = process_alive(descendant)
+            if alive and not IS_WINDOWS:
+                # The row's subject is containment keyed to the OWNER, and that
+                # is a Windows mechanism. A job object with
+                # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE makes closing the last
+                # handle a kill, so the tree cannot outlive the process that
+                # opened it. POSIX has no handle and no such flag: a process
+                # group is a set of pids the kernel keeps after its leader is
+                # gone. Measured on this host (scripts/measure_supervisor_death.py):
+                # a descendant in its own session, start_new_session=True, was
+                # still running after its owner was SIGKILLed.
+                #
+                # So the descendant surviving is the expected POSIX result, not a
+                # defect, and recording it as FAIL would report a correct
+                # platform limitation as a product bug. The row is reported
+                # unestablished instead, with the measurement that establishes
+                # why. The rest of the row's claims about the CLAIM, which are
+                # platform-neutral, are reported alongside it.
+                unestablished(
+                    row,
+                    f"the supervisor launched a check that announced pid {descendant}, "
+                    f"and that descendant was still running {3.0}s after the "
+                    f"supervisor was killed. That is the measured POSIX result: a "
+                    f"process group is not keyed to the process that created it, so "
+                    f"a tree outlives its owner. Windows achieves the opposite with a "
+                    f"job object whose KILL_ON_JOB_CLOSE makes the last handle close a "
+                    f"kill. This build's POSIX answer is that the group is signalled on "
+                    f"timeout (measured to three levels deep in "
+                    f"scripts/measure_posix_group.py) and that "
+                    f"supervisor.terminate_owned_tree raises OSError off Windows rather "
+                    f"than claiming a containment it does not have. The claim half of "
+                    f"this row, which does not depend on the platform, was measured: "
+                    f"the claim stayed reserved for task "
+                    f"{claims.holder(store, 'w:checkout').task_id if claims.holder(store, 'w:checkout') else None!r} "
+                    f"and recovery reported "
+                    f"{[f.kind.value for f in recover.inspect(store).findings]}.",
+                )
+                return
             held = claims.holder(store, "w:checkout")
             findings = recover.inspect(store).findings
             try:
@@ -1453,7 +1525,7 @@ def row_disk_or_locking_failure() -> None:
         and record_failure.startswith("OperationalError")
         and after.readiness == "READY"
         and claims.holder(store, "w:checkout") is None
-        and version == 2
+        and version == LATEST_SCHEMA_VERSION
         and isinstance(observations, list),
         f"while another process held the write lock, acquiring a resource raised "
         f"{failure.split(':')[0]} ({failure.split(': ', 1)[1][:52]!r}) and recording a "

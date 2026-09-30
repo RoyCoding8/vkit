@@ -817,7 +817,20 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> ToolResult:
         )
 
     outcome, report = cancel_run(
-        store, run_id, identity=ProcessIdentity(int(recorded["pid"]), int(created))
+        store,
+        run_id,
+        # Rebuilt through from_json so the whole recorded pair is carried, not
+        # just the two halves this code happened to name. On POSIX a record
+        # carries a boot_id as well, and dropping it would compare a live
+        # process against a record with no boot, which never matches: every
+        # cancel would report ownership_lost for a process it owns.
+        identity=ProcessIdentity.from_json(
+            {
+                "pid": int(recorded["pid"]),
+                "creation_time": int(created),
+                **({"boot_id": recorded["boot_id"]} if recorded.get("boot_id") else {}),
+            }
+        ),
     )
     body = report.get("outcome") or {}
     remaining = [] if isinstance(outcome, Blocked) else []

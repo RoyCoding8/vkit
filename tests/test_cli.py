@@ -91,6 +91,14 @@ def test_check_run_passes_on_a_correct_application(example_repo: Path) -> None:
 
 
 def test_report_records_real_command_provenance(example_repo: Path) -> None:
+    """What actually ran, recorded as it ran, not as the build platform would.
+
+    The ownership value names the mechanism that contained this run, and the
+    schema admits exactly two. Asserting the Windows one unconditionally made
+    the row fail on any other platform, which reads as a broken product rather
+    than as the platform that actually ran. The value has to be the one the run
+    reported, and it has to be the one this host's mechanism produces.
+    """
     done = vkit("check", "run", "--project", str(example_repo),
                 "--check", "totals-behavior", "--json")
     run_id = json.loads(done.stdout)["run_id"]
@@ -101,7 +109,16 @@ def test_report_records_real_command_provenance(example_repo: Path) -> None:
     assert report["command"]["argv"][1] == "verify_totals.py"
     assert report["source"]["head"]
     assert report["configuration_digest"]
-    assert report["process"]["ownership"] == "windows_job_object"
+    expected = "windows_job_object" if sys.platform == "win32" else "posix_process_group"
+    assert report["process"]["ownership"] == expected
+    # The identity half, which is what makes a later cancel safe. On POSIX this
+    # is a start-time tick count plus a boot id; on Windows a creation FILETIME
+    # and no boot, because a FILETIME is absolute.
+    assert report["process"]["creation_time"] > 0
+    if sys.platform == "win32":
+        assert "boot_id" not in report["process"]
+    else:
+        assert report["process"]["boot_id"]
 
 
 def test_introduced_defect_fails_with_expected_versus_actual(example_repo: Path) -> None:

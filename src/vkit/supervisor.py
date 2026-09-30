@@ -220,11 +220,29 @@ def cancel_run(
 
 
 def terminate_owned_tree(job_name: str | None) -> None:
-    """Terminate the job object owning a run's tree, from any process.
+    """Terminate the container owning a run's tree, from any process.
 
-    Windows first, because that is the containment this milestone verified. The
-    POSIX path signals a process group and is best effort; it has not been run on
-    a POSIX host and says so rather than pretending otherwise.
+    On Windows that is a job object, keyed to a handle, and this has been
+    verified: the object is created before the child is resumed and
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE makes closing the last handle a kill.
+
+    On POSIX the unit is a process group, and the group is what gets signalled.
+    That the signal reaches a whole tree is now measured rather than assumed:
+    scripts/measure_posix_group.py and tests/test_procs_posix_real.py both
+    observe the child, the grandchild and the great-grandchild dead after one
+    signal, with no survivor anywhere in the group.
+
+    What is NOT provided, and is the reason this still refuses, is the property
+    the job object gives for free. A Windows tree cannot outlive the handle that
+    owns it. A POSIX process group is a set of pids the kernel keeps after its
+    leader is gone, so a group outlives the process that created it. Measured in
+    scripts/measure_supervisor_death.py: a descendant in its own session was
+    still running after its owner was SIGKILLed. There is no POSIX equivalent of
+    a kill-on-last-handle-close, so a cancel that must not leave a tree behind
+    cannot be built from a process group.
+
+    So the refusal stands, and it names the real reason: not "unverified", which
+    was true when this was written and is not now, but "no mechanism exists".
     """
     if sys.platform == "win32":
         if not job_name:
@@ -239,8 +257,13 @@ def terminate_owned_tree(job_name: str | None) -> None:
         return
 
     raise OSError(
-        "POSIX run termination is not implemented on this build; the process group "
-        "signal is unverified and Plan 09 must not claim POSIX support"
+        "POSIX cancellation cannot guarantee the tree is stopped. A process group "
+        "is signalled on timeout and the signal is measured to reach every "
+        "descendant, but a group is not keyed to its creator: the kernel keeps it "
+        "after the leader exits, and POSIX has no equivalent of a job object's "
+        "kill-on-last-handle-close. A run cancelled from another process may "
+        "therefore leave descendants behind, so the claim is retained and the "
+        "operator reconciles it."
     )
 
 

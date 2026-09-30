@@ -413,6 +413,11 @@ def test_the_host_tool_names_address_this_plugin() -> None:
         ("mcp__plugin_vkit_vkit__project_inspect", True),
         ("mcp__plugin_vkitee_vkit__project_inspect", True),
         ("mcp__vkit__project_inspect", True),
+        # A server key that merely ends in `_vkit` under some other plugin's
+        # prefix is a different server, and attaching this plugin's
+        # registration to it would be a guess about whose call it is.
+        ("mcp__plugin_other_plugin_vkit_extra__project_inspect", False),
+        ("mcp__other_vkit__project_inspect", False),
         ("mcp__other__project_inspect", False),
         ("mcp__plugin_vkit_other__project_inspect", False),
     ):

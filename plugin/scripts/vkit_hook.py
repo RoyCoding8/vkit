@@ -88,13 +88,25 @@ VKIT_SERVER = "vkit"
 def _is_vkit_server(server: str) -> bool:
     """Whether a tool name's server segment names this plugin's server.
 
-    True for the bare `vkit` a `--mcp-config` server gets and for the
-    `plugin_<plugin>_vkit` a plugin server gets. The plugin name is not parsed
-    out, because a plugin name may itself contain `_` and the split would then
-    be a guess; the server key is a suffix in both forms, so a suffix is what is
-    checked.
+    Two forms exist, and both were recorded from a live host. A server from
+    `--mcp-config` is `mcp__vkit__tool`, and a server this plugin declares is
+    `mcp__plugin_<plugin>_<server key>__tool`, so the segment is
+    `plugin_<plugin>_vkit`.
+
+    The plugin name is not split out to compare it, because a plugin name may
+    contain `_` and the split would then be a guess about where the name ends.
+    What is checked is the `plugin_` prefix plus the server key as the suffix,
+    which pins both ends of the segment and leaves a name such as
+    `plugin_other_vkit_extra` rejected.
+
+    The tool name is the one thing this gate is not entitled to be lenient
+    about: it names what the caller believes it is invoking, and a match on a
+    different plugin's server would attach this plugin's registration to a call
+    it has no knowledge of.
     """
-    return server == VKIT_SERVER or server.endswith(f"_{VKIT_SERVER}")
+    return server == VKIT_SERVER or (
+        server.startswith("plugin_") and server.endswith(f"_{VKIT_SERVER}")
+    )
 
 
 # The corrective action is bounded on purpose: it names the registered tool to

@@ -759,7 +759,7 @@ def row_start_retried_around_disconnect() -> None:
         and len(after_first) == 1
         and len(table) == 1
         and table[0]["task_id"] == "t5",
-        f"the same request id yielded run {first['first'][:12]}… in both clients "
+        f"the same request id yielded run {first['first'][:12]} in both clients "
         f"and a differing payload under that key was refused; the retry ran in a "
         f"separate OS process, replayed the recorded PASS without executing again, "
         f"and the runs table went {len(after_first)} -> {len(table)} row",
@@ -1174,8 +1174,8 @@ def row_stale_owner_submits() -> None:
         f"task's stored readiness is still {stored.readiness!r} at generation "
         f"{stored.generation}. Recovery then reported {released['findings']}, an "
         f"explicitly evidenced release was {released['reconciled']}; the successor's "
-        f"claim was then refused ({released['successor']}) and the predecessor's own "
-        f"release was refused with {released['released'].split(':')[0]}, leaving "
+        f"claim was then {released['successor']} and the predecessor's own release was "
+        f"refused with {released['released'].split(':')[0]}, leaving "
         f"{sorted(released['holds'])}. "
         f"Unmet: {[name for name, ok in checks.items() if not ok] or 'none'}",
     )

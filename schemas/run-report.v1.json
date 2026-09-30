@@ -92,6 +92,20 @@
         "tool_versions": { "type": "object", "additionalProperties": { "type": "string" } }
       }
     },
+    "provenance": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "description": "Who produced this run. `ambient` is a development run, executed by whatever interpreter happened to import vkit. `trusted_integration` is the Plan 07 path, where the verifier revision, the interpreter and the artifact capture are named rather than inherited.",
+      "properties": {
+        "mode": { "enum": ["ambient", "trusted_integration"] },
+        "verifier_revision": { "type": "string", "minLength": 1 },
+        "python": { "type": "string", "minLength": 1 },
+        "plugin_root": { "type": "string", "minLength": 1 },
+        "artifact_capture": { "enum": ["verifier"] },
+        "artifact_revalidated": { "enum": ["yes", "no"] }
+      }
+    },
     "logs": {
       "type": ["object", "null"],
       "required": ["stdout", "stderr"],

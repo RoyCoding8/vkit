@@ -175,21 +175,71 @@ def _environment_facts(check: CheckSpec) -> dict[str, Any]:
     import sys
 
     tools: dict[str, str] = {}
-    git = shutil.which("git")
-    if git:
+    # `{{python}}` is the only way a check can name an interpreter, so the tool
+    # that ran the checks is part of the evidence. A check that substituted some
+    # other interpreter is not reproducible from this report without it.
+    for name, argv in (("git", ["git", "--version"]), ("python", [sys.executable, "--version"])):
+        resolved = shutil.which(argv[0]) or (argv[0] if Path(argv[0]).is_file() else None)
+        if not resolved:
+            continue
         try:
             done = subprocess.run(
-                [git, "--version"], capture_output=True, encoding="utf-8",
+                [resolved, *argv[1:]], capture_output=True, encoding="utf-8",
                 errors="replace", timeout=15,
             )
-            tools["git"] = done.stdout.strip()
         except (OSError, subprocess.SubprocessError):
-            pass
+            continue
+        tools[name] = done.stdout.strip() or done.stderr.strip()
     return {
         "python_version": sys.version.split()[0],
         "platform": platform.platform(),
         "tool_versions": tools,
     }
+
+
+@dataclass(frozen=True)
+class RunEnvironment:
+    """How a check is executed, for callers that must not use the ambient one.
+
+    A development run is the ambient environment: this interpreter, and no
+    instrumentation. That is the right default and it is why this type exists
+    only to be overridden.
+
+    Plan 07's trusted integration path overrides it, and the reason is
+    containment rather than convenience. A candidate's own verifier code runs the
+    candidate's checks, inside a checkout the candidate cannot write, and every
+    report the candidate's code produces is re-validated against the
+    authoritative schemas by a process the candidate does not control. A claim
+    that a candidate could edit its own report into a PASS is exactly the
+    failure this whole product exists to prevent, so the boundary is stated here
+    rather than assembled by a caller.
+    """
+
+    python: str | None = None
+    plugin_root: Path | None = None
+    revalidate: bool = False
+    verifier_revision: str | None = None
+
+    @property
+    def is_ambient(self) -> bool:
+        return self.python is None and self.plugin_root is None and not self.revalidate
+
+    def provenance(self) -> dict[str, str]:
+        if self.is_ambient:
+            return {"mode": "ambient"}
+        facts = {
+            "mode": "trusted_integration",
+            "verifier_revision": self.verifier_revision or "unknown",
+            "python": self.python or "inherited",
+            "artifact_capture": "verifier" if self.plugin_root is not None else "verifier",
+            "artifact_revalidated": "yes" if self.revalidate else "no",
+        }
+        if self.plugin_root is not None:
+            facts["plugin_root"] = str(self.plugin_root)
+        return facts
+
+
+AMBIENT = RunEnvironment()
 
 
 def run_check(
@@ -201,6 +251,7 @@ def run_check(
     run_id: str | None = None,
     task_id: str | None = None,
     attempt: int | None = None,
+    env: RunEnvironment = AMBIENT,
 ) -> RunOutcome:
     """Register, execute, and publish one run of one registered check.
 
@@ -231,6 +282,7 @@ def run_check(
             run_id, check, manifest, source,
             outcome=blocked, started_at=_now(), ended_at=_now(),
             process=None, artifact=None, run_dir=run_dir,
+            provenance=env.provenance(),
         )
         _publish(store, run_id, report)
         return RunOutcome(report, blocked)
@@ -240,14 +292,8 @@ def run_check(
     stderr_path = run_dir / "stderr.log"
     # The interpreter a check should use, and the run directory it should write
     # into, are the only two substitutions. The manifest may not name a shell.
-    argv = check.resolved_argv(run_dir, sys.executable)
-    result = run_command(
-        list(argv),
-        cwd=check.cwd,
-        stdout_path=stdout_path,
-        stderr_path=stderr_path,
-        timeout_seconds=check.timeout_seconds,
-    )
+    argv = check.resolved_argv_for(run_dir, env.python)
+    result = _launch(argv, check, stdout_path, stderr_path, env)
     process = ProcessResult(
         pid=result.pid,
         ownership=result.ownership,
@@ -266,6 +312,11 @@ def run_check(
     artifact = store.resolve_artifact(run_id, check.artifact_name)
     outcome = _derive(check, process, artifact if artifact.is_file() else None)
 
+    if env.revalidate:
+        problem = _revalidate(run_dir, check, manifest, env)
+        if problem is not None:
+            outcome = problem
+
     after = compute_source_identity(manifest.project)
     if not source_unchanged(source, after):
         outcome = Blocked(
@@ -279,9 +330,66 @@ def run_check(
         outcome=outcome, started_at=started_at, ended_at=_now(),
         process=process, artifact=artifact, run_dir=run_dir,
         executed_argv=list(argv),
+        provenance=env.provenance(),
     )
     _publish(store, run_id, report)
     return RunOutcome(report, outcome)
+
+
+def _launch(
+    argv: list[str],
+    check: CheckSpec,
+    stdout_path: Path,
+    stderr_path: Path,
+    env: RunEnvironment,
+):
+    """Run the check, with the check's own code isolated when the caller asked.
+
+    Without a plugin root this is the ordinary launch, so a development run is
+    unchanged. With one, the candidate's driver runs as a grandchild of this
+    process, with its own `import vkit` refused, and its artifact copied out by
+    the launcher. `vkit/integration/sandbox.py` and `launcher.py` hold that
+    contract; they are the counterpart of this branch and change with it.
+    """
+    if env.plugin_root is None:
+        return run_command(
+            argv, cwd=check.cwd, stdout_path=stdout_path,
+            stderr_path=stderr_path, timeout_seconds=check.timeout_seconds,
+        )
+    # Imported here so the development path never pays for the integration
+    # package, and so a host without it can still run every ordinary check.
+    from .integration.sandbox import run_in_plugin_subprocess
+
+    return run_in_plugin_subprocess(
+        argv, cwd=check.cwd, stdout_path=stdout_path, stderr_path=stderr_path,
+        timeout_seconds=check.timeout_seconds, plugin_root=env.plugin_root,
+        capture_artifacts=(check.artifact_name,),
+    )
+
+
+def _revalidate(run_dir: Path, check: CheckSpec, manifest: Manifest, env: RunEnvironment) -> Blocked | None:
+    """Validate the bytes the trusted launcher captured, and compare the copies.
+
+    The captured copy is authoritative: it was taken after the last process to
+    write the artifact had exited, by a process the candidate does not control.
+    It is then validated against this package's own schemas, and finally
+    compared with what the candidate left behind. A candidate that edited its own
+    artifact in place after producing it has left a disagreement, and that is a
+    BLOCKED reason rather than a pass.
+    """
+    from .integration.sandbox import disagreement, read_artifacts, validate_artifact_bytes
+
+    try:
+        captured, submitted = read_artifacts(run_dir, check.artifact_name)
+    except FileNotFoundError as exc:
+        return Blocked(BlockedReason.ARTIFACT_MISSING, str(exc))
+
+    problem = validate_artifact_bytes(
+        captured, check=check, manifest=manifest, env=env
+    )
+    if problem is not None:
+        return problem
+    return disagreement(captured, submitted)
 
 
 def _terminal_report(
@@ -297,6 +405,7 @@ def _terminal_report(
     artifact: Path | None,
     run_dir: Path,
     executed_argv: list[str] | None = None,
+    provenance: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "schema_version": 1,
@@ -330,6 +439,13 @@ def _terminal_report(
         },
         "artifacts": {},
         "environment": _environment_facts(check),
+        # What produced this run. Ambient is the default and is what a
+        # development run records; the trusted integration launcher names the
+        # verifier revision and capture root it used instead. Kept in the
+        # report rather than in the acceptance record, because a run is
+        # evidence on its own and a reader who only has the report still needs
+        # to know who ran it.
+        "provenance": provenance or {"mode": "ambient"},
         "logs": {"stdout": "stdout.log", "stderr": "stderr.log"},
     }
     if artifact is not None and artifact.is_file():

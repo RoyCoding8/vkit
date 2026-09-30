@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -59,9 +59,20 @@ class CheckSpec:
     def resolved_argv(self, run_dir: Path, python: str) -> tuple[str, ...]:
         """The exact list to execute. Only two placeholders exist, both documented
         in CONTRACT.md: the run artifact directory and the resolved interpreter.
-        Nothing is ever passed through a shell or evaluated."""
+        Nothing is ever passed through a shell or evaluated.
+
+        `python` defaults to the interpreter running vkit, which is the right
+        answer for every development run. A caller that must run the check
+        against something other than itself passes that interpreter explicitly;
+        Plan 07's trusted integration path does, so the checks of a candidate
+        checkout are executed by the approved verifier revision rather than by
+        whatever happens to be imported."""
+        return self.resolved_argv_for(run_dir, python)
+
+    def resolved_argv_for(self, run_dir: Path, python: str | None) -> tuple[str, ...]:
+        interpreter = python if python is not None else sys.executable
         return tuple(
-            part.replace("{{run_dir}}", str(run_dir)).replace("{{python}}", python)
+            part.replace("{{run_dir}}", str(run_dir)).replace("{{python}}", interpreter)
             for part in self.argv
         )
 
@@ -81,10 +92,37 @@ class Manifest:
                 f"unknown check {check_id!r}; manifest defines: {known}"
             ) from None
 
+    def with_root(self, project: Project) -> "Manifest":
+        """The same policy, re-rooted at another checkout.
+
+        The check commands are unchanged; only the project they resolve against
+        changes. That matters because `execution.run_check` re-derives the source
+        identity from `manifest.project` after the process exits, and it must
+        re-derive it for the tree that actually ran, not for the tree the
+        manifest happened to be read from."""
+        if project.root == self.project.root:
+            return self
+        checks = {
+            check_id: replace(
+                check, cwd=_resolve_cwd(project.root, _relative(check.cwd, self.project.root), check_id)
+            )
+            for check_id, check in self.checks.items()
+        }
+        return replace(self, project=project, checks=checks)
+
     def digest(self) -> str:
         """Identity of the configuration, not of the file's bytes. Two manifests
         that select the same command with different whitespace are the same
-        policy, and should not invalidate each other's evidence."""
+        policy, and should not invalidate each other's evidence.
+
+        The project root is deliberately excluded. A manifest is policy, and
+        policy is the same whichever checkout is being tested, so the resolved
+        working directory is recorded as the repository-relative path the
+        manifest declared rather than as the absolute path it resolved to.
+        Leaving the absolute path in would make the digest of one candidate's
+        approved manifest differ from another's for no reason a policy reviewer
+        could see, which is the opposite of what an integration comparison
+        needs."""
         import hashlib
 
         parts = sorted(
@@ -111,6 +149,23 @@ def _resolve_cwd(root: Path, raw: str | None, check_id: str) -> Path:
     return candidate
 
 
+def _relative(cwd: Path, root: Path) -> str:
+    """Express a resolved working directory relative to the project that owns it.
+
+    `parse_manifest` resolved the raw repository-relative string once; this is
+    how that resolution is reversed for a different root without keeping the raw
+    string around. A directory outside the root cannot be re-expressed, and
+    `_resolve_cwd` rejects the relative form for exactly the same reason, so the
+    refusal is the same one a manifest author already sees."""
+    resolved_root = root.resolve()
+    resolved = cwd.resolve()
+    if resolved == resolved_root:
+        return "."
+    if resolved_root in resolved.parents:
+        return resolved.relative_to(resolved_root).as_posix()
+    return str(resolved)
+
+
 def _resolve_artifact(run_dir: Path, raw: str, check_id: str) -> str:
     """Artifact names are written by the check, so they are the least trusted
     string in the system. A name that resolves outside the run directory is
@@ -132,16 +187,33 @@ def parse_manifest(project: Project, run_dir: Path) -> Manifest:
     path = project.manifest_path
     if not path.is_file():
         raise ManifestError(f"no manifest at {path}")
-
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ManifestError(f"{path} is not valid JSON: {exc}") from exc
+        blob = path.read_bytes()
     except OSError as exc:
         raise ManifestError(f"cannot read {path}: {exc}") from exc
+    return parse_manifest_bytes(blob, project=project, run_dir=run_dir, origin=str(path))
+
+
+def parse_manifest_bytes(
+    blob: bytes, *, project: Project, run_dir: Path, origin: str
+) -> Manifest:
+    """Validate and resolve manifest bytes read from somewhere other than the tree.
+
+    Plan 07's trusted integration path reads the approved manifest out of a
+    commit and must execute it against the candidate checkout. Re-rooting those
+    bytes requires this parser rather than a second implementation of the
+    manifest rules, because a second one is free to disagree about exactly the
+    paths and timeouts this product refuses. `origin` names where the bytes came
+    from so a rejection quotes the approved revision instead of a local path
+    that was never written.
+    """
+    try:
+        raw = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ManifestError(f"{origin} is not valid UTF-8 JSON: {exc}") from exc
 
     if not isinstance(raw, dict):
-        raise ManifestError(f"{path} must contain a JSON object")
+        raise ManifestError(f"{origin} must contain a JSON object")
     version = raw.get("schema_version")
     if version != SCHEMA_VERSION:
         raise ManifestError(
@@ -149,9 +221,9 @@ def parse_manifest(project: Project, run_dir: Path) -> Manifest:
         )
 
     try:
-        validate(str(path), MANIFEST, raw)
+        validate(origin, MANIFEST, raw)
     except SchemaValidationError as exc:
-        raise ManifestError(f"{path} rejected: {exc.reason}") from exc
+        raise ManifestError(f"{origin} rejected: {exc.reason}") from exc
 
     checks: dict[str, CheckSpec] = {}
     for entry in raw["checks"]:

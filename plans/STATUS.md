@@ -275,8 +275,14 @@ more likely rather than less.
 
 ## Known limits carried forward
 
-- The POSIX process path is untested. Plan 01 was verified on Windows only, and
-  Plan 09 must treat an untested other OS as a release limitation.
+- The POSIX process path is verified; POSIX *cancellation* is not, and cannot be.
+  The suite runs on Ubuntu through WSL2, the identity is `(pid, starttime,
+  boot_id)` proven against real pid reuse, and a process-group signal is measured
+  to kill a three-level tree. What is refused is cancelling a run from another
+  process: a job object makes the last handle close a kill, and POSIX has no
+  equivalent, so a group can outlive the process that created it. Measured, not
+  assumed. `terminate_owned_tree` refuses and names that reason, and a Windows
+  claim never carries across to POSIX.
 - A `.cmd` launcher cannot carry a non-ASCII path, because batch contents are
   read in the active ANSI code page. A check registered as a `.cmd` under a
   non-ASCII repository path will mangle its arguments.

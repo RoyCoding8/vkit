@@ -1,7 +1,7 @@
-"""The candidate cannot lower its own bar, and a moved target invalidates a
-readiness that was computed against the old one.
+"""The candidate cannot lower its own bar, cannot supply the bar, and cannot
+re-decide what was already decided.
 
-Four properties, each driven through the public command.
+Six properties, each driven through the public command.
 
 **The policy comes from trusted configuration.** The required set and the
 manifest the checks actually run are read from the approved reference before the
@@ -9,6 +9,21 @@ candidate is checked out, so a candidate that edits `verification/manifest.json`
 to drop a check changes nothing about what runs. The candidate's own manifest is
 then compared, and a difference is a finding that refuses in the protected
 context rather than a quiet pass.
+
+**The verification code is the approved bytes, not the candidate's.** A manifest
+that names a script by path is not thereby trusted, because the path resolves
+inside the candidate. The script is measured at both the approved revision and
+the candidate, a difference refuses, and the approved bytes are what execute
+when they agree. The way out of that refusal is the policy pin itself: the same
+commit is accepted under a policy that approves its driver, and a further edit
+is refused again. Trust is exactly as wide as the pin.
+
+**A receipt is decided once.** The acceptance id covers the candidate, the
+target, the policy and the measured verification context, so a repeated request
+recomputes the same id and returns the recorded decision -- the stored record,
+not a fresh copy. An observation that reaches a different decision under that id
+is a contradiction: it is recorded under its own id, answers BLOCKED, and leaves
+the recorded acceptance untouched.
 
 **Local is not weak, it is scoped.** A policy supplied as a path produces a real
 refusal, and it is never the protected integration decision. Both facts are in
@@ -20,9 +35,11 @@ it. The test moves the target after the decision and shows that the recorded
 target no longer resolves to the branch, so the recorded readiness is stale by
 construction rather than by a flag somebody has to remember to set.
 
-**A local report edited to PASS is not evidence.** The checks run again, in a
-checkout of the candidate, in a process the candidate does not control, and the
-captured artifact is compared with the one the check left behind.
+**A local report edited to PASS is not evidence.** The approved checks run again
+in a checkout of the candidate, and the answer rests on that fresh run rather
+than on the edited file. The second run is a different candidate on purpose: a
+replay of the same request returns the recorded decision without running
+anything, which is correct and would prove nothing about a second execution.
 """
 from __future__ import annotations
 
@@ -42,6 +59,7 @@ from test_integration import (  # noqa: E402
     EXIT_BLOCKED, EXIT_CHECK_FAILED, EXIT_INVALID, EXIT_OK,
     apply_edit, one_json_object, passing_manifest_only_candidate, verify, vkit,
 )
+from vkit.integration.verify import _conflict_id, _settle, summarize  # noqa: E402
 
 RAISE_CEILING = (fx.RULES_NAME, fx.RAISE_THE_CEILING_OLD, fx.RAISE_THE_CEILING_NEW)
 HARD_CODE_GUARD = (fx.QUOTE_NAME, fx.HARD_CODE_THE_GUARD_OLD, fx.HARD_CODE_THE_GUARD_NEW)
@@ -153,18 +171,13 @@ def test_the_approved_manifest_selects_the_command_not_the_candidate(
     The candidate rewrites `verification/manifest.json` to select a completely
     different command -- one that writes an all-PASS artifact and never runs the
     app. The trusted policy pins the approved manifest, so that command is
-    never executed: the run executes the approved `verify_price.py`, in the
-    candidate's checkout, over the candidate's code.
+    never executed. The run executes the approved revision's copy of
+    `verify_price.py`, materialized outside the candidate checkout, with the
+    candidate's product code under it.
 
-    What the candidate CAN do is ship a different driver, because the driver is
-    repository code and the repository is the thing under test. That is the
-    honest boundary. The check is protected from a lowered *policy*; the
-    definition of what a passing observation means lives in the repo and moves
-    with it. A candidate that rewrites the driver to fabricate a pass is making
-    a semantic change the check cannot detect from outside -- and the response
-    to that is reviewing the driver, which is a review of the candidate, not a
-    weakness in the policy layer. The test asserts the policy layer's actual
-    guarantee and stops there.
+    The manifest the candidate ships is still read and recorded, so a reviewer
+    can see the edit that was refused. Editing the driver itself is a different
+    attack, refused outright; see `test_a_candidate_that_edits_the_driver_is_refused`.
     """
     repo = fx.build_repository(tmp_path)
     target = fx.baseline_revision(repo)
@@ -179,6 +192,7 @@ def test_the_approved_manifest_selects_the_command_not_the_candidate(
     candidate = fx.commit_all(repo, "point the check at a command that always passes")
 
     done, record = verify(repo, candidate, target, "@main")
+    assert done.returncode == EXIT_OK, record
     assert record["manifest"]["approved_revision"] == approved
     # The candidate's own manifest claims a different command; the executed
     # manifest is the approved one, whose command is the real driver.
@@ -192,7 +206,10 @@ def test_the_approved_manifest_selects_the_command_not_the_candidate(
     for check in record["checks"]:
         report = store.load(check["run_id"])
         executed = report["command"]["argv"]
-        assert "verify_price.py" in executed, executed
+        # The driver that ran is the approved revision's copy, materialized in a
+        # verifier-owned directory the candidate cannot write to.
+        assert Path(executed[1]).name == fx.DRIVER_NAME, executed
+        assert "approved" in Path(executed[1]).parts, executed
         assert "cheat.py" not in " ".join(executed), executed
         # The command that ran is the approved one; the candidate's manifest
         # could not move it.
@@ -298,7 +315,8 @@ def test_a_target_that_moves_after_the_decision_makes_the_readiness_stale(
 
     done, record = verify(repo, candidate, target, "@main")
     assert done.returncode == EXIT_OK, record
-    tested = record["readiness_at_publish"]["target_tested"]
+    readiness = record["manifest"]["readiness_at_publish"]
+    tested = readiness["target_tested"]
     assert tested == target
     # The target is named as a commit, not as a branch, so the tested target is
     # a fact the record carries rather than a name that can move under it.
@@ -311,43 +329,16 @@ def test_a_target_that_moves_after_the_decision_makes_the_readiness_stale(
 
     # The recorded readiness does not follow. It names the commit, and that
     # commit is not the branch any more.
-    assert record["readiness_at_publish"]["target_tested"] == tested
-    assert record["readiness_at_publish"]["recheck_before_publish"] == "target"
-    assert fx.git(repo, "rev-parse", "main") != record["readiness_at_publish"]["target_tested"]
+    assert record["manifest"]["readiness_at_publish"]["target_tested"] == tested
+    assert record["manifest"]["readiness_at_publish"]["recheck_before_publish"] == "target"
+    assert fx.git(repo, "rev-parse", "main") != readiness["target_tested"]
 
     # And a fresh candidate built on the moved target is a different decision
     # with a different acceptance id, because the target is inside the id.
     rebuilt = apply_edit(repo, RAISE_CEILING, "rebuilt", "a change on the new base")
     _, second = verify(repo, rebuilt, moved, "@main")
-    assert second["readiness_at_publish"]["target_tested"] == moved
+    assert second["manifest"]["readiness_at_publish"]["target_tested"] == moved
     assert second["acceptance_id"] != record["acceptance_id"]
-
-
-def test_the_same_decision_asked_twice_records_one_acceptance(tmp_path: Path) -> None:
-    """A retry recomputes the same id, so it cannot write a second decision.
-
-    The id is a digest of the repository, the candidate, the target, the policy
-    digest, the context and the required checks. Anything that would make a
-    different decision is inside it.
-    """
-    repo = fx.build_repository(tmp_path)
-    target = fx.baseline_revision(repo)
-    candidate = passing_manifest_only_candidate(repo)
-
-    _, first = verify(repo, candidate, target, "@main")
-    _, second = verify(repo, candidate, target, "@main")
-    assert first["acceptance_id"] == second["acceptance_id"]
-    assert first["decision"] == second["decision"] == "ACCEPTED"
-
-    from vkit.paths import open_project
-    from vkit.storage import Store
-
-    store = Store(open_project(repo).db_path)
-    recorded = store.load_acceptance(first["acceptance_id"])
-    assert recorded is not None
-    assert recorded["candidate"] == candidate
-    assert recorded["required_checks"] == [fx.CHECK_ID]
-    assert len(store.list_acceptances()) == 1
 
 
 # --------------------------------------------------------- the report is edited
@@ -360,10 +351,15 @@ def test_a_local_report_edited_to_pass_does_not_survive_the_protected_path(
 
     A failing candidate is verified once, so a report exists on disk that says
     FAIL. That report is then edited to say PASS -- the shape of a developer
-    "fixing" the evidence rather than the code. The next verification does not
-    read it: it runs the checks again, in a fresh checkout of the candidate,
-    under a launcher the candidate's code cannot reach, and rejects the candidate
-    again.
+    "fixing" the evidence rather than the code. A second verification of a
+    DIFFERENT candidate over the same defect does not read it: it runs the
+    approved driver's checks again, in a fresh checkout, under a launcher the
+    candidate's code cannot reach, and rejects again.
+
+    The second candidate is a different commit on purpose. Re-verifying the same
+    commit is a replay, and a replay returns the recorded decision without
+    running anything -- which is the correct answer for a replay and would make
+    this test assert nothing about a second run.
     """
     repo = fx.build_repository(tmp_path)
     target = fx.baseline_revision(repo)
@@ -390,14 +386,19 @@ def test_a_local_report_edited_to_pass_does_not_survive_the_protected_path(
     # The edited report is on disk and claims a pass.
     assert json.loads(report_path.read_text(encoding="utf-8"))["outcome"]["result"] == "PASS"
 
-    # The protected path does not believe it.
-    done, second = verify(repo, candidate, target, "@main")
+    # A second candidate carrying the same defect, so the answer must come from
+    # a fresh execution rather than from the record.
+    fx.git(repo, "commit", "-q", "--allow-empty", "-m", "an unrelated change on the defect")
+    second_candidate = fx.git(repo, "rev-parse", "HEAD")
+    assert second_candidate != candidate
+
+    # The protected path does not believe the edited report.
+    done, second = verify(repo, second_candidate, target, "@main")
     assert done.returncode == EXIT_CHECK_FAILED, second
     assert second["decision"] == "REJECTED"
     assert "expected 0, printed -1000" in second["checks"][0]["detail"]
-    # And it is not the same run: the decision rests on a run whose recorded
-    # source head is the candidate and whose provenance names the launcher.
-    assert second["checks"][0]["run_id"] != run_id or second["checks"][0]["result"] == "REJECTED"
+    # And it is a different run from the edited one.
+    assert second["checks"][0]["run_id"] != run_id
 
     from vkit.paths import open_project
     from vkit.storage import Store
@@ -405,34 +406,33 @@ def test_a_local_report_edited_to_pass_does_not_survive_the_protected_path(
     store = Store(open_project(repo).db_path)
     fresh = store.load(second["checks"][0]["run_id"])
     assert fresh["outcome"]["result"] == "FAIL"
-    assert fresh["source"]["head"] == candidate
+    assert fresh["source"]["head"] == second_candidate
     assert fresh["provenance"]["mode"] == "trusted_integration"
     assert fresh["provenance"]["verifier_revision"]
 
 
-def test_an_artifact_claiming_pass_for_a_failing_check_is_rejected_by_the_code(
+def test_a_policy_pin_approves_the_driver_bytes_and_nothing_earlier_does(
     tmp_path: Path,
 ) -> None:
-    """A driver that hard-codes PASS does not make the check pass.
+    """The refusal names its way out, and the way out is the policy pin.
 
-    The driver writes an all-PASS artifact without running the app at all, and
-    exits zero. The schema accepts it -- it is a well-formed claim -- so the
-    only thing that can catch it is the real process: the check's artifact
-    claims a pass, but the driver's own exit and the absence of any execution
-    are the evidence, and the required-scenario comparison against the approved
-    manifest catches the one whose expectations the real code would have
-    contradicted.
+    A driver that reports a pass without running the app is the same attack as
+    one that edits the expectations, and both are refused here for the same
+    reason: the bytes differ from the approved revision. That is the right answer
+    but it is not the only one, and a refusal nobody can act on is a dead end.
 
-    What this row is really about is the honest one: the trusted path executes
-    the approved command, so a candidate cannot swap in a driver that reports
-    what it likes. The driver here IS the approved driver, edited to lie, and
-    the run is still rejected because the ceiling it lies about is now 900.
+    So the same commit is verified again under a policy that pins the candidate's
+    own driver as the approved one. The attack now succeeds -- which is correct,
+    because the policy pin is the explicit review that establishes new trusted
+    bytes, and refusing it would mean the bar could never be changed by anyone.
+    What the second run shows is that the trust is exactly as wide as the pin:
+    the falsified candidate is ACCEPTED, and a candidate that edits the now
+    approved driver again is refused. There is no widening; each approval
+    approves one revision's bytes.
     """
     repo = fx.build_repository(tmp_path)
     target = fx.baseline_revision(repo)
 
-    # A driver that fabricates a pass without running the app. It is
-    # well-formed and exits zero, so nothing about the artifact itself is wrong.
     liar = (
         "import json, sys\n"
         "from pathlib import Path\n"
@@ -454,61 +454,252 @@ def test_an_artifact_claiming_pass_for_a_failing_check_is_rejected_by_the_code(
     (repo / fx.DRIVER_NAME).write_text(liar, encoding="utf-8")
     candidate = fx.commit_all(repo, "a driver that reports a pass without running the app")
 
-    done, record = verify(repo, candidate, target, "@main")
-    # The approved manifest's command is what runs, and the approved driver is
-    # what it names. A candidate that rewrote the driver changed the file, not
-    # the command, so the real driver still runs and still executes the app.
-    # The fabricated artifact is therefore not even produced; the run is
-    # decided on the approved driver's honest observation.
-    assert record["manifest"]["approved_revision"] == target
-    assert done.returncode in (EXIT_CHECK_FAILED, EXIT_BLOCKED, EXIT_OK), record
-    # And whichever way it lands, the decision is not ACCEPTED on the strength
-    # of a fabricated report: the executed command named the real driver.
-    assert record["manifest"]["executed_digest"] is not None
+    # Under the approved policy: refused, no check runs, and the refusal says
+    # which file and which revision.
+    done, refused = verify(repo, candidate, target, "@main")
+    assert done.returncode == EXIT_CHECK_FAILED, refused
+    assert refused["decision"] == "REJECTED"
+    assert refused["checks"] == [], "a refused oracle must not run a check"
+    changed = [f for f in refused["findings"] if f["kind"] == "checker_bytes_changed"]
+    assert len(changed) == 1, refused["findings"]
+    assert changed[0]["severity"] == "REJECT"
+    assert changed[0]["check_id"] == fx.DRIVER_NAME
+    assert target[:12] in changed[0]["detail"]
+    # Both sides of the comparison are recorded, so the refusal is checkable
+    # rather than an assertion.
+    context = refused["verifier"]["verification_context"]
+    assert context["approved_revision"] == target
+    assert context["approved_digests"][fx.DRIVER_NAME] != context["candidate_digests"][fx.DRIVER_NAME]
+
+    # The approval: a policy that pins that commit's driver as the trusted one.
+    # That is the explicit review, and it is the same mechanism the refusal
+    # named -- no second registry, no flag. It is named as a commit rather than
+    # as a branch, because an approval is a fixed point: a branch that moved
+    # would make the trusted bytes a function of when the run happened.
+    fx.write_json(repo / fx.POLICY_NAME, fx.policy_document(manifest_revision=candidate))
+    approving = fx.commit_all(repo, "approve the rewritten driver")
+    # The candidate is rebuilt on the approval, because a candidate is always
+    # the target plus changes and the approval is now the target.
+    fx.git(repo, "commit", "-q", "--allow-empty", "-m", "a change on the approved base")
+    rebuilt = fx.git(repo, "rev-parse", "HEAD")
+    done, approved = verify(repo, rebuilt, approving, f"@{approving}")
+    assert done.returncode == EXIT_OK, approved
+    assert approved["decision"] == "ACCEPTED", approved
+    context = approved["verifier"]["verification_context"]
+    # The pin approves the driver's bytes at the commit that introduced them,
+    # and the record says so rather than naming the policy that names it.
+    assert context["approved_revision"] == candidate
+    assert context["source"].startswith("approved-manifest")
+    assert context["approved_digests"] == context["candidate_digests"]
+
+    # The falsified check really did run, and the artifact it produced is the
+    # evidence -- because under this pin the driver IS the approved code.
     from vkit.paths import open_project
     from vkit.storage import Store
 
     store = Store(open_project(repo).db_path)
-    for check in record["checks"]:
-        report = store.load(check["run_id"])
-        executed = report["command"]["argv"]
-        assert "verify_price.py" in executed[1], executed
-        # The driver's own stdout, not its artifact, is what the run trusts.
-        assert report["provenance"]["mode"] == "trusted_integration"
+    report = store.load(approved["checks"][0]["run_id"])
+    assert report["outcome"]["result"] == "PASS"
+    assert all(s["observation"] == "reported without running" for s in report["outcome"]["scenarios"])
+
+    # And the pin approves one revision's bytes and no more: an edit on top of
+    # the now-approved driver is refused again, by the same rule.
+    (repo / fx.DRIVER_NAME).write_text(liar + "# edited again\n", encoding="utf-8")
+    later = fx.commit_all(repo, "edit the driver again")
+    done, again = verify(repo, later, approving, f"@{approving}")
+    assert done.returncode == EXIT_CHECK_FAILED, again
+    assert again["decision"] == "REJECTED"
+    assert again["checks"] == []
+    assert [f["kind"] for f in again["findings"]] == ["checker_bytes_changed"], again["findings"]
 
 
-def test_the_candidate_cannot_import_the_verifier_from_inside_a_check(
+def test_a_repeated_request_returns_the_recorded_decision_and_names_its_source(
     tmp_path: Path,
 ) -> None:
-    """The driver's own process cannot reach the code that reads its verdict.
+    """Re-verifying the same thing returns what was recorded, not a new opinion.
 
-    A driver that tries to import vkit gets an ImportError, and the check is
-    BLOCKED rather than passed. The refusal is the boundary: the verifier can
-    import vkit, and the code under test cannot.
+    The acceptance id is derived from the candidate, the target, the policy, the
+    context AND the measured verification context -- the verifier's own bytes, the
+    interpreter, the fixture digests. So an identical request recomputes the same
+    id, and the answer is the one already in the table: a second CI run does not
+    get to re-decide, and a decision cannot change because the run was repeated.
+
+    What the replay returns is the STORED record, not the copy the second run
+    built. That is the part worth asserting: the run ids and the decided_at
+    timestamp come from the first execution, so nothing in the returned payload
+    claims a check ran twice.
+    """
+    repo = fx.build_repository(tmp_path)
+    target = fx.baseline_revision(repo)
+    candidate = passing_manifest_only_candidate(repo)
+
+    done, first = verify(repo, candidate, target, "@main")
+    assert done.returncode == EXIT_OK, first
+    first_id = first["acceptance_id"]
+
+    done, second = verify(repo, candidate, target, "@main")
+    assert done.returncode == EXIT_OK, second
+    assert second["acceptance_id"] == first_id
+    assert second["decision"] == first["decision"] == "ACCEPTED"
+    assert second["decided_at"] == first["decided_at"]
+    assert [c["run_id"] for c in second["checks"]] == [c["run_id"] for c in first["checks"]]
+
+    # The returned record is the durable one, not a fresh copy: it is what the
+    # table holds, and nothing in it was written twice.
+    from vkit.paths import open_project
+    from vkit.storage import Store
+
+    store = Store(open_project(repo).db_path)
+    stored = store.load_acceptance(first_id)
+    assert stored["decision"] == "ACCEPTED"
+    assert stored["decided_at"] == first["decided_at"]
+    assert stored["checks"][0]["run_id"] == first["checks"][0]["run_id"]
+    assert len(store.list_acceptances()) == 1
+
+    # The human form says which acceptance it is reporting, so a log reader can
+    # match it to the table.
+    human = vkit(
+        "integration", "verify", "--project", str(repo),
+        "--candidate", candidate, "--target", target, "--policy", "@main",
+    )
+    assert human.returncode == EXIT_OK
+    assert f"recorded as {first_id}" in human.stdout, human.stdout
+
+
+def test_a_second_observation_that_contradicts_a_receipt_is_kept_beside_it(
+    tmp_path: Path,
+) -> None:
+    """A receipt id never comes back with a different decision.
+
+    The first run records ACCEPTED. The second run reaches REJECTED under the
+    same id -- which happens for real whenever something outside the identity
+    changes: the run directory is emptied, a stale artefact, an environment the
+    id cannot see. Choosing either observation silently would be picking a
+    winner, so the run records the contradiction as its OWN acceptance,
+    answers BLOCKED, and retains the recorded one. Both are readable afterwards.
+
+    Note what is NOT the trigger: the id covers the measured context, so a real
+    change to the verifier, the interpreter or the fixture produces a different
+    id and an ordinary separate decision. The conflict path is for the residual
+    case, and it is worth being loud rather than tidy about it.
+    """
+    from vkit.paths import open_project
+    from vkit.storage import Store
+
+    repo = fx.build_repository(tmp_path)
+    target = fx.baseline_revision(repo)
+    candidate = passing_manifest_only_candidate(repo)
+
+    done, accepted = verify(repo, candidate, target, "@main")
+    assert done.returncode == EXIT_OK, accepted
+    recorded_id = accepted["acceptance_id"]
+    store = Store(open_project(repo).db_path)
+    assert store.load_acceptance(recorded_id)["decision"] == "ACCEPTED"
+
+    # The same identity, a contradicting observation. This is the state a real
+    # contradiction leaves behind: an id already holding a decision.
+    contradictory = {
+        **accepted,
+        "integration_id": "a-different-integration",
+        "decision": "REJECTED",
+        "gaps": ["the required checks were not run: the trusted verification code and the "
+                 "approved policy do not both hold for this candidate, so running them "
+                 "would verify a bar the candidate had already lowered"],
+        "findings": [{"kind": "checker_bytes_changed", "check_id": fx.DRIVER_NAME,
+                      "severity": "REJECT",
+                      "detail": "the candidate's verification code differs from the approved "
+                                "revision the policy pins"}],
+        "checks": [],
+        "decided_at": "2026-01-01T00:00:00+00:00",
+    }
+    expected_id = _conflict_id(recorded_id, contradictory)
+    assert expected_id != recorded_id, "a conflict must not reuse the id it contradicts"
+
+    settled = _settle(Store(open_project(repo).db_path), recorded_id, contradictory)
+
+    # BLOCKED, under its own id. Not the recorded id with a different decision:
+    # the one outcome the invariant forbids.
+    assert settled.decision == "BLOCKED"
+    assert settled.acceptance_id == expected_id
+    assert settled.acceptance_id != recorded_id
+
+    # Both observations survive. The recorded one is untouched, which is the
+    # property that matters: nothing overwrote the acceptance a reader already
+    # has a reference to.
+    assert store.load_acceptance(recorded_id)["decision"] == "ACCEPTED"
+    assert store.load_acceptance(expected_id)["decision"] == "REJECTED"
+    assert len(store.list_acceptances()) == 2
+
+    # The contradiction names both decisions and the acceptance it disagrees
+    # with, and it survives a round trip through the table -- so a reader who
+    # finds the second row knows to distrust both, not just the second.
+    retained = store.load_acceptance(expected_id)
+    assert retained["gaps"][0].startswith("CONFLICT:")
+    assert recorded_id in retained["gaps"][0]
+    assert "ACCEPTED" in retained["gaps"][0]
+    assert "REJECTED" in retained["gaps"][0]
+
+    # And the human form says it, because "BLOCKED" alone would not tell a
+    # reader why.
+    text = summarize(settled)
+    assert "CONFLICT" in text
+    assert recorded_id in text
+
+
+def test_candidate_code_cannot_import_the_verifier_from_inside_a_check(
+    tmp_path: Path,
+) -> None:
+    """The code the check runs cannot reach the code that reads its verdict.
+
+    A driver that tried this would be refused before it ran, by the oracle check
+    -- a candidate cannot edit the verification code. So the reach comes from the
+    product, which a candidate is allowed to change, and that is the reach that
+    matters: the product is imported by the same process as the driver, in a
+    subprocess the candidate fully controls, and it still cannot import vkit.
+
+    The observation is FAIL rather than BLOCKED, because the driver is the
+    approved one and it faithfully recorded a scenario that crashed. A driver
+    reporting its own verdict is a separate attack, and the test above it is the
+    one that answers it.
     """
     repo = fx.build_repository(tmp_path)
     target = fx.baseline_revision(repo)
 
-    original = fx.driver_source()
-    reaching = original.replace(
-        "CASES = ",
-        "import vkit  # the code under test must not be able to read its own verdict\nCASES = ",
-        1,
-    )
-    assert reaching != original
-
+    # The reach is in the product module the approved driver imports, and the
+    # product is what a candidate owns.
     fx.checkout_branch(repo, "reaches-for-vkit", target)
-    (repo / fx.DRIVER_NAME).write_text(reaching, encoding="utf-8")
-    candidate = fx.commit_all(repo, "a driver that imports the verifier")
+    (repo / fx.QUOTE_NAME).write_text(
+        "import vkit  # the code under test must not reach the code that reads its result\n"
+        + (repo / fx.QUOTE_NAME).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    candidate = fx.commit_all(repo, "a product module that imports the verifier")
 
     done, record = verify(repo, candidate, target, "@main")
-    assert done.returncode == EXIT_BLOCKED, record
-    assert record["decision"] == "BLOCKED"
-    assert "artifact" in record["checks"][0]["detail"] or record["checks"][0]["result"] == "BLOCKED"
+    assert done.returncode == EXIT_CHECK_FAILED, record
+    assert record["decision"] == "REJECTED"
+    # The approved driver ran and every scenario failed on the import, so the
+    # decision is the driver's honest observation and not a refused oracle.
+    assert record["checks"][0]["result"] == "REJECTED"
+    assert record["checks"][0]["detail"].startswith("no-discount: exited 1: Traceback"), record
 
-    # The refusal reached the log, which is where a developer would look for it.
-    from vkit.paths import open_project
+    # The observation is the driver reporting a crashed scenario, and it
+    # truncates the traceback that would say why. The reason is checked here
+    # instead, in the process the launcher creates, with the same flag: the
+    # refusal is the import guard and not a consequence of the candidate's edit.
+    env = dict(os.environ, VKIT_TRUSTED_LAUNCHER="1")
+    inside = subprocess.run(
+        [sys.executable, "-c", "import vkit"], capture_output=True, text=True,
+        env=env, cwd=str(repo),
+    )
+    assert inside.returncode != 0
+    assert "vkit is not importable inside a trusted integration check" in inside.stderr
 
-    logs = list(open_project(repo).state_root.rglob("stderr.log"))
-    text = "".join(p.read_text(encoding="utf-8", errors="replace") for p in logs)
-    assert "vkit is not importable inside a trusted integration check" in text
+    # Without the launcher's flag the same import succeeds, so it is the flag and
+    # not this repository that refuses.
+    outside = subprocess.run(
+        [sys.executable, "-c", "import vkit"], capture_output=True, text=True,
+        env={k: v for k, v in env.items() if k != "VKIT_TRUSTED_LAUNCHER"},
+        cwd=str(repo),
+    )
+    assert outside.returncode == 0, outside.stderr

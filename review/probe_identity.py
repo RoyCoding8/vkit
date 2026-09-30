@@ -1,4 +1,4 @@
-"""Probe policy fingerprint semantics without launching commands."""
+"""Probe policy fingerprint semantics and duplicate-receipt settlement."""
 import dataclasses
 import hashlib
 import json
@@ -16,7 +16,7 @@ for key in tuple(os.environ):
 from vkit.manifest import parse_manifest, parse_manifest_bytes
 from vkit.paths import open_project
 from vkit.storage import Store
-from vkit.integration.verify import _persist
+from vkit.integration.verify import _settle
 
 scratch = Path(json.loads((ROOT / 'review/probe-results.json').read_text())['scratch'])
 project = open_project(scratch / 'stale-source')
@@ -27,11 +27,18 @@ def digest(**fields):
     changed = dataclasses.replace(check, **fields)
     return dataclasses.replace(manifest, checks={changed.id: changed}).digest()
 
-wheel = next((ROOT / 'review/dist').glob('*.whl'))
-with zipfile.ZipFile(wheel) as z:
-    schema_matches = {Path(name).name: hashlib.sha256(z.read(name)).hexdigest() ==
-                      hashlib.sha256((ROOT / 'schemas' / Path(name).name).read_bytes()).hexdigest()
-                      for name in z.namelist() if name.startswith('vkit/_schemas/')}
+wheels = sorted((ROOT / 'review/dist').glob('*.whl'))
+if wheels:
+    with zipfile.ZipFile(wheels[0]) as z:
+        schema_matches = {Path(name).name: hashlib.sha256(z.read(name)).hexdigest() ==
+                          hashlib.sha256((ROOT / 'schemas' / Path(name).name).read_bytes()).hexdigest()
+                          for name in z.namelist() if name.startswith('vkit/_schemas/')}
+else:
+    # `review/dist` is deliberately untracked: a wheel is rebuildable and
+    # `wheel-inspection.json` is its receipt. So the schema comparison is
+    # reported as not run rather than crashing the probe before the receipt
+    # checks below, which need nothing but the scratch repository.
+    schema_matches = {'<no wheel built>': False}
 formal_matches = {}
 for source, receipt, key in (
     ('formal/tla/OwnershipAcceptance.tla', 'formal/results/OwnershipAcceptance-receipt.json', 'model_sha256'),
@@ -62,6 +69,9 @@ try:
                          run_dir=scratch / 'duplicate', origin='audit duplicate')
 except Exception as exc:
     result['duplicate_check_rejection'] = {'type': type(exc).__name__, 'message': str(exc)}
+
+# A duplicate receipt id must come back as one decision, never two. Two cases:
+# an observation that AGREES with the record, and one that CONTRADICTS it.
 store = Store(scratch / 'receipt-probe.sqlite3')
 acceptance_id = 'acc-' + uuid.uuid4().hex
 old_record = {
@@ -72,12 +82,29 @@ old_record = {
     'findings': [], 'decided_at': 'audit-first',
 }
 store.record_acceptance(acceptance_id, old_record)
-new_record = dict(old_record, decision='REJECTED', decided_at='audit-second')
-_persist(store, acceptance_id, new_record)
+
+agreeing = _settle(store, acceptance_id, dict(old_record, decision='ACCEPTED'))
+result['duplicate_acceptance_agreement'] = {
+    'acceptance_id_is_the_recorded_one': agreeing.acceptance_id == acceptance_id,
+    'decision': agreeing.decision,
+    'decided_at': agreeing.record['decided_at'],
+    'returned_the_stored_record': agreeing.record == store.load_acceptance(acceptance_id),
+    'rows_in_table': len(store.list_acceptances()),
+}
+
+contradicting = _settle(store, acceptance_id, dict(
+    old_record, decision='REJECTED', decided_at='audit-second',
+    integration_id='audit-again',
+    gaps=['the required checks were not run: the trusted verification code and the '
+          'approved policy do not both hold for this candidate'],
+))
 result['duplicate_acceptance_disagreement'] = {
-    'returned_record_decision': new_record['decision'],
-    'stored_record_decision': store.load_acceptance(acceptance_id)['decision'],
-    'claims_reused_recorded_acceptance': new_record.get('reused_recorded_acceptance'),
+    'answers': contradicting.decision,
+    'id_differs_from_the_recorded_one': contradicting.acceptance_id != acceptance_id,
+    'recorded_decision_untouched': store.load_acceptance(acceptance_id)['decision'],
+    'contradiction_recorded': store.load_acceptance(contradicting.acceptance_id)['decision'],
+    'both_rows_retained': len(store.list_acceptances()),
+    'contradiction_names_both': contradicting.record['gaps'][0].startswith('CONFLICT:'),
 }
 (ROOT / 'review/identity-results.json').write_text(json.dumps(result, indent=2))
 print(json.dumps(result, indent=2))

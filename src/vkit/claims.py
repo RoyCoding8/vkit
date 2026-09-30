@@ -22,12 +22,11 @@ accepted evidence after reassignment.
 from __future__ import annotations
 
 import sqlite3
-from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Literal
 
-from .storage import ConflictError, Store, StoreError
+from .storage import ConflictError, Store
 
 # One statement grants a slot or grants nothing. The WHERE clause is the whole
 # arbitration: an exclusive row carries a NULL capacity, so `held < capacity` is
@@ -104,35 +103,41 @@ def acquire(store: Store, task_id: str, generation: int, specs: Iterable[Resourc
     that error no resource in the call is held, including those the transaction
     had already granted.
     """
-    ordered = _distinct(specs)
-    if not ordered:
-        return
+    with store.transaction() as conn:
+        acquire_in(conn, task_id, generation, specs)
 
-    with store._connect() as conn:
-        _begin(conn)
-        try:
-            for spec in ordered:
-                # capacity is bound twice: once as the value a new row declares,
-                # once as the declaration an existing row must already match.
-                params = (spec.key, spec.kind, spec.capacity, task_id, generation, _now(), spec.capacity)
-                if conn.execute(_TAKE_SLOT, params).rowcount == 0:
-                    raise ConflictError(_unavailable(conn, spec))
-                # The counter moved, so record who moved it. A task that already
-                # holds a slot of this pool is not given a second one, and the
-                # counter is corrected rather than left inflated.
-                taken = conn.execute(
-                    _TAKE_MEMBER, (spec.key, task_id, generation, _now())
-                ).rowcount
-                if taken == 0:
-                    conn.execute(
-                        "UPDATE claim_holders SET held = held - 1 WHERE resource_key = ?",
-                        (spec.key,),
-                    )
-        except BaseException:
-            with suppress(sqlite3.Error):
-                conn.execute("ROLLBACK")
-            raise
-        conn.execute("COMMIT")
+
+def acquire_in(
+    conn: sqlite3.Connection, task_id: str, generation: int, specs: Iterable[ResourceSpec]
+) -> None:
+    """`acquire`, on a connection whose transaction the caller already opened.
+
+    Admission must write a task row and take that task's claims together, so the
+    acquisition has to join a transaction this module did not open. It is split
+    out rather than restated in `tasks` because the arbitration is one SQL
+    statement, and a second copy of it in the caller would be a second rule that
+    could be fixed without the first.
+
+    The caller commits. Nothing here commits or rolls back, so a caller's
+    refusal rolls the claims back with everything else it wrote.
+    """
+    for spec in _distinct(specs):
+        # capacity is bound twice: once as the value a new row declares,
+        # once as the declaration an existing row must already match.
+        params = (spec.key, spec.kind, spec.capacity, task_id, generation, _now(), spec.capacity)
+        if conn.execute(_TAKE_SLOT, params).rowcount == 0:
+            raise ConflictError(_unavailable(conn, spec))
+        # The counter moved, so record who moved it. A task that already holds a
+        # slot of this pool is not given a second one, and the counter is
+        # corrected rather than left inflated.
+        taken = conn.execute(
+            _TAKE_MEMBER, (spec.key, task_id, generation, _now())
+        ).rowcount
+        if taken == 0:
+            conn.execute(
+                "UPDATE claim_holders SET held = held - 1 WHERE resource_key = ?",
+                (spec.key,),
+            )
 
 
 def release(store: Store, task_id: str, generation: int, keys: Iterable[str] | None = None) -> None:
@@ -144,44 +149,37 @@ def release(store: Store, task_id: str, generation: int, keys: Iterable[str] | N
     refused outright, because letting it run would report success for an attempt
     that no longer owns anything.
     """
-    with store._connect() as conn:
-        _begin(conn)
-        try:
-            held_elsewhere = conn.execute(
-                "SELECT DISTINCT generation FROM claim_members WHERE task_id = ? AND generation != ?",
-                (task_id, generation),
-            ).fetchall()
-            if held_elsewhere:
-                current = ", ".join(str(row[0]) for row in held_elsewhere)
-                raise ConflictError(
-                    f"task {task_id!r} was superseded: generation {generation} cannot release "
-                    f"resources held at generation {current}"
-                )
+    with store.transaction() as conn:
+        held_elsewhere = conn.execute(
+            "SELECT DISTINCT generation FROM claim_members WHERE task_id = ? AND generation != ?",
+            (task_id, generation),
+        ).fetchall()
+        if held_elsewhere:
+            current = ", ".join(str(row[0]) for row in held_elsewhere)
+            raise ConflictError(
+                f"task {task_id!r} was superseded: generation {generation} cannot release "
+                f"resources held at generation {current}"
+            )
 
-            # Membership decides what this release may take, and the counter is
-            # corrected from the rows that survive. A task holding nothing
-            # therefore takes nothing away, and a middle holder's slot is as
-            # recoverable as the first holder's.
-            if keys is None:
+        # Membership decides what this release may take, and the counter is
+        # corrected from the rows that survive. A task holding nothing therefore
+        # takes nothing away, and a middle holder's slot is as recoverable as the
+        # first holder's.
+        if keys is None:
+            conn.execute(
+                "DELETE FROM claim_members WHERE task_id = ? AND generation = ?",
+                (task_id, generation),
+            )
+        else:
+            wanted = tuple(dict.fromkeys(keys))
+            if wanted:
+                marks = ",".join("?" * len(wanted))
                 conn.execute(
-                    "DELETE FROM claim_members WHERE task_id = ? AND generation = ?",
-                    (task_id, generation),
+                    f"DELETE FROM claim_members WHERE task_id = ? AND generation = ?"
+                    f" AND resource_key IN ({marks})",
+                    (task_id, generation, *wanted),
                 )
-            else:
-                wanted = tuple(dict.fromkeys(keys))
-                if wanted:
-                    marks = ",".join("?" * len(wanted))
-                    conn.execute(
-                        f"DELETE FROM claim_members WHERE task_id = ? AND generation = ?"
-                        f" AND resource_key IN ({marks})",
-                        (task_id, generation, *wanted),
-                    )
-            _resync_counts(conn)
-        except BaseException:
-            with suppress(sqlite3.Error):
-                conn.execute("ROLLBACK")
-            raise
-        conn.execute("COMMIT")
+        _resync_counts(conn)
 
 
 def _resync_counts(conn: sqlite3.Connection) -> None:
@@ -231,18 +229,6 @@ def holders(store: Store, task_id: str | None = None) -> tuple[Claim, ...]:
     with store._connect() as conn:
         rows = conn.execute(sql, params).fetchall()
     return tuple(Claim(*row) for row in rows)
-
-
-def _begin(conn: sqlite3.Connection) -> None:
-    """Take the write lock now, before the first read, so what we read is final.
-
-    A caller that could not get the lock has not been told the resource is
-    unavailable, so this is a store failure rather than a conflict.
-    """
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-    except sqlite3.OperationalError as exc:
-        raise StoreError(f"could not take the write lock: {exc}") from exc
 
 
 def _distinct(specs: Iterable[ResourceSpec]) -> tuple[ResourceSpec, ...]:

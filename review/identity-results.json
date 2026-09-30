@@ -1,12 +1,10 @@
 {
-  "argv_boundary_collision": true,
-  "inputs_ignored": true,
-  "prerequisites_ignored": true,
+  "argv_boundary_collision": false,
+  "inputs_ignored": false,
+  "prerequisites_ignored": false,
   "checkout_path_changes_policy_digest": true,
   "wheel_schemas_match_authoritative_source": {
-    "check-artifact.v1.json": true,
-    "manifest.v1.json": true,
-    "run-report.v1.json": true
+    "<no wheel built>": false
   },
   "formal_receipt_identity": {
     "formal/tla/OwnershipAcceptance.tla": {
@@ -23,8 +21,8 @@
     }
   },
   "duplicate_check_rejection": {
-    "type": "NameError",
-    "message": "name 'path' is not defined"
+    "type": "ManifestError",
+    "message": "duplicate check id 'totals-behavior' in audit duplicate"
   },
   "duplicate_acceptance_disagreement": {
     "returned_record_decision": "REJECTED",

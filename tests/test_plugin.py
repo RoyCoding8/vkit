@@ -56,8 +56,9 @@ def load_hook_module():
 
 def _publish_run(store: Store, run_id: str, check_id: str, task_id: str,
                  result: str, reason: str | None = None) -> None:
-    store.register_run(run_id, check_id, task_id=task_id, attempt=1, source={},
-                       configuration_digest="c", fixture_digest=None)
+    store.register_run(run_id, check_id, task_id=task_id, attempt=1,
+                       source={"inventory_digest": "src-1"},
+                       configuration_digest="pd", fixture_digest=None)
     if result == "BLOCKED":
         outcome: dict[str, Any] = {"result": "BLOCKED", "reason": reason or "timeout"}
     else:
@@ -65,6 +66,27 @@ def _publish_run(store: Store, run_id: str, check_id: str, task_id: str,
                    "scenarios": [{"id": "s", "result": result, "observation": "o"}]}
     store.publish(run_id, {"run_id": run_id, "lifecycle": "terminal",
                            "ended_at": "t", "outcome": outcome})
+
+
+def _managed_contract(session_id: str, *, agent_id: str | None = None,
+                      required: tuple[str, ...] = ("c1",)) -> dict[str, Any]:
+    """A contract in the shape `TaskContract.from_json` validates.
+
+    The flat `{"goal": ..., "required_checks": [...]}` form these tests used to
+    write is no longer a contract the core will read: it carries no repository
+    binding and no pinned policy digest, so there would be nothing for acceptance
+    to compare a pass against. The host binding is preserved verbatim in
+    `declared` because that is where the hook reads it from.
+    """
+    return {
+        "repository": {"root": ".", "git_common_dir": "."},
+        "policy_digest": "pd",
+        "required_checks": list(required),
+        "scope": "ship",
+        "resources": [],
+        "declared": {"host": {"session_id": session_id, **(
+            {"agent_id": agent_id} if agent_id else {})}},
+    }
 
 
 @pytest.fixture()
@@ -85,8 +107,7 @@ def project(tmp_path: Path) -> Path:
     store = Store(open_project(root).db_path)
     open_task(
         store, task_id="t1",
-        contract={"goal": "ship", "required_checks": ["c1"],
-                  "host": {"session_id": "sess-1"}},
+        contract=_managed_contract("sess-1"),
         policy_digest="pd",
     )
     return root
@@ -123,6 +144,23 @@ def accepts_the_finish(response: dict[str, Any]) -> bool:
     inverting the polarity and turning a refusing gate into a passing one.
     """
     return response.get("decision") != "block"
+
+
+def registration_note(response: dict[str, Any], event: str) -> str:
+    """The context a completion response carries about its own registration.
+
+    The three events that can withhold a stop differ in what Claude Code reads:
+    `TaskCompleted` is documented with a `systemMessage` and no
+    `additionalContext` field, so a note for it arrives as the message. Asking
+    for the right field per event is what keeps this helper from being the place
+    a bug hides.
+    """
+    output = response.get("hookSpecificOutput") or {}
+    if output.get("hookEventName") == event and isinstance(
+        output.get("additionalContext"), str
+    ):
+        return output["additionalContext"]
+    return response.get("systemMessage", "")
 
 
 # --- the manifest ----------------------------------------------------------
@@ -214,8 +252,7 @@ def test_a_hook_is_importable_and_well_formed_for_every_recorded_state(
 
     for state, (task_id, run_id, result, reason) in states.items():
         open_task(store, task_id=task_id,
-                  contract={"goal": state, "required_checks": ["c1"],
-                            "host": {"session_id": f"sess-{task_id}"}},
+                  contract=_managed_contract(f"sess-{task_id}"),
                   policy_digest="pd")
         if run_id is not None:
             _publish_run(store, run_id, "c1", task_id, result, reason)
@@ -286,26 +323,33 @@ def test_a_terminal_pass_is_the_only_state_that_releases_a_bound_task(
         f"{event} blocked a task whose required check has a recorded PASS: {response!r}"
 
 
-def test_an_unbound_session_is_never_gated(project: Path) -> None:
-    """A payload that matches no registered task finishes normally.
+def test_an_unregistered_session_is_reported_and_never_gated(project: Path) -> None:
+    """A payload bound to no task is not accepted silently, and is not gated.
 
     Read-only chats, unenrolled projects, and host-internal agents all arrive
-    here. Guessing a task from a recent file or the last active task is exactly
-    what CONTRACT.md forbids.
+    here. Guessing a task from a recent file or the last active task is what
+    CONTRACT.md forbids — but a bare `{}` is the other half of the same hole,
+    because a reader cannot tell "nothing was registered" from "nothing was
+    wrong". So the response is the one field that separates them: no
+    `decision: "block"`, and context naming the registration that is missing.
     """
     hook = load_hook_module()
     for event in COMPLETION_EVENTS:
         response = hook.respond(event, payload_for(event, session_id="someone-else"),
                                str(project))[0]
-        assert response == {}, f"{event} gated a session bound to no task: {response!r}"
+        assert accepts_the_finish(response), \
+            f"{event} gated a session bound to no task: {response!r}"
+        assert registration_note(response, event), \
+            f"{event} reported nothing about an unregistered session: {response!r}"
 
 
 def test_a_sibling_subagent_never_inherits_another_workers_gate(project: Path) -> None:
-    """One worker's binding cannot reach a sibling.
+    """One worker's binding cannot reach a sibling, and the sibling is told so.
 
     The task is bound to `sess-1` with no agent id, so a subagent under that
-    session carries an `agent_id` the binding does not name and must not be
-    gated by it.
+    session carries an `agent_id` the binding does not name. The BLOCKED run on
+    `t1` must therefore gate nothing here, and the response must say which
+    registration is absent rather than reading as a clean finish.
     """
     hook = load_hook_module()
     from vkit.paths import open_project
@@ -314,7 +358,70 @@ def test_a_sibling_subagent_never_inherits_another_workers_gate(project: Path) -
 
     response = hook.respond("SubagentStop", payload_for("SubagentStop", agent_id="a7"),
                             str(project))[0]
-    assert response == {}, f"a sibling subagent inherited another worker's gate: {response!r}"
+    assert accepts_the_finish(response), \
+        f"a sibling subagent inherited another worker's gate: {response!r}"
+    assert "timeout" not in json.dumps(response), \
+        f"a sibling subagent inherited another worker's findings: {response!r}"
+    note = registration_note(response, "SubagentStop")
+    assert note, f"a sibling subagent was not told what to register: {response!r}"
+    assert "a7" in note, f"the note does not identify the unregistered subagent: {note!r}"
+
+
+def test_an_ambiguous_binding_is_reported_rather_than_picked(project: Path) -> None:
+    """Two tasks claiming one session gate nothing.
+
+    Selecting the first match would resolve the task by table order, which is
+    the guess CONTRACT.md forbids; a duplicate binding is ambiguous, and an
+    ambiguous registration has no evidence to compare against. The response
+    reports the same missing-registration note an absent binding produces, so
+    the two are not confused with a gate that ran and found nothing.
+    """
+    hook = load_hook_module()
+    from vkit.paths import open_project
+    store = Store(open_project(project).db_path)
+    open_task(store, task_id="t2", contract=_managed_contract("sess-1"),
+              policy_digest="pd")
+    _publish_run(store, "r-pass", "c1", "t1", "PASS")
+    _publish_run(store, "r-blocked", "c1", "t2", "BLOCKED", "timeout")
+
+    for event in COMPLETION_EVENTS:
+        response = hook.respond(event, payload_for(event), str(project))[0]
+        assert accepts_the_finish(response), \
+            f"{event} gated a session with two tasks claiming it: {response!r}"
+        assert registration_note(response, event), \
+            f"{event} reported nothing about an ambiguous binding: {response!r}"
+
+
+def test_a_bound_task_is_never_displaced_by_a_sibling_registration(project: Path) -> None:
+    """The disjointness is on both fields, not a filter over one set.
+
+    A second task bound to the same session but a different agent is not a
+    duplicate — it is a sibling's own registration. So the main session keeps
+    its binding, and the subagent is judged against the task that names it.
+    """
+    hook = load_hook_module()
+    from vkit.paths import open_project
+    store = Store(open_project(project).db_path)
+    open_task(store, task_id="t2", contract=_managed_contract("sess-1", agent_id="a7"),
+              policy_digest="pd")
+    # t1 passes so the main session's gate accepts; t2 stays blocked so the
+    # subagent's gate has something to say, and a subagent inheriting t1
+    # instead of t2 would be visible as silence.
+    _publish_run(store, "r-pass", "c1", "t1", "PASS")
+    _publish_run(store, "r-blocked", "c1", "t2", "BLOCKED", "timeout")
+
+    main = hook.respond("Stop", payload_for("Stop"), str(project))[0]
+    assert accepts_the_finish(main), \
+        f"the main session's own task stopped being gated: {main!r}"
+    assert registration_note(main, "Stop") == "", \
+        f"a registered main session was reported as unregistered: {main!r}"
+
+    subagent = hook.respond("SubagentStop",
+                            payload_for("SubagentStop", agent_id="a7"), str(project))[0]
+    assert subagent.get("decision") == "block", \
+        f"a subagent with a registered task and a blocked check was not gated: {subagent!r}"
+    assert "t2" in subagent["reason"], \
+        f"the gate was decided by the wrong task's record: {subagent['reason']!r}"
 
 
 def test_a_second_blocked_turn_records_the_blocker_instead_of_looping(

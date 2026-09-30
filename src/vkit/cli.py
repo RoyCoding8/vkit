@@ -124,11 +124,15 @@ def _open_store(project: Project) -> Store:
         raise Refused(str(exc), EXIT_INTERNAL) from exc
 
 
-def _manifest(project: Project) -> Manifest:
-    try:
-        return parse_manifest(project, project.runs_root / "probe")
-    except ManifestError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
+def _read_policy(project: Project) -> Manifest:
+    """The registered policy, or the `ManifestError` that says why there is none.
+
+    `tasks.acceptance_context` decides what a missing or malformed policy means,
+    so the error has to reach it rather than be turned into an exit code here.
+    A command that only *reports* on the policy wraps this in `Refused` at its
+    own boundary, which is the one place a code has to be chosen.
+    """
+    return parse_manifest(project, project.runs_root)
 
 
 def _task(store: Store, task_id: str) -> tasks.TaskRecord:
@@ -139,20 +143,17 @@ def _task(store: Store, task_id: str) -> tasks.TaskRecord:
 
 
 def _read_contract(path: str) -> dict[str, Any]:
-    """Read and validate the contract file named on the command line.
+    """Read the contract file named on the command line into a request.
 
-    This is the boundary, so the check is here and not in `tasks`. A contract
-    naming a check the repository does not define would finalize as BLOCKED
-    forever with a gap nothing can close.
-
-    The key names below are the whole shape. `required_checks` is the baseline
-    and `additional_checks` may only add to it, because CONTRACT.md is explicit
-    that a task may add checks but never remove that baseline. Checks named in
-    either are checked against the manifest by the caller, which is the only
-    place the manifest is loaded.
+    This is the boundary, so the file is read and shape-checked here and nowhere
+    else. What the contract *means* is not decided here: `tasks.admit` derives
+    the mandatory floor from the approved policy, so the `required_checks` this
+    returns is the caller's selection — it can add to the floor and never
+    subtract from it. Validating check ids against the manifest is `admit`'s
+    refusal, because the manifest is part of the context admission reads.
     """
-    required = ("required_checks",)
-    optional = ("additional_checks", "description")
+    optional = ("required_checks", "additional_checks", "description",
+                "scope", "required_resources")
 
     file = Path(path).expanduser()
     if not file.is_absolute():
@@ -166,28 +167,25 @@ def _read_contract(path: str) -> dict[str, Any]:
 
     if not isinstance(raw, dict):
         raise Refused(f"{file} must contain a JSON object", EXIT_INVALID)
-    unknown = sorted(set(raw) - set(required) - set(optional))
+    unknown = sorted(set(raw) - set(optional))
     if unknown:
         raise Refused(
             f"{file} has unsupported key(s) {', '.join(unknown)}; a contract declares "
-            f"{', '.join(required)} and may add {', '.join(optional)}",
+            f"{', '.join(optional)}",
             EXIT_INVALID,
         )
-    for key in required:
-        value = raw.get(key)
-        if not isinstance(value, list) or not value:
-            raise Refused(f"{file}: {key} must be a nonempty list of registered check ids", EXIT_INVALID)
-        if any(not isinstance(item, str) or not item for item in value):
-            raise Refused(f"{file}: {key} must contain only nonempty check id strings", EXIT_INVALID)
-
-    baseline = list(dict.fromkeys(raw["required_checks"]))
+    selected = raw.get("required_checks", [])
     extra = raw.get("additional_checks", [])
-    if not isinstance(extra, list) or any(not isinstance(item, str) or not item for item in extra):
-        raise Refused(f"{file}: additional_checks must be a list of check id strings", EXIT_INVALID)
+    for key, value in (("required_checks", selected), ("additional_checks", extra)):
+        if not isinstance(value, list) or any(not isinstance(i, str) or not i for i in value):
+            raise Refused(f"{file}: {key} must be a list of check id strings", EXIT_INVALID)
+    scope = raw.get("description", raw.get("scope", ""))
+    if not isinstance(scope, str):
+        raise Refused(f"{file}: description must be a string", EXIT_INVALID)
     return {
-        "required_checks": baseline,
-        "extra_checks": [c for c in dict.fromkeys(extra) if c not in baseline],
-        "description": raw.get("description", ""),
+        "selected": list(dict.fromkeys(selected + extra)),
+        "scope": scope,
+        "resources": raw.get("required_resources"),
     }
 
 
@@ -379,23 +377,15 @@ def cmd_run_show(args: argparse.Namespace) -> int:
 
 
 def cmd_task_begin(args: argparse.Namespace) -> int:
-    """Open a task whose contract and policy are pinned at generation 1.
+    """Open a task through the core admission decision, at generation 1.
 
-    The check ids are validated against the manifest before the task exists, so
-    a contract naming an unregistered check is refused here instead of leaving a
-    task that can only ever finalize as BLOCKED.
+    The contract's own list is the caller's selection and nothing more. What the
+    task must actually prove is derived inside `tasks.admit` from the policy in
+    force, and a claim it cannot take refuses the admission rather than being
+    reported beside an admitted task.
     """
     project = _project(args)
     contract = _read_contract(args.contract)
-    manifest = _manifest(project)
-    known = set(manifest.checks)
-    named = contract["required_checks"] + contract["extra_checks"]
-    for check_id in named:
-        try:
-            manifest.require(check_id)
-        except ManifestError as exc:
-            raise Refused(str(exc), EXIT_INVALID) from exc
-
     store = _open_store(project)
     task_id = _subject(store, args, OP_TASK_BEGIN, {"contract": contract})
     try:
@@ -405,12 +395,32 @@ def cmd_task_begin(args: argparse.Namespace) -> int:
         # contract pinned here is the one the returned task was opened with.
         task = tasks.get_task(store, task_id)
     except tasks.TaskError:
+        context = tasks.acceptance_context(project, lambda: _read_policy(project))
         try:
-            task = tasks.open_task(
-                store, task_id=task_id, contract=contract, policy_digest=manifest.digest()
+            admitted = tasks.admit(
+                store, task_id, context=context,
+                required_checks=contract["selected"],
+                scope=contract["scope"],
+                resources=contract["resources"],
             )
+        except ConflictError as exc:
+            # The resource this task requires is held by someone else. Admission
+            # is refused, so nothing exists to run under a task that believes it
+            # owns a checkout it does not.
+            raise Refused(str(exc), EXIT_BLOCKED) from exc
         except tasks.TaskError as exc:
+            # `AdmissionRefused` is a `TaskError`, and every reason it gives is a
+            # reason the caller's request is invalid rather than a conflict.
             raise Refused(str(exc), EXIT_INVALID) from exc
+        task = admitted.task
+        # The policy's floor reaches the caller beside its own selection, so the
+        # difference between the two is visible instead of silently applied.
+        selected = set(contract["selected"])
+        required = list(admitted.contract.required_checks)
+        extra = [c for c in required if c not in selected]
+    else:
+        required = list(task.pinned().required_checks)
+        extra = []
 
     payload = {
         "command": "task begin",
@@ -418,15 +428,15 @@ def cmd_task_begin(args: argparse.Namespace) -> int:
         "status": task.status,
         "generation": task.generation,
         "contract": task.contract,
-        "required_checks": contract["required_checks"],
+        "required_checks": list(required),
         "policy_digest": task.policy_digest,
     }
     lines = [
         f"task {task.task_id}  generation {task.generation}  {task.status}",
-        f"requires : {', '.join(contract['required_checks'])}",
+        f"requires : {', '.join(required)}",
     ]
-    if contract["extra_checks"]:
-        lines.append(f"also runs: {', '.join(contract['extra_checks'])}")
+    if extra:
+        lines.append(f"also required by the approved policy: {', '.join(extra)}")
     _emit(payload, args.json, "\n".join(lines))
     return EXIT_OK
 
@@ -443,10 +453,20 @@ def cmd_check_start(args: argparse.Namespace) -> int:
     task = _task(store, args.task)
     if task.status == "closed":
         raise Refused(f"task {task.task_id} is closed; its result is final", EXIT_INVALID)
-    manifest = _manifest(project)
     try:
+        manifest = _read_policy(project)
         manifest.require(args.check)
     except ManifestError as exc:
+        raise Refused(str(exc), EXIT_INVALID) from exc
+
+    # Rechecked here, not only at admission. A required resource can be released
+    # by recovery while the attempt is still open, and a check launched under a
+    # task that has lost its checkout is two workers writing one tree.
+    try:
+        tasks.verify_ownership(store, task.task_id, task.generation)
+    except ConflictError as exc:
+        raise Refused(str(exc), EXIT_BLOCKED) from exc
+    except tasks.TaskError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
 
     run_id = _subject(
@@ -568,25 +588,31 @@ def _identity_of(recorded: dict[str, Any]) -> ProcessIdentity:
 
 
 def cmd_task_finalize(args: argparse.Namespace) -> int:
-    """Compute readiness from recorded evidence and record it.
+    """Decide readiness through the core acceptance decision, and record it.
 
     There is no verdict argument. CONTRACT.md forbids a client-supplied verdict,
-    so the answer is whatever `tasks.compute_readiness` makes of the runs this
-    task actually has, and the gaps it reports are what the caller has to read.
+    so the answer is whatever `tasks.finalize` makes of this attempt's runs
+    under the contract it was admitted with and the identities in force now, and
+    the gaps it reports are what the caller has to read.
     """
-    store = _open_store(_project(args))
+    project = _project(args)
+    store = _open_store(project)
     task = _task(store, args.task)
     if task.status == "closed":
         raise Refused(f"task {task.task_id} is closed; its result is final", EXIT_INVALID)
 
-    contract = task.contract
-    required = list(contract["required_checks"]) + list(contract.get("extra_checks", []))
-    decision = tasks.compute_readiness(store, task.task_id, required_check_ids=required)
     try:
-        recorded = tasks.record_readiness(store, task.task_id, decision)
+        decision = tasks.finalize(
+            store, task.task_id,
+            context=tasks.acceptance_context(project, lambda: _read_policy(project)),
+        )
     except ConflictError as exc:
         # The attempt was superseded while readiness was being computed. This is
         # a legitimate answer, not an application failure.
+        raise Refused(str(exc), EXIT_BLOCKED) from exc
+    except tasks.AdmissionRefused as exc:
+        # The recorded contract is not one this build can validate, so there is
+        # no floor to decide against. That is a block, not a pass.
         raise Refused(str(exc), EXIT_BLOCKED) from exc
     except tasks.TaskError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
@@ -594,15 +620,18 @@ def cmd_task_finalize(args: argparse.Namespace) -> int:
     payload = {
         "command": "task finalize",
         "task_id": task.task_id,
-        "status": recorded.status,
+        "status": task.status,
         "readiness": decision.readiness,
         "gaps": list(decision.gaps),
-        "required_checks": required,
+        "history": list(decision.history),
+        "required_checks": decision.context.get("required_checks", []),
         "context": decision.context,
     }
     lines = [f"task {task.task_id}  {decision.readiness}"]
     for gap in decision.gaps:
         lines.append(f"  gap: {gap}")
+    for entry in decision.history:
+        lines.append(f"  earlier attempt: {entry}")
     if decision.readiness == "READY":
         lines.append("local requirements are satisfied; this is not merge permission")
     _emit(payload, args.json, "\n".join(lines))

@@ -1,24 +1,23 @@
 {
-  "exit_code": 0,
-  "decision": "ACCEPTED",
-  "candidate": "cb84c1a19706cf5a2c638ade298a23dd38f60a38",
-  "target": "965c0a8e7015b3d972d7292e728abaa97b1e0f67",
-  "approved_manifest_revision": "2cd70c1de4d657e4d9cf4394a6c3b81f1df2730c",
+  "exit_code": 1,
+  "decision": "REJECTED",
+  "candidate": "d650e67ce1ef7a7024657dcd43b36596377b1410",
+  "target": "3abf79643cc0e6b169334f7655b67f2846169378",
+  "approved_manifest_revision": "8516e3403e3c2831551bfc92988166c0d9bdecb3",
   "approved_main_stayed_fixed": true,
   "broken_app_with_original_driver": {
-    "candidate": "64dc82aafebb7ef3f926f8d12d96875c2254ff47",
+    "candidate": "b921425c0b3ab0eb34018c0b6f68c736e9ccfa65",
     "exit_code": 1,
     "decision": "REJECTED",
     "check_results": [
       "REJECTED"
     ]
   },
-  "check_results": [
-    "ACCEPTED"
+  "check_results": [],
+  "check_details": [],
+  "gaps": [
+    "the candidate's verification code differs from the approved revision 8516e3403e3c the policy pins, in verify_price.py. A candidate that edits the code that decides whether it passes has changed the oracle rather than the product. The way to change what a check requires is an explicit policy review that establishes the new trusted bytes, not a candidate commit.",
+    "the required checks were not run: the trusted verification code and the approved policy do not both hold for this candidate, so running them would verify a bar the candidate had already lowered"
   ],
-  "check_details": [
-    "6 scenario(s) passed"
-  ],
-  "gaps": [],
   "stderr": ""
 }

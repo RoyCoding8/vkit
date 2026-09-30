@@ -21,8 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from vkit.console import api  # noqa: E402
+from vkit.console.api import MAX_BODY_BYTES  # noqa: E402
 from vkit.console.operations import Context  # noqa: E402
-from vkit.console.server import MAX_BODY_BYTES, serve  # noqa: E402
+from vkit.console.server import serve  # noqa: E402
 from vkit.paths import open_project  # noqa: E402
 from vkit.storage import Store  # noqa: E402
 from vkit.tasks import open_task  # noqa: E402

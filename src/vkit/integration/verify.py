@@ -25,10 +25,21 @@ step would otherwise be answering a question about the wrong thing.
 6. **Compare the candidate's manifest against the approved one.** A removed
    check or a dropped scenario is a REVIEW finding, which refuses in the
    protected context.
-7. **Decide, and record.** One acceptance row with the source, policy, verifier,
+7. **Hold the verification code to the approved revision too.** An approved
+   manifest naming a script path does not make that script trusted: the path
+   resolves inside the candidate checkout, so the candidate supplies the bytes
+   that decide whether it passes. The script an approved check names is measured
+   at both the approved revision and the candidate, and any difference refuses
+   before a process starts. When they agree, the approved bytes are what execute
+   and the working directory stays in the candidate, so approved verification
+   code observes candidate product bytes. See `oracle.py`.
+8. **Decide, and record.** One acceptance row with the source, policy, verifier,
    environment and fixture identities, the required checks, the gaps, and the
    context. `readiness_at_publish` records what a caller must re-check before it
-   publishes anything: the target has to still be the target.
+   publishes anything: the target has to still be the target. A replay of a
+   recorded request returns the recorded answer; a fresh execution that reaches a
+   different answer under the same identity is a conflict, keeps both
+   observations, and answers BLOCKED rather than picking one.
 
 **What this command does not do.** It does not push, merge, tag or open a pull
 request. It computes and records a decision. A protected job that has a decision
@@ -40,7 +51,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import platform
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -52,14 +62,15 @@ from ..claims import ResourceSpec
 from ..execution import RunEnvironment, run_check
 from ..identity import compute_source_identity
 from ..manifest import Manifest, ManifestError
-from ..outcome import Blocked, BlockedReason, Failed, Outcome, Passed
+from ..outcome import Blocked, Failed, Passed
 from ..paths import Project
 from ..storage import Store
 from . import checkout as checkouts
 from . import concurrency
 from . import gitidentity as gits
+from . import oracle as oracles
 from . import policy as policies
-from .gitidentity import GitError
+from .policy import MANIFEST_RELATIVE
 
 ACCEPTED = "ACCEPTED"
 REJECTED = "REJECTED"
@@ -138,7 +149,7 @@ def verify(request: Request, store: Store) -> Verified:
             executed_digest=None,
             candidate_manifest=None,
             verifier=None,
-            environment=_environment_facts(),
+            environment=oracles.environment_identity(),
             fixture=None,
             decided_at=_now(),
         )
@@ -166,20 +177,20 @@ def verify(request: Request, store: Store) -> Verified:
             executed_digest=None,
             candidate_manifest=None,
             verifier=None,
-            environment=_environment_facts(),
+            environment=oracles.environment_identity(),
             fixture=None,
             decided_at=_now(),
         )
 
     try:
-        return _verify_exclusive(
+        return _verify_checked_out(
             request, store, policy, identity, candidate_fact, target_fact, containment
         )
     finally:
         release(store, f"integration:{request.integration_id}", 1, [s.key for s in specs])
 
 
-def _verify_exclusive(
+def _verify_checked_out(
     request: Request,
     store: Store,
     policy: policies.Policy,
@@ -192,17 +203,21 @@ def _verify_exclusive(
     run_dir = project.state_root / "integration" / "runs" / request.integration_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    candidate_checkout = checkouts.create(project, candidate_fact.sha, request.integration_id)
-    checkout_project = checkouts.project_for(candidate_checkout)
-    # The verifier is this process's own package: the tree that will read the
-    # result is the tree that has to be the one the candidate cannot reach.
-    verifier = _verifier_identity()
+    # The verifier is this process's own package, measured rather than named, and
+    # the environment is the interpreter that will execute the checks. Both are
+    # measured before the candidate is checked out, so nothing the candidate ships
+    # can influence what is being measured.
+    verifier = oracles.package_identity()
     env = RunEnvironment(
         python=sys.executable,
-        plugin_root=verifier["package_root_path"],
+        plugin_root=Path(verifier["package_root"]),
         revalidate=True,
         verifier_revision=verifier["revision"],
     )
+    environment = oracles.environment_identity()
+
+    candidate_checkout = checkouts.create(project, candidate_fact.sha, request.integration_id)
+    checkout_project = checkouts.project_for(candidate_checkout)
     try:
         checkouts.assert_clean(candidate_checkout, when="before the required checks")
 
@@ -223,42 +238,81 @@ def _verify_exclusive(
                 gaps=("no manifest could be executed: the policy pins no approved "
                       "revision and the candidate ships none that parses",),
                 findings=(), executed_digest=None, candidate_manifest=None,
-                verifier=verifier,
-                environment=_environment_facts(), fixture=None, decided_at=_now(),
+                verifier=verifier, environment=environment, fixture=None,
+                decided_at=_now(), context_facts=None,
             )
+
+        # The trusted side of the verification, measured at both commits before
+        # anything runs. The check names a script by repository-relative path;
+        # the approved revision supplies those bytes and the candidate supplies
+        # the product. Anything that is not equal is a refusal, and the
+        # comparison is the whole of the oracle boundary.
+        measured = oracles.approved_oracle(
+            project, candidate_fact.sha, execution_manifest, policy.manifest_revision
+        )
+        scripts = oracles.scripts_of(execution_manifest)
+        unpinned = sorted(check_id for check_id in policy.required_ids if check_id not in scripts)
+        oracle_findings: list[policies.PolicyFinding] = []
+        if unpinned:
+            oracle_findings.append(policies.PolicyFinding(
+                "checker_not_identifiable", ", ".join(unpinned), "REJECT",
+                f"the approved command for {', '.join(unpinned)} names no repository-relative "
+                "script, so there are no trusted verification bytes this run can pin and "
+                "execute; review the command and approve one that names a file",
+            ))
+        differing = measured.changed
+        if differing:
+            oracle_findings.append(policies.PolicyFinding(
+                "checker_bytes_changed", ", ".join(sorted(differing)), "REJECT",
+                "the candidate's verification code differs from the approved revision "
+                + (f"{measured.approved_revision[:12]} " if measured.approved_revision else "")
+                + "the policy pins, in "
+                + ", ".join(sorted(differing))
+                + ". A candidate that edits the code that decides whether it passes has "
+                "changed the oracle rather than the product. The way to change what a check "
+                "requires is an explicit policy review that establishes the new trusted bytes, "
+                "not a candidate commit.",
+            ))
 
         # The source identity is computed for the checkout the checks will run
         # in, not for the caller's repository, so the before-and-after digests
         # bracket exactly the tree that executed.
         source = compute_source_identity(checkout_project)
 
-        findings: list[policies.PolicyFinding] = []
-        candidate_manifest, unreadable = _read_candidate_manifest(
+        findings: list[policies.PolicyFinding] = list(oracle_findings)
+        manifest_blob, candidate_manifest, unreadable = _read_candidate_manifest(
             project, candidate_fact.sha, run_dir
         )
         if candidate_manifest is not None:
-            findings = list(policies.compare(candidate_manifest, policy, approved))
+            findings.extend(policies.compare(candidate_manifest, policy, approved))
         elif unreadable is not None:
             # The candidate's manifest is there and the product will not accept
             # it. Saying "absent" here would be a different, weaker claim, and
             # it would hide the reason a reviewer needs: a manifest with no
             # checks is the shape a candidate uses to declare a zero-width bar.
-            findings = [policies.PolicyFinding(
+            findings.append(policies.PolicyFinding(
                 "candidate_manifest_rejected", "-", "REJECT",
-                f"the candidate's {policies.MANIFEST_RELATIVE} is not usable, so what "
+                f"the candidate's {MANIFEST_RELATIVE} is not usable, so what "
                 f"it requires cannot be established: {unreadable}",
-            )]
+            ))
         else:
-            findings = [policies.PolicyFinding(
+            findings.append(policies.PolicyFinding(
                 "candidate_manifest_absent", "-", "REVIEW",
                 "the candidate ships no verification/manifest.json, so the approved "
                 "manifest runs unchecked against what the candidate claims",
-            )]
+            ))
         gaps.extend(f.detail for f in findings if f.severity == "REJECT")
 
         results: list[dict[str, Any]] = []
         worst_finding = policies.worst(findings)
         if worst_finding != "REJECT":
+            if measured.approved_revision and scripts:
+                approved_root = checkouts.materialize_approved(
+                    project, measured.approved_revision, scripts, run_dir
+                )
+                execution_manifest = oracles.repoint_approved(
+                    execution_manifest, approved_root, scripts
+                )
             for check_id in policy.required_ids:
                 outcome = run_check(
                     execution_manifest, check_id, store=store, source=source, env=env
@@ -266,9 +320,9 @@ def _verify_exclusive(
                 results.append(_check_result(check_id, outcome))
         else:
             gaps.append(
-                "the required checks were not run: the candidate's manifest does not "
-                "meet the trusted policy, so running them would verify a bar the "
-                "candidate had already lowered"
+                "the required checks were not run: the trusted verification code and the "
+                "approved policy do not both hold for this candidate, so running them "
+                "would verify a bar the candidate had already lowered"
             )
 
         checkouts.assert_clean(candidate_checkout, when="after the required checks")
@@ -293,7 +347,7 @@ def _verify_exclusive(
                 "through the protected configuration rather than this run"
             )
 
-        fixture = _fixture_identity(execution_manifest, results)
+        fixture = oracles.fixture_identity(project, candidate_fact.sha, execution_manifest, scripts)
         return _record(
             store, request, policy, identity,
             decision=decision, candidate_fact=candidate_fact, target_fact=target_fact,
@@ -301,92 +355,15 @@ def _verify_exclusive(
             gaps=tuple(gaps), findings=tuple(findings),
             verifier=verifier,
             executed_digest=execution_manifest.digest(),
-            candidate_manifest=_candidate_manifest_facts(project, candidate_fact.sha),
-            environment=_environment_facts(), fixture=fixture, decided_at=_now(),
+            candidate_manifest=_candidate_manifest_facts(
+                manifest_blob, candidate_manifest, unreadable
+            ),
+            environment=environment, fixture=fixture, decided_at=_now(),
             checkout=str(candidate_checkout.path),
+            context_facts=measured.to_json(),
         )
     finally:
         _retire(request, candidate_checkout)
-
-
-def _verifier_identity() -> dict[str, Any]:
-    """Which verifier code made this decision.
-
-    `verifier_revision` is the Git commit of vkit's own repository when this
-    build is running from one, and the package version otherwise. Naming the
-    version rather than always naming a commit is deliberate: a build installed
-    from a wheel is a legitimate verifier and has no commit to point at, and
-    recording "unknown" for it would be less honest than recording what it is.
-    """
-    from .. import __version__
-
-    package_root = Path(__file__).resolve().parents[2]
-    revision: str | None = None
-    try:
-        from ..paths import Project, open_project
-        from .gitidentity import commit_fact, has_commits
-
-        if (package_root / ".git").exists():
-            project = open_project(package_root)
-            if has_commits(project):
-                revision = commit_fact(project, "HEAD").sha
-    except Exception:  # noqa: BLE001 - a verifier that cannot name itself still runs
-        revision = None
-    return {
-        "revision": revision or f"vkit {__version__}",
-        "package_root_path": package_root,
-        "package_root": str(package_root),
-    }
-
-
-def _candidate_manifest_facts(project: Project, candidate: str) -> dict[str, Any]:
-    """The candidate's own manifest, digested, as that commit shipped it.
-
-    Read from the commit rather than from a checkout, so a checkout that has
-    since moved cannot change what the candidate's policy was. The bytes go
-    into the acceptance because the comparison that justifies the decision can
-    only be re-checked against the bytes the candidate shipped.
-    """
-    from ..manifest import ManifestError, parse_manifest_bytes
-    from .policy import MANIFEST_RELATIVE, candidate_manifest_bytes
-
-    blob = candidate_manifest_bytes(project, candidate)
-    if blob is None:
-        return {
-            "path": MANIFEST_RELATIVE,
-            "present": False,
-            "digest": None,
-            "definition": None,
-        }
-    from ..paths import open_project
-
-    try:
-        parsed = parse_manifest_bytes(
-            blob, project=open_project(project.root), run_dir=project.runs_root / "probe",
-            origin=f"{candidate[:12]}:{MANIFEST_RELATIVE}",
-        )
-        definition = {
-            check_id: {
-                "command": list(spec.argv),
-                "required_scenarios": list(spec.required_scenarios),
-                "timeout_seconds": spec.timeout_seconds,
-                "artifact": spec.artifact_name,
-            }
-            for check_id, spec in parsed.checks.items()
-        }
-        digest = parsed.digest()
-    except ManifestError as exc:
-        return {
-            "path": MANIFEST_RELATIVE, "present": True, "digest": None,
-            "definition": None, "unreadable": str(exc),
-        }
-    return {
-        "path": MANIFEST_RELATIVE,
-        "present": True,
-        "digest": digest,
-        "bytes_sha256": hashlib.sha256(blob).hexdigest(),
-        "definition": definition,
-    }
 
 
 def _retire(request: Request, candidate_checkout) -> None:
@@ -452,40 +429,76 @@ def _check_result(check_id: str, outcome: "RunOutcome") -> dict[str, Any]:
 
 def _read_candidate_manifest(
     project: Project, candidate: str, run_dir: Path
-) -> tuple[Manifest | None, str | None]:
-    """(parsed manifest, why it was rejected). Either is None, never both.
+) -> tuple[bytes | None, Manifest | None, str | None]:
+    """The candidate's own manifest as that commit shipped it.
 
-    Read from the candidate COMMIT rather than from the checkout. The checkout
-    has already been verified clean, so the two agree today, but a decision that
-    depends on which one it read is a decision that a later checkout could
-    change, and the commit is the thing the decision is about.
+    One read, because the comparison and the receipt are about the same bytes
+    and two reads of a blob that cannot change is one more thing to keep in
+    step. The result is `(bytes, parsed, why it was rejected)`: the bytes for the
+    digest the receipt carries, the parse for the comparison, and the reason when
+    the candidate ships something the product will not accept.
+
+    Read from the commit rather than from the checkout. The checkout has already
+    been verified clean, so the two agree today, but a decision that depends on
+    which one it read is a decision that a later checkout could change, and the
+    commit is the thing the decision is about.
     """
     from ..manifest import ManifestError, parse_manifest_bytes
     from ..paths import open_project
-    from .policy import MANIFEST_RELATIVE, candidate_manifest_bytes
+    from .policy import candidate_manifest_bytes
 
     blob = candidate_manifest_bytes(project, candidate)
     if blob is None:
-        return None, None
+        return None, None, None
     try:
-        return parse_manifest_bytes(
+        return blob, parse_manifest_bytes(
             blob, project=open_project(project.root), run_dir=run_dir / "probe",
             origin=f"{candidate[:12]}:{MANIFEST_RELATIVE}",
         ), None
     except ManifestError as exc:
-        return None, str(exc)
+        return blob, None, str(exc)
 
 
-def _parse_candidate_manifest(
-    checkout_project, run_dir: Path, *, tolerate: bool = False
-) -> Manifest | None:
+def _candidate_manifest_facts(
+    blob: bytes | None, parsed: Manifest | None, unreadable: str | None
+) -> dict[str, Any]:
+    """The candidate's manifest as the acceptance records it.
+
+    The bytes go in because the comparison that justifies the decision can only
+    be re-checked against the bytes the candidate shipped. A manifest the product
+    refuses is recorded as unreadable rather than absent, because "absent" is a
+    weaker claim and would hide the reason a reviewer needs.
+    """
+    if blob is None:
+        return {"path": MANIFEST_RELATIVE, "present": False, "digest": None}
+    facts: dict[str, Any] = {
+        "path": MANIFEST_RELATIVE, "present": True, "digest": None,
+        "bytes_sha256": hashlib.sha256(blob).hexdigest(),
+    }
+    if unreadable is not None:
+        return {**facts, "unreadable": unreadable}
+    assert parsed is not None, "a blob that parsed cannot carry no parse"
+    return {
+        **facts,
+        "digest": parsed.digest(),
+        "definition": {
+            check_id: {
+                "command": list(spec.argv),
+                "required_scenarios": list(spec.required_scenarios),
+                "timeout_seconds": spec.timeout_seconds,
+                "artifact": spec.artifact_name,
+            }
+            for check_id, spec in parsed.checks.items()
+        },
+    }
+
+
+def _parse_candidate_manifest(checkout_project, run_dir: Path) -> Manifest | None:
     from ..manifest import parse_manifest
 
     try:
         return parse_manifest(checkout_project, run_dir / "probe")
     except ManifestError as exc:
-        if tolerate:
-            return None
         raise IntegrationError(f"the candidate's manifest cannot be used: {exc}") from exc
 
 
@@ -549,38 +562,6 @@ def _unresolved_source(project: Project) -> dict[str, Any]:
     }
 
 
-def _environment_facts() -> dict[str, Any]:
-    """The interpreter and platform the decision was made on. Nothing else.
-
-    Deliberately narrow. A full environment dump is a credential leak waiting to
-    happen and a reader does not need it to know which Python ran the checks.
-    """
-    return {
-        "python_version": sys.version.split()[0],
-        "python_executable": sys.executable,
-        "platform": platform.platform(),
-        "working_directory_preserved": False,
-    }
-
-
-def _fixture_identity(manifest: Manifest, results: tuple[dict[str, Any], ...]) -> dict[str, Any]:
-    """What the checks consumed, from the manifest's own declarations.
-
-    `inputs` is the manifest naming the files a check reads. It is the only
-    place a repository records that, so trusting it is trusting the
-    configuration; what is added here is the digest of those files as they stood
-    in the checkout, which is a fact rather than a claim.
-    """
-    declared: set[str] = set()
-    for check in manifest.checks.values():
-        declared.update(check.inputs)
-    return {
-        "declared_inputs": sorted(declared),
-        "check_count": len(manifest.checks),
-        "results": len(results),
-    }
-
-
 def _record(
     store: Store,
     request: Request,
@@ -602,15 +583,21 @@ def _record(
     fixture: dict[str, Any] | None,
     decided_at: str,
     checkout: str | None = None,
+    context_facts: dict[str, Any] | None = None,
 ) -> Verified:
     """Compute the acceptance id, write the acceptance, and return it.
 
     The id is a digest of the things that make this decision this decision: the
-    repository, the candidate and target commits, the policy digest, the context
-    and the required checks. Two invocations naming the same things therefore
-    produce the same id, and a second one finds the recorded answer instead of
-    writing a second decision under a new name. Anything that would make a
-    genuinely different decision is inside the digest; nothing else is.
+    repository, the candidate and target commits, the policy, the context, the
+    required checks, and the measured verification context -- the verifier's own
+    bytes, the interpreter, and the fixture digests the checks were given. The
+    operative context is inside the id because two runs that differ only in which
+    bytes decided are not the same decision, and a receipt that claimed they were
+    would make a later replay return an answer computed by different code.
+
+    Two invocations naming the same things therefore produce the same id, and a
+    second one finds the recorded answer instead of writing a second decision
+    under a new name.
     """
     body = json.dumps(
         {
@@ -620,6 +607,9 @@ def _record(
             "policy": policy.digest(),
             "context": policy.context,
             "required": list(policy.required_ids),
+            "verifier": (verifier or {}).get("package_digest"),
+            "environment": {k: environment[k] for k in sorted(environment)},
+            "fixture": (fixture or {}).get("digest"),
         },
         sort_keys=True, separators=(",", ":"),
     )
@@ -648,79 +638,134 @@ def _record(
         "candidate_commit": candidate_fact.to_json(),
         "combination": containment,
         "policy": policy.to_json(),
-        "verifier": {
-            "revision": (verifier or {}).get("revision"),
-            "package_root": (verifier or {}).get("package_root"),
-        },
+        # The verifier, the measured verification context and the publish
+        # readiness are carried inside columns the acceptances table persists, so
+        # a replayed decision returns a record that still states all of them.
+        "verifier": {**(verifier or {}), "verification_context": context_facts or {}},
         "environment": environment,
         "fixture": fixture or {},
         "manifest": {
             "executed_digest": executed_digest,
             "approved_revision": policy.manifest_revision,
             "candidate": candidate_manifest
-            or {"path": policies.MANIFEST_RELATIVE, "present": False, "digest": None},
+            or {"path": MANIFEST_RELATIVE, "present": False, "digest": None},
+            "readiness_at_publish": readiness,
+            "publishes": False,
         },
         "required_checks": list(policy.required_ids),
         "checks": list(checks),
         "gaps": list(gaps),
         "findings": [f.to_json() for f in findings],
-        "readiness_at_publish": readiness,
         "checkout": checkout,
         "decided_at": decided_at,
-        "publishes": False,
     }
-    _persist(store, acceptance_id, record)
-    return Verified(
-        decision=decision, context=policy.context, acceptance_id=acceptance_id,
-        candidate=candidate_fact.sha, target=target_fact.sha, record=record, checks=checks,
-    )
+    return _settle(store, acceptance_id, record)
 
 
-def _persist(store: Store, acceptance_id: str, record: dict[str, Any]) -> None:
-    """Write the acceptance row, exactly once, and let a retry read it back.
+def _settle(store: Store, acceptance_id: str, record: dict[str, Any]) -> Verified:
+    """Record the decision, and answer with the one that is authoritative.
 
-    The primary key on the acceptances table is the guard, for the same reason
-    it is on `runs`: a retry that recomputed a different answer under one
-    identity would be two decisions wearing one name. A retry of the same
-    decision finds the row that is already there, and the recorded answer is
-    the one that stands.
+    Three outcomes, and only one of them is a write. The first time a decision is
+    reached it is recorded, and it is the answer. A replay that reaches the same
+    decision finds the recorded one and returns it -- the stored record, not the
+    fresh copy, so what a caller reads is what is durable. A fresh execution that
+    reaches a *different* decision under the same id is a contradiction this
+    module cannot resolve by choosing, so it records the new observation as its
+    own acceptance under a distinct id, answers BLOCKED, and leaves the recorded
+    one untouched. Reusing the id while returning a different decision is the one
+    outcome that is not available.
+
+    The contradiction is stated as a gap, because a gap is what it is: the
+    evidence now holds two incompatible observations, so neither can decide
+    alone. Stating it there rather than in a field of its own is what makes it
+    survive -- a returned record carrying a key the acceptances table does not
+    persist would describe a conflict the next reader could not see.
     """
     from ..storage import StoreError
 
     try:
         store.record_acceptance(acceptance_id, record)
-    except StoreError as exc:
-        existing = store.load_acceptance(acceptance_id)
-        if existing is None:
+    except StoreError:
+        recorded = store.load_acceptance(acceptance_id)
+        if recorded is None:
             raise
-        # A retry of the same decision. The recorded one is the answer; this
-        # run's is not written over it, and the caller reads the recorded one.
-        record["reused_recorded_acceptance"] = True
-        del exc
+        if recorded["decision"] == record["decision"]:
+            return Verified(
+                decision=recorded["decision"], context=recorded["context"],
+                acceptance_id=acceptance_id, candidate=recorded["candidate"],
+                target=recorded["target"], record=recorded,
+                checks=tuple(recorded["checks"]),
+            )
+        conflict_id = _conflict_id(acceptance_id, record)
+        record["gaps"] = [
+            f"CONFLICT: this observation decided {record['decision']} and disagrees "
+            f"with the recorded acceptance {acceptance_id}, which decided "
+            f"{recorded['decision']} at {recorded['decided_at']} in integration "
+            f"{recorded['integration_id']}. Both are retained under their own ids "
+            "and neither was overwritten. This run is recorded as the contradiction "
+            "and answered BLOCKED rather than picking one.",
+            *record["gaps"],
+        ]
+        try:
+            store.record_acceptance(conflict_id, record)
+        except StoreError:
+            pass  # a third observation of the same contradiction keeps the first two
+        return Verified(
+            decision=BLOCKED, context=record["context"], acceptance_id=conflict_id,
+            candidate=record["candidate"], target=record["target"], record=record,
+            checks=tuple(record["checks"]),
+        )
+    return Verified(
+        decision=record["decision"], context=record["context"],
+        acceptance_id=acceptance_id, candidate=record["candidate"],
+        target=record["target"], record=record, checks=tuple(record["checks"]),
+    )
+
+
+def _conflict_id(acceptance_id: str, record: dict[str, Any]) -> str:
+    """The distinct identity a contradicting observation is recorded under."""
+    body = json.dumps(
+        {
+            "conflicts_with": acceptance_id,
+            "decision": record["decision"],
+            "gaps": record["gaps"],
+            "findings": [f["kind"] for f in record["findings"]],
+        },
+        sort_keys=True, separators=(",", ":"),
+    )
+    return "acc-" + hashlib.sha256(body.encode("utf-8")).hexdigest()[:20]
 
 
 def summarize(verified: Verified) -> str:
-    """The human-readable form of a decision, in the order a reader needs it."""
+    """The human-readable form of a decision, in the order a reader needs it.
+
+    Every field read here is one the acceptances table keeps, so the summary of a
+    replayed decision is written from the same durable record the caller is
+    being handed rather than from the copy that was not stored. A contradiction
+    needs no line of its own: it is a gap, and the gaps are printed below.
+    """
     record = verified.record
+    policy = record["policy"]
     lines = [
         f"{verified.decision}  candidate {verified.candidate[:12]} on target {verified.target[:12]}",
         f"  context: {verified.context}"
         + ("" if verified.context == policies.PROTECTED
            else "  (local evidence; not a protected integration decision)"),
-        f"  repository: {record['repository']['root_commit'][:12]}",
-        f"  policy: {verified.record['policy']['policy_id']}"
-        f" requires {', '.join(verified.record['required_checks'])}",
-        f"  manifest executed: {(verified.record['manifest']['executed_digest'] or 'none')[:16]}",
+        f"  policy: {policy.get('policy_id', 'unknown')}"
+        f" requires {', '.join(record['required_checks'])}",
+        f"  manifest executed: {(record['manifest'].get('executed_digest') or 'none')[:16]}",
     ]
     for check in verified.checks:
         lines.append(f"  {check['result']:8} {check['check_id']}: {check['detail']}")
-    for finding in verified.record["findings"]:
+    for finding in record["findings"]:
         lines.append(f"  POLICY {finding['severity']:6} {finding['kind']}: {finding['detail']}")
-    for gap in verified.record["gaps"]:
+    for gap in record["gaps"]:
         lines.append(f"  gap: {gap}")
+    context = (record.get("verifier") or {}).get("verification_context") or {}
+    if context.get("approved_revision"):
+        lines.append(f"  verification code: approved {context['approved_revision'][:12]}")
     lines.append(
         f"  recorded as {verified.acceptance_id}; this command does not push, merge or "
-        "tag. Publish only while the target still resolves to "
-        f"{record['readiness_at_publish']['target_tested'][:12]}."
+        f"tag. Publish only while the target still resolves to {verified.target[:12]}."
     )
     return "\n".join(lines)

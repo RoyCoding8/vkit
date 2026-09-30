@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from . import api, operations
+from . import api
 from .operations import Context
 from .plan import LOOPBACK_HOST
 

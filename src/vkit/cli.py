@@ -691,6 +691,140 @@ def cmd_mcp_serve(args: argparse.Namespace) -> int:
     return serve_stdio(project.root)
 
 
+# ------------------------------------------------------------------ plan 06
+
+
+def cmd_project_inspect(args: argparse.Namespace) -> int:
+    """Report what a repository declares about itself. Launches nothing.
+
+    The exit code is the interesting part. A repository that declares no test
+    command is not a broken repository, and it is not a successful inspection
+    either: there is nothing here to verify yet. That is exit 3, the same code a
+    BLOCKED check uses, because it is the same answer to the same question.
+    """
+    from .discover import inspect_repository
+
+    try:
+        project = open_project(args.project)
+    except ProjectError as exc:
+        return _fail(str(exc), args.json, EXIT_INVALID)
+
+    inspection = inspect_repository(project)
+    has_actionable = bool(inspection.by_kind("test"))
+    if has_actionable:
+        lines = [inspection.render(), "", "run `vkit project enroll` to propose policy for these"]
+    else:
+        lines = [inspection.render(), "", "nothing here can be registered as a check yet"]
+    _emit(inspection.to_json(), args.json, "\n".join(lines))
+    return EXIT_OK if has_actionable else EXIT_BLOCKED
+
+
+def cmd_project_enroll(args: argparse.Namespace) -> int:
+    """Propose, accept, or decline. Never overwrites, never runs anything.
+
+    The three modes are separate subcommands of one verb because they are
+    separate decisions. Proposing is reading; accepting is a person agreeing to
+    specific bytes, which is why it takes the digest that was read; declining is
+    doing nothing and saying so.
+    """
+    from .discover import inspect_repository
+    from .enroll import (
+        EnrollmentError,
+        State,
+        accept,
+        decline,
+        diff_summary,
+        enroll,
+        read_enrollment,
+    )
+
+    try:
+        project = open_project(args.project)
+    except ProjectError as exc:
+        return _fail(str(exc), args.json, EXIT_INVALID)
+
+    if args.accept and args.decline:
+        return _fail("--accept and --decline are opposite answers; pick one", args.json, EXIT_INVALID)
+
+    try:
+        if args.decline:
+            record = decline(project)
+            _emit(record.to_json(), args.json, record.render())
+            return EXIT_OK
+
+        if args.accept:
+            record = accept(project, expected_digest=args.accept_digest or None)
+            _emit(record.to_json(), args.json, record.render())
+            return EXIT_OK
+
+        proposal, path = enroll(project, inspection=inspect_repository(project))
+    except EnrollmentError as exc:
+        return _fail(str(exc), args.json, EXIT_INVALID)
+
+    payload = proposal.to_json()
+    lines = [proposal.render()]
+    existing = project.manifest_path
+    if existing.is_file():
+        # A refusal to overwrite is not a refusal to help. The difference between
+        # what is there and what enrolling would install is the decision the
+        # person is being asked to make.
+        difference = diff_summary(existing, path)
+        if difference:
+            lines.extend(["", "this repository already has a hand-maintained policy, and it "
+                          "was not touched. The difference enrolling would make:"])
+            lines.extend(difference)
+        payload["existing_policy"] = str(existing)
+        payload["difference"] = difference
+    _emit(payload, args.json, "\n".join(lines))
+
+    # A proposal that cannot be accepted yet is not a successful enroll, and the
+    # reason is in the output. Exit 3 is the honest code for "nothing can run".
+    return EXIT_BLOCKED if not proposal.entries else EXIT_OK
+
+
+def cmd_features(args: argparse.Namespace) -> int:
+    """Show the feature map, and name what is not covered.
+
+    Exit 0 when every feature is verified, exit 3 when any is not. A feature map
+    with gaps is not a failure of the application; it is an honest account of
+    what nobody has checked, and the exit code is what stops a caller from
+    reading "the map loaded" as "everything passes".
+    """
+    from .features import FeatureError, load_features
+
+    try:
+        project = open_project(args.project)
+    except ProjectError as exc:
+        return _fail(str(exc), args.json, EXIT_INVALID)
+
+    try:
+        feature_map = load_features(project.root)
+    except FeatureError as exc:
+        return _fail(str(exc), args.json, EXIT_INVALID)
+
+    try:
+        manifest = parse_manifest(project, project.runs_root / "probe")
+        known = sorted(manifest.checks)
+    except ManifestError:
+        known = []
+
+    uncovered = feature_map.uncovered(known) if known else []
+    payload = feature_map.to_json(known)
+    payload["command"] = "features"
+    lines = [feature_map.render(known)]
+    if not known:
+        lines.extend([
+            "",
+            f"no usable manifest at {project.manifest_path}, so no feature can be "
+            "verified against a registered check",
+        ])
+    elif uncovered:
+        lines.extend(["", f"{len(uncovered)} feature(s) are not verified:"])
+        lines.extend(f"  {row['feature']}: {row['reason']}" for row in uncovered)
+    _emit(payload, args.json, "\n".join(lines))
+    return EXIT_OK if known and not uncovered else EXIT_BLOCKED
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vkit", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -701,6 +835,31 @@ def build_parser() -> argparse.ArgumentParser:
         return target
 
     common(sub.add_parser("doctor", help="report whether this project's checks could run"))
+
+    project = sub.add_parser("project", help="inspect and enroll a repository")
+    project_sub = project.add_subparsers(dest="project_command", required=True)
+    inspect = project_sub.add_parser(
+        "inspect", help="report what this repository says about how to build, test and launch it"
+    )
+    common(inspect)
+    enroll_parser = project_sub.add_parser(
+        "enroll", help="propose a manifest for this repository; nothing runs until it is accepted"
+    )
+    common(enroll_parser)
+    enroll_parser.add_argument(
+        "--accept", action="store_true",
+        help="promote an existing proposal to policy, after showing what it would run",
+    )
+    enroll_parser.add_argument(
+        "--decline", action="store_true",
+        help="discard a proposal, leaving every existing file unchanged",
+    )
+    enroll_parser.add_argument(
+        "--accept-digest", default="",
+        help="the policy digest that was reviewed; acceptance is refused if the proposal changed since",
+    )
+
+    common(sub.add_parser("features", help="show the feature map and what is not covered"))
 
     check = sub.add_parser("check", help="run registered checks")
     check_sub = check.add_subparsers(dest="check_command", required=True)
@@ -758,6 +917,9 @@ def build_parser() -> argparse.ArgumentParser:
 # new verb gets wired to the wrong function.
 _DISPATCH = {
     ("doctor", None): cmd_doctor,
+    ("project", "inspect"): cmd_project_inspect,
+    ("project", "enroll"): cmd_project_enroll,
+    ("features", None): cmd_features,
     ("check", "run"): cmd_check_run,
     ("check", "start"): cmd_check_start,
     ("run", "show"): cmd_run_show,

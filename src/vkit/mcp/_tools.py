@@ -311,23 +311,105 @@ def _check_view(spec: CheckSpec, missing: list[str]) -> dict[str, Any]:
 
 
 def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
-    """What this project can run, what is missing, and what a client may select.
+    """What this project can run, what is missing, and what it declares.
 
-    The same prerequisite probe the core uses in `vkit.execution`, so inspection
-    and a real run cannot report different environments.
+    Three questions, one response. The registered checks and their
+    prerequisites (the same probe the core uses, so inspection and a real run
+    cannot report different environments), the enrollment state that decides
+    whether any of it may execute, and the mechanical discovery of what the
+    repository says about itself.
+
+    Discovery appears here so an agent has one place to learn that a repository
+    has a test command nobody has registered, rather than a report that says
+    only "no checks" and leaves the reason unstated. It is bounded by the same
+    page limit as the checks, and it is read-only: nothing here executes a
+    command, and nothing installs anything.
     """
     limit = _integer(args, "limit", DEFAULT_PAGE, low=1, high=MAX_PAGE)
     wanted = set(_string_list(args, "checks"))
+
+    from ..discover import inspect_repository
+    from ..enroll import read_enrollment
+
+    try:
+        enrollment = read_enrollment(server.project)
+    except Exception:  # noqa: BLE001 - an unreadable record is not_enrolled
+        enrollment = None
 
     content: dict[str, Any] = {
         "project_root": str(server.project.root),
         "evidence_root": str(server.project.state_root),
         "execution_available": False,
+        # Set here rather than at the end, because the no-manifest branch below
+        # returns early and a client asking a repository with no manifest still
+        # needs to know whether a proposal is waiting.
+        "policy_accepted": enrollment is None or enrollment.state.execution_permitted,
+        "enrollment": None if enrollment is None else enrollment.to_json(),
         "manifest": None,
         "checks": [],
         "gaps": [],
         "truncated": False,
     }
+
+    # A repository may hold a hand-maintained manifest that was never proposed
+    # by `enroll`; Plan 01's examples are exactly that. Requiring an acceptance
+    # record for those would block repositories that already work, so the gap
+    # fires only where it means something and the existing "no usable manifest"
+    # gap does not already say it: a proposal is waiting and was not accepted.
+    # A repository with no manifest at all is already reported further down, and
+    # saying it twice would read as two independent confirmations.
+    manifest_present = server.project.manifest_path.is_file()
+    proposal_waiting = (server.project.root / "verification" / "proposed-manifest.json").is_file()
+    if (
+        enrollment is not None
+        and not enrollment.state.execution_permitted
+        and proposal_waiting
+        and not manifest_present
+    ):
+        content["gaps"].append(
+            "a proposed manifest is waiting for review and has not been accepted; "
+            "nothing in it can be executed. Accepting it is a person reading the "
+            "command policy and agreeing to it, which this server cannot do"
+        )
+
+    try:
+        inspection = inspect_repository(server.project)
+    except Exception as exc:  # noqa: BLE001 - inspection reports, it does not raise
+        content["gaps"].append(f"repository inspection failed: {exc}")
+        inspection = None
+
+    if inspection is not None:
+        declared = [c for c in inspection.commands if c.kind in ("test", "launch", "build")]
+        content["discovery"] = {
+            "ecosystem": list(inspection.ecosystem),
+            "test_configuration": list(inspection.test_configuration),
+            "declared_commands": [c.to_json() for c in declared[:limit]],
+            "declared_total": len(declared),
+            "gaps": list(inspection.gaps),
+            "files_read": list(inspection.files_read),
+        }
+        if len(declared) > limit:
+            content["truncated"] = True
+        registered = set()
+        try:
+            manifest = server._manifest()
+        except Exception:  # noqa: BLE001 - reported as a gap, not raised
+            manifest = None
+        if manifest is not None:
+            registered = set(manifest.checks)
+        unclaimed = [c.id for c in declared if c.id.replace(":", "-") not in registered]
+        if unclaimed:
+            content["gaps"].append(
+                "the repository declares command(s) no registered check covers: "
+                + ", ".join(unclaimed[:10])
+                + ". Registering one is a person writing the driver that exercises "
+                "the application, which this server will not do"
+            )
+
+    try:
+        manifest = server._manifest()
+    except Exception:  # noqa: BLE001 - inspection reports, it does not raise
+        manifest = None
 
     try:
         manifest = server._manifest()
@@ -381,7 +463,18 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
         "registered_check_ids": sorted(manifest.checks),
     }
     content["checks"] = [_check_view(c, sorted(missing_executables)) for c in selected[:limit]]
-    content["truncated"] = len(selected) > limit
+    # `truncated` is the union of both bounds, not whichever was written last.
+    # The discovery block truncates its own command list and the check list
+    # truncates separately, and a response that reported only one of them would
+    # let a client believe it had seen everything.
+    content["truncated"] = bool(content.get("truncated")) or len(selected) > limit
+    # This is a statement about the *environment*: is there a writable store, a
+    # computable source identity, and every prerequisite installed. Whether the
+    # policy has been accepted is a separate fact, reported in `enrollment` and
+    # in the gaps, because a client that needs both has to check both. Folding
+    # consent into this flag would make it mean "the machine is ready AND the
+    # human said yes", and a reader would not know which of the two it was
+    # looking at.
     content["execution_available"] = state_ok and source is not None and not missing_executables
     content["source"] = None if source is None else source.to_json()
     content["summary"] = (

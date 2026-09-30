@@ -258,10 +258,14 @@ class Proposal:
             lines.append(f"  {entry['id']}")
             lines.append(f"    runs     : {' '.join(entry['command'])}")
             lines.append(f"    from     : {source.provenance.render()}")
-            lines.append(f"    scenarios: {', '.join(entry['required_scenarios'])}")
+            lines.append(f"    scenarios: {', '.join(entry['required_scenarios']) or '<none; nothing can be accepted yet>'}")
             if entry.get("cwd"):
                 lines.append(f"    in       : {entry['cwd']}")
-            unmet = [p["name"] for p in entry.get("prerequisites", []) if not p["satisfied"]]
+            # Read from the discovery record, not from the manifest entry. The
+            # entry carries the schema's shape (name and executable only, since
+            # that is all a manifest may say) and would not answer "is this
+            # installed here", which is a question about this host.
+            unmet = [p.name for p in source.prerequisites if not p.satisfied]
             lines.append(
                 "    needs    : " + (", ".join(unmet) if unmet else "nothing missing on this host")
             )

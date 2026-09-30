@@ -58,6 +58,11 @@ fails if one of them appears, which is the moment a gap closes.
 
 ```text absent
 KIT_ACCEPTANCE.md
+
+# vkit's own repository is not an enrolled project, so it has no manifest and
+# `vkit doctor` reports exactly that. The gate checks this stays absent, which
+# is the moment it stops being true.
+verification/manifest.json
 ```
 
 ## Read the verdict first
@@ -164,12 +169,41 @@ $ <venv>/Scripts/python.exe scripts/acceptance.py
 
 Observed on this host: `22/22 acceptance rows pass`.
 
-Read GAP-7 before trusting this number. The script resolves the command under
-test from `sys.executable`'s directory, so it exercises whichever `vkit` the
-virtualenv has on its path. In a worktree that is an editable install pointing
-at another checkout, and the rows can pass against code this revision does not
-contain. A release verification must run this script in a virtualenv that
-holds the built wheel, not a developer's editable install.
+GAP-7 was this number proving less than it appeared to. The rows resolved the
+command under test from `sys.executable`'s directory, so in a worktree they
+exercised whichever `vkit` the shared virtualenv had on its path — an editable
+install pointing at a different checkout. They now pin the child's `PYTHONPATH`
+to the tree under test, and `main` asks a real child where `vkit` resolves,
+refusing with exit 4 when it is not this tree. The script names the tree it
+tested in its own output.
+
+The rows now run the module rather than the console script, which means this
+step no longer exercises the installed entry point. The next step does, against
+the built wheel, because those are two different things and a release that only
+did the first would ship an entry point nobody ran.
+
+## Verify the installed entry point
+
+This is the command a user types. The rows above run the module; this runs the
+script the wheel installs, which is the only thing that proves the packaging
+works — a `pyproject.toml` entry point that names a function which no longer
+exists fails only here.
+
+```console command
+$ <venv>/Scripts/vkit.exe --help
+$ <venv>/Scripts/vkit.exe mcp serve --project . --json
+```
+
+Observed on this host: both exit 0, and the second lists the six tools bound to
+this project. It prints the catalogue rather than opening the transport, so it
+can be read instead of watched.
+
+`doctor` is deliberately not in this list. Run `vkit doctor --project .` and
+read the output rather than trusting its exit code: on this repository it exits
+3, correctly, because there is no manifest here — vkit's own source tree is not
+an enrolled project. A release step that passed on a non-zero exit would be
+asserting that this repository is verified, which it is not and does not need to
+be.
 
 ## Verify the CLI surface
 

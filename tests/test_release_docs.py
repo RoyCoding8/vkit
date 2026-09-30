@@ -263,8 +263,22 @@ def test_every_listed_command_exists(doc: Path) -> None:
             _check_command(doc.name, tokens)
 
 
+def _is_vkit(token: str) -> bool:
+    """True for `vkit` and for a path to the installed console script.
+
+    A checklist step has to name the entry point the wheel installs, not rely on
+    whatever is on PATH, or it is testing the developer's environment rather than
+    the artifact. The bare name and the path to `vkit` / `vkit.exe` are therefore
+    the same command, and this gate can check either.
+    """
+    if token == "vkit":
+        return True
+    name = Path(token).name.lower()
+    return name in ("vkit", "vkit.exe")
+
+
 def _check_command(doc_name: str, tokens: list[str]) -> None:
-    if tokens[0] == "vkit":
+    if _is_vkit(tokens[0]):
         _check_vkit(tokens[1:])
     elif tokens[:2] == ["uv", "venv"]:
         # Creates an empty environment. The trailing path is the environment

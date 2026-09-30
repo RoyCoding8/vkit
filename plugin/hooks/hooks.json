@@ -1,0 +1,107 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/vkit_hook.py",
+              "SessionStart",
+              "--project",
+              "${user_config.project_root}"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/vkit_hook.py",
+              "SubagentStart",
+              "--project",
+              "${user_config.project_root}"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__(plugin_)?[a-zA-Z0-9_]*vkit[a-zA-Z0-9_]*__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/vkit_hook.py",
+              "PreToolUse",
+              "--project",
+              "${user_config.project_root}"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/vkit_hook.py",
+              "Stop",
+              "--project",
+              "${user_config.project_root}"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/vkit_hook.py",
+              "SubagentStop",
+              "--project",
+              "${user_config.project_root}"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.python}",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/vkit_hook.py",
+              "TaskCompleted",
+              "--project",
+              "${user_config.project_root}"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

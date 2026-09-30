@@ -361,11 +361,20 @@ def test_a_non_ascii_path_inside_a_cmd_launcher_is_mangled(tmp_path: Path) -> No
     command line, which CreateProcess hands over in Unicode and which the
     previous test proves arrives intact; it is the file `cmd.exe` then parses.
 
-    The code page is forced to 437 for the child, because this host's console
-    runs at 65001 and would read the UTF-8 batch file correctly. That is the
-    honest shape of the limit: it depends on the code page the user's shell
-    happens to be running, which is precisely why it cannot be detected from
-    inside a repository and has to be a documented boundary instead.
+    The code page is forced to 437, whose repertoire is ASCII plus a little.
+    What decides the outcome is whether that code page can represent the
+    character, not whether the path is non-ASCII. Measured on this host with
+    the console at 437:
+
+      ASCII payload path                payload ran, exit 0
+      payload path containing 'é'       payload never ran, exit 2
+
+    'é' is inside cp1252, this machine's ANSI code page, and inside UTF-8,
+    which is what the batch file is written in. It is outside cp437. So the
+    limit is not "non-ASCII mangles" but "a character the active code page
+    cannot represent mangles". The control test beside this one runs the same
+    shape under the host's own code page and passes, so the pair states the
+    limit rather than a correlation.
 
     The payload therefore never runs. The check exits nonzero, writes no
     artifact, and the run is BLOCKED with `artifact_missing`. A failed launcher
@@ -394,9 +403,11 @@ def test_a_non_ascii_path_inside_a_cmd_launcher_is_mangled(tmp_path: Path) -> No
             "no console is attached, so there is no active code page to force "
             "and nothing here could demonstrate the limit"
         )
-    # 437 is the OEM code page for the United States, and it cannot represent
-    # any character in this payload. Restored in a finally, because leaving the
-    # console on a legacy code page would corrupt this session's own output.
+    # 437 is the OEM code page for the United States. Its repertoire is ASCII
+    # plus a little, so 'é' cannot survive it while an ASCII name can, and
+    # that difference is the measurement. Restored in a finally, because
+    # leaving the console on a legacy code page would corrupt this session's
+    # own output.
     kernel32.SetConsoleOutputCP(437)
     try:
         result = run_command(
@@ -418,6 +429,41 @@ def test_a_non_ascii_path_inside_a_cmd_launcher_is_mangled(tmp_path: Path) -> No
     assert "rateur.py" in stderr, (
         f"expected the mangled name to keep its ASCII tail, got {stderr!r}"
     )
+
+
+def test_the_same_launcher_works_under_the_hosts_own_code_page(tmp_path: Path) -> None:
+    """The control, so the test above cannot read as "non-ASCII always fails".
+
+    Identical launcher, identical non-ASCII payload path, the code page this
+    host actually runs. It works. That is what makes the other test a statement
+    about the code page rather than about the character, and it is the case a
+    maintainer on this machine will actually hit.
+    """
+    directory = tmp_path / "répertoire"
+    directory.mkdir()
+    helper = write_script(
+        directory,
+        "générateur.py",
+        "import pathlib\n"
+        "pathlib.Path('ran.txt').write_text('ran', encoding='utf-8')\n",
+    )
+    launcher = directory / "lancer.cmd"
+    launcher.write_bytes(f'@echo off\r\n"{PYTHON}" "{helper}"\r\n'.encode("utf-8"))
+
+    result = run_command(
+        [str(launcher)],
+        cwd=directory,
+        stdout_path=directory / "out.log",
+        stderr_path=directory / "err.log",
+        timeout_seconds=60.0,
+    )
+
+    assert result.exit_code == 0, (
+        f"under a code page that can represent the path the launcher must run; "
+        f"its stderr was "
+        f"{(directory / 'err.log').read_text(encoding='utf-8', errors='replace')[:200]!r}"
+    )
+    assert (directory / "ran.txt").is_file(), "the payload did not run"
 
 
 def test_missing_executable_reports_launch_failure(tmp_path: Path) -> None:

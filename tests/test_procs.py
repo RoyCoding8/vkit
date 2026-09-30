@@ -293,17 +293,24 @@ def test_a_cmd_launcher_works_from_any_repository_path(tmp_path: Path) -> None:
     `procs` used to reach a batch file through `cmd.exe /c <launcher> ...`. That
     wraps the launcher path in a second pair of quotes which `/c` then strips,
     leaving the remainder to be re-split at the first space, so any launcher path
-    containing a space or a non-ASCII character was cut in half and reported as
-    an unrecognized command. Naming the launcher directly and letting
-    CreateProcess route it to the interpreter avoids the second quoting layer
-    entirely.
+    containing a space was cut in half and reported as an unrecognized command.
+    Naming the launcher directly and letting CreateProcess route it to the
+    interpreter avoids the second quoting layer entirely.
+
+    The space is the trigger. Measured on this host through the pre-fix command
+    line, a non-ASCII directory with no space in it worked, and a plain ASCII
+    directory containing a space did not. Both are below, because a suite that
+    only tested the non-ASCII names would have let the defect through again.
 
     Every directory name here is one a real repository could have. The payload
     reports the argument it actually received, so a launcher that ran the wrong
     thing cannot pass.
     """
     non_ascii_argument = "argument ünïcødé"
-    for name in ("plain", "with space", "répertoire ünïcødé", "ünïcødé with space"):
+    for name in (
+        "plain", "withspace", "répertoire", "ünïcødé",
+        "with space", "répertoire ünïcødé", "ünïcødé with space",
+    ):
         directory = tmp_path / name
         directory.mkdir()
         helper = write_script(

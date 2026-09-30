@@ -397,15 +397,19 @@ def _command_line(argv: tuple[str, ...]) -> str:
     invokes it itself when `lpApplicationName` is NULL and the command names
     one; wrapping it as `cmd.exe /c <launcher> ...` instead re-quotes the
     launcher path, and `/c` then strips one layer of those quotes and re-splits
-    the remainder at the first space. Measured on this host, for a launcher under
-    a path containing a space, a non-ASCII character, or both: the `/c` form
-    exits 1 with `'C:\\...\\plain with space'` reported as an unrecognized
-    command, and the direct form delivers the argument exactly. An ASCII path
-    with no space happened to work, which is why the defect survived the tests
-    written for it.
+    the remainder at the first space.
+
+    Measured on this host by running the pre-fix command line through the real
+    launch, against a launcher under six directory names. The `/c` form
+    delivered the argument correctly for `plain`, `withspace`, `répertoire` and
+    `ünïcødé`, and exited 1 for `with space` and `répertoire ünïcødé`, reporting
+    the truncated prefix as an unrecognized command. So the trigger is a space
+    in the launcher path, not a non-ASCII character; the direct form delivered
+    the argument and the working directory exactly in all six cases, and the
+    test that covers it uses seven directory names.
 
     This is the same reason `lpApplicationName` is left NULL. Naming the
-    interpreter there made no difference to any of the four cases above, and
+    interpreter there made no difference to any of the six cases above, and
     naming a `.cmd` there fails outright, because a batch file is not an
     executable image.
     """

@@ -103,10 +103,28 @@ The argument never mangled. What failed was the *launch*.
 **Root cause.** `procs._command_line` wrapped a batch launcher as
 `cmd.exe /c <launcher> <args>`. `list2cmdline` quotes the launcher path because it
 contains a space. `cmd.exe /c` then strips one layer of those quotes and re-splits
-the remainder at the first space *inside the non-ASCII path*, producing
+the remainder at the first space, producing
 `'C:\...\plain with space' is not recognized as an internal or external command`.
-An ASCII path with no space happened to survive, which is why the existing test
-passed and the defect survived it.
+
+The space is the trigger, not the non-ASCII character. Measured through the
+pre-fix `_command_line` and `_application_name` themselves, since a hand-written
+approximation of the old shape would not be evidence:
+
+| Launcher directory | pre-fix `/c` form |
+| --- | --- |
+| `plain` | argument arrives exactly |
+| `withspace` | argument arrives exactly |
+| `répertoire` | argument arrives exactly |
+| `ünïcødé` | argument arrives exactly |
+| `with space` | **fails**, exit 1 |
+| `répertoire ünïcødé` | **fails**, exit 1 |
+
+So two separate things were true at once. A non-ASCII path with no space worked
+fine, which is why the documented limit read as a code-page problem. And a plain
+ASCII path containing a space was broken, which no document had recorded. The
+documented limit and this defect overlapped on exactly one case, a repository
+path with both a space and a non-ASCII character, and that overlap is why the
+defect read as the limit for as long as it did.
 
 **This was vkit's own bug, not the documented limit.** The fix is deletion.
 CreateProcess already routes a `.cmd` to the command interpreter by itself when

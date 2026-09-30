@@ -411,6 +411,155 @@ def test_separate_processes_contend_for_one_exclusive_resource(db_path: Path) ->
     assert winner["task_id"] == winners[0]["task_id"]
 
 
+def test_every_pool_holder_can_give_its_slot_back(store: Store, db_path: Path) -> None:
+    """A capacity pool must drain no matter which task gives up its slot.
+
+    `claim_holders` has `resource_key` as its primary key, so a pool is one row
+    with a counter and the task that acquired it first. `release` deleted that
+    row scoped by `task_id`, so only the FIRST holder's release ever matched: a
+    pool filled by three tasks and then emptied by those same three kept
+    `held=3` until the one task recorded on the row happened to release, and the
+    capacity was gone for good.
+
+    The existing coverage at the single-holder case passed throughout, because
+    with one holder the first holder is the only holder.
+    """
+    acquire(store, "t1", 1, [ResourceSpec("db", POOL, capacity=3)])
+    acquire(store, "t2", 1, [ResourceSpec("db", POOL, capacity=3)])
+    acquire(store, "t3", 1, [ResourceSpec("db", POOL, capacity=3)])
+    assert holder(store, "db").held == 3
+
+    # t2 is not the task recorded on the row. Its release must still count.
+    release(store, "t2", 1, ["db"])
+    assert holder(store, "db").held == 2, "a middle holder's slot was lost"
+
+    release(store, "t1", 1, ["db"])
+    assert holder(store, "db").held == 1
+
+    release(store, "t3", 1, ["db"])
+    assert holder(store, "db") is None, "an emptied pool must leave no row behind"
+    assert rows(db_path) == []
+
+    # And the capacity is genuinely reusable afterwards.
+    acquire(store, "t4", 1, [ResourceSpec("db", POOL, capacity=3)])
+    assert holder(store, "db").held == 1
+
+
+def test_a_task_holding_nothing_cannot_free_someone_elses_slot(store: Store) -> None:
+    """The counter is not free money.
+
+    A blind decrement would let any task release a slot it never took, which
+    hands out capacity that is already spoken for. A task that holds nothing
+    must take nothing away.
+    """
+    acquire(store, "t1", 1, [ResourceSpec("db", POOL, capacity=2)])
+    acquire(store, "t2", 1, [ResourceSpec("db", POOL, capacity=2)])
+
+    release(store, "outsider", 1, ["db"])
+    assert holder(store, "db").held == 2, "an outsider's release took a slot it never held"
+
+    # And no release at all is still refused, with the same effect.
+    assert holder(store, "db").held == 2
+
+
+def test_a_pool_does_not_overfill_while_slots_are_returned(store: Store) -> None:
+    """Draining and refilling must not let the pool exceed its capacity.
+
+    The counter and the membership have to agree. If a return decrements the
+    counter without removing the holder, or removes the holder without
+    decrementing, a later acquire grants a slot that is already in use.
+    """
+    for cycle in range(3):
+        acquire(store, f"a{cycle}", 1, [ResourceSpec("db", POOL, capacity=2)])
+        acquire(store, f"b{cycle}", 1, [ResourceSpec("db", POOL, capacity=2)])
+        with pytest.raises(ConflictError):
+            acquire(store, f"c{cycle}", 1, [ResourceSpec("db", POOL, capacity=2)])
+        release(store, f"a{cycle}", 1, ["db"])
+        release(store, f"b{cycle}", 1, ["db"])
+        assert holder(store, "db") is None, f"cycle {cycle} left a row behind"
+
+
+def test_releasing_a_claim_frees_the_key_and_the_slot_together(store: Store) -> None:
+    """Both tables move in one transaction, or an exclusive resource is granted twice.
+
+    `claim_holders` carries the row the primary key arbitrates on and
+    `claim_members` carries who holds it. A release that deleted only the former
+    left the membership row behind, so the key became free and a second task
+    acquired a resource the first still held. The counter is recomputed from the
+    members table, so the stale row would also have pushed `held` back up on the
+    next release anywhere in the system.
+    """
+    from vkit.claims import resync_claim_counts
+
+    acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
+    with store._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM claim_members WHERE resource_key = ? AND task_id = ? AND generation = ?",
+            ("build", "t1", 1),
+        )
+        resync_claim_counts(conn)
+        conn.execute("COMMIT")
+
+    assert holder(store, "build") is None
+    with store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM claim_members").fetchone()[0] == 0
+
+    acquire(store, "t2", 1, [ResourceSpec("build", EXCLUSIVE)])
+    assert holder(store, "build").held == 1
+
+    # And the previous holder can no longer take t2's slot back.
+    release(store, "t1", 1, ["build"])
+    assert holder(store, "build").held == 1, "a stale holder's release took a live slot"
+
+
+def test_releasing_twice_takes_only_the_one_slot_that_was_paid_for(store: Store) -> None:
+    """Membership is the authority, so a repeat release is not a second decrement.
+
+    A fix that only decremented `held` would read 0 here and hand out a slot that
+    t2 is still using. The count comes from the rows that exist, so a task that
+    has already given its slot back has nothing left to take away.
+    """
+    acquire(store, "t1", 1, [ResourceSpec("db", POOL, capacity=2)])
+    acquire(store, "t2", 1, [ResourceSpec("db", POOL, capacity=2)])
+
+    release(store, "t1", 1, ["db"])
+    release(store, "t1", 1, ["db"])
+
+    # t1 gave back one slot of two, so one remains free. That is the whole claim:
+    # a decrement-only fix would have read held=0 and freed t2's slot as well.
+    assert holder(store, "db").held == 1, "a second release freed a slot its task never held"
+    acquire(store, "t3", 1, [ResourceSpec("db", POOL, capacity=2)])
+    assert holder(store, "db").held == 2, "the pool must be full again, not over-full"
+
+    with pytest.raises(ConflictError):
+        acquire(store, "t4", 1, [ResourceSpec("db", POOL, capacity=2)])
+
+    release(store, "t2", 1, ["db"])
+    release(store, "t3", 1, ["db"])
+    assert holder(store, "db") is None
+
+
+def test_one_task_cannot_take_two_slots_of_the_same_pool(store: Store) -> None:
+    """Acquiring twice is one slot, so a task cannot drain a pool by itself.
+
+    The counter and the membership have to agree in this direction too, or a task
+    that asked for the same resource twice would consume capacity nobody else
+    held and the pool would be full while looking half empty.
+    """
+    acquire(store, "solo", 1, [ResourceSpec("db", POOL, capacity=3)])
+    acquire(store, "solo", 1, [ResourceSpec("db", POOL, capacity=3)])
+
+    assert holder(store, "db").held == 1, "one task took two slots of the same pool"
+
+    acquire(store, "other", 1, [ResourceSpec("db", POOL, capacity=3)])
+    assert holder(store, "db").held == 2
+    acquire(store, "third", 1, [ResourceSpec("db", POOL, capacity=3)])
+    assert holder(store, "db").held == 3
+    with pytest.raises(ConflictError):
+        acquire(store, "fourth", 1, [ResourceSpec("db", POOL, capacity=3)])
+
+
 def test_separate_processes_share_a_bounded_pool_without_overfilling(db_path: Path) -> None:
     """Capacity is the same arbitration against a different limit."""
     processes = 5

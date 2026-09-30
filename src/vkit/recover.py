@@ -702,8 +702,14 @@ def _release_claim(store: Store, key: str, evidence: str) -> None:
         )
 
     with _write(store) as conn:
+        # Both tables, in one transaction. Deleting only `claim_holders` would
+        # leave the holder's membership row behind, and a capacity pool's `held`
+        # is recomputed from those rows -- so the next release anywhere would set
+        # the counter back up and hand a second task a slot that is in use. For an
+        # exclusive resource it is worse: the row is gone, the primary key admits
+        # a new claimant, and the resource is granted twice.
         cursor = conn.execute(
-            "DELETE FROM claim_holders"
+            "DELETE FROM claim_members"
             " WHERE resource_key = ? AND task_id = ? AND generation = ?",
             (key, task_id, held_generation),
         )
@@ -712,6 +718,11 @@ def _release_claim(store: Store, key: str, evidence: str) -> None:
                 f"refusing to release resource {key!r}: it changed hands while recovery was "
                 "deciding, so the evidence named a claim that no longer exists"
             )
+        # The counter and the row itself are claims' business, not recovery's, so
+        # this delegates rather than restating the arithmetic a second time.
+        from .claims import resync_claim_counts
+
+        resync_claim_counts(conn)
 
 
 def _live_holder(store: Store, task_id: str) -> str | None:

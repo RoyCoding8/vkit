@@ -95,6 +95,34 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
     CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id);
     """),
     (3, """
+    -- Which task holds which slot of a capacity pool.
+    --
+    -- `claim_holders` is one row per resource, with `held` counting the slots in
+    -- use. That answers "is the pool full" but not "who is using it", and the
+    -- difference is a bug rather than a limitation: `release` deleted the row
+    -- scoped by task_id, so only the task that happened to acquire the pool first
+    -- could ever give a slot back, and a pool filled by three tasks leaked two of
+    -- them permanently.
+    --
+    -- A decrement alone would be worse, because a task holding nothing could then
+    -- free a slot it never took. So membership is recorded here and `held` is the
+    -- count of these rows. The two are written in the same transaction, so they
+    -- cannot disagree.
+    --
+    -- An exclusive resource is a pool of one. It is represented the same way
+    -- rather than as a special case, so there is one code path for both kinds and
+    -- a slot cannot be released by anything other than the holder named here.
+    CREATE TABLE IF NOT EXISTS claim_members (
+        resource_key  TEXT NOT NULL,
+        task_id       TEXT NOT NULL,
+        generation    INTEGER NOT NULL,
+        acquired_at   TEXT NOT NULL,
+        PRIMARY KEY (resource_key, task_id, generation)
+    );
+
+    CREATE INDEX IF NOT EXISTS claim_members_by_task ON claim_members(task_id, generation);
+    """),
+    (4, """
     -- The integration decision is its own record, and this table is the only
     -- writable authority for it. Its columns are exactly the CONTRACT.md
     -- acceptance row: the computed decision, the exact source and policy

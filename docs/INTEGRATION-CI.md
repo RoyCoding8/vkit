@@ -99,9 +99,3 @@ than anything in this repository.
   not a sandbox against hostile code and is not claimed to be.
 - **The POSIX process path is untested.** Plan 01 recorded this and nothing here
   changes it; the launcher inherits the same untested path.
-- **A capacity pool cannot return an individual holder's slot.**
-  `src/vkit/claims.py`'s `release` deletes a capacity row only when the releasing
-  task is the one the row names, and a row names its first holder. Every other
-  holder's slot is therefore lost. `tests/test_concurrency.py` fails on this
-  today, deliberately, and names it. It is Plan 02 code and is reported rather
-  than worked around.

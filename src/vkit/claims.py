@@ -43,6 +43,14 @@ ON CONFLICT(resource_key) DO UPDATE SET held = claim_holders.held + 1
    AND claim_holders.held < claim_holders.capacity
 """
 
+# A holder's slot is recorded by row, not inferred from the counter. Re-inserting
+# a holder the pool already has is a no-op on the members table, so the primary
+# key is what stops one task taking three of a three-slot pool.
+_TAKE_MEMBER = """
+INSERT OR IGNORE INTO claim_members (resource_key, task_id, generation, acquired_at)
+VALUES (?, ?, ?, ?)
+"""
+
 _CLAIM_COLUMNS = "resource_key, kind, capacity, held, task_id, generation, acquired_at"
 
 
@@ -109,6 +117,17 @@ def acquire(store: Store, task_id: str, generation: int, specs: Iterable[Resourc
                 params = (spec.key, spec.kind, spec.capacity, task_id, generation, _now(), spec.capacity)
                 if conn.execute(_TAKE_SLOT, params).rowcount == 0:
                     raise ConflictError(_unavailable(conn, spec))
+                # The counter moved, so record who moved it. A task that already
+                # holds a slot of this pool is not given a second one, and the
+                # counter is corrected rather than left inflated.
+                taken = conn.execute(
+                    _TAKE_MEMBER, (spec.key, task_id, generation, _now())
+                ).rowcount
+                if taken == 0:
+                    conn.execute(
+                        "UPDATE claim_holders SET held = held - 1 WHERE resource_key = ?",
+                        (spec.key,),
+                    )
         except BaseException:
             with suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")
@@ -129,7 +148,7 @@ def release(store: Store, task_id: str, generation: int, keys: Iterable[str] | N
         _begin(conn)
         try:
             held_elsewhere = conn.execute(
-                "SELECT DISTINCT generation FROM claim_holders WHERE task_id = ? AND generation != ?",
+                "SELECT DISTINCT generation FROM claim_members WHERE task_id = ? AND generation != ?",
                 (task_id, generation),
             ).fetchall()
             if held_elsewhere:
@@ -138,9 +157,14 @@ def release(store: Store, task_id: str, generation: int, keys: Iterable[str] | N
                     f"task {task_id!r} was superseded: generation {generation} cannot release "
                     f"resources held at generation {current}"
                 )
+
+            # Membership decides what this release may take, and the counter is
+            # corrected from the rows that survive. A task holding nothing
+            # therefore takes nothing away, and a middle holder's slot is as
+            # recoverable as the first holder's.
             if keys is None:
                 conn.execute(
-                    "DELETE FROM claim_holders WHERE task_id = ? AND generation = ?",
+                    "DELETE FROM claim_members WHERE task_id = ? AND generation = ?",
                     (task_id, generation),
                 )
             else:
@@ -148,15 +172,43 @@ def release(store: Store, task_id: str, generation: int, keys: Iterable[str] | N
                 if wanted:
                     marks = ",".join("?" * len(wanted))
                     conn.execute(
-                        f"DELETE FROM claim_holders WHERE task_id = ? AND generation = ?"
+                        f"DELETE FROM claim_members WHERE task_id = ? AND generation = ?"
                         f" AND resource_key IN ({marks})",
                         (task_id, generation, *wanted),
                     )
+            _resync_counts(conn)
         except BaseException:
             with suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")
             raise
         conn.execute("COMMIT")
+
+
+def _resync_counts(conn: sqlite3.Connection) -> None:
+    """Make `held` and membership agree, then drop any pool nobody holds.
+
+    Both statements read the members table rather than adjusting by one, so a
+    counter that has drifted cannot be laundered by a release: it is recomputed
+    from the rows that actually exist. The second statement is what frees the
+    resource key entirely, which the primary key needs in order for a later
+    acquire to insert a fresh row.
+    """
+    conn.execute(
+        "UPDATE claim_holders SET held = ("
+        "  SELECT COUNT(*) FROM claim_members m"
+        "  WHERE m.resource_key = claim_holders.resource_key)"
+    )
+    conn.execute(
+        "DELETE FROM claim_holders WHERE NOT EXISTS ("
+        "  SELECT 1 FROM claim_members m WHERE m.resource_key = claim_holders.resource_key)"
+    )
+
+
+#: Public name for `recover`, which releases a claim on a human's evidence and so
+#: must not restate the counter arithmetic. One implementation of the rule, two
+#: callers: a second copy is how the two drift apart and a pool starts leaking
+#: again.
+resync_claim_counts = _resync_counts
 
 
 def holder(store: Store, key: str) -> Claim | None:

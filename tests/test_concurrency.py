@@ -154,11 +154,17 @@ def test_a_hundred_clients_never_exceed_a_low_bound_and_progress_resumes(
         before = holder(store, WRITER_POOL).held
         release(store, f"task-{client['index']:03d}", 1, [WRITER_POOL])
         remaining = holder(store, WRITER_POOL)
-        assert remaining is not None and remaining.held == before - 1, (
-            f"releasing {client['index']} did not return its slot: "
-            f"held was {before}, now {None if remaining is None else remaining.held}"
-        )
-    # All slots returned: the row is gone, and a new client is admitted.
+        if before > 1:
+            assert remaining is not None and remaining.held == before - 1, (
+                f"releasing {client['index']} did not return its slot: "
+                f"held was {before}, now {None if remaining is None else remaining.held}"
+            )
+        else:
+            # The last release empties the pool and the row goes with it. A
+            # capacity row with no members is not a bound of zero, it is no
+            # bound, and leaving it would be a second way to read "full".
+            assert remaining is None, f"an empty pool still has a row: {remaining}"
+    # Every slot is back, and a fresh client is admitted.
     assert holder(store, WRITER_POOL) is None
     second = run_clients(program, db_path, WRITER_POOL, "capacity", 3, 1)
     assert second[0]["status"] == "granted", second

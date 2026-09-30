@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "notes": [
+    "This map states what a user can observe and what is not covered. It does not state the expected values: those live in verify-items.js, because a feature document that recorded them would be a second place for a behaviour regression to edit."
+  ],
+  "features": [
+    {
+      "id": "items-list-starts-empty",
+      "behavior": "A service that has never been written to answers GET /items with an empty list rather than an error or a missing field.",
+      "entry_point": "examples/node-http/src/items-server.js",
+      "setup": [
+        "start the service with a state file that does not yet exist"
+      ],
+      "covered_by": ["items-api"],
+      "expected_outcome": "",
+      "coverage_gaps": []
+    },
+    {
+      "id": "items-create-then-list",
+      "behavior": "An item created by POST /items appears in the list returned by a later GET /items. Neither request is interesting alone; the behaviour is that the second observes the effect of the first.",
+      "entry_point": "examples/node-http/src/items-server.js",
+      "setup": [
+        "start the service with a fresh state file",
+        "POST /items over HTTP, then GET /items over HTTP"
+      ],
+      "covered_by": ["items-api"],
+      "expected_outcome": "",
+      "coverage_gaps": []
+    },
+    {
+      "id": "items-order-is-post-order",
+      "behavior": "Items are listed in the order they were created, and creating more does not replace what was there.",
+      "entry_point": "examples/node-http/src/items-server.js",
+      "setup": [
+        "create one item, then a second, then read the list"
+      ],
+      "covered_by": ["items-api"],
+      "expected_outcome": "",
+      "coverage_gaps": []
+    },
+    {
+      "id": "items-reject-empty-name",
+      "behavior": "A request that would create an unusable item is refused, and the refusal leaves the stored list exactly as it was.",
+      "entry_point": "examples/node-http/src/items-server.js",
+      "setup": [
+        "create two items, then attempt one with an empty name, then read the list"
+      ],
+      "covered_by": ["items-api"],
+      "expected_outcome": "",
+      "coverage_gaps": []
+    },
+    {
+      "id": "items-unknown-route",
+      "behavior": "A route the service does not implement is refused with a not-found answer rather than being treated as an empty list.",
+      "entry_point": "examples/node-http/src/items-server.js",
+      "setup": [
+        "start the service and request a route that does not exist"
+      ],
+      "covered_by": ["items-api"],
+      "expected_outcome": "",
+      "coverage_gaps": []
+    },
+    {
+      "id": "items-instances-are-independent",
+      "behavior": "Two instances running at the same time hold separate item lists, so one instance never reads what another was given.",
+      "entry_point": "examples/node-http/src/items-server.js",
+      "setup": [
+        "start two instances, each on a port the operating system assigned",
+        "write to one, read from both"
+      ],
+      "covered_by": ["items-api"],
+      "expected_outcome": "",
+      "coverage_gaps": []
+    },
+    {
+      "id": "items-update-an-existing-item",
+      "behavior": "Changing an item that already exists replaces its stored value.",
+      "entry_point": "examples/node-http/src/items-server.js",
+      "setup": [
+        "create an item, then send a request intended to change it"
+      ],
+      "covered_by": [],
+      "expected_outcome": "",
+      "coverage_gaps": [
+        "the service has no update route; this is a feature the product has not built and it is recorded here so its absence is visible rather than assumed"
+      ]
+    },
+    {
+      "id": "items-concurrent-writes",
+      "behavior": "Two requests that create an item at the same instant both end up in the list.",
+      "entry_point": "examples/node-http/src/items-server.js",
+      "setup": [
+        "issue overlapping POST /items requests against one instance"
+      ],
+      "covered_by": [],
+      "expected_outcome": "",
+      "coverage_gaps": [
+        "the state file is read and rewritten per request, so overlapping writes can lose one; no check exercises this, and the feature is unverified for that reason"
+      ]
+    }
+  ]
+}

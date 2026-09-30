@@ -212,12 +212,14 @@ def test_the_workflow_uses_a_policy_ref_rather_than_a_path() -> None:
         )
 
 
-def test_the_documented_capacity_defect_is_real() -> None:
-    """The documents say a capacity pool leaks a slot. Prove it, do not trust it.
+def test_the_documented_capacity_behaviour_is_real() -> None:
+    """The documents describe the capacity pool's semantics. Prove them.
 
-    If this ever stops being true the document is wrong and needs editing; if it
-    stays true and Plan 02 is fixed, this test fails and the limit is removed
-    from the document in the same change. Either way the two cannot drift.
+    `docs/INTEGRATION-CI.md` used to carry a known limit: a capacity pool could
+    not return an individual holder's slot. That was fixed, so the document no
+    longer claims it. The check is here so the document and the code cannot
+    drift in either direction -- if the semantics change again, this fails and
+    the document is edited in the same change.
     """
     from vkit.claims import ResourceSpec, acquire, holder, release
     from vkit.storage import Store
@@ -227,12 +229,17 @@ def test_the_documented_capacity_defect_is_real() -> None:
     spec = ResourceSpec("pool", "capacity", capacity=3)
     acquire(store, "first", 1, [spec])
     acquire(store, "second", 1, [spec])
+    assert holder(store, "pool").held == 2
 
+    # Any holder can return its own slot, not only the one the row names.
     release(store, "second", 1, ["pool"])
-    remaining = holder(store, "pool")
-    assert remaining is not None and remaining.held == 2, (
-        "a capacity pool can now return an individual holder's slot, so "
-        "docs/INTEGRATION-CI.md no longer needs to claim it cannot"
+    assert holder(store, "pool").held == 1
+
+    # And a task holding nothing cannot free a slot it never took.
+    release(store, "second", 1, ["pool"])
+    assert holder(store, "pool").held == 1, (
+        "a second release by a task that already gave its slot back freed a slot "
+        "nobody held"
     )
 
 

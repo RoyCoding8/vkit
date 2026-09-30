@@ -34,7 +34,6 @@ import pytest
 from vkit.console import api, operations, plan, server
 from vkit.console.plan import (
     MAX_LOG_BYTES,
-    NotImplementedInBuild,
     Refused,
     WRITABLE_NAMES,
 )
@@ -65,6 +64,32 @@ def example_repo(tmp_path: Path) -> Path:
 @pytest.fixture()
 def context(example_repo: Path) -> operations.Context:
     return operations.open_context(example_repo)
+
+
+def _claude_cli() -> str | None:
+    import shutil
+
+    return shutil.which("claude")
+
+
+#: The host plugin tests drive the real `claude` CLI. A mock would prove only
+#: that the console called what it was told to call; what matters is that the
+#: package validates, that the host accepts it, and that remove leaves nothing
+#: behind. Those are the host's behaviours, so the host is skipped, never
+#: replaced, when it is absent.
+requires_host = pytest.mark.skipif(
+    _claude_cli() is None, reason="the 'claude' CLI is not on PATH"
+)
+
+
+@pytest.fixture()
+def scratch_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An empty Claude home, so no test touches the developer's real install."""
+    home = tmp_path / "home"
+    (home / ".claude" / "plugins").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
 
 
 # ------------------------------------------------------------------- binding
@@ -126,22 +151,18 @@ def test_the_manifest_is_not_writable() -> None:
         ), operation.name
 
 
-def test_the_unimplemented_operations_refuse_rather_than_pretend(
-    context: operations.Context,
+@requires_host
+def test_no_setup_operation_touches_a_hand_maintained_file(
+    context: operations.Context, scratch_host: Path
 ) -> None:
-    for name in ("install", "repair", "remove", "enroll"):
-        with pytest.raises(NotImplementedInBuild) as caught:
-            operations.OPERATIONS[name](context)
-        assert name in str(caught.value)
-        assert "not implemented in this build" in str(caught.value)
+    """The whole setup surface runs, and the repository is byte-identical after.
 
-
-def test_the_console_wrote_nothing_while_refusing(context: operations.Context) -> None:
-    """An honest gap leaves the repository byte-identical.
-
-    The point of refusing is that nothing happened. A stub that created a
-    plausible directory would pass the exception assertion above and still have
-    a real blast radius, so the tree is compared before and after.
+    enroll, install, repair and remove all run against the real host CLI and the
+    real project, and the working tree is compared before and after. This is the
+    test that would catch a setup operation quietly editing a committed file,
+    which is exactly what Plan 05's writable list exists to make impossible.
+    A test asserting only return values would pass for an installer that also
+    rewrote the manifest.
     """
     project = open_project(context.project.root)
 
@@ -153,10 +174,18 @@ def test_the_console_wrote_nothing_while_refusing(context: operations.Context) -
         )
 
     before = fingerprint()
-    for name in ("install", "repair", "remove", "enroll"):
-        with pytest.raises(NotImplementedInBuild):
-            operations.OPERATIONS[name](context)
+    assert operations.enroll(context)["enrolled"] is False
+    assert operations.enroll(context, accepted=True)["enrolled"] is True
+    operations.install(context)
+    operations.repair(context)
+    operations.remove(context)
+
     assert fingerprint() == before
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=project.root,
+        capture_output=True, encoding="utf-8", timeout=60,
+    ).stdout
+    assert status == "", f"a setup operation dirtied the working tree: {status}"
 
 
 def test_an_unknown_operation_names_the_real_surface() -> None:
@@ -264,12 +293,14 @@ def test_no_module_in_the_package_mentions_writing_the_manifest() -> None:
 def test_no_route_takes_a_path_parameter(context: operations.Context) -> None:
     """The structural guarantee that no request can name a file to act on.
 
-    Every request parameter is an identifier, a count or a stream name. None of
-    them is a path, so there is no value a caller could supply that turns into a
-    repository path the console would then read or write.
+    Every request parameter is an identifier, a count, a stream name, or a
+    fixed vocabulary value. None of them is a path, so there is no value a
+    caller could supply that turns into a repository path the console would then
+    read or write.
     """
     assert api.PARAM_NAMES == frozenset({
         "limit", "run_id", "check_id", "stream", "max_bytes", "operation",
+        "scope", "accepted",
     })
     for name in api.PARAM_NAMES:
         assert "/" not in name and "\\" not in name
@@ -295,6 +326,21 @@ def test_no_route_takes_a_path_parameter(context: operations.Context) -> None:
     with pytest.raises(api.BadRequest) as caught:
         api.dispatch(context, "plan", {"run_id": "verification/manifest.json"})
     assert "missing required parameter 'operation'" in str(caught.value)
+
+
+def test_a_scope_that_is_not_the_supported_one_is_refused(
+    context: operations.Context,
+) -> None:
+    """The scope vocabulary is closed, and the refusal names it.
+
+    `scope` reaches the host CLI as an argument, so an unchecked value is a way
+    to make the console pass an arbitrary argument to the host. It is validated
+    at the operation, not only in the page's select box.
+    """
+    with pytest.raises(Refused) as caught:
+        operations.install(context, scope="project")
+    assert "'project' is not supported" in caught.value.reason
+    assert "'user' scope only" in caught.value.reason
 
 
 def test_under_protected_path_rejects_the_policy_paths() -> None:
@@ -540,25 +586,48 @@ def test_a_refusal_over_http_is_a_409_with_the_core_reason(
         bound.server_close()
 
 
-def test_an_unimplemented_operation_over_http_is_a_501(
+def test_an_unknown_operation_names_the_real_surface_over_http(
     context: operations.Context,
 ) -> None:
-    """Applying an operation the core lacks is 501, and it is on the surface.
+    """Every name on the surface resolves through `apply`; none is a 404.
 
-    Not a 404. The operation is named in the writable list and reachable through
-    the API; it refuses because the core has not grown it, which is a different
-    fact from the console not offering it.
+    Refused with the list rather than a bare "unknown operation", so an operator
+    who guessed a name learns what the surface actually is. The four setup
+    operations are reachable, which is what makes them refusable by the core
+    rather than invisible.
     """
     bound, _thread = server.start_in_thread(context, port=0)
     port = bound.server_address[1]
     try:
-        for name in ("install", "repair", "remove", "enroll"):
-            document, status = _post(f"http://127.0.0.1:{port}/api/apply?operation={name}")
-            assert status == 501, name
-            assert document["implemented"] is False
-            assert document["operation"] == name
-            assert document["writable_surface"] == list(WRITABLE_NAMES)
-            assert "not implemented in this build" in document["error"]
+        document, status = _post(f"http://127.0.0.1:{port}/api/apply?operation=not_a_thing")
+        assert status == 400
+        assert document["error"].startswith("unknown operation 'not_a_thing'")
+        for name in WRITABLE_NAMES:
+            assert name in document["error"]
+    finally:
+        bound.shutdown()
+        bound.server_close()
+
+
+@requires_host
+def test_enroll_over_http_records_acceptance(context: operations.Context) -> None:
+    """The whole acceptance path over a real socket, including the refusal."""
+    bound, _thread = server.start_in_thread(context, port=0)
+    port = bound.server_address[1]
+    try:
+        declined, status = _post(f"http://127.0.0.1:{port}/api/apply?operation=enroll")
+        assert status == 200
+        assert declined["result"]["enrolled"] is False
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/apply",
+            data=json.dumps({"operation": "enroll", "accepted": True}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            accepted = json.loads(response.read().decode("utf-8"))
+        assert accepted["result"]["enrolled"] is True
+        assert (context.project.state_root / "enrollment.json").is_file()
     finally:
         bound.shutdown()
         bound.server_close()
@@ -601,10 +670,87 @@ def test_the_change_set_is_visible_before_anything_is_applied(
 def test_the_change_set_for_an_unimplemented_operation_is_empty(
     context: operations.Context,
 ) -> None:
-    planned = operations.plan_change_set(context, "install").to_json()
-    assert planned["implemented"] is False
-    assert planned["changes"] == []
-    assert "no core operation" in planned["note"].lower() or planned["note"]
+    planned = operations.plan_change_set(context, "run_check").to_json()
+    assert planned["implemented"] is True
+    # Every operation on the surface names its change set before it is applied.
+    for name in WRITABLE_NAMES:
+        assert operations.plan_change_set(context, name).to_json()["implemented"] is True
+
+
+def test_enroll_leaves_execution_disabled_until_the_policy_is_accepted(
+    context: operations.Context,
+) -> None:
+    """The plan's rule, exercised rather than asserted in a comment.
+
+    Plan 06: execution stays disabled until the user accepts the repository's
+    executable policy. So the first enroll reports the policy and writes
+    nothing at all; only an explicit acceptance records it, and it records to the
+    shared Git directory, never to a hand-maintained file in the tree.
+    """
+    declined = operations.enroll(context)
+    assert declined["enrolled"] is False
+    assert declined["accepted"] is False
+    assert not (context.project.state_root / "enrollment.json").exists()
+    # The policy shown is the manifest's own executable command, not a summary.
+    assert declined["policy"] == [{
+        "id": CHECK_ID,
+        "command": ["python", "verify_totals.py", "--app", "src/totals.py",
+                    "--out", "{{run_dir}}/result.json"],
+        "timeout_seconds": 120.0,
+    }]
+
+    accepted = operations.enroll(context, accepted=True)
+    assert accepted["enrolled"] is True
+    record_path = Path(accepted["record"])
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["accepted"] is True
+    assert record["configuration_digest"] == context.manifest.digest()
+    # The record lives under the Git common directory beside the store, so it is
+    # state rather than a working-tree file: it is never tracked, never appears
+    # in a diff, and survives the checkout. `git status` is asked rather than
+    # assumed, because that is the property a reviewer would rely on.
+    assert record_path.is_relative_to(context.project.git_common_dir)
+    untracked = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=context.project.root,
+        capture_output=True, encoding="utf-8", timeout=60,
+    ).stdout
+    assert "enrollment" not in untracked, untracked
+    assert "manifest.json" not in untracked, untracked
+
+
+def test_an_enrollment_is_impossible_without_a_manifest(tmp_path: Path) -> None:
+    """A repository with no manifest cannot be enrolled against nothing."""
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=bare, check=True)
+    context = operations.open_context(bare)
+    with pytest.raises(Refused) as caught:
+        operations.enroll(context, accepted=True)
+    assert "no manifest" in caught.value.reason
+
+
+def test_the_api_will_not_read_accepted_false_as_accepted(
+    context: operations.Context,
+) -> None:
+    """A JSON body and a query string both arrive as strings; "false" is truthy.
+
+    `accepted=false` reaching the operation as the string "false" would enroll a
+    repository the operator explicitly declined, because a non-empty string is
+    true. The boundary coerces both, and this drives both.
+    """
+    for query in ({"operation": "enroll", "accepted": "false"},
+                  {"operation": "enroll", "accepted": "0"}):
+        result = api.dispatch(context, "apply", query)
+        assert result["result"]["enrolled"] is False, query
+        assert result["result"]["accepted"] is False, query
+    assert not (context.project.state_root / "enrollment.json").exists()
+
+    result = api.dispatch(context, "apply", {"operation": "enroll", "accepted": "true"})
+    assert result["result"]["enrolled"] is True
+
+    with pytest.raises(api.BadRequest) as caught:
+        api.dispatch(context, "apply", {"operation": "enroll", "accepted": "maybe"})
+    assert "must be true or false" in str(caught.value)
 
 
 # ----------------------------------------------- a run survives the console
@@ -643,6 +789,133 @@ def test_the_change_set_lists_the_run_report_for_cancel(
     assert planned["implemented"] is True
     assert planned["changes"][0]["target"] == "runs/<run_id>/report.json"
     assert planned["changes"][0]["reversible"] is False
+
+
+# ------------------------------------------- the host plugin, for real
+
+
+@requires_host
+def test_install_refuses_a_package_the_host_would_not_load(
+    context: operations.Context, scratch_host: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Validation runs before the install, and a failure stops everything.
+
+    Driven against the real host: a package the host's own validator rejects is
+    offered to `install`, and `install` must refuse with the validator's words
+    while never reaching `plugin install`. Removing the validation step from
+    `install` makes this fail, because the host would then be asked to install a
+    package nobody checked. It also asserts the refusal names the failing file,
+    so an operator is told what to fix rather than that something went wrong.
+    """
+    broken = tmp_path / "broken-marketplace"
+    shutil.copytree(operations._plugin_source_dir(), broken / "plugin")
+    (broken / "plugin" / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "Not A Kebab Name", "description": "x"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(operations, "_plugin_source_dir", lambda: broken / "plugin")
+    monkeypatch.setattr(operations, "_repo_root", lambda: broken)
+
+    reached: list[list[str]] = []
+    original = operations._run_host
+
+    def spy(args: list[str]) -> tuple[int, str, str]:
+        reached.append(args)
+        return original(args)
+
+    monkeypatch.setattr(operations, "_run_host", spy)
+
+    with pytest.raises(Refused) as caught:
+        operations.install(context)
+    message = caught.value.reason
+    assert "did not validate" in message
+    assert "plugin.json" in message or "kebab" in message.lower() or "name" in message.lower()
+    # The install call itself was never reached: the package was refused first.
+    assert [a for a in reached if a[:2] == ["plugin", "install"]] == []
+
+
+@requires_host
+def test_the_real_package_installs_through_the_host(
+    context: operations.Context, scratch_host: Path
+) -> None:
+    """The shipped package validates strictly, and the host really installs it.
+
+    The complement to the refusal above: the package in this checkout is one the
+    host accepts, and the host copies it. Asserting the copy landed under the
+    host's own install path is what proves the console used the host's mechanism
+    rather than inventing a directory of its own.
+    """
+    done = subprocess.run(
+        [_claude_cli(), "plugin", "validate", "--strict", str(operations._plugin_source_dir().parent)],
+        capture_output=True, encoding="utf-8", timeout=120,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+
+    installed = operations.install(context)
+    assert installed["validated"] is True
+    assert installed["plugin"] == "vkit@vkit"
+    record = operations._installed_plugin_record("vkit@vkit")
+    assert record is not None
+    assert Path(record["installPath"]).is_dir()
+    assert (Path(record["installPath"]) / ".claude-plugin" / "plugin.json").is_file()
+
+
+@requires_host
+def test_install_is_idempotent_and_repair_converges(
+    context: operations.Context, scratch_host: Path
+) -> None:
+    """Running install twice and repairing once leaves one installation.
+
+    `principle-make-operations-idempotent`: a retry after a crash must converge
+    to the same end state. A second install over an existing one is reported as
+    already installed rather than adding a second copy, and repair on an
+    up-to-date installation changes nothing.
+    """
+    first = operations.install(context)
+    assert first["already_installed"] is False
+    second = operations.install(context)
+    assert second["already_installed"] is True
+
+    entries = json.loads(
+        (scratch_host / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8")
+    )["plugins"]
+    assert len(entries["vkit@vkit"]) == 1, "a second install stacked a duplicate record"
+
+    repaired = operations.repair(context)
+    assert repaired["validated"] is True
+    assert "latest version" in repaired["host_output"]
+
+
+@requires_host
+def test_remove_leaves_no_orphan(context: operations.Context, scratch_host: Path) -> None:
+    """Uninstalling is half of removing; the host keeps a registration.
+
+    Verified rather than assumed: after `claude plugin uninstall` the host still
+    has the marketplace registered and the cache directory on disk. `remove`
+    takes both out and then confirms nothing is left, so "no orphans" is a
+    checked end state and not a claim.
+    """
+    operations.install(context)
+    result = operations.remove(context)
+
+    assert result["uninstalled"] is True
+    assert result["orphan_cache"] is False
+    assert operations._installed_plugin_record("vkit@vkit") is None
+    assert not Path(result["cache_removed"]).exists()
+    assert operations._marketplace_registered() is False
+
+
+@requires_host
+def test_repair_and_remove_refuse_when_nothing_is_installed(
+    context: operations.Context, scratch_host: Path
+) -> None:
+    """Neither reports success for an operation that did nothing."""
+    with pytest.raises(Refused) as repair_caught:
+        operations.repair(context)
+    assert "not installed" in repair_caught.value.reason
+    with pytest.raises(Refused) as remove_caught:
+        operations.remove(context)
+    assert "nothing to remove" in remove_caught.value.reason
 
 
 # ------------------------------------------------------------------ helpers

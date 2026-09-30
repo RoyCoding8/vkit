@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vkit console</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,8 +13,8 @@
   <p class="sub">Local only. Reads the store; the six operations below are the whole writable surface.</p>
 </header>
 
-<nav>
-  <button data-view="project" class="on">Project</button>
+<nav aria-label="Views">
+  <button data-view="project" class="on" aria-current="page">Project</button>
   <button data-view="readiness">Readiness</button>
   <button data-view="checks">Checks</button>
   <button data-view="runs">Runs</button>
@@ -24,46 +25,49 @@
 <main>
   <section id="project" class="view on">
     <h2>Project</h2>
-    <div id="project-body" class="body">loading</div>
+    <div id="project-body" class="body" role="status" aria-live="polite">loading</div>
   </section>
 
-  <section id="readiness" class="view">
+  <section id="readiness" class="view" hidden>
     <h2>Readiness</h2>
     <p class="note">What <code>vkit doctor</code> reports, running nothing.</p>
-    <div id="readiness-body" class="body">loading</div>
+    <div id="readiness-body" class="body" role="status" aria-live="polite">loading</div>
   </section>
 
-  <section id="checks" class="view">
+  <section id="checks" class="view" hidden>
     <h2>Checks</h2>
-    <div id="checks-body" class="body">loading</div>
+    <p class="note">Installation as the host reports it, then every registered check.</p>
+    <div id="checks-body" class="body" role="status" aria-live="polite">loading</div>
   </section>
 
-  <section id="runs" class="view">
+  <section id="runs" class="view" hidden>
     <h2>Runs</h2>
     <p class="note">The same rows <code>vkit</code> lists. Logs are read as a bounded tail.</p>
     <div class="row">
-      <label for="limit">limit</label>
-      <input id="limit" type="number" min="1" max="500" value="50">
-      <button id="refresh-runs">Refresh</button>
+      <label for="limit">Show at most</label>
+      <input id="limit" type="number" min="1" max="500" value="50"
+             aria-describedby="limit-help">
+      <span id="limit-help" class="note">runs, newest first (1&ndash;500)</span>
+      <button id="refresh-runs" type="button">Refresh</button>
     </div>
-    <div id="runs-body" class="body">loading</div>
+    <div id="runs-body" class="body" role="status" aria-live="polite">loading</div>
     <div id="run-detail" class="body"></div>
   </section>
 
-  <section id="recovery" class="view">
+  <section id="recovery" class="view" hidden>
     <h2>Recovery</h2>
     <p class="note">Read-only. Applying a recovery action is not on the writable surface in this build.</p>
-    <div id="recovery-body" class="body">loading</div>
+    <div id="recovery-body" class="body" role="status" aria-live="polite">loading</div>
   </section>
 
-  <section id="operations" class="view">
+  <section id="operations" class="view" hidden>
     <h2>Operations</h2>
     <p class="note">The permitted surface. The manifest is not on it, deliberately.</p>
-    <div id="operations-body" class="body">loading</div>
+    <div id="operations-body" class="body" role="status" aria-live="polite">loading</div>
   </section>
 </main>
 
-<div id="toast" hidden></div>
+<div id="toast" hidden role="status" aria-live="assertive"></div>
 <script src="app.js"></script>
 </body>
 </html>

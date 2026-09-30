@@ -233,14 +233,26 @@ def _verify_exclusive(
         source = compute_source_identity(checkout_project)
 
         findings: list[policies.PolicyFinding] = []
-        candidate_manifest = _parse_candidate_manifest(checkout_project, run_dir, tolerate=True)
+        candidate_manifest, unreadable = _read_candidate_manifest(
+            project, candidate_fact.sha, run_dir
+        )
         if candidate_manifest is not None:
             findings = list(policies.compare(candidate_manifest, policy, approved))
-        elif approved is not None:
+        elif unreadable is not None:
+            # The candidate's manifest is there and the product will not accept
+            # it. Saying "absent" here would be a different, weaker claim, and
+            # it would hide the reason a reviewer needs: a manifest with no
+            # checks is the shape a candidate uses to declare a zero-width bar.
+            findings = [policies.PolicyFinding(
+                "candidate_manifest_rejected", "-", "REJECT",
+                f"the candidate's {policies.MANIFEST_RELATIVE} is not usable, so what "
+                f"it requires cannot be established: {unreadable}",
+            )]
+        else:
             findings = [policies.PolicyFinding(
                 "candidate_manifest_absent", "-", "REVIEW",
-                "the candidate ships no readable verification/manifest.json, so the "
-                "approved manifest runs unchecked against what the candidate claims",
+                "the candidate ships no verification/manifest.json, so the approved "
+                "manifest runs unchecked against what the candidate claims",
             )]
         gaps.extend(f.detail for f in findings if f.severity == "REJECT")
 
@@ -436,6 +448,32 @@ def _check_result(check_id: str, outcome: "RunOutcome") -> dict[str, Any]:
         "source_head": outcome.report["source"]["head"],
         "configuration_digest": outcome.report["configuration_digest"],
     }
+
+
+def _read_candidate_manifest(
+    project: Project, candidate: str, run_dir: Path
+) -> tuple[Manifest | None, str | None]:
+    """(parsed manifest, why it was rejected). Either is None, never both.
+
+    Read from the candidate COMMIT rather than from the checkout. The checkout
+    has already been verified clean, so the two agree today, but a decision that
+    depends on which one it read is a decision that a later checkout could
+    change, and the commit is the thing the decision is about.
+    """
+    from ..manifest import ManifestError, parse_manifest_bytes
+    from ..paths import open_project
+    from .policy import MANIFEST_RELATIVE, candidate_manifest_bytes
+
+    blob = candidate_manifest_bytes(project, candidate)
+    if blob is None:
+        return None, None
+    try:
+        return parse_manifest_bytes(
+            blob, project=open_project(project.root), run_dir=run_dir / "probe",
+            origin=f"{candidate[:12]}:{MANIFEST_RELATIVE}",
+        ), None
+    except ManifestError as exc:
+        return None, str(exc)
 
 
 def _parse_candidate_manifest(

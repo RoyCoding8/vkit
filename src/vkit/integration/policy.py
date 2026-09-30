@@ -224,10 +224,25 @@ def from_file(project, path: Path) -> Policy:
         raise PolicyError(f"cannot read policy {path}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise PolicyError(f"{path} is not valid JSON: {exc}") from exc
+
+    claimed = raw.get("context") if isinstance(raw, dict) else None
+    if claimed == PROTECTED:
+        # Not a silent downgrade. A local file that asks for protected context
+        # is asking for an authority only the repository's trusted configuration
+        # can grant, and accepting it while quietly calling it local would leave
+        # a reader believing a claim that was never honoured. The way to ask for
+        # protected context is `--policy @<ref>`, and the refusal says so.
+        raise PolicyError(
+            f"{path} declares context {PROTECTED!r}. A local file cannot confer "
+            "protected integration context: only an approved reference passed as "
+            f"`--policy @<ref>` can, because the reference is what a reviewer "
+            "approved. Use the path for local evidence, or name the approved commit."
+        )
     return _parse_document(raw, origin={
         "source": "local-file",
         "path": str(path),
         "authority": "user-selected; local evidence, not protected integration policy",
+        "claimed_context": claimed,
     })
 
 
@@ -259,15 +274,17 @@ def from_commit(project, ref: str) -> Policy:
         "source": "approved-reference",
         "ref": ref,
         "commit": revision,
-        "declared_context": raw.get("context"),
     })
-    # The context is the spelling's, not the document's. `Policy` refuses a
-    # protected policy with no pinned revision, which is the check that a
-    # candidate cannot buy itself a protected context with a one-word edit.
     if parsed.context != PROTECTED:
+        # The document claimed something the spelling does not confer. The
+        # claim is recorded rather than dropped, because a policy that asks for
+        # authority it cannot have is worth a reader seeing, and a `--policy`
+        # path is the operator's own selection rather than this repository's
+        # trusted configuration.
         parsed = Policy(
             description=parsed.description, context=PROTECTED, required=parsed.required,
-            manifest_revision=parsed.manifest_revision, origin=parsed.origin,
+            manifest_revision=parsed.manifest_revision,
+            origin={**parsed.origin, "claimed_context": raw.get("context", LOCAL)},
         )
     return parsed
 

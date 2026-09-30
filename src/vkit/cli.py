@@ -691,6 +691,53 @@ def cmd_mcp_serve(args: argparse.Namespace) -> int:
     return serve_stdio(project.root)
 
 
+def cmd_integration_verify(args: argparse.Namespace) -> int:
+    """Decide whether a candidate commit satisfies the approved policy.
+
+    Every refusal is a recorded decision rather than an exception, so the
+    `--json` output is always the acceptance record. The exit code follows the
+    decision: 0 accepted, 1 rejected, 3 blocked.
+    """
+    from .integration import verify as integration
+    from .integration.checkout import CheckoutError as CheckoutRefused
+    from .integration.gitidentity import GitError
+    from .integration.policy import PolicyError
+    from .integration.verify import IntegrationError, Request
+
+    project = _project(args)
+    store = _open_store(project)
+    try:
+        request = integration.Request(
+            project=project,
+            candidate_ref=args.candidate,
+            target_ref=args.target,
+            policy_request=args.policy,
+            writers=args.writers,
+            verifications=args.verifications,
+            keep_checkout=args.keep_checkout,
+        )
+    except ValueError as exc:
+        raise Refused(str(exc), EXIT_INVALID) from exc
+
+    try:
+        result = integration.verify(request, store)
+    except (PolicyError, GitError) as exc:
+        # A policy that cannot be read, or a ref that does not resolve, is an
+        # invalid invocation. Nothing ran and nothing was decided.
+        raise Refused(str(exc), EXIT_INVALID) from exc
+    except IntegrationError as exc:
+        raise Refused(str(exc), EXIT_BLOCKED) from exc
+    except CheckoutRefused as exc:
+        raise Refused(str(exc), EXIT_BLOCKED) from exc
+
+    _emit(result.to_json(), args.json, integration.summarize(result))
+    if result.decision == integration.ACCEPTED:
+        return EXIT_OK
+    if result.decision == integration.REJECTED:
+        return EXIT_CHECK_FAILED
+    return EXIT_BLOCKED
+
+
 # ------------------------------------------------------------------ plan 06
 
 
@@ -909,6 +956,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recovery.add_argument("--target", default="", help="the run id or resource key the action affects")
     recovery.add_argument("--evidence", default="", help="why the change is permitted; may not be empty")
+
+    integration = sub.add_parser(
+        "integration",
+        help="decide whether a candidate commit satisfies the approved policy",
+    )
+    integration_sub = integration.add_subparsers(dest="integration_command", required=True)
+    verify_parser = integration_sub.add_parser(
+        "verify",
+        help="run the required checks against one exact candidate commit and record the decision",
+    )
+    common(verify_parser)
+    verify_parser.add_argument("--candidate", required=True,
+                               help="the candidate commit, or a ref that resolves to one")
+    verify_parser.add_argument("--target", required=True,
+                               help="the target commit the candidate must be built on")
+    verify_parser.add_argument(
+        "--policy", required=True,
+        help="@<ref> for the approved policy in a commit, or a local path. A local "
+             "path is local evidence and can never be the protected decision",
+    )
+    verify_parser.add_argument(
+        "--verifications", type=int, default=None,
+        help="capacity bound on concurrent verification runs for this repository",
+    )
+    verify_parser.add_argument(
+        "--writers", type=int, default=None,
+        help="capacity bound on active registered writers; independent of verifications",
+    )
+    verify_parser.add_argument(
+        "--keep-checkout", action="store_true",
+        help="leave the candidate checkout in place instead of retiring it",
+    )
     return parser
 
 
@@ -928,6 +1007,7 @@ _DISPATCH = {
     ("task", "finalize"): cmd_task_finalize,
     ("recover", None): cmd_recover,
     ("mcp", "serve"): cmd_mcp_serve,
+    ("integration", "verify"): cmd_integration_verify,
 }
 
 

@@ -122,6 +122,43 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
 
     CREATE INDEX IF NOT EXISTS claim_members_by_task ON claim_members(task_id, generation);
     """),
+    (4, """
+    -- The integration decision is its own record, and this table is the only
+    -- writable authority for it. Its columns are exactly the CONTRACT.md
+    -- acceptance row: the computed decision, the exact source and policy
+    -- identities, the required checks, the gaps, and the context the decision
+    -- was made in. Nothing writes a verdict anywhere else, and a client cannot
+    -- supply one.
+    --
+    -- The manifest at the candidate revision is recorded here rather than being
+    -- left to be re-read later, because the comparison that matters -- does the
+    -- candidate's own policy still require what the trusted policy requires --
+    -- is only answerable against the bytes the candidate shipped. Re-deriving
+    -- them from a checkout that has since moved would answer a different
+    -- question.
+    CREATE TABLE IF NOT EXISTS acceptances (
+        acceptance_id   TEXT PRIMARY KEY,
+        integration_id  TEXT NOT NULL,
+        context         TEXT NOT NULL CHECK (context IN ('local','protected')),
+        decision        TEXT NOT NULL CHECK (decision IN ('ACCEPTED','REJECTED','BLOCKED')),
+        candidate       TEXT NOT NULL,
+        target          TEXT NOT NULL,
+        candidate_parent TEXT,
+        source_json     TEXT NOT NULL,
+        policy_json     TEXT NOT NULL,
+        verifier_json   TEXT NOT NULL,
+        environment_json TEXT NOT NULL,
+        fixture_json    TEXT NOT NULL,
+        manifest_json   TEXT NOT NULL,
+        required_checks TEXT NOT NULL,
+        checks_json     TEXT NOT NULL,
+        gaps_json       TEXT NOT NULL,
+        findings_json   TEXT NOT NULL,
+        decided_at      TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS acceptances_by_integration ON acceptances(integration_id);
+    """),
 )
 
 
@@ -455,3 +492,91 @@ class Store:
         if not row or not row[0]:
             return None
         return json.loads(row[0])
+
+    # The acceptance record's own storage, beside the runs it summarises. One
+    # module owns the durable shape of both, so a reader never has to decide
+    # which file is authoritative for a decision.
+
+    _ACCEPTANCE_COLUMNS = (
+        "acceptance_id, integration_id, context, decision, candidate, target, "
+        "candidate_parent, source_json, policy_json, verifier_json, "
+        "environment_json, fixture_json, manifest_json, required_checks, "
+        "checks_json, gaps_json, findings_json, decided_at"
+    )
+
+    def record_acceptance(self, acceptance_id: str, record: dict) -> None:
+        """Write the integration decision exactly once.
+
+        The guard is the primary key, for the same reason it is on `runs`: a
+        retry that recomputed a different answer under one identity would be two
+        decisions wearing one name. The acceptance id is derived from the
+        candidate, the target, the policy and the context, so a genuine retry
+        recomputes the same id and finds the same decision.
+        """
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    "INSERT INTO acceptances (" + self._ACCEPTANCE_COLUMNS + ")"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        acceptance_id, record["integration_id"], record["context"],
+                        record["decision"], record["candidate"], record["target"],
+                        record["candidate_parent"],
+                        _dumps(record["source"]), _dumps(record["policy"]),
+                        _dumps(record["verifier"]), _dumps(record["environment"]),
+                        _dumps(record["fixture"]), _dumps(record["manifest"]),
+                        _dumps(record["required_checks"]),
+                        _dumps(record["checks"]), _dumps(record["gaps"]),
+                        _dumps(record["findings"]), record["decided_at"],
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise StoreError(f"acceptance {acceptance_id} is already recorded") from exc
+
+    def load_acceptance(self, acceptance_id: str) -> dict | None:
+        """The recorded decision, or None. The single reader of that table."""
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._ACCEPTANCE_COLUMNS} FROM acceptances WHERE acceptance_id = ?",
+                (acceptance_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _acceptance_from_row(row)
+
+    def list_acceptances(
+        self, *, integration_id: str | None = None, limit: int = 50
+    ) -> list[dict]:
+        """Recorded decisions, newest first. Bounded, like every other listing."""
+        sql = f"SELECT {self._ACCEPTANCE_COLUMNS} FROM acceptances"
+        params: list[object] = []
+        if integration_id is not None:
+            sql += " WHERE integration_id = ?"
+            params.append(integration_id)
+        sql += " ORDER BY rowid DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_acceptance_from_row(row) for row in rows]
+
+
+def _acceptance_from_row(row) -> dict:
+    """Rebuild the acceptance record, with the policy fields made explicit.
+
+    `candidate_parent` is a nullable column because "the candidate's parent is
+    the target" is the fact a coordinator re-checks on every publish, and
+    folding it only into JSON would make it unqueryable. It is restored into
+    the policy here so there is one value in the returned record and one place
+    on disk that a writer has to set.
+    """
+    keys = (
+        "acceptance_id", "integration_id", "context", "decision", "candidate", "target",
+        "candidate_parent", "source", "policy", "verifier", "environment", "fixture",
+        "manifest", "required_checks", "checks", "gaps", "findings", "decided_at",
+    )
+    record = dict(zip(keys, row))
+    for key in ("source", "policy", "verifier", "environment", "fixture", "manifest",
+                "required_checks", "checks", "gaps", "findings"):
+        record[key] = json.loads(record[key])
+    record["policy"]["candidate_parent"] = record["candidate_parent"]
+    return record

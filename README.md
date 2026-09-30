@@ -174,7 +174,7 @@ so it cannot agree with the application by construction.
 
 ```console
 $ .venv/Scripts/python.exe -m pytest tests/
-295 passed, 1 skipped
+404 passed, 1 skipped
 
 $ .venv/Scripts/python.exe scripts/acceptance.py
 22/22 acceptance rows pass

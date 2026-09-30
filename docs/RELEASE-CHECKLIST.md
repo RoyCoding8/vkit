@@ -127,7 +127,7 @@ host that blocks network access cannot build the wheel with this command.
 $ <venv>/Scripts/python.exe -m pytest tests/
 ```
 
-Observed on this host: `244 passed, 1 skipped in 111.68s`. The skip is
+Observed on this host: `404 passed, 1 skipped`. The skip is
 `tests/test_procidentity.py:440`, which the Windows host cannot exercise.
 
 That count is evidence about the code in this repository, and only that. It is
@@ -173,8 +173,8 @@ $ <venv>/Scripts/python.exe -m pip install ".[mcp]"
 $ <venv>/Scripts/python.exe -m pytest tests/test_mcp_stdio.py
 ```
 
-Observed on this host: `16 passed`. The pinned SDK is `mcp` 2.2.0, and the
-negotiated protocol version on the wire was `2025-06-18`.
+Observed on this host: `23 passed in 88.58s`. The pinned SDK is `mcp` 2.2.0,
+and the negotiated protocol version on the wire was `2025-06-18`.
 
 What that proves, and it is worth being exact about the boundary. A real client
 process, one that does not import `mcp` or `vkit`, wrote JSON-RPC frames to the

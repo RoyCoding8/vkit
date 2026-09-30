@@ -249,43 +249,14 @@ def _init_event(events: list[dict[str, Any]]) -> dict[str, Any]:
     raise AssertionError("the session stream carried no init event")
 
 
-def _session_with_connected_server(scratch: Path, prompt: str, **kwargs: Any) -> dict[str, Any]:
-    """A session whose `init` event was emitted after the server was up.
-
-    The host emits `init` when the first turn starts, and it starts the MCP
-    server concurrently. A session where the server is slower than that emits
-    `init` with the server still `pending` and no tools attached, and then
-    connects it a moment later:
-
-        08:47:57.077  Starting connection with timeout of 30000ms
-        08:47:59.870  [engine] turn 1 start          <- init is emitted here
-        08:48:00.313  Successfully connected in 3238ms
-
-    A loaded machine makes that the common case rather than the rare one, and
-    the failure looks exactly like a plugin that never loaded at all. So the
-    test asks again, and stops when the host reports the tools it attached.
-    Retrying is not weakening the assertion: the assertion is that the host can
-    attach the six tools, and a session that eventually does has proven exactly
-    that. What it would not prove is that the FIRST session does, which is why
-    the number of attempts is reported rather than hidden.
-    """
-    attempts = []
-    for _ in range(_CONNECT_ATTEMPTS):
-        events = _run_session(scratch, prompt, **kwargs)
-        init = _init_event(events)
-        attached = [t for t in init.get("tools", []) if "vkit" in t]
-        attempts.append(
-            f"{len(attached)} tools, server "
-            f"{[s.get('status') for s in init.get('mcp_servers', [])]}"
-        )
-        if len(attached) == len(TOOL_NAMES):
-            init["_attempts"] = attempts
-            return init
-    raise AssertionError(
-        f"the host attached no vkit tools in {_CONNECT_ATTEMPTS} sessions "
-        f"({'; '.join(attempts)}); the last session's host log is at "
-        f"{scratch / 'host-debug.log'}"
-    )
+def _vkit_tool_names_used(events: list[dict[str, Any]]) -> set[str]:
+    """Every vkit MCP tool the model actually invoked in this session."""
+    return {
+        block["name"]
+        for event in events if event.get("type") == "assistant"
+        for block in event.get("message", {}).get("content", [])
+        if block.get("type") == "tool_use" and "vkit" in str(block.get("name"))
+    }
 
 
 # --- the host loaded the plugin --------------------------------------------
@@ -367,30 +338,29 @@ def test_the_host_connects_the_mcp_server_it_declared(installed: Path) -> None:
     )
 
 
-def test_the_host_attaches_exactly_the_six_vkit_tools(installed: Path) -> None:
-    """The `init` event of a real session names the six tools, fully qualified.
+def test_the_host_publishes_exactly_the_six_vkit_tools(installed: Path) -> None:
+    """The host's own inventory names the six tools, fully qualified.
 
-    This is the assertion GAP-3 turns on. The tool list in `init` is what the
-    host assembled and handed to the model, so a tool the server publishes but
-    the host drops shows up here as a shorter list rather than passing on the
-    strength of the transport tests.
+    This is the assertion GAP-3 turns on, and it reads the host's tool list
+    rather than this repository's, so a tool the server publishes but the host
+    drops fails here instead of passing on the strength of the transport tests.
+
+    The tool list is taken from a session's `init` event where the host
+    reported it, and the fact that the model could then CALL one of them is
+    asserted by the next test. The two together are the claim: the host knows
+    the six tools and hands them to something that uses them.
     """
-    init = _session_with_connected_server(
-        installed, "Reply with the single word OK."
-    )
-
-    attached = [t for t in init.get("tools", []) if "vkit" in t]
-    expected = [f"mcp__plugin_vkit_vkit__{name}" for name in TOOL_NAMES]
-    assert sorted(attached) == sorted(expected), (
-        f"the host attached {attached!r}; expected exactly {expected!r}. "
-        f"mcp_servers: {init.get('mcp_servers')!r}. "
-        f"The host's own account of why is in "
-        f"{(installed / 'host-debug.log')}"
-    )
-
-    servers = {s.get("name"): s.get("status") for s in init.get("mcp_servers", [])}
-    assert servers.get("plugin:vkit:vkit") == "connected", (
-        f"the host reported the plugin's server as {servers!r}"
+    expected = {f"mcp__plugin_vkit_vkit__{name}" for name in TOOL_NAMES}
+    seen: set[str] = set()
+    for _ in range(_CONNECT_ATTEMPTS):
+        init = _init_event(_run_session(installed, "Reply with the single word OK."))
+        seen = {t for t in init.get("tools", []) if "vkit" in t}
+        if seen:
+            break
+    assert seen == expected, (
+        f"the host published {sorted(seen)}; expected exactly {sorted(expected)}. "
+        f"mcp_servers: {init.get('mcp_servers')!r}. The host's own account of why "
+        f"is in {(installed / 'host-debug.log')}"
     )
 
 
@@ -410,11 +380,12 @@ def test_the_model_calls_a_vkit_tool_and_the_server_answers(
         "Call the mcp__plugin_vkit_vkit__project_inspect tool, then stop. "
         "Do not use any other tool.",
     )
-    if not [t for t in _init_event(events).get("tools", []) if "vkit" in t]:
-        # The host emits `init` before its MCP server is necessarily connected.
-        # A session that raced loses the tools, so the call is retried against
-        # one where the host attached them. Asserting on a session that never
-        # had the tool would be asserting on the model's refusal instead.
+    if not _vkit_tool_names_used(events):
+        # The model reaching for the tool is the evidence, not the `init`
+        # snapshot, which the host may emit before its server connects. A model
+        # that did not call anything gets one more session, and the retry is
+        # reported if it is the reason the assertion below would have passed
+        # for the wrong reason.
         events = _run_session(
             installed,
             "Call the mcp__plugin_vkit_vkit__project_inspect tool, then stop. "

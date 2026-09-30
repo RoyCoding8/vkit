@@ -22,11 +22,20 @@ function el(tag, attrs = {}, ...children) {
    commands, log tails and the core's refusal messages, and a run writes all
    three, so a log line containing markup must not become markup. */
 
-async function api(route, params = {}) {
+/* GET reads and POST writes. The split is the server's, not this page's: a
+   mutation carries the token the server put in this page, and a request without
+   it is refused there whether this page sent it or not. */
+const SESSION_TOKEN =
+  document.querySelector('meta[name="vkit-token"]').content;
+
+async function api(route, params = {}, mutate = false) {
   const query = new URLSearchParams(
     Object.entries(params).filter(([, v]) => v !== "" && v !== null && v !== undefined),
   ).toString();
-  const response = await fetch(`/api/${route}${query ? `?${query}` : ""}`);
+  const response = await fetch(`/api/${route}${query ? `?${query}` : ""}`, {
+    method: mutate ? "POST" : "GET",
+    headers: mutate ? { "X-Vkit-Token": SESSION_TOKEN } : {},
+  });
   const document_ = await response.json();
   if (!response.ok) {
     const error = new Error(document_.error || `request failed (${response.status})`);
@@ -207,7 +216,7 @@ function runControls(checkId) {
       const planned = await api("plan", { operation: "run_check" });
       change.textContent = `${planned.changes.length} change(s): ` +
         planned.changes.map((c) => c.target).join(", ");
-      const result = await api("run_check", { check_id: checkId });
+      const result = await api("run_check", { check_id: checkId }, true);
       toast(`run ${result.run_id}: ${result.outcome.result}`);
       change.textContent = "";
       await Promise.all([showChecks(), showRuns()]);
@@ -297,7 +306,7 @@ async function showRun(runId) {
 
 async function cancelRun(runId) {
   try {
-    const result = await api("cancel_run", { run_id: runId });
+    const result = await api("cancel_run", { run_id: runId }, true);
     const outcome = result.outcome;
     toast(`cancel ${runId.slice(0, 12)}: ${outcome.result}${outcome.reason ? ` / ${outcome.reason}` : ""}`);
     if (outcome.result === "BLOCKED") {
@@ -377,7 +386,7 @@ function operationButton(op) {
           new Error(planned.note || "not implemented in this build"), { status: 501 })));
         return;
       }
-      const result = await api("apply", { operation: op.name });
+      const result = await api("apply", { operation: op.name }, true);
       const done = (result && result.result) || {};
       const said = done.host_output || done.note || `${op.name} applied`;
       toast(`${op.name}: ${said.split("\n")[0]}`);
@@ -399,7 +408,7 @@ async function runEnroll(outcome) {
   // `apply` wraps the operation's answer as {operation, result}, so the policy
   // is under `result`. Reading it off the top level is how this rendered
   // "Cannot read properties of undefined" on a button that visibly did nothing.
-  const envelope = await api("apply", { operation: "enroll" });
+  const envelope = await api("apply", { operation: "enroll" }, true);
   const policy = envelope.result && envelope.result.policy;
   if (!policy) {
     outcome.replaceChildren(refusal(Object.assign(
@@ -414,7 +423,7 @@ async function runEnroll(outcome) {
   const accept = el("button", { class: "act", type: "button" }, "Accept this policy");
   accept.addEventListener("click", () => busy(accept, "accepting…", async () => {
     try {
-      const done = await api("apply", { operation: "enroll", accepted: "true" });
+      const done = await api("apply", { operation: "enroll", accepted: "true" }, true);
       toast("enrolled: execution is enabled for this policy");
       outcome.replaceChildren(el("p", { class: "note ok", text: done.result.record }));
     } catch (error) {

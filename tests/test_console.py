@@ -576,6 +576,7 @@ def test_a_refusal_over_http_is_a_409_with_the_core_reason(
     try:
         document, status = _post(
             f"http://127.0.0.1:{port}/api/run_check?check_id=no-such-check",
+            bound.session.token,
         )
         assert status == 409
         assert document["error"] == (
@@ -599,7 +600,9 @@ def test_an_unknown_operation_names_the_real_surface_over_http(
     bound, _thread = server.start_in_thread(context, port=0)
     port = bound.server_address[1]
     try:
-        document, status = _post(f"http://127.0.0.1:{port}/api/apply?operation=not_a_thing")
+        document, status = _post(
+            f"http://127.0.0.1:{port}/api/apply?operation=not_a_thing", bound.session.token,
+        )
         assert status == 400
         assert document["error"].startswith("unknown operation 'not_a_thing'")
         for name in WRITABLE_NAMES:
@@ -615,14 +618,17 @@ def test_enroll_over_http_records_acceptance(context: operations.Context) -> Non
     bound, _thread = server.start_in_thread(context, port=0)
     port = bound.server_address[1]
     try:
-        declined, status = _post(f"http://127.0.0.1:{port}/api/apply?operation=enroll")
+        declined, status = _post(
+            f"http://127.0.0.1:{port}/api/apply?operation=enroll", bound.session.token,
+        )
         assert status == 200
         assert declined["result"]["enrolled"] is False
 
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/apply",
             data=json.dumps({"operation": "enroll", "accepted": True}).encode(),
-            headers={"Content-Type": "application/json"}, method="POST",
+            headers={"Content-Type": "application/json", api.TOKEN_HEADER: bound.session.token},
+            method="POST",
         )
         with urllib.request.urlopen(request, timeout=30) as response:
             accepted = json.loads(response.read().decode("utf-8"))
@@ -953,8 +959,10 @@ def _get_bytes(url: str) -> bytes:
         return response.read()
 
 
-def _post(url: str) -> tuple[dict, int]:
-    request = urllib.request.Request(url, data=b"{}", method="POST")
+def _post(url: str, token: str, body: bytes = b"{}") -> tuple[dict, int]:
+    request = urllib.request.Request(
+        url, data=body, method="POST", headers={api.TOKEN_HEADER: token},
+    )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.loads(response.read().decode("utf-8")), response.status

@@ -37,6 +37,21 @@ group. No POSIX signal can reach it afterwards. This code does not claim
 containment past that point, and nothing here should be read as saying
 otherwise.
 
+**And the boundary is measured, in the same run as the containment.** Measured
+on WSL2 Ubuntu 26.04, kernel 6.18.33.2-microsoft-standard-WSL2, by
+scripts/measure_posix_escape.py. The tree is split on purpose: one grandchild
+stays in the group and one calls setsid, so both outcomes are observed under the
+same signal from the same run. The signal is `_kill_process_group`, the one
+`_run_posix` calls on timeout, so the finding is about the product rather than
+about a signal the product never sends.
+
+Observed: the leader and the ordinary grandchild were dead within 20ms, no
+running process remained anywhere in the group, and the setsid descendant was
+still running. Not "may survive" and not "unverified" — the group signal did not
+reach it, which is what leaving the group means. The script establishes the
+escape from /proc before it signals, because a survivor that was never really
+outside the group would prove nothing.
+
 **The POSIX path is tested, on a real POSIX host.** Measured on WSL2 Ubuntu
 26.04, kernel 6.18.33.2-microsoft-standard-WSL2, by scripts/measure_posix_group.py
 and by tests/test_procs_posix_real.py, which runs this module's public function

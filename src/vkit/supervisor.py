@@ -232,6 +232,16 @@ def terminate_owned_tree(job_name: str | None) -> None:
     observe the child, the grandchild and the great-grandchild dead after one
     signal, with no survivor anywhere in the group.
 
+    There is a second, independent reason, and it is the one that decides this.
+    A group signal is a broadcast to the pids in a group, and a descendant that
+    calls setsid is not in that group. Measured in
+    scripts/measure_posix_escape.py, in the same run and under the same signal
+    that killed the ordinary grandchild: the leader and its ordinary grandchild
+    died within 20ms with no running process left in the group, and the setsid
+    descendant was still running. So even a cancel that happened while the
+    leader was still alive would miss a descendant that left the group, which is
+    a smaller failure than the one below and is not the reason this refuses.
+
     What is NOT provided, and is the reason this still refuses, is the property
     the job object gives for free. A Windows tree cannot outlive the handle that
     owns it. A POSIX process group is a set of pids the kernel keeps after its
@@ -240,6 +250,12 @@ def terminate_owned_tree(job_name: str | None) -> None:
     still running after its owner was SIGKILLed. There is no POSIX equivalent of
     a kill-on-last-handle-close, so a cancel that must not leave a tree behind
     cannot be built from a process group.
+
+    A job object closes both gaps at once, which is why the Windows path is a job
+    object and not a walk of the parent-child tree. It is held by a HANDLE rather
+    than by group membership, so a descendant that escapes a group is still
+    inside the job, and the last handle closing is a kill whether or not the
+    process that owned it is still running.
 
     So the refusal stands, and it names the real reason: not "unverified", which
     was true when this was written and is not now, but "no mechanism exists".
@@ -259,11 +275,12 @@ def terminate_owned_tree(job_name: str | None) -> None:
     raise OSError(
         "POSIX cancellation cannot guarantee the tree is stopped. A process group "
         "is signalled on timeout and the signal is measured to reach every "
-        "descendant, but a group is not keyed to its creator: the kernel keeps it "
-        "after the leader exits, and POSIX has no equivalent of a job object's "
-        "kill-on-last-handle-close. A run cancelled from another process may "
-        "therefore leave descendants behind, so the claim is retained and the "
-        "operator reconciles it."
+        "descendant that stays in it, but a group is not keyed to its creator: the "
+        "kernel keeps it after the leader exits, and POSIX has no equivalent of a "
+        "job object's kill-on-last-handle-close. A descendant that calls setsid "
+        "also leaves the group and cannot be signalled at all. A run cancelled "
+        "from another process may therefore leave descendants behind, so the "
+        "claim is retained and the operator reconciles it."
     )
 
 

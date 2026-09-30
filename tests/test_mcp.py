@@ -429,8 +429,17 @@ def test_task_finalize_of_an_unknown_task_is_refused(tools: Server) -> None:
 def test_run_cancel_refuses_when_the_record_carries_no_verified_identity(tools: Server) -> None:
     """The core verifies (pid, creation_time). A record with only a pid cannot
     be verified, so the refusal is explicit and the claims stay held."""
-    task_id = begin_task(tools)
-    run_id = start(tools, task_id).content["runs"][0]["run_id"]
+    # A run that FINISHED cannot exercise this path: cancelling a completed run
+    # correctly returns the outcome it actually reached. The refusal needs a run
+    # that is still in flight, so register one that never launches a process.
+    run_id = "0" * 32   # the shape this build mints; the guard rejects anything else
+    tools._store().register_run(
+        run_id, "totals-behavior", task_id=None, attempt=None,
+        source={"head": "h", "inventory_digest": "i", "dirty": False},
+        configuration_digest="c", fixture_digest=None,
+    )
+    tools._store().mark_running(run_id, {"pid": 4321, "ownership": "windows_job_object",
+                                      "exit_code": None, "timed_out": False})
 
     result = tools.call_tool("run_cancel", {"run_id": run_id, "request_id": "req-cancel-1"})
     assert result.is_error is True

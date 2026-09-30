@@ -11,3 +11,5 @@ build/
 tmp/*
 !tmp/research/
 !tmp/source/
+
+# Decision trail. Committed deliberately: a reviewer needs it to trust the result.

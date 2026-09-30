@@ -412,6 +412,53 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def test_a_run_recorded_without_a_creation_time_cannot_be_cancelled() -> None:
+    """A pid with no creation time is not a partial identity, it is no identity.
+
+    `_identity_of` used to pass `recorded.get("creation_time")` straight into
+    `ProcessIdentity`, whose field is typed `int`. A record that stored a pid
+    but not its creation time therefore produced `creation_time=None`, which
+    fails every comparison in `still_the_same_process`. The cancellation was
+    refused as `ownership_lost` -- the safe direction -- but the user was told
+    a process was not theirs when it was, and the type contract was violated at
+    a boundary that is supposed to be checked.
+    """
+    from vkit.cli import _identity_of
+    from vkit.cli import Refused
+
+    with pytest.raises(Refused) as caught:
+        _identity_of({"pid": 4242, "check_id": "demo"})
+
+    message = str(caught.value)
+    assert "creation time" in message
+    assert "pids are recycled" in message
+
+
+def test_a_recorded_pid_with_a_creation_time_is_cancellable() -> None:
+    """The guard must not refuse a well-formed identity, or it is a new bug."""
+    from vkit.cli import _identity_of
+
+    identity = _identity_of({"pid": 4242, "creation_time": 133000000000000000,
+                             "check_id": "demo"})
+
+    assert identity.pid == 4242
+    assert identity.creation_time == 133000000000000000
+
+
+def test_a_zero_creation_time_is_refused_like_a_missing_one() -> None:
+    """Zero is what a record gets when a field was written but never populated.
+
+    It is falsy and it compares unequal to every real FILETIME, so it is the
+    same defect as absent and is refused the same way.
+    """
+    from vkit.cli import _identity_of
+    from vkit.cli import Refused
+
+    for bad in (0, None, -1, "133", True):
+        with pytest.raises(Refused):
+            _identity_of({"pid": 4242, "creation_time": bad, "check_id": "demo"})
+
+
 def test_mcp_serve_lists_the_bound_project_tools(tmp_path: Path) -> None:
     """The plugin's .mcp.json runs `vkit mcp serve --project <root>`. If that
     subcommand does not exist, the plugin ships a config pointing at nothing and a

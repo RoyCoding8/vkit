@@ -5,6 +5,7 @@ runs `vkit` as a subprocess against a throwaway repository, and every assertion 
 a literal expected value observed from that process.
 
 Run:  .venv/Scripts/python.exe scripts/acceptance.py
+      bash scripts/posix-run.sh scripts/acceptance.py
 """
 from __future__ import annotations
 
@@ -18,7 +19,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "python-cli"
-VKIT = Path(sys.executable).parent / "vkit.exe"
+# The console script sits beside the interpreter that installed it, and pip
+# names it vkit.exe on Windows and vkit everywhere else. Hardcoding the Windows
+# spelling made this table refuse to run on any other platform, which is the
+# same untested-other-OS gap the product is trying to close.
+VKIT = Path(sys.executable).with_name("vkit.exe" if sys.platform == "win32" else "vkit")
+
+# The two values run-report.v1.json admits for `process.ownership`. Read from
+# the module that reports them rather than restated here, so a row cannot drift
+# from the vocabulary the schema owns.
+sys.path.insert(0, str(ROOT / "src"))
+from vkit.procs import POSIX_OWNERSHIP, WINDOWS_OWNERSHIP  # noqa: E402
+
+IS_WINDOWS = sys.platform == "win32"
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 results: list[tuple[str, str, str]] = []
@@ -71,13 +84,20 @@ def row_installed_package_drives_example() -> None:
     )
     shown = run("run", "show", "--project", str(repo), "--run", payload["run_id"], "--json")
     report = json.loads(shown.stdout or "{}")
+    # The schema owns the vocabulary and admits exactly two values for
+    # `process.ownership`. Asserting the Windows one on every platform made
+    # this row fail wherever the other mechanism is the one that ran, which
+    # read as a broken product rather than as the platform it actually ran on.
+    ownership = report.get("process", {}).get("ownership")
     check(
         "  ... with actual command provenance",
         report.get("command", {}).get("argv", [None])[0] == "python"
         and bool(report.get("source", {}).get("head"))
-        and report.get("process", {}).get("ownership") == "windows_job_object",
+        and ownership in (WINDOWS_OWNERSHIP, POSIX_OWNERSHIP),
         f"argv0={report.get('command', {}).get('argv', ['?'])[0]} "
-        f"ownership={report.get('process', {}).get('ownership')}",
+        f"ownership={ownership} "
+        f"(this host is {'Windows' if IS_WINDOWS else 'POSIX'}, and the run was "
+        f"owned by a {ownership})",
     )
 
 

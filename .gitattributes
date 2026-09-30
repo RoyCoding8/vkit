@@ -1,0 +1,21 @@
+# A shell script checked out with CRLF line endings does not run on POSIX: bash
+# reads the CR as part of the command name, so `bash scripts/posix-run.sh`
+# fails with an error naming a token that is not there. Measured on this host
+# before these rules existed: the WSL verification scripts could not be executed
+# from a fresh checkout at all.
+#
+# These scripts are run on both platforms, so the line ending is part of what
+# they are. `text=auto` lets git normalise on commit, and the explicit eol
+# settings pin the working-tree form: LF for anything a POSIX shell reads, CRLF
+# for anything only Windows reads.
+* text=auto
+
+*.sh text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf

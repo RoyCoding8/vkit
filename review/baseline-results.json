@@ -1,15 +1,15 @@
 {
-  "scratch": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-floor-audit-5vrhz01d",
+  "scratch": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-floor-audit-oi5f3p7x",
   "registered_checks": [
     "totals-behavior",
     "mandatory-second"
   ],
   "run": {
-    "task_id": "03eb5a031ea4468ea68e03d130649016",
+    "task_id": "fae75f4e5ba5425b93cec34da8224adf",
     "generation": 1,
     "runs": [
       {
-        "run_id": "cc91ac7a1ba94a28987f192409d53055",
+        "run_id": "174712c3a67144f7900fc368d86dcf59",
         "check_id": "totals-behavior",
         "result": "PASS",
         "outcome": {
@@ -51,54 +51,82 @@
         "replayed": false
       }
     ],
-    "summary": "1 check(s) passed for task 03eb5a031ea4468ea68e03d130649016"
+    "summary": "1 check(s) passed for task fae75f4e5ba5425b93cec34da8224adf"
   },
   "cli_finalize": {
-    "exit_code": 0,
+    "exit_code": 3,
     "payload": {
       "command": "task finalize",
-      "task_id": "03eb5a031ea4468ea68e03d130649016",
+      "task_id": "fae75f4e5ba5425b93cec34da8224adf",
       "status": "active",
-      "readiness": "READY",
-      "gaps": [],
+      "readiness": "BLOCKED",
+      "gaps": [
+        "no completed run for required check 'mandatory-second'"
+      ],
+      "history": [],
       "required_checks": [
+        "mandatory-second",
         "totals-behavior"
       ],
       "context": {
         "generation": 1,
-        "policy_digest": "98741173526daef03a24f6031455f9762ac0dd9da7b0d786fb186aed4dced5ba"
+        "required_checks": [
+          "mandatory-second",
+          "totals-behavior"
+        ],
+        "identities": {
+          "source_inventory_digest": "cfbd1b44ecc4f2d37f97d1237d7d48601fb015cd56b946cf2f30acad7284a803",
+          "policy_digest": "b0c0e8390552906d414b66940aebb06e6e9b3f98c187c7b38c2cdde1344223d0",
+          "fixture_digest": "a4695bf0e08837abead6111a3156f042fdf20de914bfbdbc42f14e9927612e7e"
+        },
+        "unverified_identities": [
+          "fixtures"
+        ]
       }
     }
   },
   "mcp_finalize": {
-    "task_id": "03eb5a031ea4468ea68e03d130649016",
+    "task_id": "fae75f4e5ba5425b93cec34da8224adf",
     "generation": 1,
     "readiness": "BLOCKED",
     "gaps": [
       "no completed run for required check 'mandatory-second'"
     ],
+    "history": [],
     "required_checks": [
       "mandatory-second",
       "totals-behavior"
     ],
     "context": {
       "generation": 1,
-      "policy_digest": "98741173526daef03a24f6031455f9762ac0dd9da7b0d786fb186aed4dced5ba"
+      "required_checks": [
+        "mandatory-second",
+        "totals-behavior"
+      ],
+      "identities": {
+        "source_inventory_digest": "cfbd1b44ecc4f2d37f97d1237d7d48601fb015cd56b946cf2f30acad7284a803",
+        "policy_digest": "b0c0e8390552906d414b66940aebb06e6e9b3f98c187c7b38c2cdde1344223d0",
+        "fixture_digest": "a4695bf0e08837abead6111a3156f042fdf20de914bfbdbc42f14e9927612e7e"
+      },
+      "unverified_identities": [
+        "fixtures"
+      ]
     },
-    "summary": "task 03eb5a031ea4468ea68e03d130649016 is BLOCKED: 1 gap(s)"
+    "summary": "task fae75f4e5ba5425b93cec34da8224adf is BLOCKED: 1 gap(s)"
   },
   "mcp_after_manifest_removal": {
-    "task_id": "03eb5a031ea4468ea68e03d130649016",
+    "task_id": "fae75f4e5ba5425b93cec34da8224adf",
     "generation": 1,
-    "readiness": "READY",
-    "gaps": [],
-    "required_checks": [
-      "totals-behavior"
+    "readiness": "BLOCKED",
+    "gaps": [
+      "there is no usable policy at C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-floor-audit-oi5f3p7x\\verification\\manifest.json: no manifest at C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-floor-audit-oi5f3p7x\\verification\\manifest.json"
     ],
+    "history": [],
+    "required_checks": [],
     "context": {
       "generation": 1,
-      "policy_digest": "98741173526daef03a24f6031455f9762ac0dd9da7b0d786fb186aed4dced5ba"
+      "policy_digest": "b0c0e8390552906d414b66940aebb06e6e9b3f98c187c7b38c2cdde1344223d0"
     },
-    "summary": "task 03eb5a031ea4468ea68e03d130649016 is READY"
+    "summary": "task fae75f4e5ba5425b93cec34da8224adf is BLOCKED: 1 gap(s)"
   }
 }

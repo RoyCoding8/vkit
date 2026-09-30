@@ -27,11 +27,14 @@ def digest(**fields):
     changed = dataclasses.replace(check, **fields)
     return dataclasses.replace(manifest, checks={changed.id: changed}).digest()
 
-wheel = next((ROOT / 'review/dist').glob('*.whl'))
-with zipfile.ZipFile(wheel) as z:
-    schema_matches = {Path(name).name: hashlib.sha256(z.read(name)).hexdigest() ==
-                      hashlib.sha256((ROOT / 'schemas' / Path(name).name).read_bytes()).hexdigest()
-                      for name in z.namelist() if name.startswith('vkit/_schemas/')}
+wheels = sorted((ROOT / 'review/dist').glob('*.whl'))
+if wheels:
+    with zipfile.ZipFile(wheels[0]) as z:
+        schema_matches = {Path(name).name: hashlib.sha256(z.read(name)).hexdigest() ==
+                          hashlib.sha256((ROOT / 'schemas' / Path(name).name).read_bytes()).hexdigest()
+                          for name in z.namelist() if name.startswith('vkit/_schemas/')}
+else:
+    schema_matches = {'<no wheel built>': False}
 formal_matches = {}
 for source, receipt, key in (
     ('formal/tla/OwnershipAcceptance.tla', 'formal/results/OwnershipAcceptance-receipt.json', 'model_sha256'),

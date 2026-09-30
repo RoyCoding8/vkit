@@ -35,7 +35,14 @@ from ..paths import Project, ProjectError, open_project
 from ..procidentity import ProcessIdentity
 from ..storage import ConflictError, Store, StoreError
 from ..supervisor import cancel_run, outcome_from_report
-from ..tasks import TaskError, compute_readiness, get_task, open_task, record_readiness
+from ..tasks import (
+    TaskError,
+    acceptance_context,
+    admit,
+    finalize,
+    get_task,
+    verify_ownership,
+)
 
 # --- bounds -----------------------------------------------------------------
 #
@@ -241,6 +248,16 @@ class Server:
         except ManifestError:
             return None
 
+    def _registered_policy(self) -> Manifest:
+        """The registered policy, or the error explaining why there is none.
+
+        `tasks.acceptance_context` takes this shape: it has to distinguish "no
+        policy" from "a policy that will not parse", because both block but say
+        different things. `_manifest` collapses them to None for the benefit of
+        the read-only inspection paths, which report rather than decide.
+        """
+        return parse_manifest(self.project, self.project.runs_root / "probe")
+
     def _own_run(self, store: Store, run_id: str) -> dict[str, Any]:
         """The recorded process identity of a run belonging to THIS project.
 
@@ -332,6 +349,14 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
     from ..discover import inspect_repository
     from ..enroll import read_enrollment
 
+    # Inspection reports rather than deciding, so a manifest that will not parse
+    # is reported as absent instead of raised. Admission reads `_registered_policy`
+    # and does distinguish the two.
+    try:
+        manifest = server._manifest()
+    except Exception:  # noqa: BLE001 - inspection reports, it does not raise
+        manifest = None
+
     try:
         enrollment = read_enrollment(server.project)
     except Exception:  # noqa: BLE001 - an unreadable record is not_enrolled
@@ -392,10 +417,6 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
         if len(declared) > limit:
             content["truncated"] = True
         registered = set()
-        try:
-            manifest = server._manifest()
-        except Exception:  # noqa: BLE001 - reported as a gap, not raised
-            manifest = None
         if manifest is not None:
             registered = set(manifest.checks)
         unclaimed = [c.id for c in declared if c.id.replace(":", "-") not in registered]
@@ -406,16 +427,6 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
                 + ". Registering one is a person writing the driver that exercises "
                 "the application, which this server will not do"
             )
-
-    try:
-        manifest = server._manifest()
-    except Exception:  # noqa: BLE001 - inspection reports, it does not raise
-        manifest = None
-
-    try:
-        manifest = server._manifest()
-    except Exception:  # noqa: BLE001 - inspection reports, it does not raise
-        manifest = None
 
     if manifest is None:
         content["gaps"].append(
@@ -490,21 +501,41 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
 # --- task_begin --------------------------------------------------------------
 
 def _task_begin(server: Server, args: dict[str, Any]) -> ToolResult:
-    """Open a task attempt and take the resource the core says it owns."""
+    """Open a task attempt through the core admission decision.
+
+    The contract's `required_checks`, `claim_resource` and `scope` are the
+    caller's request. Everything the attempt is *bound* to — the repository, the
+    approved policy digest, the mandatory floor — is derived inside
+    `tasks.admit`, and a required resource it cannot take refuses the admission
+    rather than being reported beside an admitted task.
+    """
     request_id = _text(args, "request_id")
     contract = args.get("contract")
     if not isinstance(contract, dict) or not contract:
         raise TypeError("contract must be a non-empty object")
-    policy_digest = _text(args, "policy_digest")
-    checkout_ref = _text(args, "checkout_ref")
+    scope = args.get("scope")
+    if scope is not None and not isinstance(scope, str):
+        raise TypeError("scope must be a string when given")
     owner = args.get("owner")
     if owner is not None and (not isinstance(owner, str) or not owner.strip()):
         raise TypeError("owner must be a non-empty string when given")
 
+    resources = []
+    resource = args.get("claim_resource")
+    if isinstance(resource, str) and resource:
+        resources.append({"key": resource, "kind": "exclusive"})
+
+    selected = contract.get("required_checks", [])
+    if not isinstance(selected, list) or any(not isinstance(c, str) or not c for c in selected):
+        raise TypeError("contract.required_checks must be a list of check id strings")
+    # A contract's free-text description is the scope an agent means when it
+    # supplies no scope of its own; `scope` is the field that overrides it.
+    declared_scope = scope if isinstance(scope, str) else contract.get("description", "")
+
     store = server._store()
     payload = _identity({
-        "contract": contract, "policy_digest": policy_digest,
-        "checkout_ref": checkout_ref, "owner": owner,
+        "contract": contract, "scope": scope, "owner": owner,
+        "claim_resource": resource,
     })
     try:
         task_id = claim_request(
@@ -528,48 +559,67 @@ def _task_begin(server: Server, args: dict[str, Any]) -> ToolResult:
         )
 
     try:
-        record = open_task(store, task_id=task_id, contract=contract, policy_digest=policy_digest)
-        admitted, admission_error = True, None
-    except TaskError as exc:
-        # The id is already recorded, so a retry cannot mint a second task. The
-        # refusal is reported against the task that exists.
-        record = get_task(store, task_id)
-        admitted, admission_error = False, str(exc)
-
-    from ..claims import ResourceSpec, acquire, holders
-
-    claim: dict[str, Any] | None = None
-    claim_error: str | None = None
-    resource = args.get("claim_resource")
-    if isinstance(resource, str) and resource:
-        spec = ResourceSpec(key=resource, kind="exclusive")
+        get_task(store, task_id)
+    except TaskError:
+        context = acceptance_context(server.project, server._registered_policy)
         try:
-            acquire(store, task_id, record.generation, [spec])
-            held = holders(store, task_id)
-            claim = held[0].__dict__ if held else None
-        except (ConflictError, ValueError) as exc:
-            claim_error = str(exc)
+            admitted = admit(
+                store, task_id, context=context, required_checks=selected,
+                scope=declared_scope,
+                resources=resources or None,
+                declared={"owner": owner} if owner else None,
+            )
+        except ConflictError as exc:
+            # The resource is held elsewhere. Admission is refused, so there is no
+            # task to run checks under and nothing believes it owns the checkout.
+            return ToolResult(
+                {
+                    "task_id": task_id,
+                    "admitted": False,
+                    "claim_conflict": str(exc),
+                    "summary": f"task {task_id} was not admitted: {exc}",
+                },
+                is_error=True,
+                kind="conflict",
+            )
+        except TaskError as exc:
+            # The id is already recorded, so a retry cannot mint a second task.
+            # The refusal is reported against the task that exists.
+            return ToolResult(
+                {
+                    "task_id": task_id,
+                    "admitted": False,
+                    "admission_conflict": str(exc),
+                    "summary": f"task {task_id} was not admitted: {exc}",
+                },
+                is_error=True,
+                kind="refused",
+            )
+        record = admitted.task
+        required = list(admitted.contract.required_checks)
+    else:
+        record = get_task(store, task_id)
+        required = list(record.pinned().required_checks)
 
+    from ..claims import holders
+
+    held = holders(store, task_id)
     content = {
         "task_id": task_id,
         "generation": record.generation,
         "status": record.status,
-        "admitted": admitted,
-        "checkout_ref": checkout_ref,
+        "admitted": True,
         "owner": owner,
-        "claim": claim,
+        "claim": [claim.__dict__ for claim in held] or None,
         "readiness": record.readiness,
+        "required_checks": required,
+        "policy_digest": record.policy_digest,
         "summary": (
-            f"task {task_id} open at generation {record.generation}"
-            if admitted else
-            f"task {task_id} was not admitted: {admission_error}"
+            f"task {task_id} open at generation {record.generation}, requiring "
+            f"{', '.join(required)}"
         ),
     }
-    if admission_error:
-        content["admission_conflict"] = admission_error
-    if claim_error:
-        content["claim_conflict"] = claim_error
-    return ToolResult(content, is_error=not admitted, kind="refused" if not admitted else "ok")
+    return ToolResult(content)
 
 
 # --- check_start -------------------------------------------------------------
@@ -623,6 +673,13 @@ def _check_start(server: Server, args: dict[str, Any]) -> ToolResult:
         return _refused(
             f"check_start: task {task_id} is closed and cannot start new runs", kind="refused"
         )
+    # Rechecked here, not only at admission. A required resource can be released
+    # by recovery while the attempt is still open, and a check launched under a
+    # task that has lost its checkout is two workers writing one tree.
+    try:
+        verify_ownership(store, task_id, task.generation)
+    except (TaskError, ConflictError) as exc:
+        return _refused(f"check_start: {exc}", kind="refused")
 
     payload = _identity({"task_id": task_id, "check_ids": check_ids})
     runs = {
@@ -852,14 +909,14 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> ToolResult:
 # --- task_finalize -----------------------------------------------------------
 
 def _task_finalize(server: Server, args: dict[str, Any]) -> ToolResult:
-    """Compute and record readiness from recorded evidence.
+    """Decide readiness through the core acceptance decision, and record it.
 
-    The required set is the union of the manifest's baseline and whatever the
-    task added. A client that sends a smaller list cannot shrink the baseline,
-    so "run two of three checks and declare READY" is not expressible.
+    The floor is the one frozen at admission, derived from the approved policy,
+    so a client that sends a smaller list narrows nothing and a policy file that
+    has since been deleted cannot empty it either.
     """
     task_id = _text(args, "task_id")
-    extra = set(_string_list(args, "check_ids"))
+    extra = _string_list(args, "check_ids")
 
     store = server._store()
     try:
@@ -867,35 +924,26 @@ def _task_finalize(server: Server, args: dict[str, Any]) -> ToolResult:
     except TaskError as exc:
         return _refused(f"task_finalize: {exc}", kind="refused")
 
-    contract_extra = task.contract.get("required_checks")
-    if contract_extra is not None and (
-        not isinstance(contract_extra, list) or any(not isinstance(c, str) for c in contract_extra)
-    ):
-        return _refused(
-            f"task {task_id} recorded a contract whose required_checks is not a list of "
-            "check ids; the baseline cannot be computed",
-            kind="refused",
-        )
-
-    required: set[str] = set(contract_extra or ()) | extra
-    manifest = server._manifest()
-    if manifest is not None:
-        # The baseline is a floor, not a starting point. Passing a smaller list
-        # narrows nothing; it can only widen.
-        required |= set(manifest.checks)
-
-    result = compute_readiness(store, task_id, required_check_ids=sorted(required))
     try:
-        record = record_readiness(store, task_id, result)
-    except (TaskError, ConflictError) as exc:
+        result = finalize(
+            store, task_id,
+            context=acceptance_context(server.project, server._registered_policy),
+            additional_checks=extra,
+        )
+    except ConflictError as exc:
+        return _refused(f"task_finalize: {exc}", kind="conflict")
+    except TaskError as exc:
+        # A contract this build cannot validate leaves no floor to decide
+        # against. That is a block, not a pass.
         return _refused(f"task_finalize: {exc}", kind="refused")
 
     content = {
         "task_id": task_id,
-        "generation": record.generation,
+        "generation": task.generation,
         "readiness": result.readiness,
         "gaps": list(result.gaps),
-        "required_checks": sorted(required),
+        "history": list(result.history),
+        "required_checks": result.context.get("required_checks", []),
         "context": result.context,
         "summary": f"task {task_id} is {result.readiness}"
                    + (f": {len(result.gaps)} gap(s)" if result.gaps else ""),
@@ -935,30 +983,29 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="task_begin",
         description=(
-            "Open a task attempt against the bound project, pinning its contract "
-            "and policy. Idempotent on request_id: a retry returns the same task, "
-            "and reusing a key with a different contract is refused."
+            "Open a task attempt against the bound project. The contract's "
+            "required_checks may add to the approved policy's own checks but "
+            "cannot remove one, and the policy digest and repository binding are "
+            "derived rather than supplied. Idempotent on request_id: a retry "
+            "returns the same task, and reusing a key with a different contract "
+            "is refused."
         ),
         input_schema={
             "type": "object",
             "additionalProperties": False,
-            "required": ["contract", "policy_digest", "checkout_ref", "request_id"],
+            "required": ["contract", "request_id"],
             "properties": {
                 "contract": {
                     "type": "object",
                     "description": (
                         "The reviewed contract. An optional 'required_checks' list "
-                        "adds checks on top of the manifest baseline; it cannot "
+                        "adds checks on top of the approved policy; it cannot "
                         "remove one."
                     ),
                 },
-                "policy_digest": {
+                "scope": {
                     "type": "string", "minLength": 1,
-                    "description": "Digest of the policy this attempt is bound to.",
-                },
-                "checkout_ref": {
-                    "type": "string", "minLength": 1,
-                    "description": "The checkout reference this attempt works in.",
+                    "description": "What this attempt is for. Recorded, not enforced.",
                 },
                 "owner": {
                     "type": "string", "minLength": 1,
@@ -966,7 +1013,10 @@ TOOLS: tuple[ToolSpec, ...] = (
                 },
                 "claim_resource": {
                     "type": "string", "minLength": 1,
-                    "description": "Optional exclusive resource key to claim for the attempt.",
+                    "description": (
+                        "Optional exclusive resource key this attempt requires. "
+                        "Admission is refused if it is already held."
+                    ),
                 },
                 "request_id": {
                     "type": "string", "minLength": 1,
@@ -1070,8 +1120,9 @@ TOOLS: tuple[ToolSpec, ...] = (
         name="task_finalize",
         description=(
             "Compute and record READY, REJECTED or BLOCKED for a task from its "
-            "recorded evidence. The required set is the manifest's checks plus any "
-            "the task added; a shorter list cannot reduce it."
+            "recorded evidence and the identities in force. The required set is "
+            "the floor frozen at admission; check_ids may add to it and cannot "
+            "reduce it."
         ),
         input_schema={
             "type": "object",
@@ -1081,7 +1132,7 @@ TOOLS: tuple[ToolSpec, ...] = (
                 "task_id": {"type": "string", "minLength": 1, "description": "An open task id."},
                 "check_ids": {
                     "type": "array", "items": {"type": "string", "minLength": 1},
-                    "description": "Extra checks to require on top of the manifest baseline.",
+                    "description": "Extra checks to require on top of the frozen floor.",
                 },
             },
         },

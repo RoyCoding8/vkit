@@ -38,6 +38,22 @@ import reference  # noqa: E402
 REQUIRED_CHECKS = reference.REQUIRED_CHECKS
 
 
+def _contract() -> dict:
+    """A contract `pinned()` can read back.
+
+    These traces drive the generation guard, not admission, so they write the
+    row directly. What they must not write is a contract the core refuses to
+    read: acceptance would then have no floor to compare a pass against.
+    """
+    return {
+        "repository": {"root": ".", "git_common_dir": "."},
+        "policy_digest": "pd",
+        "required_checks": list(REQUIRED_CHECKS),
+        "scope": "formal trace",
+        "resources": [],
+        "declared": {},
+    }
+
 def _record_pass(store: Store, owner: str, check: str, revision: str = "rev1") -> None:
     """Publish one terminal passing run, the way a completed check does."""
     run_id = f"r-{owner}-{check}"
@@ -67,7 +83,7 @@ def test_a_superseded_attempt_cannot_publish_ready(tmp_path: Path) -> None:
     core leaves the task row reading READY.
     """
     store = Store(tmp_path / "state.sqlite3")
-    open_task(store, task_id="w1", contract={"g": "x"}, policy_digest="pd")
+    open_task(store, task_id="w1", contract=_contract(), policy_digest="pd")
     for check in REQUIRED_CHECKS:
         _record_pass(store, "w1", check)
 
@@ -100,7 +116,7 @@ def test_one_missing_required_check_is_never_ready(tmp_path: Path) -> None:
     counterexample.
     """
     store = Store(tmp_path / "state.sqlite3")
-    open_task(store, task_id="w1", contract={"g": "x"}, policy_digest="pd")
+    open_task(store, task_id="w1", contract=_contract(), policy_digest="pd")
     _record_pass(store, "w1", REQUIRED_CHECKS[0])
 
     verdict = compute_readiness(store, "w1", required_check_ids=list(REQUIRED_CHECKS))
@@ -133,7 +149,7 @@ def test_evidence_from_a_superseded_attempt_cannot_satisfy_readiness(tmp_path: P
     the implementation disagreed. This is the test that says which one is right.
     """
     store = Store(tmp_path / "state.sqlite3")
-    open_task(store, task_id="w1", contract={"g": "x"}, policy_digest="pd")
+    open_task(store, task_id="w1", contract=_contract(), policy_digest="pd")
     for check in REQUIRED_CHECKS:
         _record_pass(store, "w1", check)
 
@@ -150,6 +166,14 @@ def test_evidence_from_a_superseded_attempt_cannot_satisfy_readiness(tmp_path: P
         "no runs of its own, so its acceptance rests on another attempt's work"
     )
     assert second.gaps, "a readiness short of READY must say what is missing"
-    assert any("attempt" in gap or "generation" in gap for gap in second.gaps), (
-        f"the gaps must name the staleness, not merely the absence: {second.gaps}"
+    # The two are separate on purpose. The gap says this attempt has produced
+    # nothing, which is what it must fix; the history says where the runs it
+    # cannot use went. Reporting the staleness as the gap would read as though
+    # the current attempt's own evidence were missing, and a reader would go
+    # looking for a failure that never happened.
+    assert all("no completed run" in gap for gap in second.gaps), (
+        f"the gaps must describe this attempt's own evidence: {second.gaps}"
+    )
+    assert any("attempt" in line for line in second.history), (
+        f"the superseded runs must be reported as history: {second.history}"
     )

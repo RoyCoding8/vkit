@@ -1,13 +1,19 @@
 {
-  "scratch": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-3yv4v15i",
+  "scratch": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb",
   "tests": {
+    "caller_supplied_bindings_are_refused": {
+      "begin": {
+        "error": "task_begin: unknown argument(s): checkout_ref, policy_digest",
+        "summary": "task_begin: unknown argument(s): checkout_ref, policy_digest"
+      }
+    },
     "source_changed_after_pass": {
       "run": {
-        "task_id": "a36af37b17e441aaa18c704c2feadf2d",
+        "task_id": "b7fc227c73564303a5b591761313f8f0",
         "generation": 1,
         "runs": [
           {
-            "run_id": "914e3d446dcd43e09941556d3dc5469d",
+            "run_id": "f9948fbf9b3f42c5a93eef3b81492531",
             "check_id": "totals-behavior",
             "result": "PASS",
             "outcome": {
@@ -49,153 +55,113 @@
             "replayed": false
           }
         ],
-        "summary": "1 check(s) passed for task a36af37b17e441aaa18c704c2feadf2d"
+        "summary": "1 check(s) passed for task b7fc227c73564303a5b591761313f8f0"
       },
       "before": {
-        "task_id": "a36af37b17e441aaa18c704c2feadf2d",
+        "task_id": "b7fc227c73564303a5b591761313f8f0",
         "generation": 1,
         "readiness": "READY",
         "gaps": [],
+        "history": [],
         "required_checks": [
           "totals-behavior"
         ],
         "context": {
           "generation": 1,
-          "policy_digest": "caller-supplied-policy"
+          "required_checks": [
+            "totals-behavior"
+          ],
+          "identities": {
+            "source_inventory_digest": "77c42a040a2724543d14e2d2bffe0df81c6322a4658c264d993eb7a85dee3a7f",
+            "policy_digest": "243865c214aa1e7a2df811c6d6528c39ec91279005052720bb68d06f9a11490b",
+            "fixture_digest": "23434b062bad3b8339638261eb471212db6eba8a3c023fe088aa81bf38a9e8f5"
+          },
+          "unverified_identities": [
+            "fixtures",
+            "policy"
+          ]
         },
-        "summary": "task a36af37b17e441aaa18c704c2feadf2d is READY"
+        "summary": "task b7fc227c73564303a5b591761313f8f0 is READY"
       },
       "after": {
-        "task_id": "a36af37b17e441aaa18c704c2feadf2d",
+        "task_id": "b7fc227c73564303a5b591761313f8f0",
         "generation": 1,
-        "readiness": "READY",
-        "gaps": [],
+        "readiness": "BLOCKED",
+        "gaps": [
+          "required check 'totals-behavior' passed against a different source (77c42a040a2724543d14e2d2bffe0df81c6322a4658c264d993eb7a85dee3a7f) than the one this attempt is bound to (7d3178202b2ee9b88643db2c1721e74a1d182124aeab4947bcb7ef2e280b7844); the source changed since that run, so re-run it"
+        ],
+        "history": [],
         "required_checks": [
           "totals-behavior"
         ],
         "context": {
           "generation": 1,
-          "policy_digest": "caller-supplied-policy"
+          "required_checks": [
+            "totals-behavior"
+          ],
+          "identities": {
+            "source_inventory_digest": "7d3178202b2ee9b88643db2c1721e74a1d182124aeab4947bcb7ef2e280b7844",
+            "policy_digest": "243865c214aa1e7a2df811c6d6528c39ec91279005052720bb68d06f9a11490b",
+            "fixture_digest": "f6dfd2fc14f2bbfe91a542b8a1d1343c2c9e2827d869a011ce270de48a4abc14"
+          },
+          "unverified_identities": [
+            "fixtures",
+            "policy"
+          ]
         },
-        "summary": "task a36af37b17e441aaa18c704c2feadf2d is READY"
+        "summary": "task b7fc227c73564303a5b591761313f8f0 is BLOCKED: 1 gap(s)"
       },
       "defect_was_inserted": true
     },
     "unenrolled_zero_checks": {
       "begin": {
-        "task_id": "dfc22fd33cb54d3c86b79eec682381f5",
-        "generation": 1,
-        "status": "active",
-        "admitted": true,
-        "checkout_ref": "a-nonexistent-ref",
-        "owner": "auditor",
-        "claim": null,
-        "readiness": null,
-        "summary": "task dfc22fd33cb54d3c86b79eec682381f5 open at generation 1"
-      },
-      "finalize": {
-        "task_id": "dfc22fd33cb54d3c86b79eec682381f5",
-        "generation": 1,
-        "readiness": "READY",
-        "gaps": [],
-        "required_checks": [],
-        "context": {
-          "generation": 1,
-          "policy_digest": "caller-supplied-policy"
-        },
-        "summary": "task dfc22fd33cb54d3c86b79eec682381f5 is READY"
+        "task_id": "9f6d66b325a64339a23cf74c5e8681f0",
+        "admitted": false,
+        "admission_conflict": "there is no usable policy at C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb\\unenrolled\\verification\\manifest.json: no manifest at C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb\\unenrolled\\verification\\manifest.json",
+        "summary": "task 9f6d66b325a64339a23cf74c5e8681f0 was not admitted: there is no usable policy at C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb\\unenrolled\\verification\\manifest.json: no manifest at C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb\\unenrolled\\verification\\manifest.json"
       },
       "manifest_exists": false
     },
     "claim_conflict_still_executes": {
       "first": {
-        "task_id": "1d71c8b6940c44cd9d1f1b8811836433",
+        "task_id": "074f12cb772b44d7bd0d987be65029f8",
         "generation": 1,
         "status": "active",
         "admitted": true,
-        "checkout_ref": "a-nonexistent-ref",
         "owner": "auditor",
-        "claim": {
-          "resource_key": "exclusive-checkout",
-          "kind": "exclusive",
-          "capacity": null,
-          "held": 1,
-          "task_id": "1d71c8b6940c44cd9d1f1b8811836433",
-          "generation": 1,
-          "acquired_at": "2026-09-30T13:18:48.057796+00:00"
-        },
-        "readiness": null,
-        "summary": "task 1d71c8b6940c44cd9d1f1b8811836433 open at generation 1"
-      },
-      "second": {
-        "task_id": "73949bef90cf4dab9d6995401e4976da",
-        "generation": 1,
-        "status": "active",
-        "admitted": true,
-        "checkout_ref": "a-nonexistent-ref",
-        "owner": "auditor",
-        "claim": null,
-        "readiness": null,
-        "summary": "task 73949bef90cf4dab9d6995401e4976da open at generation 1",
-        "claim_conflict": "resource 'exclusive-checkout' is already held by task '1d71c8b6940c44cd9d1f1b8811836433' at generation 1"
-      },
-      "second_run": {
-        "task_id": "73949bef90cf4dab9d6995401e4976da",
-        "generation": 1,
-        "runs": [
+        "claim": [
           {
-            "run_id": "e802aa1e57314599aba10db7a534d1d0",
-            "check_id": "totals-behavior",
-            "result": "PASS",
-            "outcome": {
-              "result": "PASS",
-              "scenarios": [
-                {
-                  "id": "empty-cart",
-                  "result": "PASS",
-                  "observation": "printed 0"
-                },
-                {
-                  "id": "single-positive",
-                  "result": "PASS",
-                  "observation": "printed 42"
-                },
-                {
-                  "id": "several-positives",
-                  "result": "PASS",
-                  "observation": "printed 42"
-                },
-                {
-                  "id": "mixed-sign",
-                  "result": "PASS",
-                  "observation": "printed 42"
-                },
-                {
-                  "id": "negatives-only",
-                  "result": "PASS",
-                  "observation": "printed -12"
-                },
-                {
-                  "id": "cancels-to-zero",
-                  "result": "PASS",
-                  "observation": "printed 0"
-                }
-              ]
-            },
-            "launched": true,
-            "replayed": false
+            "resource_key": "exclusive-checkout",
+            "kind": "exclusive",
+            "capacity": null,
+            "held": 1,
+            "task_id": "074f12cb772b44d7bd0d987be65029f8",
+            "generation": 1,
+            "acquired_at": "2026-09-30T21:44:13.371278+00:00"
           }
         ],
-        "summary": "1 check(s) passed for task 73949bef90cf4dab9d6995401e4976da"
-      }
+        "readiness": null,
+        "required_checks": [
+          "totals-behavior"
+        ],
+        "policy_digest": "243865c214aa1e7a2df811c6d6528c39ec91279005052720bb68d06f9a11490b",
+        "summary": "task 074f12cb772b44d7bd0d987be65029f8 open at generation 1, requiring totals-behavior"
+      },
+      "second": {
+        "task_id": "811c9c33d203413a92dfe90418d43c4b",
+        "admitted": false,
+        "claim_conflict": "resource 'exclusive-checkout' is already held by task '074f12cb772b44d7bd0d987be65029f8' at generation 1",
+        "summary": "task 811c9c33d203413a92dfe90418d43c4b was not admitted: resource 'exclusive-checkout' is already held by task '074f12cb772b44d7bd0d987be65029f8' at generation 1"
+      },
+      "second_run": {}
     },
     "fresh_attempt_after_old_pass": {
       "first": {
-        "task_id": "f44ff31e3f7243f594eb3bfb592ddfcc",
+        "task_id": "71a6256482af40fda0540380648a4b04",
         "generation": 1,
         "runs": [
           {
-            "run_id": "e332bb88be5343af8384522c65eda2cc",
+            "run_id": "13b0476afc9248809a79b9fdc9951072",
             "check_id": "totals-behavior",
             "result": "PASS",
             "outcome": {
@@ -237,14 +203,14 @@
             "replayed": false
           }
         ],
-        "summary": "1 check(s) passed for task f44ff31e3f7243f594eb3bfb592ddfcc"
+        "summary": "1 check(s) passed for task 71a6256482af40fda0540380648a4b04"
       },
       "second": {
-        "task_id": "f44ff31e3f7243f594eb3bfb592ddfcc",
+        "task_id": "71a6256482af40fda0540380648a4b04",
         "generation": 2,
         "runs": [
           {
-            "run_id": "ae169eca09664faca927f77648ee0fcc",
+            "run_id": "ec22193563fa4cc3ba69c3213440ee16",
             "check_id": "totals-behavior",
             "result": "PASS",
             "outcome": {
@@ -286,33 +252,45 @@
             "replayed": false
           }
         ],
-        "summary": "1 check(s) passed for task f44ff31e3f7243f594eb3bfb592ddfcc"
+        "summary": "1 check(s) passed for task 71a6256482af40fda0540380648a4b04"
       },
       "finalize": {
-        "task_id": "f44ff31e3f7243f594eb3bfb592ddfcc",
+        "task_id": "71a6256482af40fda0540380648a4b04",
         "generation": 2,
-        "readiness": "BLOCKED",
-        "gaps": [
-          "check 'totals-behavior' was recorded at attempt 1, not the current attempt 2"
+        "readiness": "READY",
+        "gaps": [],
+        "history": [
+          "check 'totals-behavior' was recorded at attempt 1, not this attempt 2"
         ],
         "required_checks": [
           "totals-behavior"
         ],
         "context": {
           "generation": 2,
-          "policy_digest": "caller-supplied-policy"
+          "required_checks": [
+            "totals-behavior"
+          ],
+          "identities": {
+            "source_inventory_digest": "77c42a040a2724543d14e2d2bffe0df81c6322a4658c264d993eb7a85dee3a7f",
+            "policy_digest": "243865c214aa1e7a2df811c6d6528c39ec91279005052720bb68d06f9a11490b",
+            "fixture_digest": "23434b062bad3b8339638261eb471212db6eba8a3c023fe088aa81bf38a9e8f5"
+          },
+          "unverified_identities": [
+            "fixtures",
+            "policy"
+          ]
         },
-        "summary": "task f44ff31e3f7243f594eb3bfb592ddfcc is BLOCKED: 1 gap(s)"
+        "summary": "task 71a6256482af40fda0540380648a4b04 is READY"
       }
     },
     "check_start_is_synchronous": {
-      "elapsed_seconds": 3.218559700064361,
+      "elapsed_seconds": 2.508998300181702,
       "response": {
-        "task_id": "65211ffaf2ad443c8cea807c70e0c43b",
+        "task_id": "c5b5844a6d6b4f1db858762cc768a17b",
         "generation": 1,
         "runs": [
           {
-            "run_id": "86f02a080c8c4d87ae59ee4900864c3b",
+            "run_id": "422699d5f52041159ff5596b44092b29",
             "check_id": "totals-behavior",
             "result": "PASS",
             "outcome": {
@@ -354,7 +332,7 @@
             "replayed": false
           }
         ],
-        "summary": "1 check(s) passed for task 65211ffaf2ad443c8cea807c70e0c43b"
+        "summary": "1 check(s) passed for task c5b5844a6d6b4f1db858762cc768a17b"
       }
     },
     "foreign_origin_get_mutation": {
@@ -368,10 +346,11 @@
       ]
     },
     "console_and_core_enrollment_disagree": {
-      "console_receipt": {
+      "console_proposal": {
         "operation": "enroll",
-        "enrolled": true,
-        "accepted": true,
+        "enrolled": false,
+        "accepted": false,
+        "state": "not_enrolled",
         "policy": [
           {
             "id": "totals-behavior",
@@ -386,19 +365,25 @@
             "timeout_seconds": 120.0
           }
         ],
-        "record": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-3yv4v15i\\http\\.git\\verification-kit\\enrollment.json"
+        "policy_digest": null,
+        "record": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb\\http\\.git\\verification-kit\\enrollment.json",
+        "note": "execution stays disabled until this policy is accepted; re-run with accepted=true"
+      },
+      "console_receipt": {
+        "enrolled": null,
+        "error": "Refused: there is no proposal at C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb\\http\\verification\\proposed-manifest.json. Run `vkit project enroll` first; nothing can be accepted that was never proposed"
       },
       "core_read": {
         "schema_version": 1,
         "command": "project enroll",
-        "project": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-3yv4v15i\\http",
+        "project": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb\\http",
         "state": "not_enrolled",
         "execution_permitted": false,
         "policy_digest": null,
         "accepted_at": null,
         "proposed_at": null,
-        "manifest_path": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-3yv4v15i\\http\\verification\\manifest.json",
-        "proposal_path": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-3yv4v15i\\http\\verification\\proposed-manifest.json"
+        "manifest_path": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb\\http\\verification\\manifest.json",
+        "proposal_path": "C:\\Users\\roysh\\AppData\\Local\\Temp\\vkit-audit-lriklelb\\http\\verification\\proposed-manifest.json"
       }
     }
   }

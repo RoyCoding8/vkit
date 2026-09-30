@@ -45,11 +45,29 @@ def repo(name: str, example: bool = True) -> Path:
 
 
 def begin(server: Server, request: str, **extra) -> dict:
+    """`task_begin` as the repaired interface accepts it.
+
+    The caller-supplied `policy_digest` and `checkout_ref` were the F04
+    counterexample: a task bound to `a-nonexistent-ref` that then compared its
+    evidence against `caller-supplied-policy`. `additionalProperties: False`
+    now refuses them, so the schema still refuses them here and the refusal is
+    recorded as part of what this probe observes.
+    """
     return server.call_tool("task_begin", {
-        "contract": {"scope": "totals"}, "policy_digest": "caller-supplied-policy",
-        "checkout_ref": "a-nonexistent-ref", "owner": "auditor",
+        "contract": {"scope": "totals"}, "owner": "auditor",
         "request_id": request, **extra,
     }).content
+
+
+def task_id_of(opened: dict) -> str:
+    """The admitted task's id, or the refusal that must stop the caller.
+
+    A refused admission has no task to run under, so a probe that continued past
+    one would report a downstream symptom instead of the refusal.
+    """
+    if not isinstance(opened.get("task_id"), str) or not opened["task_id"]:
+        raise AssertionError(f"task_begin was refused, so there is no task to act on: {opened}")
+    return opened["task_id"]
 
 
 def run(server: Server, task_id: str, request: str) -> dict:
@@ -64,12 +82,19 @@ def finalize(server: Server, task_id: str) -> dict:
 
 root = repo("stale-source")
 server = Server(root)
-task = begin(server, "source-task")["task_id"]
+refused = server.call_tool("task_begin", {
+    "contract": {"scope": "totals"}, "policy_digest": "caller-supplied-policy",
+    "checkout_ref": "a-nonexistent-ref", "owner": "auditor", "request_id": "untrusted-bindings",
+}).content
+task = task_id_of(begin(server, "source-task"))
 check = run(server, task, "source-check")
 before = finalize(server, task)
 source = root / "src/totals.py"
 source.write_text(source.read_text(encoding="utf-8").replace("running += amount", "running += amount + 100"), encoding="utf-8")
 after = finalize(server, task)
+observations["tests"]["caller_supplied_bindings_are_refused"] = {
+    "begin": refused,
+}
 observations["tests"]["source_changed_after_pass"] = {
     "run": check, "before": before, "after": after,
     "defect_was_inserted": "running += amount + 100" in source.read_text(encoding="utf-8"),
@@ -79,7 +104,7 @@ root = repo("unenrolled", example=False)
 server = Server(root)
 opened = begin(server, "empty-task")
 observations["tests"]["unenrolled_zero_checks"] = {
-    "begin": opened, "finalize": finalize(server, opened["task_id"]),
+    "begin": opened,
     "manifest_exists": server.project.manifest_path.exists(),
 }
 
@@ -87,13 +112,15 @@ root = repo("ownership")
 server = Server(root)
 a = begin(server, "owner-a", claim_resource="exclusive-checkout")
 b = begin(server, "owner-b", claim_resource="exclusive-checkout")
+second_run = ({} if b.get("admitted") is False
+              else run(server, task_id_of(b), "conflicting-run"))
 observations["tests"]["claim_conflict_still_executes"] = {
-    "first": a, "second": b, "second_run": run(server, b["task_id"], "conflicting-run"),
+    "first": a, "second": b, "second_run": second_run,
 }
 
 root = repo("retry")
 server = Server(root)
-task = begin(server, "retry-task")["task_id"]
+task = task_id_of(begin(server, "retry-task"))
 first = run(server, task, "retry-first")
 supersede_task(server._store(), task)
 second = run(server, task, "retry-second")
@@ -107,7 +134,7 @@ driver.write_text(driver.read_text(encoding="utf-8").replace(
     "from __future__ import annotations", "from __future__ import annotations\nimport time\ntime.sleep(1.25)"
 ), encoding="utf-8")
 server = Server(root)
-task = begin(server, "slow-task")["task_id"]
+task = task_id_of(begin(server, "slow-task"))
 started = time.monotonic()
 result = run(server, task, "slow-check")
 observations["tests"]["check_start_is_synchronous"] = {
@@ -133,8 +160,13 @@ finally:
     http_server.server_close()
     thread.join(timeout=5)
 
-receipt = operations.enroll(context, accepted=True)
+proposed = operations.enroll(context, accepted=False)
+try:
+    receipt = operations.enroll(context, accepted=True)
+except Exception as exc:
+    receipt = {"enrolled": None, "error": f"{type(exc).__name__}: {exc}"}
 observations["tests"]["console_and_core_enrollment_disagree"] = {
+    "console_proposal": proposed,
     "console_receipt": receipt,
     "core_read": read_enrollment(context.project).to_json(),
 }
@@ -144,16 +176,20 @@ destination.write_text(json.dumps(observations, indent=2) + "\n", encoding="utf-
 for name, result in observations["tests"].items():
     if name == "source_changed_after_pass":
         print(name, result["before"].get("readiness"), "->", result["after"].get("readiness"))
+    elif name == "caller_supplied_bindings_are_refused":
+        print(name, result["begin"].get("error"))
     elif "finalize" in result:
         print(name, result["finalize"].get("readiness"), result["finalize"].get("gaps"))
+    elif "manifest_exists" in result:
+        print(name, "admitted=", result["begin"].get("admitted"), result["begin"].get("error"))
     elif name == "claim_conflict_still_executes":
         print(name, "admitted=", result["second"].get("admitted"),
               "conflict=", bool(result["second"].get("claim_conflict")),
-              "result=", result["second_run"]["runs"][0]["result"])
+              "ran=", bool(result["second_run"].get("runs")))
     elif name == "check_start_is_synchronous":
         print(name, round(result["elapsed_seconds"], 2), result["response"]["runs"][0]["result"])
     elif name == "console_and_core_enrollment_disagree":
-        print(name, "console=", result["console_receipt"]["enrolled"],
+        print(name, "console=", result["console_receipt"].get("enrolled"),
               "core=", result["core_read"]["state"])
     else:
         print(name, result)

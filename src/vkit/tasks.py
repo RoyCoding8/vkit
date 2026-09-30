@@ -213,6 +213,31 @@ def compute_readiness(
         if run["lifecycle"] == "terminal" and run["result"]:
             by_check.setdefault(run["check_id"], []).append(run)
 
+    # A run counts as evidence for this attempt only if it belongs to this
+    # attempt. `supersede_task` advances the generation to invalidate the
+    # previous attempt's authority, and a retry is a new run linked to its
+    # predecessor rather than a continuation of it. Without this filter a
+    # reassigned task was handed its own READY: generation 2 had produced no
+    # runs at all and inherited every pass from generation 1.
+    #
+    # A run recorded before attempts existed carries no attempt number. CONTRACT
+    # says such a report stays readable as standalone evidence and that migration
+    # must not invent task acceptance for it, so it is excluded from acceptance
+    # rather than assumed to belong to whichever generation is current now.
+    stale: list[str] = []
+    by_check = {}
+    for run in runs:
+        if run["lifecycle"] != "terminal" or not run["result"]:
+            continue
+        if run["attempt"] != task.generation:
+            stale.append(
+                f"check {run['check_id']!r} was recorded at attempt "
+                f"{run['attempt'] if run['attempt'] is not None else 'none'}, not the current "
+                f"attempt {task.generation}"
+            )
+            continue
+        by_check.setdefault(run["check_id"], []).append(run)
+
     rejected = False
     for check_id in required:
         outcomes = by_check.get(check_id, [])
@@ -229,13 +254,18 @@ def compute_readiness(
         elif latest["result"] != "PASS":
             gaps.append(f"required check {check_id!r} has no usable result")
 
+    # A stale run is not silently dropped. It is reported, so a reader who can
+    # see a passing run for a required check is told why it does not count
+    # rather than left to conclude the check never ran.
+    gaps = tuple(dict.fromkeys(gaps)) + tuple(dict.fromkeys(stale))
+
     if rejected:
         return ReadinessResult(
-            "REJECTED", tuple(gaps),
+            "REJECTED", gaps,
             {"generation": task.generation, "policy_digest": task.policy_digest},
         )
     if gaps:
-        return ReadinessResult("BLOCKED", tuple(gaps),
+        return ReadinessResult("BLOCKED", gaps,
                                {"generation": task.generation, "policy_digest": task.policy_digest})
     return ReadinessResult(
         "READY", (),

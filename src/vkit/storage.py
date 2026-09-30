@@ -470,7 +470,7 @@ class Store:
         row the query happened to return first. rowid is monotonic with
         insertion, so the ordering is total and the answer is reproducible.
         """
-        sql = ("SELECT run_id, check_id, task_id, lifecycle, result, reason,"
+        sql = ("SELECT run_id, check_id, task_id, attempt, lifecycle, result, reason,"
                " registered_at, ended_at FROM runs")
         params: list[object] = []
         if task_id is not None:
@@ -480,7 +480,7 @@ class Store:
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        keys = ("run_id", "check_id", "task_id", "lifecycle", "result", "reason",
+        keys = ("run_id", "check_id", "task_id", "attempt", "lifecycle", "result", "reason",
                 "registered_at", "ended_at")
         return [dict(zip(keys, row)) for row in rows]
 

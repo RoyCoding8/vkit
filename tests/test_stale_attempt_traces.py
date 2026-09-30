@@ -111,3 +111,45 @@ def test_one_missing_required_check_is_never_ready(tmp_path: Path) -> None:
     assert any(REQUIRED_CHECKS[1] in gap for gap in verdict.gaps), (
         f"the gap does not name the missing check: {verdict.gaps}"
     )
+
+
+def test_evidence_from_a_superseded_attempt_cannot_satisfy_readiness(tmp_path: Path) -> None:
+    """Generation 2 must not be made READY by generation 1's passes.
+
+    The guard in `record_readiness` stops an old attempt publishing a verdict it
+    already computed. It does not stop a NEW attempt computing one from the old
+    attempt's evidence, and `compute_readiness` filtered only on `task_id`. So
+    reassigning a task handed its successor a free READY: the successor had
+    produced nothing, checked nothing, and inherited every pass.
+
+    CONTRACT.md settles which way this goes. `supersede_task` advances the
+    generation to invalidate the previous attempt's authority, and a retry is a
+    new run linked to its predecessor rather than a continuation of it. A
+    generation that cannot own a claim must not be able to reach acceptance on
+    another generation's evidence either -- the same authority, read in a
+    different direction.
+
+    The TLA+ model forbids this in Properties 3 and 4, so the specification and
+    the implementation disagreed. This is the test that says which one is right.
+    """
+    store = Store(tmp_path / "state.sqlite3")
+    open_task(store, task_id="w1", contract={"g": "x"}, policy_digest="pd")
+    for check in REQUIRED_CHECKS:
+        _record_pass(store, "w1", check)
+
+    first = compute_readiness(store, "w1", required_check_ids=list(REQUIRED_CHECKS))
+    assert first.readiness == "READY", "the first attempt has genuinely earned this"
+
+    supersede_task(store, "w1")
+    assert current_generation(store, "w1") == 2
+
+    second = compute_readiness(store, "w1", required_check_ids=list(REQUIRED_CHECKS))
+
+    assert second.readiness != "READY", (
+        "generation 2 reached READY on generation 1's evidence; it has produced "
+        "no runs of its own, so its acceptance rests on another attempt's work"
+    )
+    assert second.gaps, "a readiness short of READY must say what is missing"
+    assert any("attempt" in gap or "generation" in gap for gap in second.gaps), (
+        f"the gaps must name the staleness, not merely the absence: {second.gaps}"
+    )

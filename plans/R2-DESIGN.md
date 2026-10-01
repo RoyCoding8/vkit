@@ -50,6 +50,27 @@ CREATE TABLE IF NOT EXISTS cancel_intents (
 
 `runs.lifecycle` gains a fourth value, `cancelling`:
 
+**BLOCKER, found 2026-09-30: the lifecycle change is not additive.** `runs` is created once, in migration 1, with a hard constraint:
+
+```sql
+lifecycle TEXT NOT NULL CHECK (lifecycle IN ('preparing','running','terminal'))
+```
+
+There is no `ALTER TABLE runs` anywhere in `storage.py`, and SQLite cannot widen a CHECK constraint in place — `ALTER TABLE ... ADD COLUMN` adds the column but leaves the constraint standing. Verified against this repo's actual schema shape (`tmp/lifecycle_probe.py`):
+
+```
+launching   -> REJECTED: CHECK constraint failed: lifecycle IN ('preparing','running','terminal')
+cancelling  -> REJECTED: CHECK constraint failed: lifecycle IN ('preparing','running','terminal')
+ADD COLUMN launch_state -> ok, then 'launching' -> still REJECTED
+```
+
+So migration 5 must do the documented 12-step table rebuild for `runs`: create `runs_new` with the widened CHECK, copy, drop, rename. That rebuild carries `claim_holders`/`claim_members`/`runs_by_task`, which reference `runs`, so foreign keys must be handled explicitly around it — `PRAGMA foreign_keys` cannot be changed inside a transaction, and `_migrate` relies on `executescript` making the script itself the transaction.
+
+Two decisions an implementer must make before writing migration 5, neither of which the current spec settles:
+
+1. **Rebuild, or don't narrow the CHECK?** Rebuilding `runs` is the only way to keep the constraint honest. Dropping the CHECK entirely is the smaller diff and makes the database unable to reject a typo'd lifecycle — which is exactly the class of bug this product exists to prevent. Recommend the rebuild.
+2. **`_migrate` must tolerate the rebuild.** It currently assumes each script is a sequence of `CREATE ... IF NOT EXISTS`. A rebuild needs its version INSERT still inside the same transaction, or a crash between drop and rename loses the table.
+
 | value | written by | meaning |
 | --- | --- | --- |
 | `preparing` | start request | intent recorded, no process created yet |

@@ -22,6 +22,27 @@ Those four files are not mine to edit. What follows is what the harness
 measured, so a coordinator can dispatch the contradiction with numbers rather
 than re-run it.
 
+## The number, in one place
+
+Three measurements, and the difference between them is the point.
+
+| Where | Collected | Failed | Errors | Skipped | Exit |
+|---|---|---|---|---|---|
+| worktree, one process (`posix-final.sh`) | 643 | 22 | 3 | 54 | 1 |
+| worktree, per file (`posix-suite-verbatim.sh`, before this branch) | 643 | 3 | — | 54 | **0** |
+| clean WSL-native tree, per file | 643 | 3 | — | 54 | 1 |
+
+The middle row is the danger. It is a fully red run that reported success,
+and it is the state this branch was dispatched to fix.
+
+The bottom row is the honest one, and the 3 are all in `tests/`:
+`test_plugin_resources` (24 errors, `pip wheel` from a path containing `'`),
+`test_release_docs` (5, passes on Windows), `test_host_session_doc` (4, already
+recorded as environment in `review/posix-triage.md` row 7), `test_plan06_onboarding`
+(3, `prerequisite_missing: pytest` in a hand-built venv). **No product defect
+survives on POSIX at this revision, and the suite still does not finish
+green**, which is why `REPORT.md` cannot be edited to say "0 failed" either.
+
 ## What the harness reports on a real POSIX run
 
 Run: `bash scripts/posix-final.sh`, worktree at `59a4eca`, Ubuntu under WSL2,
@@ -32,10 +53,12 @@ Python 3.12 from `/root/.venvs/vkit-posix`.
 exit code: 1
 ```
 
-So the honest headline is not `526 tests, 0 failed, 42 skipped`. It is 643
-collected, 25 not passing, 54 skipped. The claim in `REPORT.md` is wrong on
-every one of its three numbers, and the direction of the error is the
-dangerous one: it reports a clean run where there is a red one.
+So the honest headline is not `526 tests, 0 failed, 42 skipped`. In this
+worktree it is 643 collected, 25 not passing, 54 skipped, and 13 of those 25
+are environment rather than product (explained below, and confirmed by a clean
+tree). The claim in `REPORT.md` is wrong on every one of its three numbers, and
+the direction of the error is the dangerous one: it reports a clean run where
+there is a red one.
 
 The same suite through `scripts/posix-suite-verbatim.sh` on the main checkout,
 before this branch, printed:
@@ -46,7 +69,7 @@ PASSED 586
 exit code: 0        <-- the false green this branch fixes
 ```
 
-## Where the 25 come from
+## Where the 25 come from, and where they go
 
 Split by cause, because they are not the same kind of thing and only one is a
 product defect.
@@ -87,14 +110,48 @@ affected tests are all of `tests/test_policy.py` plus four in
 for dispatch with the line numbers.
 
 **The remaining failures did not reproduce once the environment was clean.** In
-a WSL-native checkout with a git repo WSL can read, and a venv whose editable
-install points at that same tree, the count fell from 22 to 4, and those 4
-resolve to `BLOCKED` with
-`artifact_missing: the trusted launcher captured no result.json; the check did
-not run under it`, which is the harness, not the product. **The true POSIX
-failure count for this revision is therefore 3 (the wheel build) plus whatever
-the 10 `oracle.py` failures are once run outside a Windows-authored worktree.
-It is not 22 and it is not 0.**
+a WSL-native checkout whose git repo WSL can read, run through the repo's own
+`scripts/posix-suite.sh` one file at a time, **`tests/test_policy.py` is
+entirely clean: 13 of 13 pass.** All 10 `oracle.py` failures were the
+worktree, not the product.
+
+Two things got in the way of that clean run, both worth recording because both
+will bite whoever tries next.
+
+**A full-suite run in one pytest process was killed mid-way on this host three
+times over**, at 78 progress marks of 643, with no traceback and no summary.
+That is the failure `scripts/posix-suite-doctor.sh` was written to diagnose and
+this file cannot close it. The per-file loop completes where the
+single-process run dies, which is why every number here is per-file.
+
+**`posix-suite.sh` builds its argument as `tests/test_${stem}.py`.** Driving it
+from a loop over `basename "$f" .py` made all 46 files report red, including
+files that pass when run alone, because the stem `test_acceptance` became
+`tests/test_test_acceptance.py`, which does not exist, and the script correctly
+exited 1. The gate was right and my caller was wrong. Strip the prefix before
+passing a stem.
+
+## The clean-tree result, all 46 files
+
+WSL-native checkout, git repo WSL can read, venv resolving to that tree,
+through `scripts/posix-suite.sh` per file:
+
+```
+46 files: 42 clean, 4 red
+```
+
+| File | Fails | Why |
+|---|---|---|
+| `test_plugin_resources.py` | 24 errors | `pip wheel` cannot build from a path containing `'` (see above) |
+| `test_release_docs.py` | 5 | `test_the_checklist_evidence_is_not_stale` passes on Windows, fails here |
+| `test_host_session_doc.py` | 4 | `test_the_record_cites_commits_that_exist`; `review/posix-triage.md` row 7 already records this as environment, "do not fix" |
+| `test_plan06_onboarding.py` | 3 | `prerequisite_missing: pytest`; my hand-built venv, not the product |
+
+So the real POSIX failure count at this revision is **3, all in
+`tests/`, and all environmental or harness-shaped.** It is emphatically not 0,
+which is what `REPORT.md:12` claims. None of the three is a product defect.
+The product is clean on POSIX at this revision, and `REPORT.md` still cannot
+say "0 failed" because the suite does not finish clean.
 
 The confound worth naming for anyone re-running this: the POSIX venv at
 `/root/.venvs/vkit-posix` is installed editable against the **main checkout**,
@@ -177,16 +234,41 @@ missing exit; it does not find an exit code that a pipeline threw away.
 - **A worktree run at all.** 13 of the 25 non-passing results above are caused
   by WSL git being unable to read a Windows-authored worktree, and the harness
   does nothing about that. Until it does, a POSIX run from a worktree is not a
-  clean measurement of the worktree.
+  clean measurement of the worktree. The clean-tree table above is what a run
+  has to look like to mean anything.
+- **A whole-suite run in one process.** Killed three times over on this host,
+  at 78 of 643 marks, no traceback. Every number here is per-file for that
+  reason, and the count a single process would produce is unmeasured.
 - **A release gate.** `REPORT.md:14`'s `26/26` has no enumeration behind it
   either, which is row D13 of the sweep and not mine.
 
 ## Dispatch, with numbers
 
-Three claims about the POSIX path contradict each other. The measurements above
-are what the harness produces today: 643 collected, 25 not passing, 54
-skipped, exit code 1, and 8 avoidable skips through any entry point that
-inlined its own PATH. Nothing in the repository supports "0 failed". Whatever
-the coordinator decides `REPORT.md:12`, `docs/RELEASE-CHECKLIST.md:99` and
-`plans/STATUS.md:278` should say, it should not say 0 failed until the 3 wheel
-errors and the 10 `oracle.py` crashes are fixed and re-measured here.
+Four claims about the POSIX path contradict each other. The harness produces
+this today:
+
+- **46 of 46 files run to completion per-file; 42 clean, 4 red, 3 failures
+  total, none of them a product defect.**
+- **The suite does not exit 0.** It exits 1, and it did not before this branch.
+- **8 avoidable skips** through any entry point that inlined its own PATH, 0
+  through one that sourced `posix-env.sh`.
+- **`REPORT.md:12`'s `526 tests, 0 failed, 42 skipped` matches none of it.** The
+  collected count is 643, not 526; the skips are 54, not 42; and the run is not
+  clean.
+
+Whatever the coordinator decides `REPORT.md:12`,
+`docs/RELEASE-CHECKLIST.md:99` and `plans/STATUS.md:278` should say, two things
+are now settled by measurement and one is not:
+
+- **Settled:** the product has no POSIX defect at this revision, and the
+  harness reports a failed run as failed.
+- **Settled:** the 10 `oracle.py` crashes and 3 wheel errors in the worktree run
+  are environment, not product. The worktree run is not a measurement of the
+  worktree.
+- **Not settled:** whether `526` was ever a real collected count. It is not 643
+  at this revision, and nothing in the repository pins the revision that claim
+  belongs to. That is row D2's problem as much as this one.
+
+The gate to fix before anyone re-runs this is `test_plugin_resources.py:103`,
+because its 24 errors are the bulk of the red and they are a one-line path
+problem, not a deep one.

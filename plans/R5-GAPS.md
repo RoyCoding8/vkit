@@ -231,3 +231,32 @@ silently becomes a full scan.
 Migration 5 must re-issue the index after the rename, and the gate must assert
 the query plan rather than merely that the migration applied — a test asserting
 only "migration 5 ran" passes with the index gone.
+
+## Row 10's `pinned == "policy-v1"` is load-bearing — do not "simplify" it away
+
+A worker reported this conjunct as tautological ("it just asserts `open_task`
+stored the string it was handed") and recommended deleting it. It is not, and
+the claim was checked rather than argued:
+
+```
+negating  changed["pinned"] == "policy-v1"  ->  0/1 rows pass, row 10 FAILS
+```
+
+`pinned` is not the literal that was passed in. At `acceptance02.py:1332`,
+inside the **child process that rewrites the manifest**:
+
+```python
+pinned=tasks.get_task(store, "t10").policy_digest
+```
+
+So the conjunct asserts that the task's pinned policy digest survived a manifest
+change made by a separate process — the row's actual claim, and the thing that
+makes the row's name true rather than carried by the configuration digest alone.
+Deleting it would have removed the only assertion in the row about the *pinned
+digest* specifically, and the row would still pass while testing less.
+
+Worth noting how it looked tautological in isolation: read at line 1383 without
+the `changed = child(...)` on line 1356, it does compare against the same
+literal passed at line 1348. It is the indirection through the child process
+that makes it a durability check, and that indirection is three lines above the
+use and one screen away.

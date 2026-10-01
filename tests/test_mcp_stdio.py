@@ -274,11 +274,9 @@ def test_a_client_drives_the_python_example_to_ready_over_the_wire(tmp_path: Pat
         assert started["isError"] is False, started
         run = json.loads(started["content"][0]["text"])["runs"][0]
         # The start payload names the run and carries no verdict, because the
-        # check is executing in another process right now. `launched` is not
-        # asserted here: it is derived from the lifecycle recorded at handoff, and
-        # at that instant a detached run is always still `preparing`, so the flag
-        # says nothing this test could act on. Whether a process was really
-        # launched is now a question about the run, answered below.
+        # check is executing in another process right now. It carries no `launched`
+        # flag either, and one test below says why: whether a process was launched
+        # is a question about the run, not about the instant this call returned.
         assert run["result"] is None
         assert run["outcome"] is None
         assert len(run["run_id"]) == 32
@@ -347,6 +345,62 @@ def test_the_cli_and_the_wire_report_the_same_run(tmp_path: Path) -> None:
     assert report["process"]["ownership"] == EXPECTED_OWNERSHIP
     assert report["process"]["timed_out"] is False
     assert report["artifacts"] == {"result": "result.json"}
+
+
+# --- the start payload claims only what is already true ----------------------
+
+def test_the_start_payload_never_reports_a_launch_it_has_not_seen(tmp_path: Path) -> None:
+    """The start payload carries no `launched` flag, on the fresh path or the replay.
+
+    A `launched` boolean here is a guess about a race, and it guessed wrong in both
+    directions before it was removed. On a fresh start the run was already spawned
+    and the row had not moved past `preparing`, so the flag read `false` for a run
+    that was about to launch a real process and pass. On a replay the same formula
+    read the recorded lifecycle of a run that had already finished, so the flag read
+    `true` for a call that started nothing at all -- the one question a client
+    actually has an answer to, and the one `replayed` already answers.
+
+    So the assertion is not "the flag is true". It is that no field named `launched`
+    is on the payload at all, because a value there can only be read before the fact
+    the run's own evidence -- `run_get`'s `ownership_known` and its pid -- records it
+    truthfully. Asserting the flag's value would pin whichever side of that race the
+    test machine happened to lose.
+
+    Both calls are real: a detached supervisor launched a real
+    `python verify_totals.py`, and the replay is the same request id asked for again
+    after that run reached PASS, which is the one moment the old flag read `true`.
+    """
+    project = make_repo(tmp_path, "no-launched-flag")
+    with StdioClient(project) as client:
+        task_id = begin_task(client)
+        request = {
+            "task_id": task_id, "check_ids": ["totals-behavior"], "request_id": "req-flag",
+        }
+
+        fresh = client.call_body("check_start", request, timeout=LIFECYCLE_TIMEOUT)["runs"][0]
+        assert "launched" not in fresh, (
+            "the start payload reports a launch it cannot observe yet: "
+            f"{fresh.get('launched')!r} for lifecycle {fresh.get('lifecycle')!r}"
+        )
+        # `replayed` is the whole of what this call can say about starting anything,
+        # and it is the field that stays true on both paths.
+        assert fresh["replayed"] is False
+
+        # The run really did launch, so the field's absence is not a dodge: the
+        # evidence exists, on the surface that owns it, one call later.
+        finished = await_outcome(client, fresh["run_id"])
+        assert finished["ownership_known"] is True
+        assert isinstance(finished["process"]["pid"], int)
+
+        replayed = client.call_body("check_start", request, timeout=LIFECYCLE_TIMEOUT)["runs"][0]
+        assert replayed["run_id"] == fresh["run_id"]
+        assert "launched" not in replayed, (
+            "the start payload reports a launch the replayed call did not make: "
+            f"{replayed.get('launched')!r} for lifecycle {replayed.get('lifecycle')!r}"
+        )
+        assert replayed["replayed"] is True
+
+        assert client.close() == 0
 
 
 # --- a stored FAIL must not become a protocol error --------------------------

@@ -431,7 +431,15 @@ def run_check(context: Context, check_id: str) -> dict[str, Any]:
         "check_id": check_id,
         "lifecycle": status.get("lifecycle", handoff.lifecycle),
         "outcome": (context.store.load(handoff.run_id)["outcome"] if published else None),
-        "launched": bool((status.get("process") or {}).get("ownership_known")),
+        # Named for the fact, not for a verb. This was `launched`, which reads as
+        # "a process was started" and is neither that nor the same thing the other
+        # two surfaces called `launched`: the MCP start payload derived it from a
+        # lifecycle read too early to mean anything, and `procs.RunOutcome` derives
+        # it from a pid. Here the run has already finished and the question is the
+        # one the store answers -- did the run publish an owner this console could
+        # have verified -- so it carries the same name `run_get` uses for the same
+        # fact, rather than a third name for a fourth meaning.
+        "ownership_known": bool((status.get("process") or {}).get("ownership_known")),
     }
 
 

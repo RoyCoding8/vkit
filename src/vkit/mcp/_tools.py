@@ -644,6 +644,19 @@ def _check_start(server: Server, args: dict[str, Any]) -> ToolResult:
     absent for a run that has not finished, and `lifecycle` says which state it is
     in. A caller that needs the verdict reads it with `run_get`.
 
+    **There is no `launched` flag here, and its absence is the point.** This call
+    returns the instant after the supervisor is spawned, so the run row is still
+    `preparing` and nothing downstream of the child has been written; a flag derived
+    from that read was `false` for every real detached start -- measured over four
+    fresh starts, `preparing` and `false` every time -- for a check that then ran a
+    real process to PASS. On a replay the same formula read the recorded lifecycle
+    of a run that had already finished and answered `true` for a call that started
+    nothing, which is the one thing a caller does want to know and `replayed` is
+    already true about. A field here can only be a guess about a race, in one
+    direction or the other. Whether a process was really launched is a fact about
+    the run, and `run_get` answers it from the evidence that records it:
+    `ownership_known`, and the pid once one exists.
+
     `start_run` takes no `detach` argument here, so these are detached by default.
     The two callers that want the check to finish before they return -- `vkit check
     run` and the console -- pass `detach=False` and run the supervisor body
@@ -707,7 +720,7 @@ def _check_start(server: Server, args: dict[str, Any]) -> ToolResult:
             # list is still reported so the caller sees which ones did.
             started.append({
                 "run_id": run_id, "check_id": spec.id, "result": None,
-                "outcome": None, "launched": False, "replayed": False,
+                "outcome": None, "replayed": False,
                 "lifecycle": None, "refused": str(exc),
             })
             continue
@@ -717,7 +730,6 @@ def _check_start(server: Server, args: dict[str, Any]) -> ToolResult:
             "lifecycle": handoff.lifecycle,
             "result": None,
             "outcome": None,
-            "launched": handoff.lifecycle not in ("preparing",),
             "replayed": handoff.replayed,
         })
 

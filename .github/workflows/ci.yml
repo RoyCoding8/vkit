@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.13 is what every receipt in this repository was measured on.
+          python-version: "3.13"
+
+      # The build backend and the test extra. `hatchling` is named in
+      # pyproject.toml as build-backend, so pip builds the editable install
+      # through it; `.[test]` carries pytest, hypothesis, jsonschema and the
+      # rest. Installing the test extra is not optional: without it
+      # tests/test_formal_correspondence.py skips its whole body and the
+      # suite still reads green.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+
+      # The count is collected rather than parsed out of a summary line, so
+      # this reports what pytest would run whether or not the run is clean.
+      - name: Collect
+        run: python -m pytest tests/ --collect-only -q -o addopts="" -p no:cacheprovider
+
+      - name: Test
+        run: python -m pytest tests/ -o addopts="" -p no:cacheprovider

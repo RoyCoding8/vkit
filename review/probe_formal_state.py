@@ -12,6 +12,12 @@ checker and downloads nothing. Exit 0 when every artifact is either VERIFIED
 against a reproducing digest or BLOCKED with a stated reason, and 1 when an
 artifact claims a result its receipt cannot support.
 
+It also checks the one property every receipt shares. Three of the four state
+the digest convention they were computed under, in `digest_normalization`. A
+receipt that omits the field while its siblings carry it is drift, and the probe
+fails. One receipt is excused by name, and the excuse is recomputed rather than
+trusted, so it cannot become a blank cheque.
+
     python review/probe_formal_state.py
 """
 from __future__ import annotations
@@ -27,6 +33,25 @@ sys.path.insert(0, str(ROOT / "formal"))
 from digest import canonical_sha256  # noqa: E402
 
 RESULTS = ROOT / "formal" / "results"
+
+#: Receipts that do not state the digest convention they were computed under.
+#: Each name carries the reason, so an absent field is a recorded decision
+#: rather than a gap. `formal/RESULTS.md` says the same in prose.
+#:
+#: This is not an amnesty. `_convention_state` recomputes every digest of an
+#: excused receipt and fails the probe if one does not reproduce, so an excuse
+#: asserts that the receipt's digests are sound under the canonical form and is
+#: checked on every run rather than believed once.
+UNDECLARED_CONVENTION = {
+    "OwnershipAcceptance-receipt.json": (
+        "written 2026-09-30, before formal/digest.py and the digest_normalization "
+        "field existed; both arrived in 6c92860. Its model_sha256 and "
+        "config_sha256 match the canonical form and the committed git blob, so "
+        "the receipt is sound. It is not regenerated and not hand-edited, "
+        "because the TLC run it records cannot be repeated on a host with no "
+        "JRE. See the digest section of formal/RESULTS.md."
+    ),
+}
 
 #: (artifact, receipt file, {receipt key: file it digests}). One row per claim
 #: RESULTS.md makes, so a new claim has to be added here to be checked at all.
@@ -59,6 +84,84 @@ def _digest_checks(receipt: dict, files: dict[str, str]) -> dict[str, dict]:
     return checks
 
 
+def _convention_state() -> tuple[dict, list[str]]:
+    """Does every receipt state the digest convention it was computed under.
+
+    A receipt is a claim about bytes, and a digest is only checkable once you
+    know which bytes were hashed. `digest_normalization` says so. A receipt that
+    omits it leaves that unstated, so a reader on a CRLF checkout cannot tell
+    whether a non-reproducing digest means the artifact changed or only the line
+    endings did.
+
+    This walks `formal/results/*receipt.json` rather than a hand-written list,
+    so a receipt written by a new harness is checked because it exists. A field
+    missing while siblings carry it is the drift worth catching: it means a
+    harness changed its hashing without the receipt saying so.
+
+    An excused receipt is not skipped, it is re-measured against the files
+    `CLAIMS` names for it. The excuse claims the digests are sound under the
+    canonical form, and that claim is only worth something if it is recomputed
+    every run. An excuse for a receipt whose digests no longer reproduce would
+    be stale, and is reported as a failure rather than honoured.
+    """
+    files_by_receipt = {receipt_name: files for _, receipt_name, files in CLAIMS}
+    states: dict[str, dict] = {}
+    failures: list[str] = []
+    for path in sorted(RESULTS.glob("*receipt*.json")):
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        declared = receipt.get("digest_normalization")
+        record: dict = {
+            "declared": bool(declared),
+            "digests": sorted(k for k in receipt if k.endswith("_sha256")),
+        }
+        if declared:
+            record["state"] = "DECLARED"
+            states[path.name] = record
+            continue
+
+        record["state"] = "FAIL"
+        reason = UNDECLARED_CONVENTION.get(path.name)
+        if reason is None:
+            record["why"] = (
+                "this receipt records no digest_normalization, so nothing says "
+                "which form of the file its digests were taken over. Add the "
+                "field to the harness in formal/ that writes it and rerun the "
+                "harness, or name the receipt in UNDECLARED_CONVENTION with "
+                "the reason it is excused."
+            )
+            failures.append(path.name)
+            states[path.name] = record
+            continue
+
+        checks = _digest_checks(receipt, files_by_receipt.get(path.name, {}))
+        if not checks:
+            record["why"] = (
+                f"{reason} No digest in it is named by CLAIMS, so the excuse "
+                "cannot be re-measured and is refused rather than trusted."
+            )
+            failures.append(path.name)
+            states[path.name] = record
+            continue
+        if not all(c["reproduces"] for c in checks.values()):
+            stale = [name for name, c in checks.items() if not c["reproduces"]]
+            record["why"] = (
+                f"{reason} The excuse no longer holds: {', '.join(sorted(stale))} "
+                "no longer digests to what the receipt recorded. The artifact "
+                "changed after the run, so the receipt is stale and the excuse "
+                "cannot be carried on its authority."
+            )
+            failures.append(path.name)
+            states[path.name] = record
+            continue
+        record["state"] = "UNDECLARED_EXCUSED"
+        record["why"] = reason
+        record["remeasured"] = {
+            name: c["recomputed"] for name, c in sorted(checks.items())
+        }
+        states[path.name] = record
+    return states, failures
+
+
 def _toolchain() -> dict:
     """What would a fresh run need, measured rather than assumed."""
     tools = ROOT / "tmp" / "formal-tools"
@@ -72,7 +175,12 @@ def _toolchain() -> dict:
 
 def main() -> int:
     chain = _toolchain()
-    report: dict[str, dict] = {"toolchain": chain, "artifacts": {}}
+    conventions, convention_failures = _convention_state()
+    report: dict[str, dict] = {
+        "toolchain": chain,
+        "digest_convention": conventions,
+        "artifacts": {},
+    }
     broken: list[str] = []
 
     for name, receipt_name, files in CLAIMS:
@@ -135,6 +243,10 @@ def main() -> int:
         ),
     }
 
+    broken.extend(
+        f"{name} states no digest convention" for name in convention_failures
+    )
+
     out = ROOT / "review" / "formal-state.json"
     out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
@@ -149,6 +261,14 @@ def main() -> int:
         print(f"          {record['reason']}")
         if record.get("unblocked_by"):
             print(f"          needs: {record['unblocked_by']}")
+
+    print("=" * 72)
+    print("digest convention declared per receipt")
+    for name, record in sorted(conventions.items()):
+        print(f"{record['state']:>21}  {name}")
+        if record["state"] != "DECLARED":
+            print(f"                        {record['why']}")
+
     print("=" * 72)
     print(f"written: {out.relative_to(ROOT).as_posix()}")
     if broken:

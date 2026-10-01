@@ -63,11 +63,40 @@ friends but not for `*.tla` or `*.lean`, so on a `core.autocrlf=true` checkout
 those two files arrive with CRLF. Hashing raw bytes there made a receipt
 written on this host unverifiable on any other, because the committed bytes and
 the working bytes differed without a single character of the artifact having
-changed. The bound the normalization leaves is stated in every receipt as
-`digest_normalization`: a line-ending-only change does not alter the digest. The
-jar is digested over exact bytes instead, because a binary never passes through
-git's filter and folding a byte pair out of a compressed stream would be hashing
-something other than the file.
+changed. The jar is digested over exact bytes instead, because a binary never
+passes through git's filter and folding a byte pair out of a compressed stream
+would be hashing something other than the file.
+
+**Three of the four receipts state that bound and the fourth does not.**
+`Acceptance-lean-receipt.json`, `OwnershipAcceptance-blocked-receipt.json` and
+`python-core-mutants-receipt.json` each carry `digest_normalization`.
+`OwnershipAcceptance-receipt.json` does not. It was written on 2026-09-30.
+`formal/digest.py` and the `digest_normalization` field both arrived the next
+day, in 6c92860, and at every commit that touched the receipt the harness
+hashed raw bytes with no fold. The receipt therefore predates the convention
+rather than contradicting it.
+
+That receipt is not regenerated here and nothing was added to it. It records a
+TLC run on a host that had a JRE. This host has none, so the run cannot be
+repeated, and writing the declaration into the file by hand would put a claim
+about a run into the artifact of a run that did not happen.
+`review/probe_formal_state.py` carries the exception as a named, checked entry
+instead.
+
+**How the undeclared receipt should be read.** Its two digests are
+byte-identical to the two in `OwnershipAcceptance-blocked-receipt.json`, which
+does declare the convention, so there is no second convention in play and no
+ambiguity about which file each digest covers. Measured on this host, both
+values equal `formal/digest.py`'s canonical digest and the sha256 of the
+committed git blob for `OwnershipAcceptance.tla` and `OwnershipAcceptance.cfg`.
+Neither equals the raw digest of this CRLF checkout, which is
+`a65233ad768f5368ada11dbe2509fa40cbee7e2c7a31c8795a4baf15ed95d6d8` for the model
+and `f3555e6ae783fecaabd360013057352eb420c13c82ff5b3b77608f4d570dd52a` for the
+config. So it verifies as canonical form on any host. It would also have
+verified as raw bytes on the checkout it was written from, because the bytes
+that harness hashed carried no CRLF pair, which is why the two conventions
+coincide for this receipt and diverge on this one. It is a receipt whose bound
+went unstated. Its digests are sound.
 
 ## Deliverable A: finite model checking. Ran on an earlier host. VERIFIED.
 
@@ -75,7 +104,9 @@ something other than the file.
 `formal/results/OwnershipAcceptance-receipt.json`, recorded 2026-09-30,
 reports `TLC 2.19 (08)` and both digests reproduce against the committed model
 and config. It did not rerun on this host, which has no JRE; the run it records
-stands on its receipt, not on a rerun.
+stands on its receipt, not on a rerun. This is the one receipt of the four with
+no `digest_normalization` field; the section above says how to read it and why
+it is not regenerated.
 
 **The configuration the result is scoped to.** Two owners, two exclusive
 resources, two required checks, two source+policy revision identities, two

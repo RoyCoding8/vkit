@@ -16,27 +16,29 @@ is selected. A condition with no receipt is not met.
 | Condition | Why it gates the pilot |
 | --- | --- |
 | GAP-1 closed | Met. The stdio adapter runs, and `tests/test_mcp_stdio.py` drives it with real JSON-RPC frames. |
-| GAP-4 closed | Met. `plugin/.mcp.json` starts `vkit mcp serve`, and `build_parser()` defines it. `serve_stdio` is the adapter that command reaches. |
-| GAP-3 closed | The manifest passes `claude plugin validate --strict`, but no live host session has installed it or run a hook. |
-| GAP-5 and GAP-6 closed | A pilot operator must be able to enroll a repository. `vkit project enroll` and `vkit integration verify` exist with 29 tests behind them, so the commands are not the obstacle; the console that walks an operator through them is Plan 05, and no finished flow drives them yet. |
+| GAP-4 closed | Met. `plugin/.mcp.json` starts `vkit mcp serve`, and `build_parser()` defines it. `serve_stdio` is the adapter that command reaches, and `tests/test_mcp_stdio.py` drives it. |
+| GAP-3 closed | Met, on the receipt rather than on a green suite. A live Claude Code host session installed this plugin, connected its MCP server, attached the six tools, and delivered SessionStart, PreToolUse and Stop. `docs/HOST-SESSION.md` quotes it; `tests/test_plugin_host.py` drives it. |
+| GAP-10 met | **Not met.** No live session has put a subagent behind the six tools, or stopped a real turn with a BLOCKED run. `tests/test_plugin_host.py` drives neither, so a pilot is still the first thing that would. |
+| GAP-5 and GAP-6 met | **Not met.** A pilot operator must be able to enroll a repository. `vkit project enroll` and `vkit integration verify` exist with 29 tests behind them, so the commands are not the obstacle; the console that walks an operator through them is Plan 05, and no finished flow drives them yet. |
 | GAP-2 declared | A pilot runs on one named OS. The verified one is Windows 11. |
 | GAP-7 and GAP-8 handled | The pilot baseline and report are written around a missing acceptance table. |
 | An owner-approved repository | The implementation worker does not pick this. |
 | Authorized live-model usage | A pilot spends tokens. The limit is set before the run. |
 
-GAP-1 and GAP-4 are met, and their receipts are in `RELEASE-CHECKLIST.md`. The
-rest are not. The list is the entry gate, not a progress report, and a met row
-is as much a claim to re-check as an unmet one.
+GAP-1, GAP-3 and GAP-4 are met, and their receipts are in
+`RELEASE-CHECKLIST.md`. The rest are not. The list is the entry gate, not a
+progress report, and a met row is as much a claim to re-check as an unmet one.
 
 ## The two gates, and why a pilot needs both
 
 A pilot can proceed while GAP-2 stays open, because a pilot can be run on the
-one operating system that was verified. It cannot proceed while GAP-3, GAP-5,
-or GAP-6 stay open, because each of those removes the pilot's subject: the
-plugin is never shown to load in a live host, enrollment does not exist, and
-the operator cannot set the pilot up through a real flow. The tool surface the
-pilot agent would call is now reachable; whether the host reaches it is GAP-3,
-and that is the question a pilot exists to answer.
+one operating system that was verified. It cannot proceed while GAP-5, GAP-6 or
+GAP-10 stays open, because each of those removes the pilot's subject:
+enrollment has no flow to drive, the operator cannot be set up, and no session
+has yet run a BLOCKED run through an agent's turn. The tool surface the
+pilot agent would call is reachable and the host reaches it, which GAP-3's
+session settled; whether a managed task constrains a real turn is GAP-10, and
+that is the question a pilot exists to answer.
 
 The POSIX gap is a release limitation, because the POSIX process path is
 unverified and the whole package was exercised on Windows 11 only. The rest
@@ -151,6 +153,10 @@ plugin/.mcp.json
 # The receipt that GAP-1 is met, and the client that produced it.
 tests/test_mcp_stdio.py
 tests/mcp_client.py
+
+# The receipt that GAP-3 is met, and the driver that produced it.
+docs/HOST-SESSION.md
+tests/test_plugin_host.py
 
 # The two applications a pilot can be rehearsed against.
 examples/python-cli

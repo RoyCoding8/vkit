@@ -329,28 +329,48 @@ The gap record, after this run:
 - **Not claimed.** A subagent inheriting tool access. A BLOCKED run blocking a
   real turn. `claude plugin validate --strict` implying any of this. Those need
   their own live sessions and are not covered by any test in
-  `tests/test_plugin_host.py`.
+  `tests/test_plugin_host.py`. They carry their own gap, GAP-10, so that closing
+  GAP-3 does not close them by proximity.
 
-## Two corrections that landed in master before they were corrected here
+**The closure above rests on skips, and that is the honest limit of it.**
+Every test in `tests/test_plugin_host.py` skips rather than fails when the
+`claude` executable is absent (`shutil.which("claude")`), when `vkit` is not on
+the PATH the host will spawn from, when the session produces no event stream at
+all, or when the host writes no hook payload. A missing credential or an
+uninstalled `vkit` turns 16 tests into 16 skips, and the suite still reads
+green. So "Closed" here means this session ran and produced the output quoted
+above. It does not mean the suite fails when the plugin regresses; on a host
+that cannot run it, it says nothing either way. The receipt is the transcript
+in this file, not a red suite.
+
+That is also why the register splits GAP-3 rather than closing the whole
+question. The claims this session covers are closed by it. The claims it names
+as not covered are GAP-10, and no part of this run bears on them.
+
+## The two corrections, and where they landed
 
 This branch's first version of the tool-discovery test was wrong, and it was
 wrong in a way that merged. `9a2093a` in master, "Retry the host session that
 lost the connection race", is that version: it retries up to three sessions
-waiting for the server to attach the six tools. That theory was wrong, and
-master's `test_the_host_attaches_exactly_the_six_vkit_tools` still asserts on
-the `init` tool list.
-
-It fails in a full suite. Timings from the run that failed it show the server
+waiting for the server to attach the six tools. That theory was wrong, and it
+fails in a full suite. Timings from the run that failed it show the server
 connecting in 1938ms to 3563ms, and in several sessions finishing before
 `turn 1 start` with the tool list still empty, because `init` is a snapshot on
 a different schedule from the connection. In the same sessions the host logged
 `connected=plugin:vkit:vkit` and the model called the tool.
 
-Master's `test_the_model_calls_a_vkit_tool_and_the_server_answers` also asks for
-one tool, which proves the host can reach a tool and not that it discovered six.
+Master's `test_the_model_calls_a_vkit_tool_and_the_server_answers` also asked
+for one tool, which proves the host can reach a tool and not that it discovered
+six.
 
-Both are corrected in `8595953` and `5043135`, which are **not yet in master**.
-Until they land, master's copy of this file is the version that fails under load.
+Both are corrected in `8595953` and `5043135`, and both are in master as of
+`5087624`. This paragraph used to say they were not yet in master and that
+master's copy was the version that failed under load. That was true when it was
+written and stopped being true when they merged, and a record that keeps
+describing a superseded state is the reason this file and the release checklist
+came to disagree about GAP-3. The corrections are measured here rather than
+asserted: `git merge-base --is-ancestor 8595953 master` and the same for
+`5043135` both exit 0 at the revision the checklist pins.
 
 ## Repeating it
 

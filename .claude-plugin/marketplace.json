@@ -1,0 +1,27 @@
+{
+  "name": "vkit",
+  "owner": {
+    "name": "Shashwata Roy"
+  },
+  "metadata": {
+    "description": "Run registered repository checks and keep a durable, trustworthy outcome.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "vkit",
+      "source": "./plugin",
+      "description": "Run registered repository checks and keep a durable, trustworthy outcome. Skills and hooks over the vkit core; the selected model stays a host choice.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Shashwata Roy"
+      },
+      "category": "development",
+      "keywords": [
+        "verification",
+        "evidence",
+        "checks"
+      ]
+    }
+  ]
+}

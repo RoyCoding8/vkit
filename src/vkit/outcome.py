@@ -7,17 +7,17 @@ names its reason. Constructing the variants makes those states unrepresentable
 rather than merely discouraged.
 
 The non-empty scenario list is a different call. A check artifact that lists
-zero scenarios cannot pass, and the cheapest correct place to enforce that is
-the parse boundary: `parse_artifact` either returns an artifact that has
-scenarios or raises. Everything downstream is then a plain tuple it can trust,
-per boundary discipline. A non-empty container type would charge every consumer
-for a rule only the boundary can check.
+zero scenarios cannot pass, and this module does not enforce that: `parse_artifact`
+only decodes bytes, and the schema allows an empty `scenarios` array on purpose so
+an empty report reads as ARTIFACT_EMPTY rather than as a malformed artifact.
+`execution._scenarios_from_artifact` turns the empty list into that reason. The
+rule lives there because only it knows the check's required scenarios.
 """
 from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 
 class BlockedReason(str, enum.Enum):
@@ -99,11 +99,3 @@ class Blocked:
 
 
 Outcome = Passed | Failed | Blocked
-
-
-def result_name(outcome: Outcome) -> str:
-    return outcome.to_json()["result"]
-
-
-def failed_scenarios(scenarios: Iterable[ScenarioResult]) -> tuple[ScenarioResult, ...]:
-    return tuple(s for s in scenarios if not s.passed)

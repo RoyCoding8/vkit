@@ -1036,6 +1036,14 @@ class Store:
         decisions wearing one name. The acceptance id is derived from the
         candidate, the target, the policy and the context, so a genuine retry
         recomputes the same id and finds the same decision.
+
+        Only a collision on the id is reported as a collision. `context`,
+        `decision` and `candidate_parent` carry CHECK constraints, so a record
+        that violates one arrives as the same `IntegrityError` the primary key
+        does, and reporting those as "already recorded" would point
+        `verify.py:689` at a row that does not exist -- it reads the id back,
+        finds nothing, and re-raises the refusal to the caller as a contradiction
+        it never had.
         """
         with self._connect() as conn:
             try:
@@ -1055,6 +1063,10 @@ class Store:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
+                if "acceptances.acceptance_id" not in str(exc):
+                    raise StoreError(
+                        f"acceptance {acceptance_id} is not a recordable decision: {exc}"
+                    ) from exc
                 raise StoreError(f"acceptance {acceptance_id} is already recorded") from exc
 
     def load_acceptance(self, acceptance_id: str) -> dict | None:

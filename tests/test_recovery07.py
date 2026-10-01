@@ -25,10 +25,8 @@ an explicit release.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -40,7 +38,7 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 import fixtures as fx  # noqa: E402
 from test_integration import (  # noqa: E402
-    EXIT_BLOCKED, EXIT_OK, one_json_object, passing_manifest_only_candidate, verify, vkit,
+    EXIT_BLOCKED, EXIT_OK, passing_manifest_only_candidate, verify,
 )
 
 HOLD_SOURCE = '''\
@@ -179,7 +177,7 @@ def test_a_second_verification_is_refused_while_one_holds_the_repository(
     from vkit.claims import ResourceSpec, acquire
     from vkit.integration import concurrency
     from vkit.paths import open_project
-    from vkit.storage import ConflictError, Store
+    from vkit.storage import Store
 
     repo = fx.build_repository(tmp_path)
     project = open_project(repo)

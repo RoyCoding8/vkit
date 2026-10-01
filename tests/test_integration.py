@@ -33,10 +33,11 @@ import fixtures as fx  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src"
 
-EXIT_OK = 0
-EXIT_CHECK_FAILED = 1
-EXIT_INVALID = 2
-EXIT_BLOCKED = 3
+# One exit table, the product's. This file used to declare its own four,
+# which is how a test suite ends up asserting a code the CLI never returns.
+from vkit.cli import (  # noqa: E402
+    EXIT_BLOCKED, EXIT_CHECK_FAILED, EXIT_INVALID, EXIT_OK,
+)
 
 # The two independent edits. `fixtures` owns the text; the test only says which
 # file each one lands in, so the fixture and the test cannot disagree about what

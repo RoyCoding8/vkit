@@ -1,7 +1,7 @@
 #!/bin/bash
 # Set up everything a POSIX verification run of this repository needs.
 #
-# Three things, and each one exists because a run failed without it:
+# Four things, and each one exists because a run failed without it:
 #
 #   1. A venv. The Windows host uses one with pywin32. The POSIX host uses the
 #      same layout minus pywin32, which pyproject.toml declares
@@ -13,6 +13,18 @@
 #      tests/test_features.py skips honestly when node is missing, but a skipped
 #      suite verifies nothing about them, so node is installed rather than
 #      tolerated.
+#   4. hatchling, because pyproject.toml names it as the build backend and
+#      tests/test_plugin_resources.py builds this tree's wheel. Pip's build
+#      isolation does NOT reuse a backend from the ambient venv: it builds a
+#      fresh overlay and installs `requires` into it from an index, so a host
+#      with no index still fails with `Failed to build ... when installing build
+#      dependencies` no matter what this venv holds. Measured on this offline
+#      host: a venv WITH ambient hatchling and `--no-build-isolation` builds the
+#      wheel, exit 0; the same venv with isolation still reaches pypi.org and
+#      fails. So hatchling here is what makes the `--no-build-isolation` build
+#      in that test possible, and that is the only path that is offline-clean.
+#      Without it, `--no-build-isolation` dies with
+#      `BackendUnavailable: Cannot import 'hatchling.build'`.
 #
 # Run:  bash scripts/posix-venv.sh
 # Then: bash scripts/posix-run.sh -m pytest tests/ -q
@@ -41,7 +53,7 @@ fi
 posix_path
 
 "$VENV/bin/python" -m pip install --quiet --upgrade pip
-"$VENV/bin/python" -m pip install --quiet "jsonschema>=4.23,<5" "pytest>=8.0" "mcp>=2.2,<3" "anyio>=4.5"
+"$VENV/bin/python" -m pip install --quiet "jsonschema>=4.23,<5" "pytest>=8.0" "mcp>=2.2,<3" "anyio>=4.5" "hatchling>=1.32,<2"
 
 # The editable install puts this checkout's src on sys.path, so an acceptance
 # script that spawns the vkit console script exercises this tree and not
@@ -60,7 +72,7 @@ fi
 
 echo
 echo "== installed =="
-"$VENV/bin/python" -m pip list 2>/dev/null | grep -Ei 'jsonschema|pytest|mcp|anyio|vkit|pywin32' || true
+"$VENV/bin/python" -m pip list 2>/dev/null | grep -Ei 'jsonschema|pytest|mcp|anyio|hatchling|vkit|pywin32' || true
 echo "node:  $(node --version 2>&1 || echo MISSING)"
 echo "python on PATH from the venv: $("$VENV/bin/python" -c 'import sys; print(sys.executable)')"
 echo

@@ -434,12 +434,28 @@ def _on_completion(
         # never registered, or one whose registration is ambiguous. Both are
         # reported, because a silent response here is indistinguishable from a
         # registered session whose evidence was never checked.
-        return _note_response(event, _registration_note(payload))
+        return _registration_response(event, payload)
     return _completion_response(event, store, payload, tasks_mod, project, task_id)
 
 
+def _registration_response(event: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """The unregistered-session note, delivered once.
+
+    The note names what is missing, and it says it out loud every time it is
+    delivered into the turn. Feeding it back unchanged is what turns an
+    unregistered session into a continuation loop that can never end: each
+    stop produces a turn, and each turn produces a stop. So the first delivery
+    carries the note in full, and a stop the host has already fed this gate
+    back into returns nothing. The ambiguity is still named once, which is what
+    keeps it from reading as a registered session whose evidence was never
+    checked.
+    """
+    if payload.get("stop_hook_active"):
+        return {}
+    return _note_response(event, _registration_note(payload))
+
+
 def _registration_note(payload: dict[str, Any]) -> str:
-    """What a session must register before this gate can judge it."""
     agent_id = payload.get("agent_id")
     who = "this subagent" if agent_id else "this session"
     identified = f"agent {agent_id!r} in " if agent_id else ""

@@ -465,6 +465,31 @@ def test_an_unregistered_session_is_reported_and_never_gated(project: Path) -> N
             f"{event} reported nothing about an unregistered session: {response!r}"
 
 
+def test_a_repeated_unregistered_stop_is_silent_after_the_first(project: Path) -> None:
+    """The registration note is delivered once, not on every stop.
+
+    A read-only session never registers, so without a bound the note is emitted
+    on every stop forever. Each delivery is a turn, and each turn is a stop, so
+    the same context comes back each time and the session can never close. The
+    first stop still names the missing registration; only the stop the host has
+    already fed this gate back into goes quiet.
+    """
+    hook = load_hook_module()
+    for event in COMPLETION_EVENTS:
+        first = hook.respond(event, payload_for(event, session_id="someone-else"),
+                             str(project))[0]
+        assert registration_note(first, event), \
+            f"{event} withheld the registration note on the first stop: {first!r}"
+
+        again = hook.respond(event, payload_for(event, session_id="someone-else",
+                                                stop_hook_active=True),
+                             str(project))[0]
+        assert accepts_the_finish(again), \
+            f"{event} gated a repeated unregistered stop: {again!r}"
+        assert not registration_note(again, event), \
+            f"{event} re-delivered the registration note into the same turn: {again!r}"
+
+
 def test_a_sibling_subagent_never_inherits_another_workers_gate(project: Path) -> None:
     """One worker's binding cannot reach a sibling, and the sibling is told so.
 

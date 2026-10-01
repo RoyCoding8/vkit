@@ -16,8 +16,10 @@ it.
 
 **The manifest has no route.** Not one handler below reads a path under
 `verification/` or `schemas/`, and there is no request shape that could name
-one. A test walks this file's AST and asserts it, so the guarantee is checked
-against the source rather than against a comment describing the source.
+one. This module opens no file at all: every route reads from `operations`,
+which holds the project's resolved paths. `test_this_module_names_no_policy_path`
+walks this file's AST and asserts it, so the guarantee is checked against the
+source rather than against a comment describing the source.
 """
 from __future__ import annotations
 
@@ -73,8 +75,10 @@ MUTATIONS: dict[str, Callable[[Context, Mapping[str, Any]], Any]] = {
     "run_check": lambda ctx, q: operations.run_check(ctx, _text_param(q, "check_id")),
     "cancel_run": lambda ctx, q: operations.cancel_check_run(ctx, _text_param(q, "run_id")),
     # Invoke an operation by name. Every name on the writable surface is
-    # reachable here and nowhere else, and the four the core does not have
-    # refuse with 501 rather than being absent from the list.
+    # reachable here and nowhere else. All six are implemented in this build,
+    # so no name currently reaches the 501 path; an operation marked
+    # `implemented=False` would refuse with 501 rather than being absent from
+    # the list.
     "apply": lambda ctx, q: _apply(ctx, q),
 }
 

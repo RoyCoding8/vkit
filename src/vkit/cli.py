@@ -25,7 +25,7 @@ from .manifest import Manifest, ManifestError, parse_manifest
 from .outcome import Blocked, BlockedReason, Failed, Outcome, Passed
 from .paths import Project, ProjectError, open_project
 from .procidentity import ProcessIdentity
-from .storage import ConflictError, Store, StoreError
+from .storage import ConflictError, Store, StoreError, probe_state
 
 EXIT_OK = 0
 EXIT_CHECK_FAILED = 1
@@ -252,14 +252,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "detail": found or f"{need.executable!r} is not on PATH",
                 })
 
-    state_writable = True
-    detail = str(project.state_root)
-    try:
-        project.state_root.mkdir(parents=True, exist_ok=True)
-        Store(project.db_path)
-    except (StoreError, OSError) as exc:
-        state_writable = False
-        detail = str(exc)
+    state_writable, detail = probe_state(project.state_root, project.db_path)
 
     source = None
     try:

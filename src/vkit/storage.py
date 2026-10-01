@@ -590,7 +590,13 @@ class Store:
         return json.loads(row[0])
 
     def mark_running(self, run_id: str, process: dict, *, command: dict | None = None) -> None:
-        """Attach process identity, and the command that was launched.
+        """Attach a verified process identity, and the command that was launched.
+
+        The legacy name for `publish_identity`, kept because callers outside this
+        milestone's scope still use it -- the acceptance harness and two test
+        modules -- and because it is not a second authority: it performs the same
+        single guarded write, so a run cannot end up `running` through one name and
+        `launching` through the other. It is deleted with the last caller.
 
         The command is recorded here rather than only in the final report because
         a run cancelled before it finished still has to describe what it was
@@ -600,14 +606,7 @@ class Store:
         payload = dict(process)
         if command is not None:
             payload["command"] = command
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "UPDATE runs SET lifecycle = 'running', process_json = ?"
-                " WHERE run_id = ? AND lifecycle != 'terminal'",
-                (_dumps(payload), run_id),
-            )
-            if cursor.rowcount == 0:
-                raise StoreError(f"cannot mark running: {run_id} is unknown or already terminal")
+        self.publish_identity(run_id, payload)
 
     def attach_task(self, run_id: str, task_id: str, attempt: int) -> None:
         """Bind a run to the attempt that started it."""

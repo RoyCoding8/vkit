@@ -34,6 +34,12 @@ if [ ! -d "$VENV" ]; then
     python3 -m venv "$VENV"
 fi
 
+# The one definition of the PATH, applied as soon as the venv it points at
+# exists. Nothing above this line needs a POSIX venv: `python3 -m venv` is the
+# stock interpreter and the two echoes are shell builtins.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
+
 "$VENV/bin/python" -m pip install --quiet --upgrade pip
 "$VENV/bin/python" -m pip install --quiet "jsonschema>=4.23,<5" "pytest>=8.0" "mcp>=2.2,<3" "anyio>=4.5"
 

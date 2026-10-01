@@ -19,6 +19,13 @@ if [ ! -x "$PY" ]; then
     exit 1
 fi
 
+# One definition of the PATH a POSIX run needs. This script only installs into
+# the venv and reports versions, so it has nothing to lose a directory from yet,
+# and the point of sourcing it here is that the day it grows a line which does,
+# the PATH is already right. See scripts/posix-env.sh.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
+
 # pywin32 is deliberately absent: pyproject.toml declares it
 # `sys_platform == 'win32'` and nothing on the POSIX path imports it.
 "$PY" -m pip install --quiet \

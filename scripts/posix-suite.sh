@@ -13,7 +13,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 VENV="${VKIT_POSIX_VENV:-$HOME/.venvs/vkit-posix}"
 cd "$REPO_ROOT"
 mkdir -p tmp/posix-suite
-export PATH="$VENV/bin:$PATH"
+# One definition of the PATH a POSIX run needs, so no entry point can silently
+# lose a directory. See scripts/posix-env.sh for why each is there.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
 
 if [ "$#" -gt 0 ]; then
     # Arguments are file stems, matched as tests/test_<stem>.py. The glob needs

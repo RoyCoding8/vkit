@@ -14,6 +14,10 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 VENV="${VKIT_POSIX_VENV:-$HOME/.venvs/vkit-posix}"
 cd "$REPO_ROOT"
+# One definition of the PATH a POSIX run needs, so no entry point can silently
+# lose a directory. See scripts/posix-env.sh for why each is there.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
 mkdir -p tmp
 
 row="$1"; shift || true
@@ -33,3 +37,9 @@ cat "$out"
 echo "--- stderr ---"
 head -30 "$err"
 echo "--- bytes: out=$(wc -c < "$out") err=$(wc -c < "$err") ---"
+
+# The exit code is the verdict, and it has to agree with the line just printed.
+# A script that prints "row 7 exit=1" and then exits 0 is worse than one that
+# crashes, because a reader trusts the exit code. The row's own status is the
+# verdict; pass it through rather than deciding a second time.
+exit "$status"

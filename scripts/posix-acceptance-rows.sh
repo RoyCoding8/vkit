@@ -15,9 +15,10 @@ VENV="${VKIT_POSIX_VENV:-$HOME/.venvs/vkit-posix}"
 cd "$REPO_ROOT"
 mkdir -p tmp
 
-# The example manifests name the interpreter `python`; the venv provides it.
-# See scripts/posix-run.sh for the measurement behind this.
-export PATH="$VENV/bin:$PATH"
+# One definition of the PATH a POSIX run needs, so no entry point can silently
+# lose a directory. See scripts/posix-env.sh for why each is there.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
 
 if [ "$#" -gt 0 ]; then
     ROWS="$*"

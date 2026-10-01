@@ -57,7 +57,8 @@ import sys
 pattern = re.compile(r"(\d+) (passed|failed|skipped|error|errors)")
 tests = failed = skipped = 0
 missing = []
-for path in sorted(glob.glob(os.path.join(sys.argv[1], "test_*.txt"))):
+reports = sorted(glob.glob(os.path.join(sys.argv[1], "test_*.txt")))
+for path in reports:
     text = open(path, encoding="utf-8", errors="replace").read()
     counts = {kind: int(n) for n, kind in pattern.findall(text)}
     if not counts:
@@ -71,4 +72,13 @@ print(f"TOTAL  {tests} tests: {failed} failed or errored, {skipped} skipped")
 print(f"PASSED {tests - failed - skipped}")
 if missing:
     print(f"no count parsed for: {', '.join(missing)}")
+
+# The exit code is the verdict, and it has to agree with the numbers above.
+# A script that prints a failure count and exits 0 is worse than one that
+# crashes, because a reader trusts the exit code. Two things count as a
+# failure beyond the failure count itself: a report whose count line could not
+# be parsed, which contributes nothing to TOTAL and would otherwise read as
+# neither failed nor run; and no reports at all, which is the same false green
+# one layer up.
+sys.exit(1 if (failed or missing or not reports) else 0)
 PY

@@ -20,12 +20,15 @@ cd "$REPO_ROOT"
 # recorded as a mitigation rather than a fix.
 OUTDIR="${VKIT_POSIX_REPORTS:-$HOME/vkit-posix-reports/posix-suite}"
 mkdir -p "$OUTDIR"
-export PATH="$VENV/bin:$PATH"
+# One definition of the PATH a POSIX run needs, so no entry point can silently
+# lose a directory. See scripts/posix-env.sh for why each is there.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
 
 echo "reports: $OUTDIR"
 echo
 
-killed_at=""
+killed=""
 for f in tests/test_*.py; do
     name=$(basename "$f" .py)
     out="$OUTDIR/$name.txt"
@@ -45,6 +48,7 @@ for f in tests/test_*.py; do
             printf '%-32s no tests collected\n' "$name"
         else
             printf '%-32s NO REPORT (exit %s)\n' "$name" "$status"
+            killed="$killed $name"
         fi
         continue
     fi
@@ -61,6 +65,13 @@ else:
           suite.get("errors", 0), suite.get("skipped", 0))
 PY
     )
+    if [ "${tests:-0}" -eq 0 ]; then
+        # A report that parses but counts no tests describes no run. It is not
+        # a clean file, so it is held out of the total rather than added to it.
+        printf '%-32s NO TESTS IN REPORT\n' "$name"
+        killed="$killed $name"
+        continue
+    fi
     printf '%-32s tests=%-4s fail=%-3s err=%-3s skip=%s\n' \
         "$name" "$tests" "$failures" "$errors" "$skipped"
 done
@@ -74,7 +85,8 @@ import xml.etree.ElementTree as ET
 
 pattern = os.path.join(sys.argv[1], "*.xml")
 tests = failures = errors = skipped = 0
-for path in sorted(glob.glob(pattern)):
+reports = sorted(glob.glob(pattern))
+for path in reports:
     root = ET.parse(path).getroot()
     suite = root.find("testsuite") if root.tag == "testsuites" else root
     if suite is None:
@@ -85,7 +97,26 @@ for path in sorted(glob.glob(pattern)):
     skipped += int(suite.get("skipped", 0))
 
 print("=" * 60)
+print(f"reports: {len(reports)}")
 print(f"TOTAL  {tests} tests: {failures} failed, {errors} errors, {skipped} skipped")
 print(f"PASSED {tests - failures - errors - skipped}")
 print("=" * 60)
+
+# The exit code is the verdict, and it has to agree with the numbers above. A
+# script that prints a failure count and exits 0 is worse than one that crashes,
+# because a reader trusts the exit code. This step is the one place that knows
+# every count, so it is the one place that decides. No reports at all is a
+# failure too: a directory that was never written to reads as a clean bill of
+# health otherwise.
+sys.exit(1 if (failures or errors or not reports) else 0)
 PY
+total_rc=$?
+[ "$total_rc" -ne 0 ] && echo "the totals above are a FAILED run" >&2
+
+# A file that died or produced a report describing no run leaves no count here
+# for the total to judge, so the loop's own verdict covers those.
+if [ -n "$killed" ]; then
+    echo "files with no usable report:$killed" >&2
+    total_rc=1
+fi
+exit "$total_rc"

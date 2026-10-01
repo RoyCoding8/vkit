@@ -12,7 +12,10 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 VENV="${VKIT_POSIX_VENV:-$HOME/.venvs/vkit-posix}"
 cd "$REPO_ROOT"
-export PATH="$VENV/bin:$PATH"
+# One definition of the PATH a POSIX run needs, so no entry point can silently
+# lose a directory. See scripts/posix-env.sh for why each is there.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
 
 DIR="${1:-$HOME/vkit-posix-reports/posix-suite}"
 echo "reading $DIR"
@@ -53,10 +56,22 @@ for name, note, detail, tests, bad, skipped in rows:
 tests = sum(r[3] for r in rows)
 bad = sum(r[4] for r in rows)
 skipped = sum(r[5] for r in rows)
+# A report that could not be parsed contributes nothing to TOTAL, so it would
+# otherwise read as neither failed nor run.
+unusable = [name for name, note, _detail, _t, _b, _s in rows if note]
 print()
 print("=" * 62)
 print(f"files with a report: {len(rows)}")
+if unusable:
+    print(f"unusable report: {', '.join(unusable)}")
 print(f"TOTAL  {tests} tests: {bad} failed or errored, {skipped} skipped")
 print(f"PASSED {tests - bad - skipped}")
 print("=" * 62)
+
+# The exit code is the verdict, and it has to agree with the numbers above. A
+# script that prints a failure count and exits 0 is worse than one that crashes,
+# because a reader trusts the exit code. So a failure or an error is a failure,
+# an unusable report is a failure, and no reports at all is a failure rather
+# than a clean bill of health for a directory that was never written to.
+sys.exit(1 if (bad or unusable or not rows) else 0)
 PY

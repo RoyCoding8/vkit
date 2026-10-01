@@ -211,7 +211,24 @@ class JobLease:
                     close()
 
 
-def prepare_job(run_id: str) -> JobLease:
+def job_name_for(run_id: str) -> str:
+    """A job name only this machine's vkit can guess.
+
+    Minted separately from the job itself because a detached supervisor has to
+    create the job from a name that was recorded durably before it was started.
+    The creator cannot be the process that registers the run: it has to let go of
+    the job handle before the supervisor is spawned, and closing the last handle
+    is the kill. So the name is minted and persisted first, and the supervisor
+    creates the job from it.
+
+    The name is the capability to terminate the run, so it must not be derivable
+    from anything an outside party already knows. A random token per run is the
+    whole defence; deriving it from the run id would be security by obscurity.
+    """
+    return f"Local\\vkit-run-{run_id}-{secrets.token_hex(8)}"
+
+
+def prepare_job(run_id: str, name: str | None = None) -> JobLease:
     """Create the named job. No process exists yet.
 
     Windows-only, and the only place `CreateJobObject` is called. The name
@@ -220,6 +237,11 @@ def prepare_job(run_id: str) -> JobLease:
     kill the tree, so a name an outside party could compute from the run id
     would be no protection at all.
 
+    `name` is how a detached supervisor creates the job its launcher already
+    recorded. Re-creating a name that exists fails with ERROR_ALREADY_EXISTS,
+    which is the right outcome: two supervisors for one run is a bug, and a
+    second one silently taking over the job would be worse than refusing.
+
     The handle is returned rather than closed, and the caller holds it until the
     run is terminal. That is the entire mechanism: closing the last handle is a
     kill, so a supervisor that exits early would kill the tree it was supposed to
@@ -227,8 +249,8 @@ def prepare_job(run_id: str) -> JobLease:
     """
     if not IS_WINDOWS:
         return JobLease(name="", handle=None)
-    name = f"Local\\vkit-run-{run_id}-{secrets.token_hex(8)}"
-    job = win32job.CreateJobObject(None, name)
+    resolved = name or job_name_for(run_id)
+    job = win32job.CreateJobObject(None, resolved)
     try:
         info = win32job.QueryInformationJobObject(
             job, win32job.JobObjectExtendedLimitInformation
@@ -243,7 +265,7 @@ def prepare_job(run_id: str) -> JobLease:
         with contextlib.suppress(Exception):
             job.Close()
         raise
-    return JobLease(name=name, handle=job)
+    return JobLease(name=resolved, handle=job)
 
 
 @dataclass(frozen=True)

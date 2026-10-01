@@ -10,7 +10,7 @@
     "schema_version": { "const": 1 },
     "run_id": { "type": "string", "minLength": 1 },
     "check_id": { "type": "string", "minLength": 1 },
-    "lifecycle": { "enum": ["preparing", "running", "terminal"] },
+    "lifecycle": { "enum": ["preparing", "launching", "cancelling", "running", "terminal"] },
     "started_at": { "type": "string", "minLength": 1 },
     "ended_at": { "type": ["string", "null"] },
     "outcome": {
@@ -76,6 +76,10 @@
           "type": "string",
           "minLength": 1,
           "description": "Name of the Windows job object owning this run's tree, so another process can terminate it. Unguessable: anyone who can open it can kill the run."
+        },
+        "ownership_known": {
+          "const": false,
+          "description": "Present only when it is false, and that is the whole point. A cancel report for a run whose owner was never published carries this key, because a report that omitted it would read as a run with no process at all -- which is indistinguishable from a run that never started, the inference this milestone exists to prevent. Absent means the owner is known."
         },
         "ownership": { "enum": ["windows_job_object", "posix_process_group"] },
         "exit_code": { "type": ["integer", "null"] },

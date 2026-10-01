@@ -426,6 +426,20 @@ def _resources(raw: Any) -> tuple[dict[str, Any], ...]:
     if raw is None:
         return ()
     if isinstance(raw, dict):
+        # Each value has to be an object before it is unpacked. `{"key": k, **v}`
+        # raises a TypeError on a bare string, which would leave the caller with
+        # a traceback instead of the refusal naming what to send.
+        for key, value in raw.items():
+            if not isinstance(value, dict):
+                raise AdmissionRefused(
+                    f"required resource {key!r} must name an object, not "
+                    f"{type(value).__name__}"
+                )
+            if "key" in value:
+                raise AdmissionRefused(
+                    f"required resource {key!r} is named twice: by the mapping key "
+                    "and by a key field; give it one name"
+                )
         raw = [{"key": key, **value} for key, value in raw.items()]
     if not isinstance(raw, list):
         raise AdmissionRefused("required_resources must be a list of resource objects")

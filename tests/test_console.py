@@ -109,17 +109,47 @@ def test_a_refused_bind_leaves_no_socket_listening(context: operations.Context) 
     """The refusal happens before the socket exists, so nothing is reachable.
 
     A check that only asserted the exception would still pass if the server had
-    bound the routable address and then complained. This proves the port is free
-    afterwards.
+    bound the routable address and then complained. So the probe has to be able
+    to fail, and it has to be aimed at the port this code chose. Both are
+    established here: the probe is shown to reach a live socket, and the port
+    handed to `serve` is a real free port rather than a hardcoded one.
+
+    Binding port 0 and probing an unrelated port proves nothing about the port
+    the server picked, which is what the earlier version of this test did.
     """
     import socket
 
+    def reachable(port: int) -> bool:
+        probe = socket.socket()
+        probe.settimeout(5)
+        try:
+            return probe.connect_ex(("127.0.0.1", port)) == 0
+        finally:
+            probe.close()
+
+    # The probe's own calibration: it reaches a socket that is listening, and
+    # stops reaching one that has been closed. A probe that could not tell those
+    # apart would pass the refusal assertion below whatever the server did.
+    calibration = socket.socket()
+    calibration.bind(("127.0.0.1", 0))
+    calibration.listen(1)
+    calibration_port = calibration.getsockname()[1]
+    assert reachable(calibration_port), "the probe cannot reach a listening socket"
+    calibration.close()
+    assert not reachable(calibration_port), "the probe still reaches a closed port"
+
+    # A port this test owns, so the refused bind is aimed at something known.
+    taken = socket.socket()
+    taken.bind(("127.0.0.1", 0))
+    port = taken.getsockname()[1]
+    taken.close()
+
     with pytest.raises(server.BindRefused):
-        server.serve(context, port=0, host="0.0.0.0")
-    probe = socket.socket()
-    probe.settimeout(5)
-    assert probe.connect_ex(("127.0.0.1", 1)) != 0
-    probe.close()
+        server.serve(context, port=port, host="0.0.0.0")
+
+    assert not reachable(port), (
+        f"the refused bind left something reachable on 127.0.0.1:{port}"
+    )
 
 
 def test_a_loopback_bind_succeeds_on_port_zero(context: operations.Context) -> None:
@@ -946,7 +976,11 @@ def test_a_run_stays_readable_with_no_console_state(context: operations.Context)
     report = Store(context.project.db_path).load(run_id)
     assert report["run_id"] == run_id
     assert report["outcome"]["result"] == "PASS"
-    assert report["configuration_digest"] == report["configuration_digest"]
+    # The digest pins the policy that ran, so it is compared against the
+    # manifest this session resolved rather than against itself. The previous
+    # assertion compared the field to the same subscript, which is true for any
+    # value the key holds including a wrong one.
+    assert report["configuration_digest"] == context.manifest.digest()
 
     fresh = operations.open_context(context.project.root)
     assert operations.run_detail_view(fresh, run_id)["report"] == report

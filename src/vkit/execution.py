@@ -451,10 +451,10 @@ def _terminal_report(
         "configuration_digest": manifest.digest(),
         "fixture_digest": None,
         # A refused launch produces a real result whose pid is None, not a
-        # missing process. Guarding on the object left process.pid = None in the
-        # report, which violates the schema, so publish never ran and the row
-        # stayed 'running' with no result forever. A run that never started has
-        # no process to record.
+        # missing process. Guarding on the object records null here, and null is
+        # what the schema accepts: `process.pid` is declared an integer, so a
+        # `process` object carrying a null pid is the shape the schema refuses.
+        # A run that never started has no process to record.
         "process": None if process is None or process.pid is None else {
             "pid": process.pid,
             **({"creation_time": process.creation_time}

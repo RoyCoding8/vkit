@@ -337,16 +337,25 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
     """What this project can run, what is missing, and what it declares.
 
     Three questions, one response. The registered checks and their
-    prerequisites (the same probe the core uses, so inspection and a real run
-    cannot report different environments), the enrollment state that decides
-    whether any of it may execute, and the mechanical discovery of what the
-    repository says about itself.
+    prerequisites, the enrollment state that decides whether any of it may
+    execute, and the mechanical discovery of what the repository says about
+    itself.
+
+    The prerequisite probe here is `shutil.which`, not the core's
+    `execution.check_prerequisites`, so it reports every missing executable as a
+    gap where the core stops at the first and returns a BLOCKED outcome. That is
+    deliberate for a tool that reports rather than decides, and it means the two
+    answers are not comparable term for term: this one lists gaps, the core
+    refuses a run.
 
     Discovery appears here so an agent has one place to learn that a repository
     has a test command nobody has registered, rather than a report that says
     only "no checks" and leaves the reason unstated. It is bounded by the same
-    page limit as the checks, and it is read-only: nothing here executes a
-    command, and nothing installs anything.
+    page limit as the checks. Nothing here executes a command and nothing
+    installs anything, but the state probe below writes: it opens the evidence
+    store, because whether a check can run here is a fact about that store being
+    writable, and a tool that reports on the environment has to be able to
+    reach it.
     """
     limit = _integer(args, "limit", DEFAULT_PAGE, low=1, high=MAX_PAGE)
     wanted = set(_string_list(args, "checks"))
@@ -974,7 +983,9 @@ TOOLS: tuple[ToolSpec, ...] = (
         description=(
             "Report the checks registered for the bound project, whether their "
             "prerequisites are installed, and which optional extra checks exist. "
-            "Read-only; launches nothing and installs nothing."
+            "Launches nothing and installs nothing, but it opens the project's "
+            "evidence store to report whether one can be written here, so a call "
+            "may create that store."
         ),
         input_schema={
             "type": "object",
@@ -993,7 +1004,7 @@ TOOLS: tuple[ToolSpec, ...] = (
             },
         },
         handler=_project_inspect,
-        read_only=True, idempotent=True, destructive=False,
+        read_only=False, idempotent=True, destructive=False,
     ),
     ToolSpec(
         name="task_begin",
@@ -1073,7 +1084,10 @@ TOOLS: tuple[ToolSpec, ...] = (
         description=(
             "Read a run's lifecycle, outcome, scenarios, artifact references and a "
             "bounded window of its logs. Logs are paginated by byte offset, so a "
-            "large log is read in pages rather than returned whole."
+            "large log is read in pages rather than returned whole. Reads only the "
+            "records already written, but it opens the project's evidence store to "
+            "read them, so a call against a repository with no store yet may create "
+            "it."
         ),
         input_schema={
             "type": "object",
@@ -1092,7 +1106,7 @@ TOOLS: tuple[ToolSpec, ...] = (
             },
         },
         handler=_run_get,
-        read_only=True, idempotent=True, destructive=False,
+        read_only=False, idempotent=True, destructive=False,
     ),
     ToolSpec(
         name="run_cancel",

@@ -239,9 +239,62 @@ def test_tools_list_publishes_exactly_the_six_tools_with_their_schemas(connected
         assert isinstance(annotations["destructiveHint"], bool)
 
     by_name = {t["name"]: t for t in tools}
-    assert by_name["project_inspect"]["annotations"]["readOnlyHint"] is True
     assert by_name["run_cancel"]["annotations"]["destructiveHint"] is True
-    assert by_name["run_get"]["annotations"]["readOnlyHint"] is True
+
+
+def test_the_read_only_honours_whether_the_handler_writes(tmp_path: Path) -> None:
+    """`readOnlyHint` agrees with what the handler does, measured on the disk.
+
+    The previous test asserted `readOnlyHint is True` against the advertised
+    value, which passes whether or not the handler writes: relabelling the tool
+    changes the advertised value and the assertion with it. So the label is not
+    what is measured here. The write is.
+
+    `project_inspect` reports whether this machine can run a check, and the
+    evidence store being writable is part of that answer, so it opens the store
+    to find out. That is a directory creation and a migration on a repository
+    that has neither. The claim that decides auto-approval therefore has to be
+    false, and this test is what would notice if the handler were later made
+    genuinely read-only without the label being corrected to match.
+
+    The Git common directory is watched rather than the worktree, because that is
+    where vkit keeps state and a linked worktree puts it outside the tree the
+    client named.
+    """
+    project = make_repo(tmp_path, "inspected")
+    from vkit.paths import open_project
+
+    resolved = open_project(project)
+    assert not resolved.state_root.exists(), (
+        "the fixture already holds a state directory, so nothing here could "
+        "detect a write"
+    )
+
+    def tree() -> set[Path]:
+        return {
+            path
+            for base in (resolved.git_common_dir,)
+            for path in base.rglob("*")
+            if path.is_file() or path.is_dir()
+        }
+
+    before = tree()
+    with StdioClient(project) as client:
+        inspected = client.call_body("project_inspect", {})
+        assert [c["id"] for c in inspected["checks"]] == ["totals-behavior"]
+        annotations = {t["name"]: t["annotations"] for t in client.list_tools()}
+
+    written = tree() - before
+    assert written, (
+        "project_inspect no longer creates the evidence store, so the "
+        "read_only flag and its description are now stale claims about a "
+        "handler that does not write"
+    )
+    assert annotations["project_inspect"]["readOnlyHint"] is False, (
+        "project_inspect wrote to the project but still advertises readOnlyHint "
+        "true, which is the promise a host trusts to auto-approve it: "
+        f"{sorted(str(p) for p in written)}"
+    )
 
 
 # --- a whole lifecycle over the wire -----------------------------------------

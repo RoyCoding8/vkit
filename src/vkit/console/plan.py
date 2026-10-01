@@ -9,9 +9,9 @@ code path that performs it.
 executable repository policy: committed, reviewed in a diff, and its digest is
 stamped into every run report. A console that could rewrite it would let an
 operator weaken the contract the evidence is measured against with nothing to
-review. Changing the manifest means making a commit. `PROTECTED_PATHS` names the
-paths that are policy rather than state, and a test asserts no handler in this
-package writes anything under them.
+review. Changing the manifest means making a commit. `PROTECTED_PATH_PARTS` names the
+paths that are policy rather than state, and a test walks this package's own AST
+for a write call naming one.
 
 Two failure shapes are modelled as two types rather than one string, because
 they mean opposite things to an operator and a reader must not have to guess

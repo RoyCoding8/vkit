@@ -752,6 +752,13 @@ def test_a_client_that_disconnects_mid_lifecycle_loses_no_evidence(tmp_path: Pat
     for the same run, and the recorded outcome is there. A run that lived only in
     the first process's memory would be gone, and the product's whole claim is
     that it is not.
+
+    "Loses no evidence" is the claim, so the read is polled to a terminal state
+    rather than made once. A single immediate read asserts that the check
+    happened to finish before the client reconnected, which is a fact about the
+    machine's load rather than about the product. Waiting keeps the guarantee and
+    drops the accident: the run must still publish its verdict from a process
+    this client never had.
     """
     project = make_repo(tmp_path, "disconnect")
 
@@ -766,7 +773,15 @@ def test_a_client_that_disconnects_mid_lifecycle_loses_no_evidence(tmp_path: Pat
     client.kill()
 
     with StdioClient(project) as reconnected:
-        fetched = reconnected.call_body("run_get", {"run_id": run_id})
+        # Polled, not read once. `check_start` is detached by design: it records
+        # the launch and returns while the check is still running, so the verdict
+        # is never in the `check_start` payload. This test read the run one time
+        # immediately after the kill and asserted a verdict on that single read,
+        # which is a race against the check's own duration. It failed on Windows
+        # at about 88% across eight runs, and every one of those runs went on to
+        # publish PASS -- measured by re-reading the same run id with nothing
+        # held but the id, up to 60 s later. Nothing was lost; the read was early.
+        fetched = await_outcome(reconnected, run_id)
         assert fetched["run_id"] == run_id
         assert fetched["result"] == "PASS"
         assert fetched["lifecycle"] == "terminal"

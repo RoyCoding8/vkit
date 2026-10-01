@@ -392,10 +392,18 @@ def row_evidence_survives_checkout() -> None:
     payload = json.loads(done.stdout or "{}")
     report_path = Path(payload.get("report_path", ""))
 
+    # Both halves are resolved before comparing, because the product resolves
+    # the path it publishes and this script's own side never has. On a runner
+    # whose TEMP is an 8.3 short name (`C:\Users\RUNNER~1\...`) the unresolved
+    # side keeps the short form while the resolved one spells out the long name,
+    # so a string prefix compared them as two different directories. The
+    # directory was the same one throughout; only the spelling differed. This is
+    # the same reason `paths.py` resolves both of its own paths.
+    claimed = (main / ".git").resolve()
     check(
         "State lives in the shared git dir, not the worktree",
-        bool(payload) and str(report_path).startswith(str(main / ".git")),
-        f"report {report_path.name} lives under {main / '.git'}, not under {worker}",
+        bool(payload) and Path(report_path).resolve().is_relative_to(claimed),
+        f"report {report_path.name} lives under {claimed}, not under {worker}",
     )
 
     subprocess.run(["git", "worktree", "remove", "--force", str(worker)], cwd=main, check=True)

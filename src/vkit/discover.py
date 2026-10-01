@@ -875,7 +875,9 @@ def _bound(inspection: Inspection) -> None:
     repository with 40 build helpers declared before its test script reported no
     test command at all. Silent absence of the one command a reader came for is
     worse than a long report, so the bound drops the least important kinds
-    first and never drops a test or an install hook.
+    first. A `test`, `install` or `launch` command is kept ahead of any helper,
+    so it is dropped only when there are more of those than the whole bound has
+    room for, and the gap then says so by name.
     """
     for label, collection in (("commands", inspection.commands), ("CI commands", inspection.ci_commands)):
         if len(collection) <= MAX_PER_CATEGORY:
@@ -899,11 +901,23 @@ def _bound(inspection: Inspection) -> None:
         dropped = [c for c in collection if c not in kept]
         inspection.truncated = True
         kinds = sorted({c.kind for c in dropped})
-        inspection.gaps.append(
-            f"more than {MAX_PER_CATEGORY} {label} were discovered; "
-            f"{len(dropped)} of kind {', '.join(kinds)} are not shown. "
-            "Test, install and launch commands are never dropped by this bound"
-        )
+        spared = [k for k in ("test", "install", "launch") if k in kinds]
+        if spared:
+            # More entry points than the bound has room for. The report has to
+            # say it lost one, because the loss is exactly what the bound was
+            # written to avoid and a reader cannot see it from a list of names.
+            inspection.gaps.append(
+                f"more than {MAX_PER_CATEGORY} {label} were discovered; "
+                f"{len(dropped)} of kind {', '.join(kinds)} are not shown, "
+                f"including {len([c for c in dropped if c.kind in spared])} "
+                f"{'/'.join(spared)} command(s). The bound has no room for them."
+            )
+        else:
+            inspection.gaps.append(
+                f"more than {MAX_PER_CATEGORY} {label} were discovered; "
+                f"{len(dropped)} of kind {', '.join(kinds)} are not shown. "
+                "Test, install and launch commands are never dropped by this bound"
+            )
         if label == "commands":
             inspection.commands = kept
         else:

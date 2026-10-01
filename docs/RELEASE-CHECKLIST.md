@@ -5,7 +5,7 @@ release record. A step you did not run is a step you did not do, and the
 release is described by what ran, never by what the checklist says can run.
 
 The commands here are the ones that exist in this repository at revision
-`abb402f`. `tests/test_release_docs.py` resolves every command below against
+`829bd77`. `tests/test_release_docs.py` resolves every command below against
 `build_parser()` and the working tree, so a step that stops existing fails the
 suite instead of quietly misleading a maintainer. It also resolves every file
 this document cites as evidence *at that revision*, so a pin left behind HEAD
@@ -162,7 +162,7 @@ only one of them needed running.
 ## Build the artifacts
 
 Every command below was run on Windows 11 with Python 3.13.14 at revision
-`abb402f`. The only edits since that commit are to documents, which no command
+`829bd77`. The only edits since that commit are to documents, which no command
 in this document measures.
 
 ```console command
@@ -180,7 +180,7 @@ $ <venv>/Scripts/python.exe -m pip wheel . --no-deps -w <dist>
 
 On this host the wheel build printed
 `Created wheel for vkit: filename=vkit-0.1.0-py3-none-any.whl size=258158`,
-rebuilt at revision `abb402f`. The size is what makes this a receipt rather than
+rebuilt at revision `829bd77`. The size is what makes this a receipt rather than
 a claim that the wheel builds, and `tests/test_release_docs.py` checks it has a
 byte count without checking the value, because a wheel's size moves with the
 source it packages.

@@ -20,7 +20,7 @@ is selected. A condition with no receipt is not met.
 | GAP-3 closed | Met, on the receipt rather than on a green suite. A live Claude Code host session installed this plugin, connected its MCP server, attached the six tools, and delivered SessionStart, PreToolUse and Stop. `docs/HOST-SESSION.md` quotes it; `tests/test_plugin_host.py` drives it. |
 | GAP-10 met | **Not met.** No live session has put a subagent behind the six tools, or stopped a real turn with a BLOCKED run. `tests/test_plugin_host.py` drives neither, so a pilot is still the first thing that would. |
 | GAP-5 and GAP-6 met | **Not met.** A pilot operator must be able to enroll a repository. `vkit project enroll` and `vkit integration verify` exist, with 29 collected tests behind them in `tests/test_enroll.py`, `tests/test_integration.py` and `tests/test_plan06_onboarding.py`, so the commands are not the obstacle; the console that walks an operator through them is Plan 05, and no finished flow drives them yet. |
-| GAP-2 declared | A pilot runs on one named OS. POSIX-CLAIM: no-receipt. The one with an executed suite behind it is Windows 11. |
+| GAP-2 declared | A pilot runs on one named OS. POSIX-CLAIM: no-receipt, derived by `tests/test_release_docs.py::_posix_position_derived_from_the_tree`. The one with an executed suite behind it is Windows 11. |
 | GAP-7 and GAP-8 handled | The pilot baseline must be measured against a built wheel, and the report is written around 59 acceptance rows nobody has mapped. |
 | An owner-approved repository | The implementation worker does not pick this. |
 | Authorized live-model usage | A pilot spends tokens. The limit is set before the run. |

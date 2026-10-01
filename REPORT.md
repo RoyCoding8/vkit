@@ -15,7 +15,7 @@ collection count with no verdict attached.
 | | |
 |---|---|
 | Repo | `D:\AI\Poteto's Style`, branch `master`, commit `59a4eca` |
-| Suite collected | 646 collected, 0 run. Collected with `--collect-only`; no full execution at this revision. |
+| Suite collected | 647 collected, 0 run. Collected with `--collect-only`; no full execution at this revision. |
 | Windows suite passed | Unmeasured at this revision. The last observed full runs were 508 passed, 20 skipped at `14e21cb` and 444 passed, 2 skipped at `5087624`. Neither is a claim about `59a4eca`. |
 | Linux (WSL2) suite | No receipt in this repository. `scripts/posix-*.sh` write their reports under the invoking user's home directory and no run artifact is tracked. See the POSIX section below. |
 | Acceptance rows | 22/22, observed on this host at `59a4eca` and re-derived on every run of `tests/test_release_docs.py` |

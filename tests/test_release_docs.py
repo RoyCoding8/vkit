@@ -102,12 +102,12 @@ GAPS: list[tuple[str, tuple[str, ...]]] = [
     # GAP-1 is closed, so its tokens are the receipt rather than the absence:
     # a reword that drops the evidence has to fail here.
     ("GAP-1", ("mcp", "SDK", "test_mcp_stdio.py")),
-    # GAP-2's row says the run has no receipt in this tree, so the tokens are
-    # the two halves of that claim rather than the platform names the old row
-    # used. It used to read `("POSIX", "Windows", "unverified")`, and the row it
-    # described said "Verified on Windows 11 ... only", so all three tokens were
-    # satisfied by a sentence that contradicted the sibling document's.
-    ("GAP-2", ("POSIX", "no receipt")),
+    # GAP-2's row points at the derivation rather than restating the position,
+    # so the tokens are the subsystem and the pointer. It used to read
+    # `("POSIX", "Windows", "unverified")`, and the row it described said
+    # "Verified on Windows 11 ... only", so all three tokens were satisfied by
+    # a sentence that contradicted the sibling document's.
+    ("GAP-2", ("POSIX", "posix_position_derived_from_the_tree")),
     ("GAP-3", ("test_plugin_host.py", "host session")),
     ("GAP-4", ("mcp serve", "serve_stdio")),
     ("GAP-5", ("console", "Plan 05")),
@@ -739,6 +739,58 @@ def test_the_readme_suite_count_is_the_one_this_file_recomputes() -> None:
         "the number the reader will compare against, so a mismatch here is a "
         "false receipt rather than a rounding error."
     )
+
+
+def test_the_acceptance_matrix_row_count_is_the_count_in_the_matrix() -> None:
+    """GAP-8's row states how many rows the matrix has, and that is derivable.
+
+    Measured: rewriting GAP-8's status cell to the old "There is no acceptance
+    table to map" left every gate green, because the row's status word is still
+    `Open` and its evidence cell still names the matrix. So the register said
+    the matrix was absent in one cell and quoted 59 rows from it in the next,
+    and the two cells contradicted each other unchecked.
+
+    The count is derived here from the matrix itself rather than read from the
+    document. A row in that file is a `|`-delimited line under a `##` heading,
+    excluding the `Check | Required outcome` header and the `|---|` rule, so
+    the total is a property of the file and not a phrasing anyone chose. That is
+    what makes this a count check rather than a vocabulary one: the number in
+    the row is compared with the number the matrix contains.
+    """
+    rows = _matrix_data_rows()
+    counted = _numbers(_read(CHECKLIST), r"holds (\d+) data rows")
+    assert counted, (
+        "GAP-8's evidence cell states no row count for the matrix, so nothing "
+        "ties the register's claim to the file it describes."
+    )
+    assert int(counted.group(1)) == len(rows), (
+        f"GAP-8's evidence cell says the matrix holds {counted.group(1)} data "
+        f"rows and tmp/research/KIT_ACCEPTANCE.md holds {len(rows)}. A row that "
+        "describes a file has to describe the file that is there."
+    )
+
+
+_MATRIX = ROOT / "tmp" / "research" / "KIT_ACCEPTANCE.md"
+
+
+def _matrix_data_rows() -> list[str]:
+    """The matrix's rows: one per check, across its six sections.
+
+    A data row is a pipe-delimited line whose first cell is text rather than
+    the literal `Check` header or a `---` rule. Sections come from the `##`
+    headings, and a line before the first heading is preamble, which holds no
+    rows.
+    """
+    text = _read(_MATRIX)
+    rows = [
+        line
+        for line in text.splitlines()
+        if line.startswith("|")
+        and not re.fullmatch(r"\|\s*-{3,}\s*(\|\s*-{3,}\s*)*\|?", line)
+        and not re.match(r"\|\s*Check\s*\|", line)
+    ]
+    assert rows, "no data rows were read from the acceptance matrix"
+    return rows
 
 
 def test_a_gap_row_cites_a_receipt_that_exists_and_does_not_call_one_missing() -> None:

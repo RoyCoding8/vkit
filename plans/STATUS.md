@@ -151,7 +151,7 @@ beside them and are not a claim about a later one.
   collects 32 and passes 32; the ten was true when this section was written.
 
 At `59a4eca`, which is the revision the release checklist pins,
-`pytest tests/ --collect-only -q` collects **646** across 46 files. That is a
+`pytest tests/ --collect-only -q` collects **647** across 46 files. That is a
 collection count and not a pass count. The last full execution at that revision
 has not been run, so no passed figure is quoted here. Both stale whole-suite
 numbers that used to sit in this file's neighbours were inherited from earlier
@@ -290,7 +290,9 @@ more likely rather than less.
 - The POSIX process path has been exercised on Ubuntu through WSL2, but no run
   of this suite is recorded in this repository, so the claim rests on the
   measurement scripts rather than on a receipt a reader can re-check.
-  POSIX-CLAIM: no-receipt.
+  POSIX-CLAIM: no-receipt, and the position is derived by
+  `tests/test_release_docs.py::_posix_position_derived_from_the_tree` rather
+  than asserted here.
   `scripts/measure_posix_escape.py` and its siblings exist and are committed,
   and `review/posix-triage.md` is the POSIX host agent's own record, but the
   suite run wrote to `$HOME/vkit-posix-reports/`, which is outside the tree.

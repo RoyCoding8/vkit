@@ -174,7 +174,7 @@ so it cannot agree with the application by construction.
 
 ```console
 $ .venv/Scripts/python.exe -m pytest tests/ --collect-only -q
-646 tests collected
+647 tests collected
 
 $ .venv/Scripts/python.exe scripts/acceptance.py
 22/22 acceptance rows pass
@@ -203,11 +203,14 @@ with the server about a changed contract instead of disagreeing with it.
 ## Known limits
 
 The POSIX path is written from documented semantics. This milestone was
-verified on Windows 11 with Python 3.13.14, and a POSIX host has exercised the
+verified on Windows 11 with Python 3.13.14. A POSIX host has exercised the
 process path, but **no POSIX run of this suite is recorded in this
-repository**, so the tree holds the measurement scripts and the host agent's
+repository**: the scripts write their reports under the invoking user's home
+directory, so the tree holds the measurement scripts and the host agent's
 triage rather than a receipt a reader can re-check. POSIX-CLAIM: no-receipt.
-`docs/RELEASE-CHECKLIST.md` carries this as GAP-2.
+`docs/RELEASE-CHECKLIST.md` carries this as GAP-2, and
+`tests/test_release_docs.py::_posix_position_derived_from_the_tree` is where
+the position is derived rather than restated.
 Its timeout and completion control flow is exercised on Windows with the two
 POSIX-only mechanisms stubbed, because an ordinary timeout there used to raise
 `UnboundLocalError` instead of reporting a timeout. Group signalling itself is

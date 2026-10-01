@@ -50,6 +50,6 @@ For any authorized live increase, declare host agent limits, registered writer l
 
 ## Release checks and report
 
-Map every row in [KIT_ACCEPTANCE.md](../KIT_ACCEPTANCE.md) to an executed test, a clearly optional capability, or an explicit unsupported boundary. Required failed or unrun rows prevent the associated support claim. The report must identify actual platforms, host versions, SDK versions, models exercised, plugin version, and candidate revision.
+Map every row in [KIT_ACCEPTANCE.md](../tmp/research/KIT_ACCEPTANCE.md) to an executed test, a clearly optional capability, or an explicit unsupported boundary. Required failed or unrun rows prevent the associated support claim. The report must identify actual platforms, host versions, SDK versions, models exercised, plugin version, and candidate revision.
 
 Deliver the built packages, checksums, reproducible install commands, compatibility table, pilot evidence, known limits, and remaining release gates. Update STATUS.md. Keep publication pending if it was not authorized, with artifacts ready for review.

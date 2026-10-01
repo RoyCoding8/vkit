@@ -20,6 +20,11 @@ tmp/*
 !tmp/research/
 !tmp/source/
 
+# Mutation-testing scratch: ablated, head and mine copies of the tree, written
+# by whatever ablation is running. Three near-identical 80 KB modules are not
+# source material, and no test or script resolves one by path.
+.abl/
+
 # Decision trail. Committed deliberately: a reviewer needs it to trust the result.
 
 # Session scratch: probe scripts, run logs and sweep records from the repair

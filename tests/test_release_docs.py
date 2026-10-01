@@ -140,6 +140,24 @@ ABSENT_COMMANDS = ("hook", "setup")
 # is capable of failing, so it is never offered as a checklist step.
 PRESENT_COMMAND_PROBE = "task begin"
 
+# The POSIX entry points this tree holds, and the one way to name them.
+#
+# These replaced eighteen shell scripts, and the documents name two of those
+# scripts by path. A document that names a path nobody can open is the failure
+# this file exists to catch, so the replacement is named here as the thing a
+# document may point at: the check below fails until the documents are updated,
+# which is the correct state and not a gap in the gate.
+#
+# A set rather than a constant because the documents are allowed to name either
+# of them. One spelling would be a second authority for a choice the tree
+# already makes, and the tree can make it twice over: a run and a setup are two
+# different jobs.
+POSIX_ENTRY_POINTS = ("scripts/posix_harness.py", "scripts/posix_setup.py")
+
+# A path that names a POSIX entry point and is not one. Used only to prove the
+# check below is capable of failing.
+ABSENT_POSIX_PROBE = "scripts/posix-suite-verbatim.sh"
+
 
 # --------------------------------------------------------------------- reading
 
@@ -335,6 +353,77 @@ def _is_interpreter(token: str) -> bool:
     return token in ("python", "python3", "py") or _NAME_RE.search(
         Path(token).name
     ) is not None and Path(token).name.lower().startswith(("python", "py"))
+
+
+def test_the_posix_entry_points_are_the_ones_the_tree_holds() -> None:
+    """Every POSIX entry point a document may name has to exist here.
+
+    A document that offers a maintainer a script nobody wrote reads as
+    verification, which is the shape of failure this file was written to end.
+    The eighteen shell scripts named here are gone, so this fails against the
+    documents until they name the harness instead, and that failure is the
+    correct state: a checklist pointing at a deleted script is worse than one
+    pointing at nothing, because it looks checked.
+
+    The negative half is the load-bearing half. `ABSENT_POSIX_PROBE` names a
+    path that was in this list and is not in the tree, so a document naming it
+    fails. A guard that cannot fire is decoration, and this one is proved
+    capable of firing by construction rather than by a comment claiming it
+    would.
+    """
+    for entry in POSIX_ENTRY_POINTS:
+        assert (ROOT / entry).is_file(), (
+            f"{entry} is named here as an entry point a document may point at, "
+            "and it does not exist. A document naming it would be naming "
+            "nothing, which is what this file exists to prevent."
+        )
+    assert not (ROOT / ABSENT_POSIX_PROBE).exists(), (
+        f"{ABSENT_POSIX_PROBE} was a shell script and is now the negative "
+        "probe for this check. If it exists again, pick a different path: the "
+        "probe has to name something the tree does not have, or the check it "
+        "proves is not proving anything."
+    )
+
+
+@pytest.mark.parametrize("doc", [CHECKLIST, PILOT], ids=lambda p: p.name)
+def test_no_document_names_a_posix_script_that_is_not_one(doc: Path) -> None:
+    """Every path under `scripts/` a document names has to exist here.
+
+    `test_every_path_is_verified_or_declared_absent` already refuses a path in
+    either document that is not in a checked block, so this is narrower and
+    reads the documents the same way. It exists because a POSIX script name is
+    the specific thing most likely to go stale: eighteen of them were deleted
+    at once and two were named in prose that no block checked.
+
+    Both halves of the document are read, and both are needed. A path in a
+    `console command` block is a step a maintainer is told to run. A path
+    outside every block is a receipt a maintainer is told to open, and the
+    check above does not see it, because a token outside a checked block has to
+    be in one to pass there -- which is why the deleted scripts sat in the
+    document as long as they did.
+
+    Measured while writing this: a first version read only the prose outside
+    the fences and passed a document naming a script nobody wrote, because the
+    fence held the command and stripping the fences removed it. The mutation
+    below is what caught that, and it is kept because a guard whose failure has
+    never been seen is not a guard.
+    """
+    text = _read(doc)
+    prose = _strip_fences(text)
+    commands = [
+        line for block in _blocks(text).get("console command", [])
+        for line in block
+    ]
+    for token in _tokens(prose) + [
+        token for line in commands for token in _tokens(line.lstrip("$ "))
+    ]:
+        if not token.startswith("scripts/"):
+            continue
+        assert (ROOT / token).exists(), (
+            f"{doc.name} names {token}, and nothing in this tree resolves. A "
+            "document may not offer a command a maintainer cannot run, and may "
+            "not cite a receipt no reader can open."
+        )
 
 
 def _check_python(doc_name: str, tokens: list[str]) -> None:

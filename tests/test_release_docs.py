@@ -797,6 +797,153 @@ def _calls_it_missing(evidence: str, token: str) -> bool:
     )
 
 
+def test_the_posix_claim_is_stated_the_same_way_everywhere_it_is_stated() -> None:
+    """One subsystem, one position, and the position is derived not declared.
+
+    This is the repair for D8, where two live documents made opposite claims
+    about POSIX and the tree held nothing that settled it. `GAP-2` said the
+    process path was untested; `plans/STATUS.md` said it was verified. Neither
+    had a run artifact, both were locally plausible, and no gate in this file
+    could see the disagreement: each document was checked against the
+    repository, never against the other document.
+
+    So the position is computed from the tree rather than read out of prose.
+    `_posix_position_derived_from_the_tree` decides what the evidence supports
+    and each document has to say that, in a marker line that carries no
+    argument. A marker is not the claim; it is the document agreeing to be
+    checked against one number.
+
+    Why a marker and not a sentence this file pattern-matches: a sentence is
+    vocabulary, and vocabulary is what let the original disagreement through.
+    `POSIX-CLAIM: verified` cannot be reached by editing prose, only by editing
+    the marker, and the marker is compared against a value derived from what
+    the repository contains. Rewording the paragraph around it changes nothing.
+    """
+    derived = _posix_position_derived_from_the_tree()
+    recorded = {
+        path.name: _posix_claim(_read(path))
+        for path in (CHECKLIST, PILOT, STATUS, README)
+    }
+    for name, position in recorded.items():
+        assert position, (
+            f"{name} discusses POSIX but records no POSIX-CLAIM line, so nothing "
+            "compares it against the documents that discuss the same subsystem"
+        )
+        assert position in POSIX_CLAIMS, (
+            f"{name} records POSIX-CLAIM: {position}, which is not one of "
+            f"{sorted(POSIX_CLAIMS)}. Rewrite the line and this file's record "
+            "in the same commit."
+        )
+        assert POSIX_CLAIMS[position] <= POSIX_CLAIMS[derived], (
+            f"{name} claims POSIX-CLAIM: {position}. The evidence in this tree "
+            f"supports {derived}: {sorted(_posix_evidence())} are tracked, so a "
+            f"POSIX host ran something, and nothing tracked records a suite run, "
+            "so there is no receipt. A document may say less than the evidence "
+            "supports; saying more is the false claim this test exists for."
+        )
+    assert recorded[CHECKLIST.name] == derived, (
+        f"the checklist records POSIX-CLAIM: {recorded[CHECKLIST.name]} where "
+        f"the evidence supports {derived}. GAP-2 is the register's row for this "
+        "subsystem, so it carries the position and the rest follow it."
+    )
+
+
+def _posix_evidence() -> set[str]:
+    """The tracked files that show a POSIX host ran something.
+
+    A measurement script that can only produce output on a POSIX host is the
+    receipt. So is a triage written by a POSIX host agent. Neither is a suite
+    run, which is the distinction `no-receipt` rests on.
+    """
+    import subprocess
+
+    listed = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "scripts/"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    ).stdout.splitlines()
+    scripts = {
+        name
+        for name in listed
+        if Path(name).name.startswith(("measure_posix", "verify_posix"))
+    }
+    if (ROOT / "review" / "posix-triage.md").is_file():
+        scripts.add("review/posix-triage.md")
+    return scripts
+
+
+def _posix_position_derived_from_the_tree() -> str:
+    """What this repository supports about POSIX, decided by what it holds.
+
+    Three cases, in order. A tracked suite run means a reader can check the
+    claim, so `verified` is reachable and the strongest position is available.
+    Measurement scripts without a suite run mean a POSIX host ran something a
+    reader cannot re-check, which is `no-receipt`. Nothing at all means the
+    tree is silent, which is `unverified`.
+
+    `never-run` is deliberately not derivable. It was the README's claim before
+    this test existed and the repository contradicted it, so it is a position a
+    document may hold only in a tree where nothing POSIX is tracked. It is kept
+    in the vocabulary because a reader looking at this file should see the
+    full space of claims the documents have made, including the one that was
+    wrong.
+    """
+    import subprocess
+
+    artifacts = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    ).stdout.splitlines()
+    run_receipt = [
+        name
+        for name in artifacts
+        if "posix" in name.lower() and re.search(r"(report|result|log)", name, re.I)
+    ]
+    if run_receipt:
+        return "verified"
+    if _posix_evidence():
+        return "no-receipt"
+    return "unverified"
+
+
+# What this repository can support about the POSIX process path, weakest first.
+#
+#   `no-receipt`     the process path has been exercised on a POSIX host, but
+#                    no suite run is recorded in this tree, so no support
+#                    claim rests on it. This is what the evidence supports.
+#   `unverified`     nothing in the tree establishes that it ran at all.
+#   `never-run`      nothing in the tree, and the documents have always said so.
+#   `verified`       a POSIX suite run is recorded and a reader can check it.
+#
+# The strongest one the evidence supports is `no-receipt`, so that is what every
+# document records. `verified` is listed because a future commit may make it
+# true, and it should then be a deliberate edit here rather than a sentence
+# somebody types into three documents.
+POSIX_CLAIMS = {
+    "no-receipt": 1,
+    "unverified": 2,
+    "never-run": 3,
+    "verified": 4,
+}
+
+# The documents that discuss POSIX. Adding one is a deliberate act, because a
+# document that discusses the subsystem without recording the claim is how this
+# disagreement started.
+STATUS = ROOT / "plans" / "STATUS.md"
+README = ROOT / "README.md"
+
+_POSIX_CLAIM_RE = re.compile(r"POSIX-CLAIM:\s*([a-z-]+)")
+
+
+def _posix_claim(text: str) -> str | None:
+    """The POSIX position a document records, or None if it records none."""
+    found = _POSIX_CLAIM_RE.search(text)
+    return found.group(1) if found else None
+
+
 def test_the_gap_register_has_a_row_per_known_gap() -> None:
     """A gap is only tracked if it has its own row in the register.
 

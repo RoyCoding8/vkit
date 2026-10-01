@@ -67,14 +67,25 @@ SESSION_TIMEOUT = 420.0
 #: without turning a genuinely broken plugin into a slow pass.
 _CONNECT_ATTEMPTS = 3
 
-#: The executable that launches the plugin's MCP server, and the directory that
-#: has to contain it. `.mcp.json` names a bare `vkit`, so the host resolves it
-#: on PATH. On Windows the host spawns with cmd.exe, which cannot read the MSYS
+#: The directory that has to hold the `vkit` the host launches. `.mcp.json`
+#: names a bare `vkit`, so the host resolves it on PATH.
+#:
+#: It is the directory belonging to the interpreter running this suite, and
+#: deliberately NOT `<repo>/.venv`. A git worktree has no environment of its
+#: own, and whatever `.venv` happens to sit beside one is that worktree's own
+#: first resolve -- not necessarily an environment that can run `vkit mcp
+#: serve`, because the server's dependencies are an optional extra. Prepending
+#: it put a launcher on PATH that died on import, and the host reported the
+#: result as `CONNECTION_CLOSED: Connection closed`, which names the transport
+#: and not the cause. The interpreter under test is the one directory
+#: guaranteed to hold a working launcher.
+#:
+#: On Windows the host also spawns with cmd.exe, which cannot read the MSYS
 #: `/d/...` spelling of PATH that Git Bash hands down, and the server dies with
 #: "'vkit' is not recognized as an internal or external command" while every
 #: other surface reports the plugin loaded. A PATH in the spelling cmd.exe
 #: understands is part of the fixture, not a convenience.
-VENV_SCRIPTS = REPO_ROOT / ".venv" / "Scripts" if os.name == "nt" else REPO_ROOT / ".venv" / "bin"
+VENV_SCRIPTS = Path(sys.executable).parent
 
 
 def _claude_executable() -> str | None:
@@ -83,22 +94,35 @@ def _claude_executable() -> str | None:
 
 def _vkit_executable() -> Path | None:
     name = "vkit.exe" if os.name == "nt" else "vkit"
-    for base in (VENV_SCRIPTS, Path(sys.executable).parent):
-        candidate = base / name
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = VENV_SCRIPTS / name
+    return candidate if candidate.is_file() else None
 
 
 def _spawn_path_env() -> dict[str, str]:
-    """PATH in the spelling a Windows child process can read.
+    """PATH and PYTHONPATH, each correcting a different spawned process.
 
-    Git Bash exports `/d/...`, which cmd.exe treats as a literal path and does
-    not search. Prepending the Windows-form directory is what makes the host
-    able to launch `vkit` at all; the MSYS form is left in place for the tools
-    in this test that are not spawned by cmd.
+    **PATH** names the directory holding `vkit`, for the reason `VENV_SCRIPTS`
+    gives. Git Bash exports `/d/...`, which cmd.exe treats as a literal path
+    and does not search, so prepending the Windows-form directory is what makes
+    the host able to launch `vkit` at all; the MSYS form is left in place for
+    the tools in this test that are not spawned by cmd.
+
+    **PYTHONPATH** is what makes the server the host launches run *this*
+    checkout. The console script on PATH is a launcher for whatever `vkit` the
+    interpreter's environment has installed, and an editable install is a
+    `.pth` line naming one specific checkout's `src`. A spawned process does
+    not inherit this process's `sys.path`, so from a worktree the host's server
+    ran another checkout's `vkit` against this one's project. `PYTHONPATH` sits
+    ahead of the site-packages entries the interpreter adds at startup, so
+    naming this checkout's `src` is what wins that race -- the same lever, in
+    the same spelling, that `scripts/acceptance.py` and `tests/mcp_client.py`
+    already pull.
     """
     env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(REPO_ROOT / "src"),
+         *([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])]
+    )
     existing = env.get("PATH", "")
     if os.name == "nt":
         import ntpath

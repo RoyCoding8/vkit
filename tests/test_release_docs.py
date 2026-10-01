@@ -57,6 +57,7 @@ without knowing what the right verdict is, which is what makes it safe to gate.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -101,13 +102,23 @@ GAPS: list[tuple[str, tuple[str, ...]]] = [
     # GAP-1 is closed, so its tokens are the receipt rather than the absence:
     # a reword that drops the evidence has to fail here.
     ("GAP-1", ("mcp", "SDK", "test_mcp_stdio.py")),
-    ("GAP-2", ("POSIX", "Windows", "unverified")),
+    # GAP-2's row says the run has no receipt in this tree, so the tokens are
+    # the two halves of that claim rather than the platform names the old row
+    # used. It used to read `("POSIX", "Windows", "unverified")`, and the row it
+    # described said "Verified on Windows 11 ... only", so all three tokens were
+    # satisfied by a sentence that contradicted the sibling document's.
+    ("GAP-2", ("POSIX", "no receipt")),
     ("GAP-3", ("test_plugin_host.py", "host session")),
     ("GAP-4", ("mcp serve", "serve_stdio")),
     ("GAP-5", ("console", "Plan 05")),
     ("GAP-6", ("enroll", "integration verify")),
-    ("GAP-7", ("acceptance.py", "editable install")),
-    ("GAP-8", ("KIT_ACCEPTANCE.md", "absent")),
+    ("GAP-7", ("editable install", "environment")),
+    # The matrix is tracked under `tmp/research/`, so the row names that path
+    # rather than the bare filename. The tokens are `unmapped` and the path,
+    # because the false claim this replaces named the wrong path and said the
+    # file was absent; `("KIT_ACCEPTANCE.md", "absent")` was satisfied by the
+    # false row and by a true one alike.
+    ("GAP-8", ("tmp/research/KIT_ACCEPTANCE.md", "unmapped")),
     ("GAP-9", (".cmd", "reverted")),
     # GAP-10 is the part of GAP-3 the live session did not reach. It carries a
     # separate id because "GAP-3 is closed" and "a BLOCKED run blocks a real
@@ -442,13 +453,30 @@ def test_every_known_gap_is_named(doc: Path) -> None:
     `test_a_gap_row_states_the_status_this_file_holds` is what binds a row to
     it. A presence check cannot tell those two states apart, which is why the
     token list below is only the floor and not the claim.
+
+    The tokens are looked for in the gap's own row rather than anywhere in the
+    document. Measured: GAP-8's evidence was rewritten to say the acceptance
+    matrix was absent, which is false, and this check passed. The reason is
+    that `tmp/research/KIT_ACCEPTANCE.md` was still named in the `text files`
+    block and `unmapped` in a comment beside it, so a document-wide search
+    found both tokens in text that had nothing to do with the row. Reading the
+    row is what makes the token mean something: it is the difference between
+    "the document mentions this" and "the row that carries this gap says it".
+
+    A gap with no row in this document is checked against the whole document,
+    because there is no row to read. GAP-4 is the case that motivated that
+    fallback; the register check above is what keeps it honest.
     """
     text = _read(doc)
     for gap_id, tokens in GAPS:
         assert gap_id in text, f"{doc.name} never names {gap_id}"
+        rows = _gap_rows(text, gap_id)
+        scope = " ".join(rows) if rows else text
         for token in tokens:
-            assert token in text, (
-                f"{doc.name} names {gap_id} without saying anything about {token}"
+            assert token in scope, (
+                f"{doc.name} names {gap_id} in its row without saying anything "
+                f"about {token}, so nothing checks that the row still means "
+                "what it is supposed to mean"
             )
 
 
@@ -681,6 +709,92 @@ def test_every_pilot_row_agrees_with_this_files_record_of_its_gaps() -> None:
 
 
 _ROW_RE = re.compile(r"^\|\s*(GAP-\d+|Claim)\b.*$", re.MULTILINE)
+
+
+def test_a_gap_row_cites_a_receipt_that_exists_and_does_not_call_one_missing() -> None:
+    """A gap row's evidence cell has to name something a reader can open.
+
+    Measured on GAP-8. Its evidence read "`KIT_ACCEPTANCE.md` is absent from
+    this repository", which was false, and every gate stayed green: the row was
+    open, the register had the row, and the token check found both `absent` and
+    the filename. Nothing in this file looked at the evidence cell, so a row
+    could assert anything at all about what proves it and the register read as
+    though every row were backed.
+
+    `test_every_gap_row_carries_an_evidence_cell` only checks the cell is
+    non-empty, which is what let prose sit there. So this walks the evidence
+    cells twice. The first pass resolves every path-shaped token against the
+    working tree, so a row that names a file nobody can open fails. The second
+    rejects a sentence that calls a tracked path absent or missing, which is
+    the direction GAP-8's falsehood ran in.
+
+    The cell's own `text absent` block is checked here too rather than in a
+    separate test, because it is the same assertion about the same register
+    read from the other end: a path declared absent must not exist, and a path
+    called absent in prose must not exist either.
+
+    A cell that names no path at all is not a failure here. Some rows are
+    evidenced by an observation rather than an artifact, and deciding which is a
+    judgement about the gap. What is rejected is a cell that names a path and is
+    wrong about it, because that is the specific falsehood this repair is for.
+    """
+    text = _read(CHECKLIST)
+
+    absent = {
+        token
+        for block in _blocks(text).get("text absent", [])
+        for entry in block
+        if not entry.startswith("#")
+        for token in _tokens(entry)
+    }
+    for token in sorted(absent):
+        assert not (ROOT / token).exists(), (
+            f"the checklist lists {token} under `text absent`, and it exists. "
+            "An absent-block entry is the moment a gap closes, so a stale one "
+            "is the register asserting a falsehood."
+        )
+
+    resolved = 0
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.split("|")[1:-1]]
+        if len(cells) != 3 or not cells[0].startswith("GAP-"):
+            continue
+        for token in _tokens(f"{cells[0]} {cells[2]}"):
+            if token.startswith(PLACEHOLDERS):
+                continue
+            assert (ROOT / token).exists(), (
+                f"{cells[0]} names {token} in its evidence cell, and nothing "
+                "here resolves. A row may not assert a receipt a reader cannot "
+                "open."
+            )
+            assert not _calls_it_missing(cells[2], token), (
+                f"{cells[0]} says {token} is absent or missing, and {token} is "
+                f"in this repository. {cells[2]!r}"
+            )
+            resolved += 1
+    assert resolved >= 5, (
+        f"only {resolved} evidence-cell paths were resolved; the gap register "
+        "has been cut down to something this test can no longer see"
+    )
+
+
+_MISSING_RE = re.compile(r"\babsent\b|\bmissing\b|\bdoes not exist\b", re.I)
+
+
+def _calls_it_missing(evidence: str, token: str) -> bool:
+    """True when the cell says this named token is the thing that is missing.
+
+    Scoped to the sentence naming the token, because a cell may say one file
+    exists and another is absent, which is the normal shape of a row that
+    carries both. Checking the whole cell would reject that, which is why the
+    sentences are searched rather than the cell.
+    """
+    return any(
+        token in sentence and _MISSING_RE.search(sentence)
+        for sentence in re.split(r"(?<=\.)\s+", evidence)
+    )
 
 
 def test_the_gap_register_has_a_row_per_known_gap() -> None:
@@ -1025,25 +1139,219 @@ def _suite_summary_matches(text: str) -> str:
 
     The count moves every time a plan lands, and a count that has quietly
     drifted is worse than no count: it is read as a receipt.
+
+    Two forms are accepted, and the difference between them is the point. A
+    passed count is a stronger claim than this repository can afford to keep
+    current on its own, because nothing re-runs the suite for the document and
+    a number that decays is exactly the failure this check exists to catch. So
+    the document may either state a passed count, which then has to be a real
+    observation the reader can reproduce, or state the collected count, which
+    this check recomputes on every run.
+
+    The collected form is the one that cannot go stale, so it is the one the
+    document uses. The two are not interchangeable: `444 passed, 2 skipped` sat
+    here for four commits while `tests/` grew past 590 test functions, and
+    nothing failed, because the check only read the shape of the number and not
+    the tree it described.
     """
-    found = _numbers(text, r"`(\d+) passed, (\d+) skipped`")
-    assert found, "the checklist states no passed/skipped summary for the suite"
-    return found.group(0)
+    passed = _numbers(text, r"`(\d+) passed, (\d+) skipped`")
+    if passed:
+        return passed.group(0)
+
+    collected = _collected_count(text)
+    assert collected is not None, (
+        "the checklist states neither a passed/skipped summary for the suite nor "
+        "a collected count"
+    )
+    assert int(collected.group(1)) == _actually_collected(), (
+        f"the checklist states {collected.group(1)} tests collected, but running "
+        f"`pytest tests/ --collect-only -q` at this revision collects "
+        f"{_actually_collected()}. That is the count this document is measured "
+        "against, so a mismatch means the document has drifted from the tree."
+    )
+    return collected.group(0)
+
+
+# `643 tests collected` and `643 collected` are the two shapes a reader meets.
+_ACTUAL_COLLECTED: dict[str, int] = {}
+
+
+def _actually_collected(target: str = "tests/") -> int:
+    """How many tests `target` collects, asked of pytest rather than of a file.
+
+    Measured with `--collect-only`, so it costs about a second and executes
+    nothing. Counting `def test_` in the source was the cheaper approach and it
+    is the wrong one: a parameterised test collects more than once, so the
+    number a reader would get from running the command and the number a grep
+    gives are two different claims about the same suite. The previous repair
+    of this row substituted one for the other and got 444 against a real 643.
+
+    The result is cached per target for the session because this is called from
+    a parametrized evidence check that would otherwise re-collect once per
+    label.
+    """
+    if target in _ACTUAL_COLLECTED:
+        return _ACTUAL_COLLECTED[target]
+
+    import subprocess
+    import sys
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", target, "--collect-only", "-q",
+         "-p", "no:cacheprovider", "-o", "addopts="],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+        timeout=600,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+    )
+    found = re.search(r"(\d+) tests? collected", completed.stdout)
+    if not found:
+        pytest.fail(
+            f"pytest --collect-only produced no collected count for {target}, so "
+            f"the document has nothing to be measured against: "
+            f"{completed.stdout[-500:]}{completed.stderr[-500:]}"
+        )
+    _ACTUAL_COLLECTED[target] = int(found.group(1))
+    return _ACTUAL_COLLECTED[target]
+
+
+def _collected_count(text: str) -> re.Match[str] | None:
+    """The suite's collected count, in the one shape the document states it in.
+
+    Named rather than inlined so the shape lives in one place: the document
+    says `644 tests collected` and nothing else, and a reader comparing the
+    document against a run should be able to find both the shape and what is
+    compared against it without hunting.
+    """
+    return _numbers(text, r"`(\d+) tests? collected`")
 
 
 def _acceptance_ratio_present(text: str) -> str:
-    """The acceptance ratio must be a ratio, so a partial run cannot read as all."""
+    """The acceptance ratio's denominator must be the harness's own number.
+
+    The count moves whenever a check is added to `scripts/acceptance.py`, and a
+    ratio is a number a reader acts on before shipping. Measured: the check
+    accepted `0/22` and `22/99` unchanged, because it only required
+    `total > 0 and passed <= total`. That made the shape of the number the
+    whole guarantee, so a document claiming every row failed satisfied this
+    gate while every other gate stayed green.
+
+    So both halves are produced by running the harness rather than read out of
+    a document. Measured: with only the denominator bound, rewriting the
+    numerator to `0` left every gate green, so a document could state that every
+    acceptance row failed and still satisfy a gate whose job is to keep that
+    claim current. The numerator is now compared against the harness's own
+    summary line as well, and `_acceptance_results_observed` explains why the
+    source cannot be read instead.
+    """
     found = _numbers(text, r"`(\d+)/(\d+) acceptance rows pass`")
     assert found, "the checklist states no N/M acceptance ratio"
     passed, total = int(found.group(1)), int(found.group(2))
     assert total > 0 and passed <= total, f"{passed}/{total} is not a valid ratio"
+
+    observed_passed, expected = _acceptance_results_observed()
+    assert total == expected, (
+        f"the checklist states {passed}/{total} acceptance rows, and "
+        f"`scripts/acceptance.py` produces {expected} results at this revision. "
+        "The denominator has to be the count in the harness, or the ratio "
+        "describes a table that does not exist."
+    )
+    assert passed == observed_passed, (
+        f"the checklist states {found.group(0)}, and the harness reports "
+        f"{observed_passed}/{expected} on this host. A numerator that disagrees "
+        "with the run is the one half of a ratio a reader cannot check by "
+        "arithmetic, because nothing else in the document pins it."
+    )
     return found.group(0)
+
+
+def _acceptance_results_observed() -> tuple[int, int]:
+    """What `scripts/acceptance.py` actually reports, run now and read back.
+
+    Returns the harness's own `(passed, total)` so the document's ratio can be
+    compared with both halves rather than with a shape.
+
+    The count. The script prints `len(results)` and appends one entry per
+    `check()` call, so the total is the number of those calls plus the extra
+    iterations any loop around one contributes, less any that sit behind a
+    branch which does not run. At this revision that is 19 call sites, one of
+    which sits in a `for kind, reasons in expected.items()` over a literal
+    four-key dict giving 23, minus one that is unreachable whenever the run
+    passes.
+
+    The unreachable one is the subtraction that matters.
+    `scripts/acceptance.py:407` guards a `check()` with
+    `if report_path.is_file()`, and the check immediately above it asserts
+    `report_path.is_file()` as a condition. So the guard is only ever true on
+    a run that already failed, and a green run prints 22 while the source
+    admits 23 call sites. Reading only the call sites would have made this
+    check report 23 against an observed 22, which is why the count is taken
+    from an actual run instead.
+
+    That is the whole reason this re-runs the harness rather than parsing it.
+    It costs about twenty seconds and it launches real processes, which is
+    real work for a documentation gate. The alternative is a source count that
+    is wrong for a reason invisible in the source, and a gate that is wrong
+    about the product is worse than a slow one. The run is bounded by the same
+    harness a release runs, and a harness that hangs here would hang the
+    release check too.
+    """
+    import subprocess
+    import sys
+
+    completed = subprocess.run(
+        [sys.executable, "scripts/acceptance.py"],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+        timeout=1800,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+    )
+    found = re.search(r"(\d+)/(\d+) acceptance rows pass", completed.stdout)
+    if not found:
+        pytest.fail(
+            "scripts/acceptance.py printed no acceptance summary, so the "
+            "document has no number to be measured against: "
+            f"{completed.stdout[-500:]}{completed.stderr[-500:]}"
+        )
+    return int(found.group(1)), int(found.group(2))
 
 
 def _protocol_count_present(text: str) -> str:
-    found = _numbers(text, r"`(\d+) passed in [\d.]+s`")
-    assert found, "the checklist states no count for the protocol suite"
-    return found.group(0)
+    """The protocol suite's count must be one this file can re-derive.
+
+    The old shape was ``N passed in Xs``, which the check only read as a
+    present-and-shaped number. It could not tell `23 passed` from `24 passed`,
+    so the document sat on a stale 23 through four commits of growth while
+    every gate stayed green. The number that cannot go stale is the collected
+    one, and it is re-derived here from the same file the command names.
+
+    A passed count is still accepted, because a real run produced one once and
+    discarding the form entirely would throw away the better receipt. It is
+    just no longer the only shape, and the two are checked against different
+    things on purpose.
+    """
+    passed = _numbers(text, r"`(\d+) passed in [\d.]+s`")
+    if passed:
+        return passed.group(0)
+
+    # Scoped to the sentence that names the protocol file, because the whole
+    # suite's collected count appears earlier in the same document and an
+    # unscoped search reads the suite's number as the protocol suite's.
+    collected = _numbers(
+        text, r"`(\d+) tests? collected` in (?:this file|`tests/test_mcp_stdio\.py`)"
+    )
+    assert collected is not None, (
+        "the checklist states no count for the protocol suite, in either a "
+        "passed or a collected form"
+    )
+    assert int(collected.group(1)) == _actually_collected("tests/test_mcp_stdio.py"), (
+        f"the checklist states {collected.group(1)} tests collected for the "
+        "protocol suite, and collecting that file at this revision gives "
+        f"{_actually_collected('tests/test_mcp_stdio.py')}"
+    )
+    return collected.group(0)
 
 
 def _pinned_revision_is_a_real_commit(text: str) -> str:

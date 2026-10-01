@@ -6,7 +6,7 @@ Read [CONTRACT.md](CONTRACT.md). Ready after Plans 02, 04, and 06. This plan imp
 
 Several authorized engineers can work independently while one integration path decides whether their combined code satisfies the agreed checks. A passing worker branch cannot stand in for the merged candidate. Work and evidence survive interruption.
 
-Apply the Orchestrate playbook only to a campaign that needs durable coordination. Use `swarm` for independent coverage or work batches and `git-worktree-discipline` for writers. Follow the corrections in [WORKER_WORKFLOW.md](../WORKER_WORKFLOW.md#correct-the-existing-worktree-discipline), especially checking the actual merged checkout and preserving dirty work.
+Apply the Orchestrate playbook only to a campaign that needs durable coordination. Use `swarm` for independent coverage or work batches and `git-worktree-discipline` for writers. Follow the corrections in [WORKER_WORKFLOW.md](../tmp/research/WORKER_WORKFLOW.md#correct-the-existing-worktree-discipline), especially checking the actual merged checkout and preserving dirty work.
 
 ## Integration operation
 

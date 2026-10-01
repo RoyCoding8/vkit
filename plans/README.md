@@ -78,7 +78,7 @@ The plan directory and research files should be available in the worker's checko
 
 Use `poteto-mode` for each complete engineering task, `ponytail` to avoid unnecessary mechanisms, and `unslop` for instructions and reports. Use `how` when inspecting existing code and `architect` for a disputed cross-module contract. The worker may load other relevant skills after reading their requirements.
 
-Use `swarm` for an authorized batch of independent work. Use `git-worktree-discipline` for concurrent writers, applying the corrections in [WORKER_WORKFLOW.md](../WORKER_WORKFLOW.md#correct-the-existing-worktree-discipline). These are complementary. Worktrees do not isolate test databases or running applications.
+Use `swarm` for an authorized batch of independent work. Use `git-worktree-discipline` for concurrent writers, applying the corrections in [WORKER_WORKFLOW.md](../tmp/research/WORKER_WORKFLOW.md#correct-the-existing-worktree-discipline). These are complementary. Worktrees do not isolate test databases or running applications.
 
 Plan 01 needs one owner. After it passes, Plans 02 and 06 can overlap when fixture files, production modules, and shared dependency files have explicit owners. After Plan 03, one owner implements Plan 04. Plan 05 follows the actual plugin layout. Do not parallelize all nine plans against guessed interfaces.
 
@@ -90,7 +90,7 @@ A milestone is complete when its acceptance commands run on the actual candidate
 
 If a prerequisite fails, repair it within its ownership boundary or return a concrete blocker. Ordinary implementation choices belong to the engineer. Changes to product scope, public semantics, or required evidence must be surfaced rather than hidden in fallback code.
 
-Research background: [architecture](../KIT_RESEARCH.md), [acceptance matrix](../KIT_ACCEPTANCE.md), and [skill routing](../WORKER_WORKFLOW.md).
+Research background: [architecture](../tmp/research/KIT_RESEARCH.md), [acceptance matrix](../tmp/research/KIT_ACCEPTANCE.md), and [skill routing](../tmp/research/WORKER_WORKFLOW.md).
 
 ## Acceptance ownership
 

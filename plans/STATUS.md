@@ -10,13 +10,13 @@ a running total — an earlier number is not evidence about a later one.
 | --- | --- | --- |
 | 01 | Implemented and verified on Windows | 22/22 acceptance rows, `README.md` |
 | 02 | Implemented; merged to master | Supervisor, claims, recovery. 14/14 acceptance rows in `scripts/acceptance02.py`, plus 17 tests over the harness itself |
-| 03 | Tool layer implemented; stdio transport verified on the wire | `src/vkit/mcp/`, six tools through `Server.call_tool` plus 23 protocol tests driving a real subprocess; GAP-1 closed |
+| 03 | Tool layer implemented; stdio transport verified on the wire | `src/vkit/mcp/`, six tools through `Server.call_tool` plus 24 protocol tests driving a real subprocess (20 module-level test functions in `tests/test_mcp_stdio.py`, one parameterised over five ids, so 24 collected); GAP-1 closed. `tests/test_mcp.py` collects 24 more and drives `Server.call_tool` directly |
 | 04 | Plugin installed and driven in a real Claude Code host | `docs/HOST-SESSION.md` transcript, 16 host tests against a scratch config; GAP-3 closed |
 | 05 | Console exists as a view over the core; all four setup operations implemented; page driven and layout repaired | `src/vkit/console/`. Driven with headless Chrome at 1440/1024/768/480/360px; eight defects found and fixed. **The layout fixes live only in `app.js` and `style.css` and no test pins them, so a regression is silent** — that is GAP-5's real shape, and it is stronger than "never been looked at" |
 | 06 | In progress | GAP-6 |
 | 07 | In progress | — |
 | 08 | In progress | — |
-| 09 | Release checklist and pilot gate merged; the release does not pass its own checklist | `docs/RELEASE-CHECKLIST.md`, `docs/PILOT.md`, `tests/test_release_docs.py` (10 tests) |
+| 09 | Release checklist and pilot gate merged; the release does not pass its own checklist | `docs/RELEASE-CHECKLIST.md`, `docs/PILOT.md`, `tests/test_release_docs.py` (32 collected) |
 
 
 ## Build order agreed with the owner, 2026-09-29
@@ -145,8 +145,17 @@ beside them and are not a claim about a later one.
 - `plugin/scripts/vkit_hook.py SessionStart`: emits the documented JSON
   response, exit code 0.
 - `pip wheel . --no-deps`: built `vkit-0.1.0-py3-none-any.whl`, with the three
-  schemas present as `vkit/_schemas`.
-- `pytest tests/test_release_docs.py`: 10 passed.
+  schemas present as `vkit/_schemas`. Rebuilt at `59a4eca` for the size the
+  release checklist quotes: 255418 bytes.
+- `pytest tests/test_release_docs.py`: 10 passed. At `59a4eca` the same file
+  collects 32 and passes 32; the ten was true when this section was written.
+
+At `59a4eca`, which is the revision the release checklist pins,
+`pytest tests/ --collect-only -q` collects **644** across 46 files. That is a
+collection count and not a pass count. The last full execution at that revision
+has not been run, so no passed figure is quoted here. Both stale whole-suite
+numbers that used to sit in this file's neighbours were inherited from earlier
+revisions, which is what the sentence above the list is warning about.
 
 ### The release does not pass its own checklist
 
@@ -184,17 +193,20 @@ must be in the form `cmd.exe` reads, since Git Bash exports `/d/...` and
 
 `mcp` is a pinned optional extra rather than an install requirement, because the
 six tools are useful without a transport and a missing optional package must not
-break the CLI, the console or the hook. The suite is 23 protocol tests plus
-`tests/test_mcp.py`, which drives `Server.call_tool`, the one entry point an SDK
-adapter forwards to.
+break the CLI, the console or the hook. The protocol suite collects 24, plus
+`tests/test_mcp.py`'s 24, which drives `Server.call_tool`, the one entry point
+an SDK adapter forwards to.
 
 A full-suite run without the extra installed reports the protocol suite as
 errors rather than skips. That is a defensible shape — a test that cannot reach
 the transport is not testing the transport — but it means a missing optional
 dependency reads as a red suite rather than an unmet extra.
 
-`KIT_ACCEPTANCE.md`, which plan 09 asks to map row by row, is absent. See
-GAP-8 in `docs/RELEASE-CHECKLIST.md`.
+`tmp/research/KIT_ACCEPTANCE.md` is tracked, and `plans/09-release-and-pilot.md`
+asks for every one of its 59 data rows to be mapped. None is. The mapping is
+GAP-8, and the gap is the mapping rather than the file: an earlier version of
+this line called the matrix absent, which was false, because the file is tracked
+under `tmp/research/` and `git ls-files` returns it.
 
 ## Defects found and fixed after the plans were marked done
 
@@ -275,9 +287,14 @@ more likely rather than less.
 
 ## Known limits carried forward
 
-- The POSIX process path is verified; POSIX *cancellation* is not, and cannot be.
-  The suite runs on Ubuntu through WSL2, the identity is `(pid, starttime,
-  boot_id)` proven against real pid reuse, and a process-group signal is measured
+- The POSIX process path has been exercised on Ubuntu through WSL2, but no run
+  of this suite is recorded in this repository, so the claim rests on the
+  measurement scripts rather than on a receipt a reader can re-check.
+  `scripts/measure_posix_escape.py` and its siblings exist and are committed,
+  and `review/posix-triage.md` is the POSIX host agent's own record, but the
+  suite run wrote to `$HOME/vkit-posix-reports/`, which is outside the tree.
+  The identity is `(pid, starttime, boot_id)` proven against real pid reuse,
+  and a process-group signal is measured
   to kill a three-level tree. Two separate measurements say the rest cannot be
   built from a group. A descendant that calls `setsid` is not in the group, so
   the signal cannot reach it: `scripts/measure_posix_escape.py` ran one tree in
@@ -288,7 +305,8 @@ more likely rather than less.
   closes both gaps at once — it is held by a HANDLE rather than by group
   membership, so an escaping descendant is still in the job.
   `terminate_owned_tree` refuses and names that reason, and a Windows claim never
-  carries across to POSIX.
+  carries across to POSIX. GAP-2 carries the missing receipt, which is what a
+  release would need and this line is not.
 - A `.cmd` launcher cannot carry a non-ASCII path, because batch contents are
   read in the active ANSI code page. A check registered as a `.cmd` under a
   non-ASCII repository path will mangle its arguments.

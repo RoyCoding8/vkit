@@ -40,6 +40,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .procidentity import openprocess_failure_is_gone
 from .storage import REPORT_NAME, Store
 
 if sys.platform == "win32":
@@ -63,15 +64,6 @@ LAUNCH_ABANDONED = "launch_abandoned"
 # that really did exit with 259 is indistinguishable from one still running; the
 # API defines no other signal, and this is the API's limit, not a choice here.
 STILL_ACTIVE = 259
-
-# The two OpenProcess failures that mean different things. Anything unopenable
-# because the pid names nothing is proof of death. Anything unopenable because we
-# are not permitted to look is not proof of anything, and preserving the claim is
-# the only safe reading.
-WINERROR_INVALID_PARAMETER = 87
-WINERROR_INVALID_HANDLE = 6
-WINERROR_NOT_FOUND = 1168
-WINERROR_ACCESS_DENIED = 5
 
 
 class RecoveryRefused(Exception):
@@ -255,15 +247,18 @@ def liveness(
         live worker as dead.
       * it opens and reports any other code: DEAD, with the code as evidence. We
         hold a handle and read a real exit code, which is proof.
-      * it fails with ERROR_INVALID_PARAMETER, ERROR_INVALID_HANDLE, or
-        ERROR_NOT_FOUND: DEAD. The operating system is saying no process carries
-        that pid, which is not the same as declining to tell us.
-      * it fails with ERROR_ACCESS_DENIED: UNCERTAIN. The pid may name a live
-        process this session may not open. "Cannot open" and "does not exist" are
-        different claims and only one of them is a safe basis for releasing
-        someone's resource.
-      * it fails with anything else, or the handle cannot be opened for any other
-        reason: UNCERTAIN. The default is the direction that preserves the claim.
+      * it fails with ERROR_INVALID_PARAMETER: DEAD. The operating system is saying
+        no process carries that pid, which is not the same as declining to tell
+        us. That is the only code that means it, so this branch asks
+        `procidentity.openprocess_failure_is_gone` rather than reading a table of
+        its own.
+      * it fails with anything else, including ERROR_ACCESS_DENIED,
+        ERROR_INVALID_HANDLE and ERROR_NOT_FOUND: UNCERTAIN. "Cannot open" and
+        "does not exist" are different claims and only one of them is a safe
+        basis for releasing someone's resource. The first two named here used to
+        sit on the DEAD side of this branch, and a DEAD verdict from a code that
+        does not establish death is exactly the premise a claim release rests
+        on. The default is the direction that preserves the claim.
 
     On POSIX, `kill(pid, 0)` is a permission-checked existence probe.
     `ProcessLookupError` is DEAD because the kernel said there is no such
@@ -286,20 +281,16 @@ def _liveness_windows(pid: int, creation_time: int | None = None) -> Liveness:
         handle = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION, False, pid)
     except pywintypes.error as exc:
         code = exc.winerror
-        if code in (WINERROR_INVALID_PARAMETER, WINERROR_INVALID_HANDLE, WINERROR_NOT_FOUND):
+        if openprocess_failure_is_gone(code):
             return Liveness(
                 LivenessState.DEAD,
                 f"OpenProcess for pid {pid} failed with Windows error {code}; no process carries that pid",
             )
-        if code == WINERROR_ACCESS_DENIED:
-            return Liveness(
-                LivenessState.UNCERTAIN,
-                f"OpenProcess for pid {pid} failed with Windows error {code} (access denied); "
-                "the pid may name a live process this session is not permitted to open",
-            )
         return Liveness(
             LivenessState.UNCERTAIN,
-            f"OpenProcess for pid {pid} failed with Windows error {code}, which does not prove death",
+            f"OpenProcess for pid {pid} failed with Windows error {code}, which does not prove "
+            "death; the pid may name a live process this session may not open, and the claim "
+            "stays held",
         )
 
     try:

@@ -37,6 +37,7 @@ if Path(_procidentity.__file__).resolve() != (_THIS_SRC / "vkit" / "procidentity
 CannotConfirm = _procidentity.CannotConfirm
 ProcessIdentity = _procidentity.ProcessIdentity
 is_alive = _procidentity.is_alive
+openprocess_failure_is_gone = _procidentity.openprocess_failure_is_gone
 read_identity = _procidentity.read_identity
 still_the_same_process = _procidentity.still_the_same_process
 
@@ -466,6 +467,47 @@ def test_cannot_confirm_does_not_launder_into_a_different_process(
     # It says the read failed. It does not say the process is a different one,
     # which is a claim nothing established.
     assert "different" not in message
+
+
+def test_one_classifier_answers_the_gone_question() -> None:
+    """87 is gone, and nothing else is.
+
+    This is the whole table, and it is the table `vkit.recover` calls. Two
+    modules once each kept their own: `recover` additionally read 6 and 1168 as
+    death, which released a claim on a code that never established the process had
+    ended. One function is where that question is answered now, and this asserts
+    the shape of the answer rather than the four codes anyone remembered: 87 is
+    the only one that reads gone, and an unknown code falls on the safe side.
+
+    The unknown code is the load-bearing half. A classifier written as a list of
+    codes that mean death would pass every other assertion here and still release
+    a claim the day Windows answered with something nobody anticipated.
+    """
+    gone = openprocess_failure_is_gone
+
+    assert gone(87) is True
+    for code in (6, 1168, 5, 1, 9999, 0, -1, None):
+        assert gone(code) is False, (
+            f"Windows error {code!r} does not establish that no process carries "
+            "the pid, so it must not be a basis for releasing a claim"
+        )
+
+
+def test_a_failure_that_does_not_establish_death_is_cannot_confirm(
+    unreadable_pid: int,
+) -> None:
+    """The same rule at this module's own seam, reached through the public API.
+
+    `test_one_classifier_answers_the_gone_question` pins the function. This pins
+    that `_open` still routes through it, which is the wiring that would let the
+    two answers drift apart again: a reader would see a correct classifier and a
+    call site that ignores it.
+    """
+    with pytest.raises(CannotConfirm) as caught:
+        read_identity(unreadable_pid)
+
+    assert caught.value.pid == unreadable_pid
+    assert "Access is denied" in caught.value.detail
 
 
 def test_a_denial_the_kernel_itself_issues_is_cannot_confirm() -> None:

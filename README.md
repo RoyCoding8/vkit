@@ -174,7 +174,7 @@ so it cannot agree with the application by construction.
 
 ```console
 $ .venv/Scripts/python.exe -m pytest tests/ --collect-only -q
-724 tests collected
+740 tests collected
 
 $ .venv/Scripts/python.exe scripts/acceptance.py
 22/22 acceptance rows pass

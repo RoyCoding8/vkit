@@ -25,9 +25,35 @@ prove the process is its own, and those lead to different reports.
 The line is WinError 87 from `OpenProcess`, and it was measured on this host
 rather than assumed. 87 is what a pid with no process behind it produces: pid 0,
 a pid above the configured maximum, and a pid whose process exited after every
-handle to it was closed. WinError 5, access denied, is what a pid that IS in use
+handle to it closed. WinError 5, access denied, is what a pid that IS in use
 but out of reach produces -- the System process at pid 4 is the reproducible
 example -- and that is cannot-confirm, not gone.
+
+**Only 87 is a death certificate, and that is the whole of the answer.** Measured
+on this host by driving `OpenProcess` over 700-odd probes: every live pid under
+both `PROCESS_QUERY_LIMITED_INFORMATION` and `PROCESS_QUERY_INFORMATION`, plus
+pid 0, pid 1, pid 2, pid 4, three pids above the maximum, a pid whose object
+had been reclaimed, a live pid probed under four malformed access masks, and
+thread ids passed where a process id belongs. Exactly three outcomes occurred:
+the call opened, 5, and 87. WinError 6 and WinError 1168 did not occur once,
+for a pid that is alive and not for one that is gone. The run behind that is
+`scripts/measure_openprocess_errors.py`, which prints the histogram by category
+and is the first thing to re-run if a new code ever appears.
+
+Their absence is the reason they cannot join 87, not a reason to leave them out of
+caution. ERROR_INVALID_HANDLE means the handle *you passed* is not a handle, and
+`OpenProcess` takes a process id rather than a handle, so that code is not a
+statement about the pid at all. ERROR_NOT_FOUND belongs to the lookup-by-name path
+-- `OpenJobObject`, `RegOpenKeyEx`, `CreateFile` -- and a numeric process id is
+resolved through the process table instead, so that path is not the one running.
+Neither can be produced for a pid that is alive, and equally neither proves a pid
+is gone. Both are answers about the request rather than about the world, and
+reading either as death infers the one fact from a code that does not carry it.
+
+`vkit.recover` decides claims from this same question, so it calls
+`openprocess_failure_is_gone` rather than keeping a second table. The guarantee
+its callers rest on is that a DEAD verdict is only ever returned on a code that
+establishes no process carries the number.
 
 An earlier reading of this problem held that an exited process keeps a readable
 creation time, so the exit case always resolves to "readable, and different".
@@ -132,12 +158,35 @@ if IS_WINDOWS:
     _KERNEL32.GetProcessTimes.restype = wintypes.BOOL
 
 
-# The one WinError OpenProcess returns for a pid with no process behind it.
-# Measured on this host: pid 0, a pid above the configured maximum, and a pid
-# whose process exited after every handle to it closed all produce 87. Nothing
-# else does; a pid in use but out of reach produces 5, and that is a different
-# answer, so this constant is the whole of the gone test.
+# ERROR_INVALID_PARAMETER, the one WinError OpenProcess returns for a pid with no
+# process behind it. Measured on this host over 700-odd probes spanning every live
+# pid under both query access masks, the sentinels, pids above the maximum, a
+# reclaimed pid, malformed access masks and thread ids: the call opened, or it
+# failed with 5, or it failed with 87. Nothing else occurred, so this constant is
+# the whole of the gone test rather than the best-supported member of a set.
 PID_GONE_WINERROR = 87
+
+# A malformed request is still a request, and every code outside the one above
+# reads cannot-confirm. This is the module's only place Windows error numbers are
+# interpreted, and it is public because a module that decides whether a claim may
+# be released has to answer the same question without keeping its own table.
+#
+# The two codes worth naming, because both were once read as death by
+# vkit.recover and neither can carry that fact:
+#
+#   * 6, ERROR_INVALID_HANDLE -- the handle you passed is not a handle.
+#     OpenProcess takes a process id, so the code is a statement about the call
+#     and not about the pid. Did not occur in the measurement above.
+#   * 1168, ERROR_NOT_FOUND -- the named object does not exist. It belongs to the
+#     lookup-by-name path (OpenJobObject, RegOpenKeyEx, CreateFile); a numeric
+#     process id is resolved through the process table, which answers 87 instead.
+#     Did not occur in the measurement above.
+#
+# Both are safe here precisely because they are unreachable. A code that cannot
+# be produced for a live pid cannot release a live pid's claim, and the run stays
+# UNCERTAIN and recoverable rather than lost. Were either to become reachable it
+# would need measuring before it could be trusted here, and the measurement is
+# the first thing this module would owe: scripts/measure_openprocess_errors.py.
 
 # proc(5) pid_stat, field 22, counting from 1. Splitting the line on the LAST
 # ") " leaves field 3 at token 0, so field 22 is token 19. Token 20 is vsize,
@@ -327,6 +376,26 @@ def _require_windows() -> None:
         )
 
 
+def openprocess_failure_is_gone(winerror: int | None) -> bool:
+    """Whether a failed OpenProcess establishes that no process carries the pid.
+
+    The single answer to the one question two modules were asking separately.
+    False covers every code that does not establish death, and it is the answer
+    a caller must be able to act on: a claim stays held, and the run stays
+    recoverable by a human. That makes the safe reading available even for a
+    code nobody has ever seen, which is the property a release depends on and the
+    reason this takes the whole code rather than a set of known-bad ones.
+
+    `None` is what pywintypes raises as when the underlying call never set
+    `GetLastError`, and it is not evidence of anything, so it reads False.
+
+    Public because a module that releases another task's resource has to be able
+    to ask. The alternative was a second table in vkit.recover, and two tables
+    disagreed about 6 and 1168 for as long as both existed.
+    """
+    return winerror == PID_GONE_WINERROR
+
+
 def _open(pid: int):
     """A handle for reading, or None if the pid names no process.
 
@@ -337,7 +406,7 @@ def _open(pid: int):
     try:
         return win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     except pywintypes.error as exc:
-        if exc.winerror == PID_GONE_WINERROR:
+        if openprocess_failure_is_gone(exc.winerror):
             return None
         raise CannotConfirm(pid, f"OpenProcess failed: {exc.strerror}") from exc
 
@@ -509,6 +578,7 @@ __all__ = [
     "UnsupportedPlatform",
     "boot_id",
     "is_alive",
+    "openprocess_failure_is_gone",
     "read_identity",
     "still_the_same_process",
 ]

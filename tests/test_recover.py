@@ -843,6 +843,103 @@ def test_liveness_reports_a_pid_that_is_not_a_pid_as_uncertain() -> None:
 
 
 @requires_windows
+@pytest.mark.parametrize("winerror", [6, 1168, 5, 1, 9999])
+def test_a_failure_that_does_not_establish_death_is_uncertain(
+    monkeypatch: pytest.MonkeyPatch, alive_pid: int, winerror: int
+) -> None:
+    """No code but 87 releases a claim, whatever its name suggests.
+
+    ERROR_INVALID_HANDLE and ERROR_NOT_FOUND used to sit on the DEAD side of this
+    branch, alongside 87. A DEAD verdict here is not a report, it is a permission:
+    _live_holder treats DEAD as the only state that stops blocking, and
+    _release_claim then deletes the claim row. So each of these codes, replayed
+    against a pid that is demonstrably alive, must read UNCERTAIN and leave the
+    claim held.
+
+    9999 is in the list because the guarantee is about the shape of the answer and
+    not about an enumeration. A code nobody has seen has to be able to fall on the
+    safe side, and a test that only named the four known codes would keep passing
+    against a table that classified 9999 as death.
+
+    The pid is a real running process this file launched, so a DEAD verdict here
+    would be a false statement about the world and not a defensible reading of a
+    hard case.
+    """
+    import pywintypes
+    import win32api
+
+    assert liveness(alive_pid).state is LivenessState.ALIVE, (
+        "the pid under test must be alive, or this asserts nothing"
+    )
+
+    def refused(access: int, inherit: bool, target: int):
+        raise pywintypes.error(winerror, "OpenProcess", "replayed")
+
+    monkeypatch.setattr(win32api, "OpenProcess", refused)
+
+    state = liveness(alive_pid)
+
+    assert state.state is LivenessState.UNCERTAIN, (
+        f"Windows error {winerror} does not establish that no process carries the "
+        "pid, and reading it as death releases a live run's claim to a stranger"
+    )
+    assert state.dead is False
+    assert str(winerror) in state.detail
+
+
+@requires_windows
+def test_the_claim_survives_a_live_pid_reported_unopenable(
+    monkeypatch: pytest.MonkeyPatch, store: Store, alive_pid: int
+) -> None:
+    """The consequence, not the classification: the resource is still held.
+
+    The test above pins the verdict. This one pins what the verdict is for. A
+    stale-generation claim looks releasable whenever no run of the old generation
+    is alive, so a DEAD verdict on a live pid hands the resource to a second task
+    while the first is still working on it.
+
+    ERROR_NOT_FOUND is the code used because it is the one most likely to be read
+    as "the object does not exist, therefore the process is gone", and because
+    that reading was in this file until the two classifiers were made one.
+    """
+    import pywintypes
+    import win32api
+
+    from vkit.procidentity import read_identity
+
+    real = read_identity(alive_pid)
+    assert real is not None, "the fixture process must be readable for this to mean anything"
+
+    a_task(store)
+    acquire(store, "t1", 1, [ResourceSpec("build", EXCLUSIVE)])
+    start_run(store, "r-old", pid=alive_pid, task_id="t1", attempt=1,
+              creation_time=real.creation_time)
+    supersede_task(store, "t1")
+
+    def refused(access: int, inherit: bool, target: int):
+        raise pywintypes.error(1168, "OpenProcess", "The object was not found.")
+
+    monkeypatch.setattr(win32api, "OpenProcess", refused)
+
+    findings = inspect(store)
+    holder_states = {
+        f.kind for f in findings.findings
+        if f.kind in (FindingKind.RUN_LIVE_PROCESS, FindingKind.RUN_UNCERTAIN_PROCESS,
+                      FindingKind.RUN_DEAD_PROCESS)
+    }
+    assert holder_states == {FindingKind.RUN_UNCERTAIN_PROCESS}
+
+    with pytest.raises(RecoveryRefused) as caught:
+        apply_action(store, Action.RELEASE_CLAIM, target="build",
+                     evidence="the operator was told the pid could not be opened")
+
+    assert "build" in str(caught.value)
+    # Read back from the database, not from the object under test.
+    assert holder(store, "build") is not None
+    assert holder(store, "build").task_id == "t1"
+
+
+@requires_windows
 def test_liveness_distinguishes_a_real_process_from_an_absent_one(alive_pid: int, dead_pid: int) -> None:
     alive = liveness(alive_pid)
     dead = liveness(dead_pid)

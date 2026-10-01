@@ -220,7 +220,7 @@ $ <venv>/Scripts/python.exe -m pip install -e ".[test]"
 $ <venv>/Scripts/python.exe -m pytest tests/
 ```
 
-Observed on this host: `724 tests collected`. That is the collected count and
+Observed on this host: `740 tests collected`. That is the collected count and
 not a passed count. A passed count is not recorded here because the last full
 execution of this suite at this revision has not been run, and carrying a
 number forward from a revision where fewer tests existed would be a count

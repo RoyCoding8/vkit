@@ -19,7 +19,9 @@ directory and ask the installed package where its plugin is. That temporary
 directory is outside the repository, so a resolver that answered from `PATH` or
 from a source-tree guess could not pass by accident. Every plugin resource is
 asserted by name, because shipping the manifest while dropping the hooks is the
-same defect in smaller clothes.
+same defect in smaller clothes. The wheel is built without build isolation so
+that this gate needs no package index; see the `wheel` fixture for why that
+costs nothing in coverage.
 """
 from __future__ import annotations
 
@@ -91,18 +93,32 @@ def _make_venv(venv: Path) -> Path:
 
 @pytest.fixture(scope="module")
 def wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One wheel for the module, built through pip's own build isolation.
+    """One wheel for the module, built without reaching a package index.
 
-    `python -m build` would need a build dependency installed into the ambient
-    interpreter, which for a worktree worker is a shared virtualenv. Pip's
-    isolation installs hatchling from the declared backend, so this is the same
-    code path a real `pip install .` takes. Building it once per module rather
-    than once per test keeps the gate to a few builds instead of four.
+    `--no-build-isolation` makes this build import the declared backend
+    (`hatchling`) from the environment that is running the suite, which the
+    `test` extra installs. The alternative was pip's own isolation, which
+    constructs an overlay virtualenv and installs the backend into it from an
+    index. That made this gate need network access for a build whose inputs
+    were all already present, and it had already cost a POSIX run whose venv
+    lacked `hatchling`.
+
+    What this test is for is the bytes in the archive, not the ability of a
+    stranger on a clean machine to produce it. `hatchling` is declared in
+    `[build-system]`, so a clean `pip install .` still resolves and installs it
+    for itself; dropping the isolation here does not weaken that, and nothing
+    in this file depends on it. Building it once per module rather than once
+    per test keeps the gate to a few builds instead of four.
     """
     out_dir = tmp_path_factory.mktemp("dist")
     done = _run([sys.executable, "-m", "pip", "wheel", "--no-deps",
+                 "--no-build-isolation",
                  "--wheel-dir", str(out_dir), str(REPO_ROOT)], cwd=out_dir)
-    assert done.returncode == 0, f"pip wheel failed:\n{done.stdout}\n{done.stderr}"
+    assert done.returncode == 0, (
+        f"pip wheel failed:\n{done.stdout}\n{done.stderr}\n"
+        "The build backend comes from this environment, so a failure here on a "
+        "host with no index means the `test` extra is not installed."
+    )
     wheels = list(out_dir.glob("vkit-*.whl"))
     assert len(wheels) == 1, f"expected one wheel, found {[w.name for w in wheels]}"
     return wheels[0]

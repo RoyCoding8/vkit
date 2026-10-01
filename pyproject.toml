@@ -30,7 +30,15 @@ mcp = ["mcp>=2.2,<3"]
 # host that lacked the package, while the suite still read green. Hypothesis
 # stays optional for ordinary USERS, per CONTRACT.md, and mandatory for anyone
 # running the test suite.
-test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5", "hypothesis>=6.100"]
+# hatchling is here for the same reason, and its absence is a measured hole.
+# tests/test_plugin_resources.py builds the wheel with `--no-build-isolation`
+# so the gate needs no package index, and that build imports the backend from
+# this environment. pip's isolation installs the backend into an overlay it
+# then discards, so an editable install of this project leaves none behind:
+# without this line the wheel tests fail on a host that has everything except
+# a way to reach an index. `editables` is deliberately absent, because pip
+# needs it only to build an editable and these tests build a wheel.
+test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5", "hypothesis>=6.100", "hatchling"]
 
 # Optional for a user, required to verify. Plan 08's property tests import
 # this at module scope, so a host without it skips them rather than failing.

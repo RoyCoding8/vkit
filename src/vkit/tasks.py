@@ -685,20 +685,25 @@ def compute_readiness(
     the identity comparison runs; omit it and only the frozen floor and the
     evidence decide, which is all a caller with no repository can honestly know.
 
+    A context that arrives unusable is BLOCKED, not a context to fall back from.
+    "There is no policy here" and "there is no repository to compare against" are
+    different questions, and only the second one answers READY: the first leaves
+    the identity a pass would be measured against unmeasured, which is the same
+    condition `finalize` already refuses at. Dropping it here is what let an
+    adapter that had built a context still decide as though it had not.
+
     A caller may add to `required_check_ids` and never subtract: the pinned floor
     is unioned in unconditionally.
     """
     record = get_task(store, task_id)
-    if not context or not context.usable:
-        required = tuple(
-            sorted(set(record.pinned().required_checks) | set(required_check_ids))
-        )
+    required = tuple(sorted(set(record.pinned().required_checks) | set(required_check_ids)))
+    if context is None:
         return _decide(store, record, required)
-    return _decide(
-        store, record,
-        tuple(sorted(set(record.pinned().required_checks) | set(required_check_ids))),
-        expected_identities(record, context),
-    )
+    if not context.usable:
+        return _blocked_result(
+            record, context.refusal or "the acceptance context is unusable"
+        )
+    return _decide(store, record, required, expected_identities(record, context))
 
 
 def _decide(

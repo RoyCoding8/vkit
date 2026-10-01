@@ -37,7 +37,7 @@ from ..paths import Project, ProjectError, open_project
 from ..procidentity import CannotConfirm, ProcessIdentity, UnsupportedPlatform, read_identity
 from ..recover import Report as RecoveryReport
 from ..recover import inspect as inspect_recovery
-from ..storage import Store, StoreError
+from ..storage import Store, StoreError, probe_state
 from ..supervisor import SupervisorError, cancel_run
 from .plan import (
     DEFAULT_RUN_LIMIT,
@@ -126,9 +126,12 @@ def readiness_view(context: Context) -> dict[str, Any]:
     """2. Readiness. What `vkit doctor` reports, running nothing.
 
     Deliberately not a call into `cli.cmd_doctor`: that writes an argparse
-    namespace and prints to stdout, and this returns a value. The rules it
-    applies are the same and both read the same manifest, so there is one
-    answer to show, not two that can drift.
+    namespace and prints to stdout, and this returns a value. The readiness
+    rule itself is `storage.probe_state`, which `cmd_doctor` also calls, so the
+    two surfaces run one probe rather than each carrying a copy that can drift.
+    This view hardcoded `state_writable: True` while `cmd_doctor` opened the
+    store, and a project whose state store could not be opened read as ready
+    here and not ready there.
     """
     findings: list[dict[str, Any]] = []
     if context.manifest is None:
@@ -149,11 +152,16 @@ def readiness_view(context: Context) -> dict[str, Any]:
                     "detail": found or f"{need.executable!r} is not on PATH",
                 })
 
-    ok = bool(context.manifest is not None) and all(f.get("ok", True) for f in findings)
+    state_writable, state_detail = probe_state(
+        context.project.state_root, context.project.db_path
+    )
+    ok = state_writable and bool(context.manifest is not None) and all(
+        f.get("ok", True) for f in findings
+    )
     return {
         "ok": ok,
-        "state_writable": True,
-        "state_detail": str(context.project.state_root),
+        "state_writable": state_writable,
+        "state_detail": state_detail,
         "checks": checks,
         "findings": findings,
     }

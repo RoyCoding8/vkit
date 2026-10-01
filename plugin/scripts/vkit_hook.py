@@ -144,6 +144,11 @@ def _open_store(project: str | None, payload: dict[str, Any]):
     root, and falls back to the payload's own working directory. It is never
     taken from task prose or from a recent file, so two checkouts of one
     repository still share the one state directory git defines.
+
+    The resolved `Project` is returned next to the store because readiness is
+    decided against this checkout's own identities: a gate that holds the store
+    and not the project has no way to ask whether the recorded evidence describes
+    the code that is here now.
     """
     paths, storage, _ = _import_core()
     root = project or payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR")
@@ -153,7 +158,30 @@ def _open_store(project: str | None, payload: dict[str, Any]):
         resolved = paths.open_project(root)
     except Exception as exc:  # noqa: BLE001
         raise HookError(f"{root} is not a project vkit can read: {exc}") from exc
-    return storage.Store(resolved.db_path), paths
+    return storage.Store(resolved.db_path), resolved
+
+
+def _acceptance_context(tasks_mod: Any, project: Any):
+    """The identities acceptance compares against, measured now.
+
+    Readiness without this is not a weaker gate, it is a different one: `tasks`
+    skips the comparison entirely when no context is supplied, so a pass recorded
+    before a source or policy change would still read as acceptance.
+
+    `manifest.parse_manifest` is the loader every other caller uses, and it takes
+    the project this function was handed rather than resolving one again, so
+    there is still exactly one root in play. A policy that cannot be read is not
+    raised away: `tasks.acceptance_context` turns it into a refusal the verdict
+    reports, because an unresolved measurement is an unresolved measurement and
+    the gate must not read a missing policy as the absence of one.
+    """
+    try:
+        from vkit.manifest import parse_manifest
+    except Exception as exc:  # noqa: BLE001 - a hook reports, it does not traceback
+        raise HookError(f"the vkit core is not importable here: {exc}") from exc
+    return tasks_mod.acceptance_context(
+        project, lambda: parse_manifest(project, project.runs_root)
+    )
 
 
 def _bindings(store) -> list[tuple[str, dict[str, Any]]]:
@@ -342,12 +370,21 @@ def _on_pre_tool_use(store, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _completion_response(
-    event: str, store, payload: dict[str, Any], tasks_mod: Any, task_id: str
+    event: str, store, payload: dict[str, Any], tasks_mod: Any,
+    project: Any, task_id: str
 ) -> dict[str, Any]:
     """The Stop/SubagentStop/TaskCompleted gate, translated to that event's fields.
 
     Readiness comes from the core and is not re-derived here. This function only
     decides whether to withhold the stop and, when it does, what to say.
+
+    `compute_readiness` rather than `finalize`, because this is a read. A Stop hook
+    fires on a host event, not on a decision to accept the work, and recording a
+    verdict into the task row from one would let the act of asking the question
+    move the answer — including on the two paths where the host repeats the
+    question every turn. `compute_readiness` runs the same `_decide` over the same
+    floor and the same identities; the only difference is that the verdict is not
+    written down, which is what a gate firing on someone else's event wants.
     """
     task = tasks_mod.get_task(store, task_id)
     # The core owns the floor. A contract this build cannot validate is reported
@@ -363,7 +400,10 @@ def _completion_response(
             "Reopen it with an explicit contract rather than treating this as a pass.",
         )
 
-    readiness = tasks_mod.compute_readiness(store, task_id, required_check_ids=required)
+    readiness = tasks_mod.compute_readiness(
+        store, task_id, required_check_ids=required,
+        context=_acceptance_context(tasks_mod, project),
+    )
     if readiness.readiness == "READY":
         return {}
 
@@ -385,19 +425,37 @@ def _completion_response(
     return {"decision": "block", "reason": note}
 
 
-def _on_completion(event: str, store, payload: dict[str, Any], tasks_mod: Any) -> dict[str, Any]:
+def _on_completion(
+    event: str, store, payload: dict[str, Any], tasks_mod: Any, project: Any
+) -> dict[str, Any]:
     task_id = _bound_task_id(store, payload)
     if task_id is None:
         # An absent binding is not a pass and not a gate: it is a session that was
         # never registered, or one whose registration is ambiguous. Both are
         # reported, because a silent response here is indistinguishable from a
         # registered session whose evidence was never checked.
-        return _note_response(event, _registration_note(payload))
-    return _completion_response(event, store, payload, tasks_mod, task_id)
+        return _registration_response(event, payload)
+    return _completion_response(event, store, payload, tasks_mod, project, task_id)
+
+
+def _registration_response(event: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """The unregistered-session note, delivered once.
+
+    The note names what is missing, and it says it out loud every time it is
+    delivered into the turn. Feeding it back unchanged is what turns an
+    unregistered session into a continuation loop that can never end: each
+    stop produces a turn, and each turn produces a stop. So the first delivery
+    carries the note in full, and a stop the host has already fed this gate
+    back into returns nothing. The ambiguity is still named once, which is what
+    keeps it from reading as a registered session whose evidence was never
+    checked.
+    """
+    if payload.get("stop_hook_active"):
+        return {}
+    return _note_response(event, _registration_note(payload))
 
 
 def _registration_note(payload: dict[str, Any]) -> str:
-    """What a session must register before this gate can judge it."""
     agent_id = payload.get("agent_id")
     who = "this subagent" if agent_id else "this session"
     identified = f"agent {agent_id!r} in " if agent_id else ""
@@ -432,11 +490,11 @@ def handle(event: str, payload: dict[str, Any], project: str | None = None) -> d
     if not isinstance(payload, dict):
         raise HookError("the hook payload was not a JSON object")
 
-    store, _paths = _open_store(project, payload)
+    store, resolved = _open_store(project, payload)
     _, _storage, tasks_mod = _import_core()
 
     if event in ("Stop", "SubagentStop", "TaskCompleted"):
-        return _on_completion(event, store, payload, tasks_mod)
+        return _on_completion(event, store, payload, tasks_mod, resolved)
     return _HANDLERS[event](store, payload, tasks_mod)
 
 

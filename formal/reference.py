@@ -20,16 +20,6 @@ The distinction matters because the TLA+ model and this file agree about the
 rules, and neither is the core. A bug shared between the TLA+ model and this
 reference model would be invisible to every test in the repository. Only the
 core is under test here; the reference is the thing being compared against.
-
-## Where the core and this model are known to disagree
-
-They are not equivalent, and one divergence is deliberate and recorded rather
-than papered over. `real_acceptance_allows_any_attempt` marks it: the core's
-`compute_readiness` does not filter evidence by the attempt generation, so a
-generation 2 attempt can reach READY on generation 1 evidence alone. This
-model refuses that. The test asserting the divergence is a real, failing-safe
-test of observed behaviour, not a skipped one, so a future fix to the core
-turns it red and someone has to decide what to do about the model.
 """
 from __future__ import annotations
 

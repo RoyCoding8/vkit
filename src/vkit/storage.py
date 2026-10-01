@@ -174,6 +174,27 @@ class ConflictError(StoreError):
     """
 
 
+def probe_state(state_root: Path, db_path: Path) -> tuple[bool, str]:
+    """Whether the state store at these paths can be opened, and why not.
+
+    One probe, so `vkit doctor` and the console's readiness view cannot report
+    different answers about the same repository. They each used to run their own
+    copy: `cmd_doctor` did this and let `ok` depend on it, while the console
+    hardcoded `state_writable: True`. A project whose state store could not be
+    opened was therefore reported ready by the console and not ready by the CLI.
+
+    Opening a `Store` migrates it, so this is a write. It is the same write the
+    store does on any open, which is why `ok` may depend on it: a project that
+    cannot take that write cannot run a check either.
+    """
+    try:
+        state_root.mkdir(parents=True, exist_ok=True)
+        Store(db_path)
+    except (StoreError, OSError) as exc:
+        return False, str(exc)
+    return True, str(state_root)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 

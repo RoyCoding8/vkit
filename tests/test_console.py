@@ -270,6 +270,62 @@ def test_no_handler_writes_a_protected_path() -> None:
     assert offences == [], f"a console module writes committed policy: {offences}"
 
 
+def test_this_module_names_no_policy_path() -> None:
+    """api.py has no handler that could read a manifest, checked on the source.
+
+    api.py's module docstring claims this guarantee is asserted rather than
+    merely described, and until this test existed nothing checked it: the AST
+    scan above is a package-wide test about writes, and says nothing about reads
+    in this one file. The claim was true of the code and unsupported by any test.
+
+    Stronger than the claim it replaces. The docstring said no handler reads a
+    path under verification/ or schemas/; this asserts the stronger thing, that
+    the file opens no file at all, so a route cannot reach a manifest by any
+    means including one added later.
+    """
+    tree = ast.parse((PACKAGE / "api.py").read_text(encoding="utf-8"))
+    # Anything that could open a file or walk the filesystem, by attribute or by
+    # the module it is reached through. Deliberately wide: a reader arriving
+    # under a name this test has not seen is still caught.
+    filesystem = {
+        "open", "read_text", "read_bytes", "readlink", "glob", "rglob", "iterdir",
+        "listdir", "scandir", "walk", "stat", "lstat", "exists", "is_file", "is_dir",
+        "write_text", "write_bytes", "unlink", "mkdir", "rmdir", "rmtree", "replace",
+        "rename", "copy", "move", "chmod", "resolve",
+    }
+    modules = {"os", "os.path", "shutil", "pathlib", "io"}
+    offences: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in modules:
+                    offences.append(f"api.py:{node.lineno} import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in modules:
+                offences.append(f"api.py:{node.lineno} from {node.module} import ...")
+        elif isinstance(node, ast.Attribute) and node.attr in filesystem:
+            offences.append(f"api.py:{node.lineno} {node.attr}")
+    assert offences == [], f"api.py reaches the filesystem: {offences}"
+
+    # And no handler names a policy path as executable code. The one place the
+    # string does appear outside the docstring is the refusal that names it,
+    # which is the guarantee rather than a breach of it.
+    literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    protected = {part for part in plan.PROTECTED_PATH_PARTS for part in (part,)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            for part in protected:
+                assert f"{part}/" not in node.value or "does not" in node.value, (
+                    f"api.py:{node.lineno} names the policy path {part!r}: {node.value!r}"
+                )
+    assert literals, "the module parsed to nothing; this test would pass vacuously"
+
+
 def test_no_module_in_the_package_mentions_writing_the_manifest() -> None:
     """No source line both names a policy path and performs a write.
 
@@ -353,6 +409,53 @@ def test_under_protected_path_rejects_the_policy_paths() -> None:
     assert plan.under_protected_path("verification/manifest.json") is True
     assert plan.under_protected_path("schemas/run-report.v1.json") is True
     assert plan.under_protected_path("verification-kit/runs/abc/stdout.log") is False
+
+
+# --------------------------------------- readiness agrees with vkit doctor
+
+
+def test_readiness_agrees_with_doctor_when_the_state_store_cannot_be_opened(
+    context: operations.Context,
+) -> None:
+    """The console and `vkit doctor` must not disagree about the same repository.
+
+    `readiness_view` hardcoded `state_writable: True` and derived `ok` without
+    it, while `cmd_doctor` opened the store and let `ok` depend on the result.
+    On a project whose state root had been replaced by a file, the console
+    reported ready and the CLI reported not ready, and both were reading the
+    same repository at the same moment.
+
+    Driven through the real CLI entry point, so this compares the shipped
+    answers rather than two calls into a shared helper that could drift apart
+    again behind the test.
+    """
+    import argparse
+    import contextlib
+    import io
+
+    from vkit import cli
+
+    # The store breaks after the console is open: a removable volume, a
+    # revoked permission, or a state root replaced by a file. A state root that
+    # is already broken cannot be used, because `open_context` refuses to open a
+    # console against one, which is correct behaviour on its own.
+    shutil.rmtree(context.project.state_root)
+    context.project.state_root.write_text("a file where the state directory belongs")
+
+    readiness = operations.readiness_view(context)
+    assert readiness["state_writable"] is False
+    assert readiness["ok"] is False
+    assert readiness["state_detail"] != str(context.project.state_root)
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        exit_code = cli.cmd_doctor(argparse.Namespace(project=str(context.project.root), json=True))
+    doctor = json.loads(buffer.getvalue())
+
+    assert doctor["state_writable"] is False
+    assert doctor["ok"] is False
+    assert doctor["state_detail"] == readiness["state_detail"]
+    assert exit_code != 0
 
 
 # -------------------------------------------------- operations need no server

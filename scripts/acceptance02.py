@@ -37,6 +37,7 @@ import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -55,8 +56,9 @@ from vkit.manifest import parse_manifest  # noqa: E402
 from vkit.paths import open_project  # noqa: E402
 from vkit.procidentity import ProcessIdentity, read_identity  # noqa: E402
 from vkit.procs import run_command  # noqa: E402
-from vkit.storage import MIGRATIONS, Store, StoreError  # noqa: E402
+from vkit.storage import MIGRATIONS, Store  # noqa: E402
 from vkit.supervisor import cancel_run, job_name_for, start_run  # noqa: E402
+from vkit.tasks import TaskRecord  # noqa: E402
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 UNREACHED = "UNREACHED"
@@ -224,6 +226,12 @@ def claim_rows(db_path: Path) -> list[dict]:
                     "resource_key, kind, capacity, held, task_id, generation")
 
 
+def task_rows(db_path: Path) -> list[dict]:
+    """Task rows as they actually sit in the file, for a before-and-after compare."""
+    return raw_rows(db_path, "tasks",
+                    "task_id, status, generation, policy_digest, readiness")
+
+
 def run_rows(db_path: Path) -> list[dict]:
     """Run rows, newest first, so row 0 is the run that was just made."""
     return raw_rows(db_path, "runs",
@@ -271,6 +279,54 @@ def make_repo(name: str, *, checks: list[dict] | None = None) -> Path:
 def store_for(repo: Path) -> tuple[object, Store]:
     project = open_project(repo)
     return project, Store(project.db_path)
+
+
+def task_contract(repo: Path, policy_digest: str,
+                  required_checks: Iterable[str]) -> dict:
+    """A contract this build will read back, bound to one fixture repository.
+
+    `open_task` validates the contract before storing it, so the `{"goal":
+    ...}` this harness used to write is refused: a contract with no mandatory
+    floor is exactly the shape that would let acceptance have nothing to
+    decide against. Two things about the result are load-bearing. The
+    repository is the one the store is actually reading, because the binding
+    is what a checkout is verified against. And `required_checks` names real
+    check ids from that fixture's own manifest -- a floor of invented ids
+    would test a contract no admission could have produced, and a floor
+    naming a check this repo does not register would test a manifest that
+    does not exist. So the floor is spelled at each call site, where the
+    fixture that has to satisfy it is visible.
+
+    This is separate from `open_task` because row 8 opens its task inside a
+    child process, which is handed the contract as JSON on the environment
+    rather than importing this module.
+    """
+    project = open_project(repo)
+    return {
+        "repository": {"root": str(project.root),
+                       "git_common_dir": str(project.git_common_dir)},
+        "policy_digest": policy_digest,
+        "required_checks": list(required_checks),
+        "scope": "acceptance",
+        "resources": [],
+        "declared": {},
+    }
+
+
+def open_task(store: Store, repo: Path, task_id: str, policy_digest: str,
+              *, required_checks: Iterable[str]) -> TaskRecord:
+    """Write a task row these rows can later compute readiness against.
+
+    The digest goes into the contract and is passed separately because
+    `open_task` takes the pair: a contract carrying one digest beside a column
+    naming another is a record that disagrees with itself, and row 10's
+    subject is a record disagreeing with itself.
+    """
+    return tasks.open_task(
+        store, task_id=task_id,
+        contract=task_contract(repo, policy_digest, required_checks),
+        policy_digest=policy_digest,
+    )
 
 
 def run_one(store: Store, repo: Path, check_id: str = PASSING_CHECK_ID, *,
@@ -770,7 +826,7 @@ def row_start_retried_around_disconnect() -> None:
     row = _row(5)
     repo = make_repo("retry-start")
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t5", contract={"goal": "ship"}, policy_digest="d5")
+    open_task(store, repo, "t5", "d5", required_checks=[PASSING_CHECK_ID])
     env = {"ACCEPTANCE02_ROOT": str(repo)}
 
     first = child(RETRY_BEFORE_DISCONNECT, env)
@@ -1037,7 +1093,8 @@ def row_cancel_repeated() -> None:
 SUPERVISOR_THAT_DIES = """
     project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
     run_id = os.environ["ACCEPTANCE02_RUN_ID"]
-    tasks.open_task(store, task_id="t8", contract={"goal": "ship"},
+    tasks.open_task(store, task_id="t8",
+                    contract=json.loads(os.environ["ACCEPTANCE02_CONTRACT"]),
                     policy_digest="d8")
     claims.acquire(store, "t8", 1, [ResourceSpec("w:checkout", "exclusive")])
     store.register_run(run_id, "hangs", task_id="t8", attempt=1,
@@ -1062,8 +1119,15 @@ def row_supervisor_dies() -> None:
     repo = make_repo("supervisor-dies", checks=[hang_check(pid_file)])
     _, store = store_for(repo)
     run_id = uuid.uuid4().hex
+    # The row's subject is what happens to a killed supervisor's descendants and
+    # to the claim it held, so the contract's floor names this fixture's only
+    # registered check. Nothing here reaches acceptance, and the child is a real
+    # separate interpreter, so the contract is handed over as JSON rather than
+    # built by this module inside the child.
     env = {"ACCEPTANCE02_ROOT": str(repo), "ACCEPTANCE02_RUN_ID": run_id,
-           "ACCEPTANCE02_BODY": body}
+           "ACCEPTANCE02_BODY": body,
+           "ACCEPTANCE02_CONTRACT": json.dumps(
+               task_contract(repo, "d8", ["hangs"]))}
 
     with ExitStack() as stack:
         # The body is passed through the environment rather than formatted into
@@ -1205,7 +1269,7 @@ def row_stale_owner_submits() -> None:
     row = _row(9)
     repo = make_repo("supersession")
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t9", contract={"goal": "ship"}, policy_digest="d9")
+    open_task(store, repo, "t9", "d9", required_checks=[PASSING_CHECK_ID])
     claims.acquire(store, "t9", 1, [ResourceSpec("w:checkout", "exclusive"),
                                     ResourceSpec("w:other", "exclusive")])
     run_one(store, repo, task_id="t9", attempt=1)
@@ -1284,9 +1348,11 @@ def row_changed_contract_or_policy() -> None:
     _, store = store_for(repo)
     # The contract names the mandatory set for this attempt, and the policy digest
     # is pinned when the attempt opens rather than read from the manifest later.
-    tasks.open_task(store, task_id="t10",
-                    contract={"required_checks": [PASSING_CHECK_ID, "newly-required"]},
-                    policy_digest="policy-v1")
+    # The floor names the check this row installs afterwards, which is what makes
+    # the row's claim: a required check that has no evidence under the old policy,
+    # and evidence under the new one.
+    open_task(store, repo, "t10", "policy-v1",
+              required_checks=[PASSING_CHECK_ID, NEWLY_REQUIRED_CHECK["id"]])
     # Only the first check is registered, so the second has no evidence at all.
     run_one(store, repo, task_id="t10", attempt=1)
     under_v1 = tasks.compute_readiness(
@@ -1381,7 +1447,7 @@ def row_required_check_absent() -> None:
     row = _row(11)
     repo = make_repo("absent-check", checks=[*example_checks(), SECOND_PASSING_CHECK])
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t11", contract={"goal": "ship"}, policy_digest="d11")
+    open_task(store, repo, "t11", "d11", required_checks=[PASSING_CHECK_ID])
 
     first = run_one(store, repo, task_id="t11", attempt=1)
     second = run_one(store, repo, "second-behavior", task_id="t11", attempt=1)
@@ -1411,11 +1477,19 @@ def row_required_check_absent() -> None:
 #
 # The row is driven through `Server.call_tool`, the same entry point an MCP SDK
 # adapter forwards to, because the surface that holds the baseline is the tool
-# rather than the readiness function. `task_finalize` computes the required set
-# as the union of the manifest's checks and whatever the caller passes, so a
-# client naming a smaller list narrows nothing. A row that only called
-# `compute_readiness` would have measured the wrong thing, and would have
-# reported a failure that the product does not actually have.
+# rather than the readiness function. The floor is derived at admission and
+# unioned again at the decision, so a client naming a smaller list narrows
+# nothing at either point. A row that only called `compute_readiness` would have
+# measured the wrong thing, and would have reported a failure that the product
+# does not actually have.
+#
+# The client sends the arguments `task_begin` accepts and nothing else. It named
+# neither `policy_digest` nor `checkout_ref`: R1 removed both from the schema
+# because a caller-supplied digest let a task bind to a checkout and a policy
+# and then be compared against evidence it chose itself (F04). Both are derived
+# inside admission now, and this row is also what proves it -- the client cannot
+# name a digest because the tool refuses the call, so the digest the task is
+# pinned to is the one measured from the policy in force.
 
 SMALLER_SELECTION_CLIENT = """
     import sys
@@ -1423,29 +1497,29 @@ SMALLER_SELECTION_CLIENT = """
     from vkit.mcp import Server
     server = Server({root!r})
     begin = server.call_tool("task_begin", {{
-        "contract": {{"required_checks": ["second-behavior"]}},
-        "policy_digest": "policy-v2", "checkout_ref": "w:checkout",
+        "contract": {{"required_checks": {asked!r}}},
         "request_id": "req-12",
     }})
     task_id = begin.content["task_id"]
     # The client runs the one check it asked for.
     start = server.call_tool("check_start", {{
-        "task_id": task_id, "check_ids": ["totals-behavior"], "request_id": "req-12-run",
+        "task_id": task_id, "check_ids": {asked!r}, "request_id": "req-12-run",
     }})
     # And asks to finalize against a selection of one, naming only what it ran.
     small = server.call_tool("task_finalize", {{"task_id": task_id,
-                                               "check_ids": ["totals-behavior"]}})
+                                               "check_ids": {asked!r}}})
     # Read back what that decision actually recorded, before anything else runs.
     from vkit.paths import open_project
     from vkit.storage import Store
     from vkit import tasks as task_module
     stored_after_small = task_module.get_task(
         Store(open_project({root!r}).db_path), task_id).readiness
-    # The baseline check has now actually run.
-    server.call_tool("check_start", {{"task_id": task_id, "check_ids": ["second-behavior"],
+    # The check the client never asked for has now actually run.
+    server.call_tool("check_start", {{"task_id": task_id, "check_ids": {unasked!r},
                                      "request_id": "req-12-run-2"}})
     full = server.call_tool("task_finalize", {{"task_id": task_id}})
-    emit(task_id=task_id, claim=begin.content.get("claim"),
+    emit(task_id=task_id, floor_at_begin=begin.content["required_checks"],
+         pinned_digest=begin.content["policy_digest"],
          ran=[r["check_id"] + "=" + r["result"] for r in start.content["runs"]],
          small=small.content, stored_after_small=stored_after_small, full=full.content)
 """
@@ -1455,43 +1529,89 @@ def row_smaller_check_selection() -> None:
     """A smaller selection cannot produce READY while the baseline is missing."""
     row = _row(12)
     repo = make_repo("smaller-selection", checks=[*example_checks(), SECOND_PASSING_CHECK])
+    # What the policy registers is read from the policy, not assumed from the
+    # fixture it was built with, so the row can say it asked for a strict subset
+    # rather than a list that happens to look smaller.
+    project = open_project(repo)
+    policy_checks = sorted(parse_manifest(project, project.runs_root / "probe").checks)
+    policy_digest = parse_manifest(project, project.runs_root / "probe").digest()
+    # The client narrows to a single check, and the policy registers another it
+    # never mentions. It asks the same question twice -- at admission, and again
+    # when it finalizes naming only what it ran -- so a tool that honoured either
+    # request would report a floor of one and the row would fail.
+    asked = [PASSING_CHECK_ID]
+    unasked = [SECOND_PASSING_CHECK["id"]]
 
-    client = child(SMALLER_SELECTION_CLIENT.format(src=str(SRC), root=str(repo)))
+    client = child(SMALLER_SELECTION_CLIENT.format(
+        src=str(SRC), root=str(repo), asked=asked, unasked=unasked))
     if "__error__" in client:
         unestablished(row, f"the client failed: {client}")
         return
     small = client["small"]
     full = client["full"]
-    baseline_gap = "no completed run for required check 'second-behavior'"
+    unasked_gap = f"no completed run for required check '{SECOND_PASSING_CHECK['id']}'"
     observed(
         row,
-        client["ran"] == [f"{PASSING_CHECK_ID}=PASS"]
+        # The selection was genuinely narrower than the floor, at both points.
+        policy_checks == sorted([*asked, *unasked])
+        and client["floor_at_begin"] == policy_checks
+        and client["floor_at_begin"] != asked
+        # And the client did not get to choose the digest its evidence is
+        # compared against, because the tool no longer accepts one.
+        and client["pinned_digest"] == policy_digest
+        and client["ran"] == [f"{PASSING_CHECK_ID}=PASS"]
         and small["readiness"] == "BLOCKED"
-        and small["gaps"] == [baseline_gap]
-        and small["required_checks"] == sorted([PASSING_CHECK_ID, "second-behavior"])
+        and small["gaps"] == [unasked_gap]
+        and small["required_checks"] == policy_checks
         and client["stored_after_small"] == "BLOCKED"
         and full["readiness"] == "READY"
         and full["gaps"] == [],
-        f"the client opened a task and ran {client['ran']} only, then called "
-        f"task_finalize naming just that one check; the tool refused to narrow the "
-        f"selection and computed readiness over {small['required_checks']}, so the "
-        f"answer was {small['readiness']} with gaps {small['gaps']} and the task "
-        f"recorded {client['stored_after_small']!r}. The mandatory baseline was "
-        f"required rather than skipped. Once {SECOND_PASSING_CHECK['id']} actually "
-        f"ran, the same task became {full['readiness']} with no gaps",
+        f"the policy registers {len(policy_checks)} checks {policy_checks} and the "
+        f"client asked for only {asked}, naming neither a policy digest nor a "
+        f"checkout; the task was still frozen against all of {client['floor_at_begin']}, "
+        f"pinned to policy digest {client['pinned_digest'][:12]}... as measured rather "
+        f"than supplied. The client ran {client['ran']} only, then called task_finalize "
+        f"naming just that one check; the tool refused to narrow the selection and "
+        f"computed readiness over {small['required_checks']}, so the answer was "
+        f"{small['readiness']} with gaps {small['gaps']} and the task recorded "
+        f"{client['stored_after_small']!r}. The mandatory baseline was required "
+        f"rather than skipped. Once {SECOND_PASSING_CHECK['id']} actually ran, the "
+        f"same task became {full['readiness']} with no gaps",
     )
 
 
 # --- row 13: a disk or locking failure --------------------------------------
+#
+# The row asserts the CLAIM and not the exception's class name. "A locking
+# failure is diagnosable and fabricates nothing" is a statement about what is in
+# the database afterwards, and that is what is asserted: both refusals were
+# raised rather than swallowed, no verdict was written, no claim was invented,
+# and an outside reader still sees exactly the rows there were before. The class
+# a refusal arrives as is an implementation detail R1 already changed once -- it
+# wrapped a raw `sqlite3.OperationalError` in `StoreError` (c884de9) -- and this
+# row was written before that (7e20fae), so pinning the class bought nothing and
+# went stale for free. A row that would fail the next time the wrapping moved is
+# a row that measures the wrapping, not the behaviour.
+#
+# What replaces it is not weaker. The refusals are still required to have been
+# RAISED (an empty string means the call succeeded and the row fails), the
+# message is still required to name the contended write lock rather than
+# something vaguer, and the state assertions are checked over a connection that
+# shares nothing with the code under test, which is stricter than the old
+# `isinstance(observations, list)`.
 
 def row_disk_or_locking_failure() -> None:
     """A store that cannot take the write lock must not produce a verdict."""
     row = _row(13)
     repo = make_repo("locking-failure")
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t13", contract={"goal": "ship"}, policy_digest="d13")
+    open_task(store, repo, "t13", "d13", required_checks=[PASSING_CHECK_ID])
     run_one(store, repo, task_id="t13", attempt=1)
     before = tasks.compute_readiness(store, "t13", required_check_ids=[PASSING_CHECK_ID])
+    # What an outside reader sees before anything is attempted, and again after.
+    # A row that only compared the store to itself would prove the store is
+    # self-consistent, which is not the question.
+    baseline = task_rows(store._db_path)
 
     # Induce a genuine lock failure: another process holds the write lock. This is
     # induced on the store rather than by making a file read-only, so what is
@@ -1504,7 +1624,7 @@ def row_disk_or_locking_failure() -> None:
         failure = ""
         try:
             claims.acquire(store, "t13", 1, [ResourceSpec("w:checkout", "exclusive")])
-        except StoreError as exc:
+        except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"
         # A verdict that was already computed cannot be recorded while locked.
         record_failure = ""
@@ -1519,25 +1639,41 @@ def row_disk_or_locking_failure() -> None:
     after = tasks.compute_readiness(store, "t13", required_check_ids=[PASSING_CHECK_ID])
     observations = recover.inspect(store).to_json()["findings"]
     version = store.version()
+    survived = task_rows(store._db_path)
+    # `readiness` is None rather than `before.readiness`: the failure must have
+    # left the stored task exactly as it found it, which is a stricter reading
+    # than "the verdict still computes to the same answer".
+    recorded_after = tasks.get_task(store, "t13").readiness
     observed(
         row,
         before.readiness == "READY"
-        and failure.startswith("StoreError")
-        and "could not take the write lock" in failure
-        and record_failure.startswith("OperationalError")
+        # Both refusals were raised, and both said the write lock was the reason.
+        # The class is deliberately not asserted; see the note above this row.
+        and bool(failure) and "could not take the write lock" in failure
+        and bool(record_failure) and "could not take the write lock" in record_failure
         and after.readiness == "READY"
+        # Nothing fabricated: no claim, and the stored row is byte-for-byte what
+        # it was, read over a connection that shares nothing with the store.
         and claims.holder(store, "w:checkout") is None
+        and recorded_after is None
+        and survived == baseline
+        and claim_rows(store._db_path) == []
+        # And the failure stayed diagnosable rather than becoming a broken file:
+        # recovery reports on the store instead of raising, and the schema is intact.
         and version == LATEST_SCHEMA_VERSION
         and isinstance(observations, list),
         f"while another process held the write lock, acquiring a resource raised "
         f"{failure.split(':')[0]} ({failure.split(': ', 1)[1][:52]!r}) and recording a "
-        f"readiness raised {record_failure.split(':')[0]}; no claim was created, so "
-        f"nothing fabricated ownership, and the database stayed readable at schema "
-        f"version {version}. The verdict computed before the failure "
-        f"({before.readiness}) was unchanged afterwards ({after.readiness}) and the "
-        f"stored task row still read {tasks.get_task(store, 't13').readiness!r}, so the "
-        f"failure left the state diagnosable. NOT induced: a full disk, a read-only "
-        f"state directory, and a corrupted database, so those remain unmeasured",
+        f"readiness raised {record_failure.split(':')[0]}; both refusals named the "
+        f"contended write lock. No claim was created, so nothing fabricated ownership: "
+        f"claim_holders over a fresh connection holds [], and the task row read outside "
+        f"the store is unchanged from before the failure ({survived == baseline}), with "
+        f"its stored readiness still {recorded_after!r} rather than the {before.readiness} "
+        f"that had been computed. The database stayed readable at schema version "
+        f"{version} and recovery reported {len(observations)} finding(s) instead of "
+        f"raising, so the failure left the state diagnosable. NOT induced: a full disk, "
+        f"a read-only state directory, and a corrupted database, so those remain "
+        f"unmeasured",
     )
 
 
@@ -1618,7 +1754,7 @@ def row_stateful_sequences() -> None:
     row = _row(14)
     repo = make_repo("stateful")
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t14", contract={"goal": "ship"}, policy_digest="d14")
+    open_task(store, repo, "t14", "d14", required_checks=[PASSING_CHECK_ID])
     claims.acquire(store, "t14", 1, [ResourceSpec("w:checkout", "exclusive")])
     env = {"ACCEPTANCE02_ROOT": str(repo)}
 

@@ -4,7 +4,7 @@ Implementation spec for R2 of `review/REPAIR_PLAN.md` (F05, F13). Written to be 
 
 ## 1. The defect, stated as one invariant violation
 
-`run_check` registers the run row, launches, **waits for completion**, then writes process identity (`execution.py:310`), and MCP binds `task_id`/`attempt` only after that returns (`mcp/_tools.py:653`). Between the register and the `mark_running` the durable record says `preparing` with no process. That is indistinguishable from a run that never launched. `recover._live_holder` (`recover.py:801-802`) skips any run whose `pid is None`, so the window reads as "nothing is running" and `apply_action(RELEASE_CLAIM)` transfers the claim. One defect, two findings.
+`run_check` registers the run row, launches, **waits for completion**, then writes process identity (`execution.py:310`), and MCP binds `task_id`/`attempt` only after that returns (`mcp/_tools.py:710`). Between the register and the `mark_running` the durable record says `preparing` with no process. That is indistinguishable from a run that never launched. `recover._live_holder` (`recover.py:801-802`) skips any run whose `pid is None`, so the window reads as "nothing is running" and `apply_action(RELEASE_CLAIM)` transfers the claim. One defect, two findings.
 
 **The invariant that replaces it:** at every instant after a run id exists, the durable record answers *"what is this run's owner, and is it safe to release what its task holds?"* Either it names a verified owner, or it says ownership is unknown. Missing identity is never read as proof of absence.
 
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS cancel_intents (
 );
 ```
 
-`runs.lifecycle` gains a fourth value, `cancelling`:
+`runs.lifecycle` gains two values, `launching` and `cancelling`:
 
 **BLOCKER, found 2026-09-30: the lifecycle change is not additive.** `runs` is created once, in migration 1, with a hard constraint:
 
@@ -113,18 +113,48 @@ Every row below is a write that commits before the next step begins. "Recovery c
 | # | Action (committed before the next) | Crash here ⇒ durable state | Recovery concludes | Claim |
 | --- | --- | --- | --- | --- |
 | 1 | Validate task open, generation current, and caller still holds every `required_resources` key (R1's contract field), inside one `BEGIN IMMEDIATE` | nothing exists | — | — |
-| 2 | Insert `launches` + `run_intents` row | nothing exists | — | — |
-| 3 | `store.register_run` → `lifecycle='preparing'`, `task_id`/`attempt` set **by the supervisor, not the caller** | `preparing`, no identity | `RUN_UNRESOLVED_LAUNCH`: no process was created because `launches` has no row and the row is `preparing`. Reconcilable only by `ABANDON_LAUNCH` with evidence. | held |
-| 4 | Supervisor `CreateProcess(SUSPENDED)`, `AssignProcessToJobObject`, read creation FILETIME | `preparing`, `process_json` null | `RUN_UNRESOLVED_LAUNCH`: the supervisor died holding a suspended child. `KILL_ON_JOB_CLOSE` fired on handle close, so the tree is gone. That is the *default* OS behaviour rather than a recorded fact, so the claim is still held until `ABANDON_LAUNCH` is applied. | held |
-| 5 | `lifecycle='launching'`, `process_json={"ownership_known": false, "launch_state":"started", "check_id":..., "command":...}` | `launching`, identity unknown | `RUN_UNRESOLVED_LAUNCH`: a process was created and its identity was never published. **The dangerous window.** Claims held, no release, no auto-abandon. | held |
-| 6 | Write `{"pid","creation_time","job_name","ownership"}` into `process_json`, `lifecycle='running'` | `running`, verified owner | `RUN_LIVE_PROCESS` if the handle opens; `RUN_DEAD_PROCESS` if the pid names nothing and the creation FILETIME matches nothing. Both existing kinds, both correct here. | held |
-| 7 | Supervisor publishes the terminal report (`store.publish`) | `terminal` | `RUN_TERMINAL_NO_REPORT` if the swap did not land. Existing behaviour, already correct. | R1 releases on task lifecycle |
-| 8 | Cancel request → insert `cancel_intents`, `lifecycle='cancelling'` | `cancelling` | `RUN_UNRESOLVED_LAUNCH` if `ownership_known` is false: cancellation cannot proceed and the claim is retained with a named reason. | held |
-| 9 | Cancel resolves: `TerminateJobObject`, wait for all job processes to exit, publish `BLOCKED/cancelled` | `terminal` | nothing outstanding | held until R1 supersedes |
+| 2 | `prepare_job` — create the **named** job (`CreateJobObject(None, f"Local\\vkit-run-{run_id}-…")`) and hold the handle open. No row yet, so a crash here leaves nothing durable and nothing to reconcile | nothing exists | — | — |
+| 3 | `store.register_run` → `lifecycle='preparing'`, `task_id`/`attempt` set **by the supervisor, not the caller** | `preparing`, no identity, no `launches` row | `RUN_UNRESOLVED_LAUNCH`: no process was created — the row is `preparing` and no `launches` row says a launch was ever attempted. Reconcilable only by `ABANDON_LAUNCH` with evidence. | held |
+| 4 | `record_launch` — insert the `launches` row (`run_id`, job name, resolved argv, cwd, supervisor pid), plus the `run_intents` row | `preparing`, identity unknown, `launches` present | `RUN_UNRESOLVED_LAUNCH`: a launch was attempted and its outcome is unknown. Claims held, no release, no auto-abandon. | held |
+| 5 | Supervisor `CreateProcess(SUSPENDED)`, `AssignProcessToJobObject`, read creation FILETIME | `preparing`, `process_json` null | `RUN_UNRESOLVED_LAUNCH`: the supervisor died holding a suspended child. `KILL_ON_JOB_CLOSE` fired on handle close, so the tree is gone. That is the *default* OS behaviour rather than a recorded fact, so the claim is still held until `ABANDON_LAUNCH` is applied. | held |
+| 6 | `lifecycle='launching'`, `process_json={"ownership_known": false, "launch_state":"started", "check_id":..., "command":...}` | `launching`, identity unknown | `RUN_UNRESOLVED_LAUNCH`: a process was created and its identity was never published. **The dangerous window.** Claims held, no release, no auto-abandon. | held |
+| 7 | Write `{"pid","creation_time","job_name","ownership"}` into `process_json`, `lifecycle='running'` | `running`, verified owner | `RUN_LIVE_PROCESS` if the handle opens; `RUN_DEAD_PROCESS` if the pid names nothing and the creation FILETIME matches nothing. Both existing kinds, both correct here. | held |
+| 8 | Supervisor publishes the terminal report (`store.publish`) | `terminal` | `RUN_TERMINAL_NO_REPORT` if the swap did not land. Existing behaviour, already correct. | R1 releases on task lifecycle |
+| 9 | Cancel request → insert `cancel_intents`, `lifecycle='cancelling'` | `cancelling` | `RUN_UNRESOLVED_LAUNCH` if `ownership_known` is false: cancellation cannot proceed and the claim is retained with a named reason. | held |
+| 10 | Cancel resolves: `TerminateJobObject`, wait for all job processes to exit, publish `BLOCKED/cancelled` | `terminal` | nothing outstanding | held until R1 supersedes |
 
 **Crash between 5 and 6 is the one that matters, and the OS closes it without us.** The job name is written into `launches` at step 2, before `CreateProcess`, so a `launching` row still has a durable handle another process can open. `recover` and `cancel_run` read the name from `launches` rather than only from `process_json`, and every reader takes the union of the two. The two pieces of ownership are persisted at the two points where they first exist: the name at step 2, the pid at step 6.
 
 `recover` treats a `launching` run as UNCERTAIN by default. If the persisted job name still opens and reports zero live processes **and** the supervisor pid is confirmed gone **and** the recorded creation FILETIME is unreadable at that pid, the finding is `RUN_UNRESOLVED_LAUNCH` with `action=ABANDON_LAUNCH`. Two of three is UNCERTAIN and keeps the claim. This is the only path that clears an unresolved launch without a human naming evidence.
+
+### 3.1 Steps 3 and 4 were the wrong way round (corrected 2026-10-01)
+
+An earlier revision inserted `launches` at step 2, **before** the `runs` row it
+references. §2 declares `launches.run_id TEXT PRIMARY KEY REFERENCES
+runs(run_id)`, and every connection enforces it: `storage.py:296` runs
+`PRAGMA foreign_keys = ON` inside `_connect`, which is what `_Transaction` and
+every `Store` method go through. Step 2 as written therefore raises
+`IntegrityError: FOREIGN KEY constraint failed` on the first run of the new
+code, immediately and not deferred (`review/probe_launch_order.py`):
+
+```
+foreign_keys pragma : 1
+foreign_key_list(launches) = [(0, 0, 'runs', 'run_id', 'run_id', ...)]
+design's order (launches first) -> REJECTED: FOREIGN KEY constraint failed
+swapped order (runs first)     -> SUCCEEDED
+orphan launches row            -> REJECTED immediately, so there is no later window
+```
+
+This is not the migration-5 finding, and the two were conflated until they were
+both checked. That finding is that this schema declares **no** `REFERENCES`
+clause today, so rebuilding `runs` has nothing to violate. This one is that
+**enforcement is on** for any constraint R2 adds. Both are true; only the first
+bears on the rebuild.
+
+Step 3's recovery column depended on the wrong order too: under it a `preparing`
+row always had a `launches` row, so "no `launches` row" could not distinguish
+"never attempted" from "attempted and unresolved". The reordering is what makes
+that distinction real, which is the reason the row exists.
 
 ## 4. The Windows ownership mechanism
 
@@ -133,13 +163,37 @@ Every row below is a write that commits before the next step begins. "Recovery c
 Replace with a two-phase launcher in `procs.py`:
 
 ```python
-def prepare_job(run_id: str) -> str:
-    """Create the named job and return its name. No process exists yet."""
-    job = win32job.CreateJobObject(None, f"Local\\vkit-run-{run_id}-{secrets.token_hex(8)}")
+@dataclass(frozen=True)
+class JobLease:
+    """The named job, and the handle that keeps it alive.
+
+    Both halves are needed and neither substitutes for the other. The name is
+    what another process passes to `OpenJobObject`, which is the whole reason
+    the job is named rather than anonymous; the handle is what
+    `AssignProcessToJobObject` takes, and holding it open across the client's
+    disconnect is what makes `KILL_ON_JOB_CLOSE` fire at the right moment.
+
+    The earlier form of this function was annotated `-> str` and returned the
+    handle. Either reading breaks something: the name alone cannot assign the
+    child to the job, so the containment the whole design rests on is never
+    established and the tree survives cancellation; the handle alone cannot be
+    opened by a second process, so G2 fails. Returning the name and letting the
+    caller reopen the job is also wrong — the lease is precisely what must not
+    be reopened, because the last handle closing is what fires the kill.
+    """
+    name: str
+    handle: Any
+
+
+def prepare_job(run_id: str) -> JobLease:
+    """Create the named job. No process exists yet."""
+    name = f"Local\vkit-run-{run_id}-{secrets.token_hex(8)}"
+    job = win32job.CreateJobObject(None, name)
     info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
     info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
-    return job
+    return JobLease(name=name, handle=job)
+kit-run-{run_id}", handle=job)
 ```
 
 `prepare_job` is Windows-only and is the only place `CreateJobObject` is called. `run_command` splits into `launch(...)` returning immediately after `ResumeThread` with the job handle still open, and `await_exit(...)`. The handle must not close between them: `KILL_ON_JOB_CLOSE` turns the ordinary finally-block into a kill. Therefore:
@@ -160,7 +214,7 @@ The supervisor, not `procs`, owns the lease. It is the only caller that must kee
 
 ## 5. The supervisor
 
-`start_run` currently returns only after the check finishes, and cannot be called by MCP because it double-registers (`_tools.py:584` documents this and it is accurate). The replacement is one new entry point plus a thin detached process. There is no daemon, no scheduler, no registry.
+`start_run` currently returns only after the check finishes, and cannot be called by MCP because it double-registers (`_tools.py:634-642` documents this and it is accurate). The replacement is one new entry point plus a thin detached process. There is no daemon, no scheduler, no registry.
 
 `RunHandoff` is a frozen dataclass with `run_id`, `check_id`, `task_id`, `generation`, `lifecycle`, `started_at`, and `replayed`.
 `start_run(...) -> RunHandoff` becomes: validate (§3 steps 1-2), then:
@@ -181,20 +235,20 @@ Every row is a deletion, not a deprecation. Leaving any of these in place is a s
 
 | Dies | Where | Replaced by |
 | --- | --- | --- |
-| `run_check`'s register-inside-the-execute function | `execution.py:277` | `supervisor` registers. `run_check` keeps only the execute-and-publish half and takes an already-registered `run_id` |
-| `store.attach_task` and its call at `_tools.py:653` | storage, MCP | the `run_intents` row written at §3 step 2; `register_run` receives `task_id`/`attempt` directly from the supervisor |
+| `run_check`'s register-inside-the-execute function — **only for the supervisor path** | `execution.py:277` | `supervisor` registers. **The registration cannot simply be deleted**: `cmd_check_run` (`cli.py:324`), `console/operations.run_check` (`operations.py:385`) and `integration/sandbox.py` all call `run_check` directly and register nothing themselves, so with the row gone `store.publish` finds no row and raises `cannot publish: <id> is unknown or already terminal` on every `vkit check run`. Either route all three through `supervisor.start_run(..., detach=False)`, or keep the registration in `run_check` for non-supervisor callers. |
+| `store.attach_task` and its call at `_tools.py:710` | storage, MCP | the `run_intents` row written at §3 step 2; `register_run` receives `task_id`/`attempt` directly from the supervisor |
 | `supervisor.start_run`'s `_is_registered` + "registered but no report" branch (`supervisor.py:118-126`) | supervisor | the `launches` row is the retry authority. A run with a `launches` row and no terminal outcome is *live or unresolved*, never "refuse to re-execute" |
 | `start_run`'s `attach_job_name` call at `supervisor.py:146` and the fake-name write it makes | supervisor | `prepare_job` names a real job; the name is written into `launches` at step 2 |
 | `Store.attach_job_name` | storage | `publish_identity` (§8) writes the job name with the pid |
 | `procs._new_job` | procs | `prepare_job` |
-| `_check_start`'s declared limit docstring at `_tools.py:584-592` | MCP | the limit is false after this change; the docstring is removed with the fix, not left as history |
+| `_check_start`'s declared limit docstring at `_tools.py:634-642` | MCP | the limit is false after this change; the docstring is removed with the fix, not left as history |
 | `console/operations.run_check`'s "the console is not a client that disconnects" branch | console | still correct. The console keeps `run_check` with `detach=False`. **Only the comment changes.** |
 | `FindingKind.RUN_WITHOUT_PROCESS` | recover | replaced by `RUN_UNRESOLVED_LAUNCH` (§9). The old name encodes the bug: "no process recorded" as a distinct, calm state |
 | `recover._live_holder`'s `if run.pid is None: continue` | recover | **the F13 line.** Replaced by `_live_holder` refusing on any unfinished run whose ownership is unknown |
 | `recover._holder_liveness`'s "No run of that task has a recorded process to check" | recover | becomes a refusal, not a note. Unknown is not a clearance |
 | `cmd_run_cancel`'s pre-flight `store.run_process_identity` and `_identity_of` | cli | `cancel_run` reads the record itself; the CLI passes only `run_id`. Today the CLI, not the supervisor, decides a run is uncancellable |
 
-`cmd_check_start`, `_check_start`, and `_run_cancel` bodies are rewritten to call `supervisor.start_run` / `cancel_run` and return. `run_check` survives for `cmd_check_run`, `console/operations.run_check`, and `integration/sandbox.py`.
+`cmd_check_start`, `_check_start`, and `_run_cancel` bodies are rewritten to call `supervisor.start_run` / `cancel_run` and return. `run_check` survives for `cmd_check_run`, `console/operations.run_check`, and `integration/sandbox.py` — and whichever of the two options the row above takes, all three must still end up with a registered row. `store.publish` requires one.
 
 ## 7. Assumptions about R1 that must be re-verified after R1 merges
 
@@ -227,7 +281,7 @@ def runs_for_task(self, task_id, generation) -> tuple[dict, ...]   # for recover
 
 `publish_identity` and `mark_launching` are two distinct UPDATEs, both `WHERE lifecycle != 'terminal'`. A cancel that has already published terminal wins over a late identity write, which is the correct outcome: the run is cancelled and stays cancelled.
 
-`register_run` no longer writes `fixture_digest=None`. R1 owns that field now. If R1 has not landed, leave the existing call and let R1 change it. Do not add a second writer.
+`register_run` keeps its `fixture_digest=None` argument. An earlier revision said to drop it because R1 owns the field now; that is a no-op at best and a `TypeError` at worst, because the parameter is keyword-only with no default (`storage.py:345`) and `register_run` is still the tree's only writer of `runs.fixture_digest` — R1's `tasks.py` occurrence is the readiness record's identity dict, not a `runs` write. What R1 owns is the acceptance *comparison*. Recording a real fixture digest on the run is R5's evidence gap, not a change to make here. Do not add a second writer.
 
 ## 9. Recovery changes (F13)
 
@@ -252,7 +306,10 @@ So `RUN_WITHOUT_PROCESS` survives as a *finding*, and what R2 replaces is the *g
 for run in runs of (task_id, held_generation):
     if run.lifecycle in ('preparing', 'launching'):
         return refusal   # ownership unknown -> presumed live
-    if not run.process.ownership_known:
+    # `process` is `dict | None`, and `register_run`'s INSERT does not list
+    # `process_json`, so every run sitting in `preparing` has None here. The
+    # `None` case is the F13 window, not an impossible state, so it refuses.
+    if not run.process or not run.process.get("ownership_known"):
         return refusal
     state = liveness(pid, creation_time, boot_id)
     if state in (ALIVE, UNCERTAIN):
@@ -262,7 +319,171 @@ return None   # only confirmed-dead and terminal runs clear
 
 A run at a *different* generation of the same task does not block; the claim being released is the stale generation's, and the current generation's runs hold their own claims. `run_intents` supplies that membership because `runs.task_id` is still set.
 
-New `FindingKind.RUN_UNRESOLVED_LAUNCH` with `action=ABANDON_LAUNCH`, replacing `RUN_WITHOUT_PROCESS`. `Action.ABANDON_LAUNCH` marks the `launches` row `abandoned=1` and re-runs the §3-step-5 liveness evidence check inside the write transaction. It never deletes anything and never touches claims itself. The claim is released only when the existing `RELEASE_CLAIM` finds no live holder. Two explicit actions, in order, each with evidence. That is what "retain claims for explicit reconciliation" means operationally.
+New `FindingKind.RUN_UNRESOLVED_LAUNCH` with `action=ABANDON_LAUNCH`, replacing the **guard** at `recover.py:802` — not the report at `recover.py:541`. `Action.ABANDON_LAUNCH` marks the `launches` row `abandoned=1` and re-runs the §3-step-5 liveness evidence check inside the write transaction. It never deletes anything and never touches claims itself. The claim is released only when the existing `RELEASE_CLAIM` finds no live holder. Two explicit actions, in order, each with evidence. That is what "retain claims for explicit reconciliation" means operationally.
+
+### 9.1 Three sites the design did not account for
+
+Found 2026-10-01 while tracing §9 against merged master. Each is a place where "no identity yet" is currently read as "nothing is happening", which is the same inference F13 is about — in three more places.
+
+**1. `recover.py:431` `_Run.unfinished` is `lifecycle in ("preparing","running")`.**
+
+A `launching` or `cancelling` run is classified **finished**, so `_run_findings` (`:529-532`) skips it and `_terminal_run_findings` runs instead: recovery reports a mid-flight run as terminal-with-no-report. Reachable from `operations.py:254` and `cli.py:656`. This must become "everything except `terminal` is unfinished" — which is the existing meaning of the name, currently under-applied.
+
+**2. `console/operations.py:419-431` answers a cancel for an identity-less run with a *settled* verdict.**
+
+```python
+recorded = context.store.run_process_identity(run_id) or {}
+pid = recorded.get("pid")
+if not pid:
+    return {..., "outcome": {"result": "BLOCKED", "reason": "ownership_lost",
+             "detail": f"run {run_id} recorded no process, so there is nothing to cancel"}}
+```
+
+This both guesses early and duplicates the core's own refusal at `supervisor.py:185-197`. Under R2 it must record a `cancelling` intent and report that the cancellation is pending, not that the run has a settled `BLOCKED/ownership_lost` outcome. A cancel that is still arriving is not an answer about the run.
+
+**3. `store.load` raises for any run without a published report, and both read paths surface that as a malformed request.**
+
+`storage.py:480-481` raises `StoreError("no published report for run ...")`. `cli.py:355` turns it into `EXIT_INVALID` and `operations.py:231` into `Refused`. Under R2 *every* in-flight run is report-less by design, so `vkit run show <id>` on a running check — and the console's run detail view — report a valid request as invalid.
+
+Q6 already settles the principle for `run_get` ("`preparing` with no identity is a valid, honest answer"), so this is the same answer applied consistently: a status read of an unfinished run returns the recorded lifecycle and the absence of an outcome, and reserves its error for a run id that does not exist at all. This was left UNKNOWN in the census; it is now decided.
+
+### 9.2 F13's severity, and two further findings (2026-10-01)
+
+**The release half of F13 is CRITICAL, reproduced end to end**
+(`review/probe_f13_release.py`, on master). The window is not the
+microsecond race it looks like in a code trace: `execution.run_check`
+inserts the run row at `:277`, then `_launch` blocks in
+`procs.py:559 _wait_windows` for the child's entire execution, bounded by
+`check.timeout_seconds`, and only then calls `mark_running` at `:310` —
+the sole writer of a pid. So `process_json` is NULL and `lifecycle` is
+`preparing` for the whole run, and forever after a crash.
+
+Driving the sequence with a real child process that is genuinely writing:
+
+```
+A admitted at generation 1 holding scope:checkout
+run row: lifecycle='preparing' process_json=None, child alive, writing
+supersede A -> generation 2 (claims deliberately kept, tasks.py:267-270)
+inspect -> CLAIM_STALE_GENERATION, action=RELEASE_CLAIM
+RELEASE SUCCEEDED
+B ADMITTED at generation 1 -> holder = Claim(...task_id='B'...)
+A's child alive = True, still advancing its output = True
+```
+
+Two tasks hold the same checkout and both write to it. The guard at
+`recover.py:763` asks `_live_holder`, which skips pidless runs at
+`:801-802`, finds nothing, and clears the claim. This is the finding that
+makes the record state critical rather than cosmetic, and §9's guard
+change is what closes it.
+
+On POSIX the consequence is worse than on Windows: `_run_posix`
+(`procs.py:279-286`) uses `start_new_session=True`, so after a supervisor
+crash nothing kills the orphan at all — the child survives indefinitely,
+still writing, while recovery reads a pidless row forever.
+
+**`supervisor.py:118-126`'s refusal keys on `report.json` alone and ignores
+`runs.lifecycle`.** That flattens three distinct states into one refusal:
+live right now, crashed and unreconciled, and terminal-but-unpublished.
+The third is simply wrong. `store.publish` claims the row before the swap
+(`storage.py:464-468`) and swaps last (`:475`), so a crash between them
+leaves `lifecycle='terminal'` with no `report.json` — and that row can
+never publish again, because the same `lifecycle != 'terminal'` guard
+makes every future `publish` raise. The refusal's stated reason, "a second
+run under one id", is already impossible: `register_run`'s PRIMARY KEY
+(`storage.py:364-365`) raises `already registered`. So the branch blocks
+retries while preventing nothing, and locks out permanently the one run
+that most needs a remedy. §6 deletes it in favour of the `launches` row;
+that is right, and this is the reason.
+
+**Two liveness implementations can disagree about the same pid.**
+`recover.py:265` probes with `PROCESS_QUERY_INFORMATION` and its own
+error-code table; `procidentity.py:338` probes with
+`PROCESS_QUERY_LIMITED_INFORMATION` and its own. `recover` calls
+`read_identity` only at `:331`, as a second opinion *after* it has already
+reached a verdict, so the two can disagree and only `procidentity`'s
+measurements are documented as measured (`procidentity.py:25-30`). Worse,
+`recover.py:263-308` treats WinError 6 and 1168 as DEAD alongside 87, while
+`procidentity.py:135-140` states as measured that 87 is *the one* WinError
+`OpenProcess` returns for a pid with no process behind it. A DEAD verdict
+from a code `procidentity` says nothing about is exactly the premise a
+claim release rests on.
+
+This is R2's to fix only insofar as §9's guard must not depend on it: the
+guard refuses on *unknown ownership* before asking about liveness at all,
+so the duplicated probe stops being load-bearing. Collapsing the two
+probes into one is a separate cleanup and is named here rather than
+silently absorbed into this milestone.
+
+Also verified SAFE, so it is not re-investigated: `claims.acquire_in` and
+`_release_claim` are correctly atomic and cannot by themselves grant a
+resource twice; `inspect()` on a pidless run is inert and no caller
+releases from it; `CannotConfirm` retains the claim at all four of its
+recovery call sites; `UnsupportedPlatform` is unreachable from `recover`.
+(`WrongProcess` does not exist in this codebase — the stranger case is
+`LivenessState.UNCERTAIN`.)
+
+### 9.3 Further corrections from the design audit (2026-10-01)
+
+Verified against merged master before being written down. These are
+corrections to the document, not to the code.
+
+**`vkit/supervise.py` needs a `__main__` guard, and §5 calling it "one function"
+is what hides that.** `-m` only executes a module through a `__main__` guard.
+Of every `.py` under `src/`, only `cli.py:1069` and
+`integration/launcher.py:94` have one, and there is no `__main__.py` anywhere.
+A supervisor module with a single function and no guard runs, exits 0, and has
+done nothing: `start_run` returns a handoff for a run that will never launch,
+the driver is never spawned, and the row sits `preparing` forever — the exact
+F13 window this milestone exists to close. The `VKIT_FAULT` seam at §10 lives
+in this same module, so G5 and G7 inherit the no-op and pass or fail for the
+wrong reason.
+
+**G12 tests a key no listed writer emits.** `ownership_known` is tied to the
+report schema, but `process_json` is a `runs` column (`storage.py:46`), not the
+report's `process` object. The report's `process` is built at
+`execution.py:438-446` and `supervisor.py:305-315` (`_cancel_report`), and
+neither is in §6's rewrite list. G12 as written passes vacuously because
+nothing ever adds `ownership_known` to a report. Either name `_cancel_report`
+as a writer, or drop the key from the report and assert it on `process_json`
+via `run_process_identity`.
+
+**The console holds a second cancel authority that §6 does not list.**
+`operations.py:419` reads `run_process_identity` and `:446` fabricates
+`ProcessIdentity(pid=int(pid), creation_time=-1)` to force the core's refusal,
+then calls `cancel_run(..., identity=identity)` at `:449`. §6 gives
+`cancel_run` a `run_id`-only signature, so this raises `TypeError: unexpected
+keyword argument 'identity'` on every cancel, surfacing as a console 500. §6's
+claim that leaving any row in place "is a second authority for the same fact"
+was true and this row was the one left out. (This is the same site as §9.1 item
+2, seen from the deletion side rather than the behaviour side.)
+
+**§5's `Store(Path(state_dir)/db)` names a path component that does not exist.**
+The real names are `paths.py:19` `DB_NAME = "state.sqlite3"` and
+`Project.db_path` (`paths.py:65`). The supervisor re-opens the child's store
+with one of those.
+
+**Q3 names a call site §6 does not create.** `cmd_check_run`
+(`cli.py:300-345`) calls `run_check`, not `start_run`, and `detach` appears
+nowhere in `src/` today. Console only, unless the `run_check` deletion row is
+resolved by routing `cmd_check_run` through the supervisor too.
+
+**G5's crash is described two ways.** §10's setup says the supervisor is
+`taskkill`'d after step 5 while §10's fault-injection note specifies
+`os._exit(9)`. `os._exit` does close handles so `KILL_ON_JOB_CLOSE` still fires
+and G7 works, but "taskkill'd" reads as a second mechanism to build. Use the
+`VKIT_FAULT` exit.
+
+**`supervisor.py:118-126` is the call site of `_is_registered`, not its
+definition** (which is `:150-154`). Matters only to a reader searching by
+definition, but a deletion list should name the thing being deleted.
+
+Verified accurate and left alone: §4's claim that `_new_job`
+(`procs.py:432`) creates an *anonymous* job — `CreateJobObject(None, "")` — and
+that the name recorded at `supervisor.py:146` was never given to
+`CreateJobObject`, so no second process can address today's job. §1's
+citations (`execution.py:310`, `recover.py:801-802`). §10's gate vocabulary,
+all twelve resolving. And the current lifecycle values are exactly the three
+`storage.py` writes.
 
 ## 10. The gate
 
@@ -285,6 +506,22 @@ Each row is a public-behaviour regression in `tests/`, driven through `superviso
 
 **Fault injection.** G5 and G7 need a crash at an exact point. Add one private hook in `vkit/supervise.py`: `if os.environ.get("VKIT_FAULT") == "after_launching": os._exit(9)`, placed between §3 steps 5 and 6. That is the only test seam added, it is one line, and it is removed by the same commit that removes the two tests if the tests move elsewhere. A subprocess that calls `os._exit` is the only way to test a crash that a `finally` block cannot survive, which is the whole point of these two cases.
 
+### 10.1 What the gate does not cover, and the migration surface
+
+The gate is the new behaviour. The migration surface is larger and is easy to under-count, so it is counted here rather than discovered.
+
+**`tests/test_recover.py` is a false-census trap.** It defines its own `start_run()` at line 218; all 24 `start_run` hits in that file are that fixture, not the supervisor. A grep-driven migration that rewrites them is chasing the wrong symbol. Its `RUN_WITHOUT_PROCESS` assertions (`:327`, `:583-592`) pass today and will flood under R2, because every fresh run is briefly pid-less by design.
+
+**No test file imports `vkit.supervisor`.** The only real imports are `scripts/acceptance02.py`, `scripts/diagnose_cancel_posix.py` and `scripts/verify_posix_cancel.py`. Every test reaches identity through `execution.run_check` or `console.operations.run_check`. So the test blast radius is `run_check`'s synchronous contract plus lifecycle literals — not `StartedRun` going away — because §6 keeps `run_check` synchronous for `cmd_check_run`, the console and `sandbox.py`. Roughly half the grep hits drop out on that basis.
+
+**`scripts/acceptance02.py` is the single largest block: 30 of the ~59 breaking sites, across rows 5, 6, 7, 8 and 14.** Row 6 (`:903-925`) *inverts meaning*: its central claim is that an in-flight run names no pid, which R2 converts into "a pid is published later". Its comment at `:811-816` and verdict prose at `:944-946` document exactly the limitation being removed, and those strings are interpolated into the row note — so rewriting the Python without rewriting the prose produces a green acceptance table that lies. That is the same failure mode R1 found with `unverified_identities`: the record green, the claim false.
+
+**`tests/test_storage.py:209-232` is the canary.** It issues a raw `UPDATE runs SET lifecycle='running'` and asserts lifecycle literals, so it is the one site that fails *at the database* rather than at an assertion. Run it first; if migration 5's rebuild is wrong, it says so before anything else does.
+
+**`schemas/run-report.v1.json:13` pins the lifecycle enum** and is `additionalProperties: false`, so `launching`/`cancelling` force a schema edit in the same commit (G12 covers this).
+
+**`console/static/app.js:309-315`** reads `result.outcome` on cancel. A deferred cancel has no outcome; the view must show a pending state.
+
 **What the probe's behaviours become.** `probe_recovery.py`'s assertions invert: `process_identity` before recovery becomes non-null and `ownership_known: true`; `finding_kinds` becomes `["run_with_live_process"]`; `release_claim.succeeded` becomes `false` with a `RecoveryRefused`; `second_task_claim.acquired` becomes `false`; `driver.alive_after_release_and_second_claim` becomes `false` because the release never happened and the child completed normally. Keep the probe script itself in `review/` as the record.
 
 ## 11. Open questions, with defaults
@@ -300,6 +537,6 @@ The worker proceeds on the default and does not block.
 | Q5 | Detached supervisor's own lifetime if the run finishes in 200ms | it exits after publishing; no reaping loop | none |
 | Q6 | Should `run_get` poll for the detached supervisor's startup? | **No.** `preparing` with no identity is a valid, honest answer | none |
 | Q7 | Job name entropy / naming | `Local\vkit-run-<run_id>-<16 hex>`, minted by `prepare_job`, persisted in `launches` at step 2 | reuse of `supervisor.job_name_for` is also fine; do not derive it from `run_id` alone |
-| Q8 | Do we keep `FindingKind.RUN_WITHOUT_PROCESS` as a deprecated alias? | **No.** Delete it (§6). Old databases are read by `liveness`, not by this enum | old JSON findings naming it are audit records, not live state |
+| Q8 | Do we keep `FindingKind.RUN_WITHOUT_PROCESS` as a deprecated alias? | **Keep it, as a report — not as a guard.** This row previously said "delete it (§6)", which was wrong: `RUN_WITHOUT_PROCESS` is returned by `_unfinished_run_finding` (`recover.py:541`), which carries **no action** and is a correct thing to show an operator. The F13 defect is in the *claim-release guard* `_live_holder` (`recover.py:802`) and in `_holder_liveness` (`:671`), and those are what R2 changes. What `RUN_UNRESOLVED_LAUNCH` replaces is the guard's refusal, not this report. If §6 and this row are read together the report survives; do not delete it on the strength of the old §6 wording | old JSON findings naming it are audit records, not live state — which is another reason to keep the enum rather than churn it |
 | Q9 | Does `recover` get a `--apply` guard so `RELEASE_CLAIM` cannot be scripted? | keep the existing explicit `evidence` string requirement | none |
 | Q10 | Should `MARK_RUN_DEAD` also accept a `launching` run? | **No.** `ABANDON_LAUNCH` is the only action for `preparing`/`launching`, because it carries the job-name evidence that `MARK_RUN_DEAD` does not have | none |

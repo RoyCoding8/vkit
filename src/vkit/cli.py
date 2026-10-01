@@ -339,15 +339,47 @@ def cmd_check_run(args: argparse.Namespace) -> int:
 
 
 def cmd_run_show(args: argparse.Namespace) -> int:
+    """Read a run's outcome, or report that it has not reached one yet.
+
+    Every in-flight run is report-less by design, so asking about one is a valid
+    request with a valid answer. This used to turn `store.load`'s "no published
+    report" into `EXIT_INVALID`, which reported a working run as a malformed
+    request -- the same class of error as a run id that does not exist at all,
+    for a state that is the ordinary condition of a started check. The error is
+    now reserved for a run id this project has never heard of.
+
+    The exit code still reflects the verdict where there is one, so a script
+    polling a finished run behaves as before.
+    """
+    project = _project(args)
     try:
-        project = open_project(args.project)
-    except ProjectError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
+        store = Store(project.db_path)
+    except StoreError as exc:
+        return _fail(str(exc), args.json, EXIT_INTERNAL)
+
+    status = store.run_status(args.run)
+    if status is None:
+        return _fail(f"no run is recorded under {args.run!r}", args.json, EXIT_INVALID)
 
     try:
-        report = Store(project.db_path).load(args.run)
-    except StoreError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
+        report = store.load(args.run)
+    except StoreError:
+        report = None
+
+    if report is None:
+        process = status.get("process") or {}
+        owner = (
+            f"pid {process.get('pid')}" if process.get("ownership_known")
+            else "no verified owner yet"
+        )
+        payload = {"command": "run show", "outcome": None, **status}
+        _emit(
+            payload, args.json,
+            f"run {status['run_id']}  {status['lifecycle']}\n"
+            f"  check {status['check_id']}, {owner}\n"
+            "  no outcome yet; read it again once the run is terminal",
+        )
+        return EXIT_OK
 
     body = report["outcome"]
     if body["result"] in ("PASS", "FAIL"):
@@ -435,11 +467,22 @@ def cmd_task_begin(args: argparse.Namespace) -> int:
 
 
 def cmd_check_start(args: argparse.Namespace) -> int:
-    """Run one registered check under a task, returning the run it recorded.
+    """Record a run and start it, returning the run id while it is still in flight.
 
-    The run id is claimed before anything executes and handed to the supervisor
-    as the run's own id, so a retry of the same request id returns the outcome
-    that run already reached rather than starting a second one.
+    The run id is claimed before anything executes and handed to the supervisor as
+    the run's own id, so a retry of the same request id returns the run that
+    already exists rather than starting a second one.
+
+    **This command no longer returns the check's verdict**, and it exits 0 when
+    the run starts. The supervisor runs the check in its own process and this
+    returns as soon as the launch is durably recorded, so there is no outcome to
+    report yet. An exit code is about whether the *command* did what was asked,
+    and the command asked for a run to start. A caller that wants the verdict
+    reads it afterwards with `vkit run show <run_id>`, which is where the answer
+    lives from the moment it exists. A script that used to read this command's
+    exit code to learn the result must now make a second call; that is a real
+    change in the surface and it is stated rather than papered over with a wait
+    that would defeat the point.
     """
     project = _project(args)
     store = _open_store(project)
@@ -466,52 +509,55 @@ def cmd_check_start(args: argparse.Namespace) -> int:
         store, args, OP_CHECK_START, {"task_id": task.task_id, "check_id": args.check}
     )
     try:
-        # `start_run` attaches to a run that already published a report, and
-        # refuses one that was registered and then interrupted rather than
-        # executing a second run under a claimed id. The request id is the only
-        # thing that decides whether this is a retry, so the same id and payload
-        # always land on the same run and a new id always begins a new one.
-        started = supervisor.start_run(
+        handoff = supervisor.start_run(
             project, store, args.check,
             task_id=task.task_id, generation=task.generation,
             manifest=manifest, run_id=run_id,
         )
     except supervisor.SupervisorError as exc:
-        # A run that is registered with no report is evidence that cannot be
-        # decided, which is what BLOCKED means.
+        # The task no longer owns what it needs, or the launch could not be
+        # recorded. Either way nothing started, and a refusal is the honest exit.
         raise Refused(str(exc), EXIT_BLOCKED) from exc
     except (StoreError, ExecutionError) as exc:
         raise Refused(str(exc), EXIT_INTERNAL) from exc
 
-    report = started.report
-    body = report["outcome"]
     payload = {
         "command": "check start",
-        "run_id": report["run_id"],
+        "run_id": handoff.run_id,
         "task_id": task.task_id,
         "attempt": task.generation,
-        "check_id": report["check_id"],
-        "outcome": body,
-        "report_path": str(store.run_dir(report["run_id"]) / "report.json"),
+        "check_id": handoff.check_id,
+        "lifecycle": handoff.lifecycle,
+        "replayed": handoff.replayed,
+        "report_path": str(store.run_dir(handoff.run_id) / "report.json"),
     }
-    lines = [f"run {report['run_id']}  task {task.task_id}  check {report['check_id']}"]
-    lines.extend(_outcome_lines(body))
-    lines.append(body["result"])
-    _emit(payload, args.json, "\n".join(lines))
-    return exit_code_for(started.outcome)
+    _emit(
+        payload, args.json,
+        f"run {handoff.run_id}  task {task.task_id}  check {handoff.check_id}\n"
+        f"  {handoff.lifecycle}"
+        + ("  (replayed an existing run)" if handoff.replayed else "")
+        + "\nread the outcome with: vkit run show " + handoff.run_id,
+    )
+    return EXIT_OK
 
 
 def cmd_run_cancel(args: argparse.Namespace) -> int:
-    """Ask a run to stop, by the process identity the run itself recorded.
+    """Ask a run to stop, by the identity the run itself recorded.
 
-    The identity is read from the run, not taken from the client, for the reason
-    `procidentity` exists: a bare pid is recycled, and a cancellation aimed at a
-    recycled pid kills a stranger. A run that already finished is not cancelled
-    at all. It returns the outcome it actually reached.
+    The identity is read from the run, not taken from the client: a bare pid is
+    recycled, and a cancellation aimed at a recycled pid kills a stranger. The
+    core reads it, because the core is where the knowledge of what a run recorded
+    lives. This command passes the run id and nothing else -- a client-supplied
+    identity is a client-supplied identity, and one used to be accepted here and
+    then checked against the record, which taught the caller nothing it could not
+    read and let a caller name a pid it was told was wrong.
+
+    A run that already finished is not cancelled at all. It returns the outcome it
+    actually reached. A run whose owner is not published yet is recorded and
+    reported as pending, which is a different answer from a refusal.
     """
     store = _open_store(_project(args))
-    recorded = store.run_process_identity(args.run)
-    if recorded is None:
+    if store.run_status(args.run) is None:
         raise Refused(f"no run is recorded under {args.run!r}", EXIT_INVALID)
 
     run_id = _subject(
@@ -524,60 +570,33 @@ def cmd_run_cancel(args: argparse.Namespace) -> int:
             EXIT_INVALID,
         )
 
-    identity = _identity_of(recorded)
     try:
-        outcome, report = supervisor.cancel_run(store, args.run, identity=identity)
+        outcome, report = supervisor.cancel_run(store, args.run, requested_by="cli")
     except supervisor.SupervisorError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
     except StoreError as exc:
         raise Refused(str(exc), EXIT_INTERNAL) from exc
 
     body = report["outcome"]
+    cancelled = bool(report.get("cancelled"))
     payload = {
         "command": "run cancel",
         "run_id": report["run_id"],
-        "cancelled": body["result"] == "BLOCKED" and body.get("reason") == "cancelled",
+        "cancelled": cancelled,
+        "pending": bool(report.get("pending")),
+        "lifecycle": report.get("lifecycle", "terminal"),
         "outcome": body,
         "report_path": str(store.run_dir(report["run_id"]) / "report.json"),
     }
     lines = [f"run {report['run_id']}  {body['result']}"]
-    lines.extend(_outcome_lines(body))
+    if report.get("pending"):
+        lines.append(f"  cancellation pending: {body.get('detail', '')}")
+    else:
+        lines.extend(_outcome_lines(body))
     _emit(payload, args.json, "\n".join(lines))
+    if report.get("pending"):
+        return EXIT_BLOCKED
     return exit_code_for(outcome)
-
-
-def _identity_of(recorded: dict[str, Any]) -> ProcessIdentity:
-    """The identity a run recorded, or an impossibility if it never recorded one.
-
-    `supervisor.cancel_run` refuses a bare pid by design, and refuses a
-    mismatched one with `ownership_lost`, which BLOCKED. A run that launched
-    nothing has no pid and is not recoverable by anyone, so it is reported as
-    invalid here and `cancel_run` never sees an invented pid.
-
-    The creation time is checked as carefully as the pid. A record carrying a
-    pid but no creation time is not a partial identity that can be completed
-    later, it is a record that cannot prove ownership of anything: a bare pid
-    fails every comparison, so passing `None` through would reach
-    `still_the_same_process` as a value that never matches and the user would be
-    told the process is not theirs when it is. Refusing here names the actual
-    defect instead of a downstream symptom of it.
-    """
-    pid = recorded.get("pid")
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        raise Refused(
-            f"run {recorded.get('check_id', '<unknown>')!r} recorded no process identity, "
-            "so there is no verified owner to cancel",
-            EXIT_INVALID,
-        )
-    creation_time = recorded.get("creation_time")
-    if not isinstance(creation_time, int) or isinstance(creation_time, bool) or creation_time <= 0:
-        raise Refused(
-            f"run {recorded.get('check_id', '<unknown>')!r} recorded pid {pid} without the "
-            "creation time that identifies it, so ownership cannot be proven. Cancelling on "
-            "a bare pid is refused because pids are recycled; reconcile this run instead",
-            EXIT_INVALID,
-        )
-    return ProcessIdentity(pid=pid, creation_time=creation_time)
 
 
 def cmd_task_finalize(args: argparse.Namespace) -> int:

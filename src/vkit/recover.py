@@ -53,6 +53,11 @@ if sys.platform == "win32":
 # claims to know whether a process is alive.
 RECONCILIATION_KEY = "reconciliation"
 DEAD_CONFIRMED = "process_dead_confirmed"
+# Distinct from DEAD_CONFIRMED because it decides a different question. A dead
+# process is settled by asking about a pid; an unresolved launch has no pid to ask
+# about at all, and is settled by asking about the job and the supervisor. An
+# operator reading a record has to be able to see which evidence was gathered.
+LAUNCH_ABANDONED = "launch_abandoned"
 
 # Windows reports "this process has not exited yet" as its exit code. A process
 # that really did exit with 259 is indistinguishable from one still running; the
@@ -92,12 +97,22 @@ class LivenessState(str, enum.Enum):
 class FindingKind(str, enum.Enum):
     """One way the records and the processes disagree, or one way they cannot."""
 
+    # A report, not a guard. An unfinished run that records no pid is worth
+    # showing an operator, and it carries no action. It is NOT the finding that
+    # decides a claim release; that one is RUN_UNRESOLVED_LAUNCH below, and
+    # conflating the two is what let a claim be released while a live check was
+    # still writing.
     RUN_WITHOUT_PROCESS = "run_without_process"
     RUN_DEAD_PROCESS = "run_with_dead_process"
     RUN_LIVE_PROCESS = "run_with_live_process"
     RUN_UNCERTAIN_PROCESS = "run_with_uncertain_process"
     RUN_TERMINAL_LIVE_PROCESS = "terminal_run_with_live_process"
     RUN_TERMINAL_NO_REPORT = "terminal_run_without_report"
+    # A launch was attempted and its outcome was never established. Distinct from
+    # RUN_WITHOUT_PROCESS because it is actionable: it names the one action that
+    # can clear it, and that action is not MARK_RUN_DEAD because deciding it
+    # requires the job-name evidence a dead-pid check does not have.
+    RUN_UNRESOLVED_LAUNCH = "run_with_unresolved_launch"
     CLAIM_STALE_GENERATION = "claim_with_stale_generation"
     CLAIM_OWNER_MISSING = "claim_with_no_task"
 
@@ -107,6 +122,12 @@ class Action(str, enum.Enum):
 
     RELEASE_CLAIM = "release_claim"
     MARK_RUN_DEAD = "mark_run_dead"
+    # Marks an unresolved launch as reconciled. It never deletes anything and
+    # never touches a claim; the claim is released by RELEASE_CLAIM, which asks
+    # again whether any holder is live. Two explicit actions in order, each with
+    # evidence, is what retaining a claim for explicit reconciliation means
+    # operationally.
+    ABANDON_LAUNCH = "abandon_launch"
 
 
 @dataclass(frozen=True)
@@ -426,10 +447,44 @@ class _Run:
     reason: str | None
     process: dict | None
     ended_at: str | None
+    job_name: str | None = None
+    abandoned: bool = False
 
     @property
     def unfinished(self) -> bool:
-        return self.lifecycle in ("preparing", "running")
+        """Everything except a run that has published one outcome.
+
+        Was `lifecycle in ("preparing", "running")`, which classified a `launching`
+        or `cancelling` run as *finished*. Recovery then reported a mid-flight run
+        as terminal-with-no-report, and the guard that decides a claim release was
+        never even asked about it. The name already said what this means;
+        under-applying it was the defect.
+        """
+        return self.lifecycle != "terminal"
+
+    @property
+    def ownership_known(self) -> bool:
+        """Whether this run has published a verified owner.
+
+        False is the dangerous state, not the empty one. It covers a run that is
+        `preparing` with no process at all, a run that is `launching` with a
+        process whose identity was never published, and a `cancelling` run whose
+        termination has not resolved. All three are "something may be running and
+        I cannot prove what", and all three must refuse a release.
+        """
+        return bool((self.process or {}).get("ownership_known"))
+
+    @property
+    def job(self) -> str | None:
+        """The job name, from either of the two places it is recorded.
+
+        `launches` is written before the process exists and `process_json` after,
+        so the launch row is the one that is present for exactly the runs whose
+        ownership is least certain. A reader that consulted only `process_json`
+        would find no job name for a `launching` run -- the one run that most
+        needs a handle on its tree.
+        """
+        return self.job_name or (self.process or {}).get("job_name")
 
     @property
     def pid(self) -> int | None:
@@ -467,10 +522,18 @@ def _read_runs(store: Store) -> tuple[_Run, ...]:
         rows = conn.execute(
             "SELECT " + ", ".join(_RUN_COLUMNS) + " FROM runs ORDER BY rowid"
         ).fetchall()
+        # Read in the same transaction as the runs themselves. A launch row
+        # written between the two reads would otherwise be missed, and the run it
+        # describes is exactly the one whose ownership is least certain.
+        launches = {
+            row[0]: (row[1], bool(row[2]))
+            for row in conn.execute("SELECT run_id, job_name, abandoned FROM launches")
+        }
     runs = []
     for row in rows:
         record = dict(zip(_RUN_COLUMNS, row))
         raw = record["process_json"]
+        job_name, abandoned = launches.get(record["run_id"], (None, False))
         runs.append(_Run(
             run_id=record["run_id"],
             check_id=record["check_id"],
@@ -481,6 +544,8 @@ def _read_runs(store: Store) -> tuple[_Run, ...]:
             reason=record["reason"],
             process=json.loads(raw) if raw else None,
             ended_at=record["ended_at"],
+            job_name=job_name,
+            abandoned=abandoned,
         ))
     return tuple(runs)
 
@@ -538,15 +603,47 @@ def _unfinished_run_finding(store: Store, run: _Run) -> Finding:
         f"run {run.run_id!r} for check {run.check_id!r} is recorded {run.lifecycle} "
         f"(task {run.task_id!r}, attempt {run.attempt!r}, result {run.result!r})"
     )
-    if run.pid is None:
+    launch = store.load_launch(run.run_id)
+    if run.pid is None or not run.ownership_known:
+        if launch is not None and not run.abandoned:
+            return Finding(
+                kind=FindingKind.RUN_UNRESOLVED_LAUNCH,
+                target=run.run_id,
+                detail=(
+                    f"{common} and a launch was recorded for it, so a process was created "
+                    f"and its identity was never published. The job owning its tree is "
+                    f"{launch.get('job_name')!r} and the supervisor was pid "
+                    f"{launch.get('supervisor_pid')!r}. The claim stays held: an unresolved "
+                    "launch is reconciled by naming the evidence that it is over, not by "
+                    "inferring from the absent pid that nothing was ever started"
+                ),
+                action=Action.ABANDON_LAUNCH,
+            )
+        if launch is not None and run.abandoned:
+            return Finding(
+                kind=FindingKind.RUN_UNRESOLVED_LAUNCH,
+                target=run.run_id,
+                detail=(
+                    f"{common} and its launch was already abandoned by an operator with "
+                    "the evidence they gave. The run itself is not reconciled and holds "
+                    "no outcome, so this remains visible; it simply is not the open "
+                    "question it was, and the claim may now be released"
+                ),
+                action=Action.ABANDON_LAUNCH,
+                reconciled=True,
+            )
         return Finding(
             kind=FindingKind.RUN_WITHOUT_PROCESS,
             target=run.run_id,
             detail=(
                 f"{common} and records no process identity, so there is no pid to check. "
-                "A run that launched and crashed before attaching its process lands here, "
-                "and so does one that never launched. The two are not distinguishable from "
-                "the records, so this is reported and not acted on."
+                + (
+                    "Its launch was already abandoned by an operator, so this is a decided "
+                    "state rather than an open one"
+                    if run.abandoned else
+                    "No launch was ever recorded for it, so nothing was created. The two are "
+                    "now distinguishable from the records, and neither is acted on here"
+                )
             ),
         )
     state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
@@ -667,12 +764,26 @@ def _holder_liveness(runs: tuple[_Run, ...], task_id: str, generation: int) -> s
     This is the evidence that decides whether releasing is safe, so it is read
     from the runs rather than from the task, and a pid that cannot be checked is
     reported as uncertain rather than skipped.
+
+    A run with no pid is reported as *unresolved*, not omitted. The old version
+    filtered those out and then said "No run of that task has a recorded process
+    to check" when the list came back empty, which read as clearance. It is the
+    same inference the F13 guard made and it is wrong for the same reason.
     """
-    relevant = [run for run in runs if run.task_id == task_id and run.pid is not None]
+    relevant = [run for run in runs if run.task_id == task_id and run.attempt == generation]
     if not relevant:
-        return "No run of that task has a recorded process to check."
+        return (
+            f"No run of {task_id!r} at generation {generation} has a recorded process to check, "
+            "so nothing in that generation is known to be writing"
+        )
     parts = []
     for run in relevant:
+        if run.pid is None or not run.ownership_known:
+            parts.append(
+                f"run {run.run_id!r} is {run.lifecycle} with no verified owner, so it is "
+                "presumed to be running until an operator reconciles it"
+            )
+            continue
         state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
         parts.append(f"run {run.run_id!r} is {run.lifecycle} at pid {run.pid}, {state.state.value}")
     return "; ".join(parts) + "."
@@ -729,9 +840,147 @@ def apply_action(store: Store, action: Action, *, target: str, evidence: str) ->
 
     if action is Action.RELEASE_CLAIM:
         _release_claim(store, target, evidence)
+    elif action is Action.ABANDON_LAUNCH:
+        _abandon_launch(store, target, evidence)
     else:
         _mark_run_dead(store, target, evidence)
     return inspect(store)
+
+
+def _abandon_launch(store: Store, run_id: str, evidence: str) -> None:
+    """Decide that an unresolved launch is over, on a human's evidence.
+
+    Three things are checked, and all three must hold. The job recorded for the
+    run must no longer open, which means no second process can be holding it; the
+    supervisor's own pid must be gone, confirmed against the creation FILETIME
+    recorded beside it so a recycled pid cannot pass; and there must be no
+    published pid whose creation time matches the run's. Two of three is not
+    enough, and neither is a job that opens with live processes in it.
+
+    The job condition is not independent evidence of "nothing is running". It is
+    the *consequence* of the supervisor being gone, because closing the last handle
+    to a job destroys it -- measured on this host, a creator's job name fails to
+    open with WinError 2 the moment that creator exits, and `KILL_ON_JOB_CLOSE`
+    kills its members as it goes. So the job check confirms the supervisor is gone
+    and the tree went with it; the supervisor and pid checks are what would catch
+    a supervisor that is somehow still alive. All three are still asked, because
+    each names a different way the evidence could be wrong, and this decision
+    releases a resource two workers could otherwise share.
+
+    Nothing is deleted and no claim is touched. The claim is released by
+    `RELEASE_CLAIM`, which asks the guard again.
+    """
+    decided_at = datetime.now(timezone.utc).isoformat()
+    with _write(store) as conn:
+        row = conn.execute(
+            "SELECT " + ", ".join(_RUN_COLUMNS) + " FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise RecoveryRefused(
+                f"refusing to abandon the launch of {run_id!r}: no run is recorded under that id"
+            )
+        record = dict(zip(_RUN_COLUMNS, row))
+        if record["lifecycle"] == "terminal":
+            raise RecoveryRefused(
+                f"refusing to abandon the launch of {run_id!r}: it is already terminal with "
+                f"result {record['result']!r}, and a finished run has nothing to abandon"
+            )
+        launch = conn.execute(
+            "SELECT job_name, supervisor_pid, supervisor_start, abandoned FROM launches"
+            " WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if launch is None:
+            raise RecoveryRefused(
+                f"refusing to abandon the launch of {run_id!r}: no launch was ever recorded "
+                "for it, so there is no unresolved launch to decide"
+            )
+        job_name, supervisor_pid, supervisor_start, already = launch
+        if already:
+            raise RecoveryRefused(
+                f"refusing to abandon the launch of {run_id!r}: it was already recorded as "
+                "abandoned. Reconciliation is decided once, by a human, with the evidence "
+                "they gave; a second request would be a second guess at it"
+            )
+
+        if _job_has_live_processes(job_name):
+            raise RecoveryRefused(
+                f"refusing to abandon the launch of {run_id!r}: its job {job_name!r} still "
+                "opens and reports live processes, so the run's tree is still there"
+            )
+        if supervisor_pid:
+            # Only asked once a supervisor has claimed the run. A launch whose
+            # supervisor never started -- it died between the registration and
+            # the claim, or the process that would have claimed it was killed --
+            # has nobody to ask about, and the job condition above is then the only
+            # evidence available. Refusing there would strand the run: the claim
+            # could never be released, and there would be no evidence a human could
+            # ever supply to change that.
+            state = liveness(supervisor_pid, creation_time=supervisor_start)
+            if state.state is not LivenessState.DEAD:
+                raise RecoveryRefused(
+                    f"refusing to abandon the launch of {run_id!r}: {state.detail}. A supervisor "
+                    "that is still running owns a run whose outcome is not yet known"
+                )
+        process = json.loads(record["process_json"]) if record["process_json"] else None
+        pid = (process or {}).get("pid")
+        if isinstance(pid, int) and not isinstance(pid, bool):
+            owner = liveness(pid, creation_time=(process or {}).get("creation_time"),
+                             boot_id=(process or {}).get("boot_id", ""))
+            if owner.state is not LivenessState.DEAD:
+                raise RecoveryRefused(
+                    f"refusing to abandon the launch of {run_id!r}: its recorded process at "
+                    f"pid {pid} is {owner.state.value}, so the run's owner may still be writing"
+                )
+
+        conn.execute(
+            "UPDATE launches SET abandoned = 1, abandoned_at = ?, abandon_evidence = ?"
+            " WHERE run_id = ?",
+            (decided_at, evidence, run_id),
+        )
+        if process is not None:
+            reconciled = dict(process)
+            reconciled[RECONCILIATION_KEY] = {
+                "state": LAUNCH_ABANDONED,
+                "evidence": evidence,
+                "decided_at": decided_at,
+                "exit_code": None,
+            }
+            conn.execute(
+                "UPDATE runs SET process_json = ? WHERE run_id = ?",
+                (json.dumps(reconciled, sort_keys=True), run_id),
+            )
+
+
+def _job_has_live_processes(job_name: str | None) -> bool:
+    """Whether the recorded job still exists and still has members.
+
+    A name that does not open is the expected answer for a run whose supervisor
+    is gone, and it is a kill that has already happened rather than a tree that is
+    still running. A name that does open is the opposite: something is still
+    holding the job, and the run is not over.
+    """
+    if not job_name or sys.platform != "win32":
+        return False
+    try:
+        import win32job
+    except ImportError:
+        return False
+    try:
+        handle = win32job.OpenJobObject(win32job.JOB_OBJECT_QUERY, False, job_name)
+    except Exception:
+        return False
+    try:
+        accounting = win32job.QueryInformationJobObject(
+            handle, win32job.JobObjectBasicAccountingInformation
+        )
+        return int(accounting.get("ActiveProcesses", 0)) > 0
+    except Exception:
+        # It opened, so something holds it, and this cannot prove otherwise.
+        return True
+    finally:
+        with suppress(Exception):
+            handle.Close()
 
 
 def _release_claim(store: Store, key: str, evidence: str) -> None:
@@ -760,7 +1009,7 @@ def _release_claim(store: Store, key: str, evidence: str) -> None:
             f"resource is held at generation {held_generation}"
         )
 
-    blocker = _live_holder(store, task_id)
+    blocker = _live_holder(store, task_id, held_generation)
     if blocker is not None:
         raise RecoveryRefused(
             f"refusing to release resource {key!r}: {reason}, but {blocker}. A resource "
@@ -791,16 +1040,52 @@ def _release_claim(store: Store, key: str, evidence: str) -> None:
         resync_claim_counts(conn)
 
 
-def _live_holder(store: Store, task_id: str) -> str | None:
+def _live_holder(store: Store, task_id: str, generation: int | None = None) -> str | None:
     """Name a run that still might be writing, or None when none can be found.
 
-    Every unfinished run of the task is checked, and an uncertain pid counts as
-    might-still-be-writing. The first one found is named so the refusal tells the
-    user which run to look at.
+    **This is the F13 guard, and the order of its questions is the fix.** It used
+    to ask "does this run have a pid?" and skip the ones that did not. That single
+    `continue` is the whole defect: a run registers, launches, and only publishes
+    its identity after the check has finished, so for the entire run -- and forever
+    after a crash -- the record said `preparing` with no pid. The guard read that
+    as "nothing is running", found no holder, and released a claim that a live
+    check was still writing to.
+
+    So ownership is asked about first and liveness second. A run of unknown
+    ownership is presumed live whatever its lifecycle says, because "I cannot prove
+    what is running" and "nothing is running" are different states and only one of
+    them is safe to release against.
+
+    `generation` narrows the question to the runs of one generation, which is the
+    claim actually being released. A run at a different generation does not block:
+    the current generation's runs hold their own claims, so refusing on their
+    behalf would protect nothing and would make the resource unreleasable while any
+    later attempt existed.
     """
     for run in _read_runs(store):
-        if run.task_id != task_id or run.pid is None:
+        if run.task_id != task_id:
             continue
+        if generation is not None and run.attempt != generation:
+            continue
+        if not run.unfinished:
+            # A terminal run holds nothing further, whatever its process record
+            # says. Its own reconciliation is a separate question.
+            continue
+        if run.lifecycle in ("preparing", "launching") or not run.ownership_known:
+            if run.abandoned:
+                # The unresolved launch was decided by a human, on evidence, and
+                # the decision is recorded. Refusing here again would make the
+                # abandon unreachable: the only action that can clear this state
+                # is the one this guard blocks, and a run nobody may ever release
+                # is a claim nobody may ever hand on.
+                continue
+            return (
+                f"run {run.run_id!r} is {run.lifecycle} and has published no verified "
+                f"owner, so whether it is still writing cannot be ruled out. A missing "
+                "identity is not evidence that nothing is running. If an operator has "
+                "confirmed the launch is over, apply ABANDON_LAUNCH to this run with "
+                "that evidence first"
+            )
         state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
         if state.state is LivenessState.ALIVE:
             return f"run {run.run_id!r} is {run.lifecycle} and its process is alive ({state.detail})"
@@ -836,6 +1121,13 @@ def _mark_run_dead(store: Store, run_id: str, evidence: str) -> None:
             raise RecoveryRefused(
                 f"refusing to mark run {run_id!r} dead: it is already terminal with result "
                 f"{record['result']!r}, and a terminal run is not reconciled by liveness"
+            )
+        if record["lifecycle"] in ("preparing", "launching", "cancelling"):
+            raise RecoveryRefused(
+                f"refusing to mark run {run_id!r} dead: it is {record['lifecycle']} and its "
+                "ownership was never established, so there is no pid whose death could be "
+                "confirmed. ABANDON_LAUNCH is the action for this state, because it carries "
+                "the job-name evidence that a dead-pid check does not have"
             )
         if _reconciled(process):
             raise RecoveryRefused(

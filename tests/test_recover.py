@@ -400,6 +400,7 @@ def test_inspect_changes_nothing(store: Store, db_path: Path, alive_pid: int, de
         "process_json": json.dumps({
             "pid": dead_pid, "ownership": "windows_job_object",
             "exit_code": None, "timed_out": False,
+            "ownership_known": True, "launch_state": "identity_published",
         }, sort_keys=True, separators=(",", ":")),
     }
 
@@ -586,9 +587,17 @@ def test_marking_a_run_dead_is_refused_when_it_records_no_process(store: Store) 
     with pytest.raises(RecoveryRefused) as raised:
         apply_action(store, Action.MARK_RUN_DEAD, target="r-preparing", evidence="operator observed it")
 
+    # The refusal now names the action that does apply. MARK_RUN_DEAD decides a
+    # question about a pid, and a run that never published one has no such pid;
+    # ABANDON_LAUNCH is the action for a run whose ownership was never
+    # established, because it carries the job-name evidence a dead-pid check does
+    # not have. Sending the operator to a dead end is how a state like this stays
+    # unreconciled forever.
     assert str(raised.value) == (
-        "refusing to mark run 'r-preparing' dead: it records no process identity, so there is "
-        "no pid whose death could be confirmed"
+        "refusing to mark run 'r-preparing' dead: it is preparing and its ownership was never "
+        "established, so there is no pid whose death could be confirmed. ABANDON_LAUNCH is the "
+        "action for this state, because it carries the job-name evidence that a dead-pid check "
+        "does not have"
     )
 
 

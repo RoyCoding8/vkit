@@ -306,7 +306,15 @@ async function showRun(runId) {
 
 async function cancelRun(runId) {
   try {
-    const result = await api("cancel_run", { run_id: runId }, true);
+    const result = await api("cancel_run", { run_id: run_id }, true);
+    // A cancellation that arrived before the run published an owner has no
+    // outcome to show. It is pending, and the supervisor will honour it before
+    // the check begins executing, so this is a state rather than a failure.
+    if (result.pending) {
+      toast(`cancel ${runId.slice(0, 12)}: pending, the run has no published owner yet`);
+      await showRuns();
+      return;
+    }
     const outcome = result.outcome;
     toast(`cancel ${runId.slice(0, 12)}: ${outcome.result}${outcome.reason ? ` / ${outcome.reason}` : ""}`);
     if (outcome.result === "BLOCKED") {

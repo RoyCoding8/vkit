@@ -26,22 +26,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
-from ..execution import run_check
 from ..idempotency import begin as claim_request
 from ..identity import compute_source_identity
 from ..manifest import CheckSpec, Manifest, ManifestError, parse_manifest
-from ..outcome import Blocked, BlockedReason
 from ..paths import Project, ProjectError, open_project
-from ..procidentity import ProcessIdentity
 from ..storage import ConflictError, Store, StoreError
-from ..supervisor import cancel_run, outcome_from_report
+from ..supervisor import SupervisorError, cancel_run, start_run
 from ..tasks import (
     TaskError,
     acceptance_context,
     admit,
     finalize,
     get_task,
-    verify_ownership,
 )
 
 # --- bounds -----------------------------------------------------------------
@@ -259,24 +255,33 @@ class Server:
         return parse_manifest(self.project, self.project.runs_root / "probe")
 
     def _own_run(self, store: Store, run_id: str) -> dict[str, Any]:
-        """The recorded process identity of a run belonging to THIS project.
+        """The recorded status of a run belonging to THIS project.
 
         A run id minted by another repository's store has no row here, and that
         absence is the answer. This is the check behind "ids must belong to that
         project"; the caller must make it before a run id reaches a path.
+
+        It reads the run *row*, not the process identity, and that is the fix
+        rather than a detail. `run_process_identity` returns None for any run that
+        has not published an identity yet, which under this milestone is every run
+        in the window between its registration and its first write -- so asking
+        "does this store own this id" through that column refused precisely the
+        runs that were legitimately in flight, and `run_get` could not read a run
+        that had just started. Whether this project owns a run is a fact about the
+        run's existence, not about whether it has finished describing its process.
         """
         if not run_id or set(run_id) - _RUN_ID:
             raise _Refused(
                 f"{run_id!r} is not a run id this build mints; pass the id "
                 f"check_start returned"
             )
-        recorded = store.run_process_identity(run_id)
-        if recorded is None:
+        status = store.run_status(run_id)
+        if status is None:
             raise _Refused(
                 f"run {run_id} is not recorded in this project's evidence store; "
                 "ids from another project are refused"
             )
-        return recorded
+        return status
 
     def _owned_run(self, store: Store, run_id: str) -> dict[str, Any]:
         """`_own_run` as a response, because a refusal is an answer, not a crash.
@@ -627,19 +632,35 @@ def _task_begin(server: Server, args: dict[str, Any]) -> ToolResult:
 def _check_start(server: Server, args: dict[str, Any]) -> ToolResult:
     """Start registered checks against a task, once per request id.
 
-    Check ids resolve through the manifest and are executed by
-    `vkit.execution.run_check`, the same function `vkit check run` calls, so the
-    two surfaces cannot report different verdicts for the same check.
+    Check ids resolve through the manifest and are executed by the supervisor, the
+    same path `vkit check start` takes, so the two surfaces cannot report different
+    verdicts for the same check.
 
-    `vkit.supervisor.start_run` is not used and that is a declared limit rather
-    than a preference. On this build it registers the run and then delegates to
-    `run_check`, which registers the same id a second time and raises
-    `StoreError: run ... is already registered`. The function has no test
-    coverage, so it appears to have never executed. Until it is repaired
-    outside this plan's scope, calling it would make `check_start` unusable;
-    the consequence is that no run started this way carries the launch-intent
-    record or the job name that `vkit.procs` needs to name its job, and that
-    `run_cancel` cannot reach a run that has already finished.
+    **This returns before the checks finish.** Each run is started through
+    `supervisor.start_run`, which records the launch and returns a handoff, and the
+    supervisor executes the check in its own process. That is what makes a run
+    outlive the client that asked for it, and it is why a cancel from a later
+    session can reach a run this call started. The consequence is that `result` is
+    absent for a run that has not finished, and `lifecycle` says which state it is
+    in. A caller that needs the verdict reads it with `run_get`.
+
+    **There is no `launched` flag here, and its absence is the point.** This call
+    returns the instant after the supervisor is spawned, so the run row is still
+    `preparing` and nothing downstream of the child has been written; a flag derived
+    from that read was `false` for every real detached start -- measured over four
+    fresh starts, `preparing` and `false` every time -- for a check that then ran a
+    real process to PASS. On a replay the same formula read the recorded lifecycle
+    of a run that had already finished and answered `true` for a call that started
+    nothing, which is the one thing a caller does want to know and `replayed` is
+    already true about. A field here can only be a guess about a race, in one
+    direction or the other. Whether a process was really launched is a fact about
+    the run, and `run_get` answers it from the evidence that records it:
+    `ownership_known`, and the pid once one exists.
+
+    `start_run` takes no `detach` argument here, so these are detached by default.
+    The two callers that want the check to finish before they return -- `vkit check
+    run` and the console -- pass `detach=False` and run the supervisor body
+    in-process.
     """
     request_id = _text(args, "request_id")
     task_id = _text(args, "task_id")
@@ -673,13 +694,6 @@ def _check_start(server: Server, args: dict[str, Any]) -> ToolResult:
         return _refused(
             f"check_start: task {task_id} is closed and cannot start new runs", kind="refused"
         )
-    # Rechecked here, not only at admission. A required resource can be released
-    # by recovery while the attempt is still open, and a check launched under a
-    # task that has lost its checkout is two workers writing one tree.
-    try:
-        verify_ownership(store, task_id, task.generation)
-    except (TaskError, ConflictError) as exc:
-        return _refused(f"check_start: {exc}", kind="refused")
 
     payload = _identity({"task_id": task_id, "check_ids": check_ids})
     runs = {
@@ -691,40 +705,47 @@ def _check_start(server: Server, args: dict[str, Any]) -> ToolResult:
         for spec in specs
     }
 
-    source = compute_source_identity(server.project)
     started = []
     for spec in specs:
         run_id = runs[spec.id]
-        replayed = (store.run_dir(run_id) / "report.json").is_file()
-        if replayed:
-            # The request already produced this run. A retry attaches to the
-            # recorded evidence instead of executing the check a second time,
-            # which is the entire reason the run id was claimed before launching.
-            report = store.load(run_id)
-            body = outcome_from_report(report).to_json()
-        else:
-            result = run_check(manifest, spec.id, store=store, source=source, run_id=run_id)
-            # `run_check` registers the run without a task, so the attempt is
-            # bound here. Readiness reads ownership from this column, and a run
-            # left unattached is invisible to the task that asked for it.
-            store.attach_task(run_id, task_id, task.generation)
-            report = result.report
-            body = result.outcome.to_json()
+        try:
+            handoff = start_run(
+                server.project, store, spec.id,
+                task_id=task_id, generation=task.generation,
+                manifest=manifest, run_id=run_id,
+            )
+        except SupervisorError as exc:
+            # The task lost a resource it needs, or the launch could not be
+            # recorded. Either way this check did not start, and the rest of the
+            # list is still reported so the caller sees which ones did.
+            started.append({
+                "run_id": run_id, "check_id": spec.id, "result": None,
+                "outcome": None, "replayed": False,
+                "lifecycle": None, "refused": str(exc),
+            })
+            continue
         started.append({
-            "run_id": report["run_id"],
-            "check_id": spec.id,
-            "result": body["result"],
-            "outcome": body,
-            "launched": bool(report.get("process")),
-            "replayed": replayed,
+            "run_id": handoff.run_id,
+            "check_id": handoff.check_id,
+            "lifecycle": handoff.lifecycle,
+            "result": None,
+            "outcome": None,
+            "replayed": handoff.replayed,
         })
 
-    results = {entry["result"] for entry in started}
-    if results == {"PASS"}:
-        summary = f"{len(started)} check(s) passed for task {task_id}"
+    live = [entry for entry in started if entry["result"] is None]
+    if live:
+        summary = (
+            f"started {len(live)} check(s) for task {task_id}; "
+            "read each outcome with run_get"
+        )
     else:
-        named = ", ".join(f"{e['check_id']}={e['result']}" for e in started)
-        summary = f"task {task_id}: {named}"
+        results = {entry["result"] for entry in started}
+        summary = (
+            f"{len(started)} check(s) passed for task {task_id}" if results == {"PASS"}
+            else f"task {task_id}: "
+                 + ", ".join(f"{e['check_id']}={e['result']}" for e in started)
+        )
     return ToolResult({
         "task_id": task_id,
         "generation": task.generation,
@@ -782,22 +803,33 @@ def _run_get(server: Server, args: dict[str, Any]) -> ToolResult:
         report = None
 
     body = (report or {}).get("outcome") or {}
-    # The check id comes from the report when there is one. `run_check` marks a
-    # run running with a process payload that carries no check id, so for a
-    # finished run the process record cannot answer this on its own.
+    # The check id comes from the report when there is one, and from the run row
+    # otherwise. A run that has not finished has no report, and its process record
+    # carries no check id either, so the row is the only place left to ask.
     check_id = (report or {}).get("check_id") or recorded.get("check_id")
+    recorded_process = recorded.get("process") or {}
     content: dict[str, Any] = {
         "run_id": run_id,
         "check_id": check_id,
-        "lifecycle": (report or {}).get("lifecycle", recorded.get("lifecycle", "running")),
+        # The row's lifecycle is authoritative. The report says `terminal` because
+        # a report is only ever published for a terminal run, so a run read before
+        # it finishes has no report at all and the row is the whole answer.
+        "lifecycle": recorded.get("lifecycle", "preparing"),
         "result": body.get("result"),
         "outcome": body or None,
         "scenarios": body.get("scenarios", []),
         "command": (report or {}).get("command"),
-        "started_at": (report or {}).get("started_at"),
-        "ended_at": (report or {}).get("ended_at"),
+        "started_at": (report or {}).get("started_at") or recorded.get("registered_at"),
+        "ended_at": (report or {}).get("ended_at") or recorded.get("ended_at"),
         "environment": (report or {}).get("environment", {}),
-        "process": (report or {}).get("process"),
+        # A run that has published an owner reports it; one that has not says so
+        # explicitly, because an absent `process` here would read as "no process
+        # exists" rather than "the owner is not published yet".
+        "process": (report or {}).get("process") or (
+            recorded_process if recorded_process.get("ownership_known") else None
+        ),
+        "ownership_known": bool(recorded_process.get("ownership_known")),
+        "task_id": recorded.get("task_id"),
         "artifacts": {
             name: {
                 "reference": f"run:{run_id}/{value}",
@@ -829,28 +861,27 @@ def _run_get(server: Server, args: dict[str, Any]) -> ToolResult:
 # --- run_cancel --------------------------------------------------------------
 
 def _run_cancel(server: Server, args: dict[str, Any]) -> ToolResult:
-    """Cancel a run this project started, by verified process identity.
+    """Cancel a run this project started, by the identity the run recorded.
 
-    The owner pid is re-read from the durable record rather than trusted from
-    the caller, so a client cannot name a process it did not launch. The pair
-    the core verifies is `(pid, creation_time)`; the record has no creation
-    time to pair with, which this reports rather than works around.
+    **The client supplies no pid and no creation time.** It used to supply both,
+    and the server checked them against the record and then acted on the record
+    anyway. That made the client's arguments a second authority for a fact the
+    store already held: a client naming a different pid was told it was wrong, and
+    one naming the right pid had learned nothing it could not read for itself. The
+    parameters are removed rather than deprecated, because a wire format that
+    still accepts an identity it will ignore is a wire format two tools can
+    disagree about.
+
+    A cancel that arrives before the run has a published owner is recorded and
+    reported as pending, not refused. The supervisor honours it before the check
+    begins executing, so an early cancel is deferred rather than lost.
     """
     request_id = _text(args, "request_id")
     run_id = _text(args, "run_id")
-    owner_pid = _integer(args, "owner_pid", -1, low=-1, high=2**31 - 1)
-    owner_creation_time = args.get("owner_creation_time")
-    if owner_creation_time is not None and (
-        isinstance(owner_creation_time, bool) or not isinstance(owner_creation_time, int)
-    ):
-        raise TypeError("owner_creation_time must be an integer when given")
 
     store = server._store()
-    recorded = server._owned_run(store, run_id)
-    payload = _identity({
-        "run_id": run_id, "owner_pid": owner_pid,
-        "owner_creation_time": owner_creation_time,
-    })
+    server._owned_run(store, run_id)
+    payload = _identity({"run_id": run_id})
     # The recorded run IS the subject. Minting one here would record the request
     # against an id nothing ever used, and the retry would then look like a
     # request for some other run.
@@ -859,49 +890,33 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> ToolResult:
         payload=payload, subject_id=run_id,
     )
 
-    if owner_pid >= 0 and owner_pid != recorded.get("pid"):
-        return _refused(
-            f"run {run_id} is owned by pid {recorded.get('pid')}, not {owner_pid}"
-        )
+    try:
+        outcome, report = cancel_run(store, run_id, requested_by=f"mcp:{request_id}")
+    except SupervisorError as exc:
+        return _refused(f"run_cancel: {exc}")
+    except StoreError as exc:
+        return _refused(f"run_cancel: {exc}", kind="internal")
 
-    created = recorded.get("creation_time")
-    if created is None:
-        return _refused(
-            f"run {run_id} recorded pid {recorded.get('pid')} with no creation time, "
-            "so its process cannot be verified and will not be signalled. This build's "
-            "run record omits the creation time that vkit.procidentity requires; the "
-            "run stays as recorded and its claims are retained."
-        )
-
-    outcome, report = cancel_run(
-        store,
-        run_id,
-        # Rebuilt through from_json so the whole recorded pair is carried, not
-        # just the two halves this code happened to name. On POSIX a record
-        # carries a boot_id as well, and dropping it would compare a live
-        # process against a record with no boot, which never matches: every
-        # cancel would report ownership_lost for a process it owns.
-        identity=ProcessIdentity.from_json(
-            {
-                "pid": int(recorded["pid"]),
-                "creation_time": int(created),
-                **({"boot_id": recorded["boot_id"]} if recorded.get("boot_id") else {}),
-            }
-        ),
-    )
     body = report.get("outcome") or {}
-    remaining = [] if isinstance(outcome, Blocked) else []
-    if isinstance(outcome, Blocked) and outcome.reason is BlockedReason.OWNERSHIP_LOST:
-        remaining.append("the run's claim is retained; recover must reconcile it")
-
     content = {
         "run_id": run_id,
         "check_id": report.get("check_id"),
         "outcome": body,
         "result": body.get("result"),
-        "cancelled": body.get("result") == "BLOCKED" and body.get("reason") == "cancelled",
-        "recovery_needed": remaining,
-        "summary": f"run {run_id}: {body.get('result')} {body.get('reason', '')}".strip(),
+        "cancelled": bool(report.get("cancelled")),
+        # A cancel that is still arriving has no verdict about the run, and
+        # reporting one anyway is what this used to do.
+        "pending": bool(report.get("pending")),
+        "lifecycle": report.get("lifecycle", "terminal"),
+        "recovery_needed": (
+            ["the run's claim is retained; recover must reconcile it"]
+            if body.get("reason") == "ownership_lost" else []
+        ),
+        "summary": (
+            f"run {run_id}: cancellation pending, the owner is not published yet"
+            if report.get("pending")
+            else f"run {run_id}: {body.get('result')} {body.get('reason', '')}".strip()
+        ),
     }
     return ToolResult(content)
 
@@ -1082,9 +1097,11 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="run_cancel",
         description=(
-            "Cancel a run by the process identity recorded when it launched. The "
-            "owner pid is re-read from durable state and its creation time is "
-            "verified, so a recycled pid is never signalled."
+            "Cancel a run by the process identity it recorded when it launched. The "
+            "owner pid and its creation time are read from durable state and verified "
+            "against the process, so a recycled pid is never signalled. A cancel that "
+            "arrives before the run has published an owner is recorded and reported as "
+            "pending; the supervisor honours it before the check begins executing."
         ),
         input_schema={
             "type": "object",
@@ -1092,21 +1109,6 @@ TOOLS: tuple[ToolSpec, ...] = (
             "required": ["run_id", "request_id"],
             "properties": {
                 "run_id": {"type": "string", "minLength": 1, "description": "A run id from check_start."},
-                "owner_pid": {
-                    "type": "integer", "minimum": -1,
-                    "description": (
-                        "Optional assertion of the owning pid. When given and wrong, "
-                        "the cancellation is refused."
-                    ),
-                },
-                "owner_creation_time": {
-                    "type": "integer",
-                    "description": (
-                        "Optional creation time to pair with the recorded pid. This "
-                        "build's run record does not store one, so cancellation is "
-                        "refused with an explicit reason rather than acting unverified."
-                    ),
-                },
                 "request_id": {
                     "type": "string", "minLength": 1,
                     "description": "Idempotency key for this request.",

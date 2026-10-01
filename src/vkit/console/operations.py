@@ -24,8 +24,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..execution import ExecutionError
-from ..execution import run_check as execute_check
 from ..identity import compute_source_identity
 # The console reads and writes the enrollment record through the core, which is
 # the only module that owns its format. It did not before, and wrote a second
@@ -34,11 +32,10 @@ from ..identity import compute_source_identity
 from .. import enroll as core_enroll
 from ..manifest import Manifest, ManifestError, parse_manifest
 from ..paths import Project, ProjectError, open_project
-from ..procidentity import CannotConfirm, ProcessIdentity, UnsupportedPlatform, read_identity
 from ..recover import Report as RecoveryReport
 from ..recover import inspect as inspect_recovery
 from ..storage import Store, StoreError, probe_state
-from ..supervisor import SupervisorError, cancel_run
+from ..supervisor import SupervisorError, cancel_run, start_run
 from .plan import (
     DEFAULT_RUN_LIMIT,
     LOOPBACK_HOST,
@@ -234,15 +231,42 @@ def run_detail_view(context: Context, run_id: str) -> dict[str, Any]:
     The report is already a validated document, so it is passed through whole
     rather than re-described. Re-projecting it here would be a second schema
     that could disagree with the one the run was published against.
+
+    **A run that has not finished is a valid request with a valid answer.** It has
+    no report, and `store.load` raises for a run with no published report, so this
+    used to refuse with "no published report" -- the same error as a run id this
+    project has never heard of, for the ordinary condition of a started run. What
+    comes back instead is the run's recorded lifecycle and whatever identity it has
+    published, with no outcome. `Refused` is now reserved for a run that does not
+    exist at all.
     """
+    status = context.store.run_status(run_id)
+    if status is None:
+        raise Refused(f"no run is recorded under {run_id!r}")
     try:
         report = context.store.load(run_id)
-    except StoreError as exc:
-        raise Refused(str(exc)) from exc
+    except StoreError:
+        report = None
+
+    if report is None:
+        return {
+            "run_id": run_id,
+            "report": None,
+            "lifecycle": status.get("lifecycle"),
+            "pending": True,
+            "check_id": status.get("check_id"),
+            "process": status.get("process"),
+            "logs": [],
+        }
+
     logs = (report.get("logs") or {})
     return {
         "run_id": run_id,
         "report": report,
+        "lifecycle": report.get("lifecycle"),
+        "pending": False,
+        "check_id": report.get("check_id"),
+        "process": report.get("process"),
         # Only the streams this run actually recorded. A cancel report names no
         # log at all, and listing one anyway would send the page looking for a
         # file the store does not hold.
@@ -368,15 +392,16 @@ def plan_change_set(context: Context, name: str) -> ChangeSet:
 def run_check(context: Context, check_id: str) -> dict[str, Any]:
     """Start a registered check.
 
-    Calls `execution.run_check` directly, which is the same call `vkit check run`
-    makes, so the console and the CLI register a run, fingerprint the source and
-    publish a report through exactly one path.
+    Routes through `supervisor.start_run` with `detach=False`, so the console and
+    the CLI register a run, fingerprint the source and publish a report through
+    exactly one path, and the check still finishes before this returns.
 
-    It calls `run_check` rather than `supervisor.start_run`. The console wants
-    the run to happen before the HTTP response returns, and `run_check` is the
-    call that actually executes a check. `start_run` is the entry point for a
-    caller that owns a run's lifecycle across a client disconnect, which the
-    console is not.
+    **The console is not a client that disconnects.** It holds an open request and
+    a user waiting on it, so a detached supervisor would leave the page showing a
+    run with no outcome for as long as the check takes, with nothing to poll. That
+    is the right shape for `vkit check start` and the wrong one here, and the
+    difference is the `detach=False` and nothing else: the supervisor body is the
+    same code either way, so the two cannot drift.
     """
     if not check_id:
         raise Refused("a check id is required; the manifest defines the permitted ones")
@@ -389,73 +414,63 @@ def run_check(context: Context, check_id: str) -> dict[str, Any]:
         raise Refused(str(exc)) from exc
 
     try:
-        source = compute_source_identity(context.project)
-        result = execute_check(context.manifest, check_id, store=context.store, source=source)
+        handoff = start_run(
+            context.project, context.store, check_id,
+            manifest=context.manifest, detach=False,
+        )
     except (StoreError, OSError) as exc:
         raise ConsoleError(f"the state store could not record the run: {exc}") from exc
-    except ExecutionError as exc:
+    except SupervisorError as exc:
         raise ConsoleError(str(exc)) from exc
 
+    status = context.store.run_status(handoff.run_id) or {}
+    published = (status.get("lifecycle") == "terminal")
     return {
         "operation": "run_check",
-        "run_id": result.report["run_id"],
+        "run_id": handoff.run_id,
         "check_id": check_id,
-        "outcome": result.outcome.to_json(),
-        "launched": result.report.get("process") is not None,
+        "lifecycle": status.get("lifecycle", handoff.lifecycle),
+        "outcome": (context.store.load(handoff.run_id)["outcome"] if published else None),
+        # Named for the fact, not for a verb. This was `launched`, which reads as
+        # "a process was started" and is neither that nor the same thing the other
+        # two surfaces called `launched`: the MCP start payload derived it from a
+        # lifecycle read too early to mean anything, and `procs.RunOutcome` derives
+        # it from a pid. Here the run has already finished and the question is the
+        # one the store answers -- did the run publish an owner this console could
+        # have verified -- so it carries the same name `run_get` uses for the same
+        # fact, rather than a third name for a fourth meaning.
+        "ownership_known": bool((status.get("process") or {}).get("ownership_known")),
     }
 
 
 def cancel_check_run(context: Context, run_id: str) -> dict[str, Any]:
-    """Cancel a run, by verified process identity.
+    """Cancel a run, by the identity the run itself recorded.
 
-    The identity is read here, from the live process, and handed to the core
-    whole. A bare pid is refused by `cancel_run` because pids are recycled; that
-    check stays in the core where the knowledge of what a run recorded lives.
+    **This module no longer reads the identity or decides anything about it.** It
+    used to read `run_process_identity` and answer a run with no pid with a settled
+    `BLOCKED/ownership_lost`, and where a pid was present it fabricated
+    `ProcessIdentity(pid, creation_time=-1)` to force the core's refusal and then
+    handed that in. Both are the same defect: the console decided, from its own
+    reading, whether a run could be cancelled, while the core decided the same
+    thing from the same record. Two authorities over one fact, and the console's
+    answer for a run that had not yet published an owner was a verdict about the
+    run rather than a statement about the cancellation.
 
-    **The core's own refusal is what surfaces.** There are two ways a run cannot
-    be cancelled and both are its answer, not this module's: a run that recorded
-    no process, and a run whose process is gone or no longer provable. The second
-    is reached by handing the core a pid that matches the recorded one with a
-    creation time no live process has, so `still_the_same_process` is false and
-    the core emits its own `ownership_lost` with its own explanation of why it
-    refused to signal. Rewording that here would defeat the point of calling the
-    core at all.
+    It also called `cancel_run(..., identity=...)`, which the run-id-only signature
+    no longer accepts -- a `TypeError` on every cancel, surfacing as a console 500.
+    Both the fabrication and the parameter are gone.
+
+    A cancel that arrives before the run has a published owner now comes back as
+    pending, which is what the core returns and what the state actually is.
     """
     if not run_id:
         raise Refused("a run id is required to cancel a run")
 
-    recorded = context.store.run_process_identity(run_id) or {}
-    pid = recorded.get("pid")
-    if not pid:
-        return {
-            "operation": "cancel_run",
-            "run_id": run_id,
-            "cancelled": False,
-            "outcome": {
-                "result": "BLOCKED",
-                "reason": "ownership_lost",
-                "detail": f"run {run_id} recorded no process, so there is nothing to cancel",
-            },
-        }
-
     try:
-        live = read_identity(int(pid))
-    except (CannotConfirm, UnsupportedPlatform):
-        # The pid may be in use and unreadable. That is not the same as gone, and
-        # either way ownership is unproven, so the unprovable identity below is
-        # the honest thing to hand over rather than a guess.
-        #
-        # UnsupportedPlatform is the same kind of "cannot prove" on a host where
-        # `procidentity` has no verified answer to give at all. Without it here
-        # the exception escaped this boundary and an operator on a POSIX host
-        # cancelling a finished run got a traceback instead of the run's outcome.
-        live = None
-
-    identity = live if live is not None else ProcessIdentity(pid=int(pid), creation_time=-1)
-
-    try:
-        outcome, _report = cancel_run(context.store, run_id, identity=identity)
-    except (StoreError, SupervisorError) as exc:
+        outcome, report = cancel_run(context.store, run_id, requested_by="console")
+    except SupervisorError as exc:
+        raise Refused(str(exc)) from exc
+    except StoreError as exc:
         raise Refused(str(exc)) from exc
 
     # `cancelled` is a fact about the outcome, and the outcome is a sum type: a
@@ -466,8 +481,11 @@ def cancel_check_run(context: Context, run_id: str) -> dict[str, Any]:
     return {
         "operation": "cancel_run",
         "run_id": run_id,
-        "cancelled": document["result"] == "BLOCKED"
-        and document.get("reason") == "cancelled",
+        "cancelled": bool(report.get("cancelled")),
+        # A cancellation that is still arriving has no outcome to show. The view
+        # reads this and shows a pending state rather than a settled BLOCKED.
+        "pending": bool(report.get("pending")),
+        "lifecycle": report.get("lifecycle", "terminal"),
         "outcome": document,
     }
 

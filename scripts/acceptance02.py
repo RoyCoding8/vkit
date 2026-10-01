@@ -54,7 +54,7 @@ from vkit.execution import run_check  # noqa: E402
 from vkit.identity import compute_source_identity  # noqa: E402
 from vkit.manifest import parse_manifest  # noqa: E402
 from vkit.paths import open_project  # noqa: E402
-from vkit.procidentity import ProcessIdentity, read_identity  # noqa: E402
+from vkit.procidentity import read_identity  # noqa: E402
 from vkit.procs import run_command  # noqa: E402
 from vkit.storage import MIGRATIONS, Store  # noqa: E402
 from vkit.supervisor import cancel_run, job_name_for, start_run  # noqa: E402
@@ -353,7 +353,7 @@ from vkit.execution import run_check
 from vkit.identity import compute_source_identity
 from vkit.manifest import parse_manifest
 from vkit.paths import open_project
-from vkit.procidentity import ProcessIdentity, read_identity
+from vkit.procidentity import read_identity
 from vkit.procs import run_command
 from vkit.storage import Store
 from vkit.supervisor import cancel_run, job_name_for, start_run
@@ -864,34 +864,24 @@ def row_start_retried_around_disconnect() -> None:
 # about the run after the parent is gone, what it can do about it, and whether
 # any result was ever reported.
 #
-# On this build a second process can continue nothing. `execution.run_check`
-# attaches the process identity only after the command returns, so a run in
-# flight names no pid, and `supervisor.start_run` executes in the calling
-# process rather than detaching a supervisor. What the row measures is the arm
-# the build actually has: after the parent is gone a different process reads the
-# run, and the only route to a terminal state is a documented refusal.
+# On this build a second process can continue the run. `start_run` records the
+# launch, detaches a supervisor, and returns while the check is still running, so
+# the run outlives the client that asked for it. The supervisor publishes its
+# owner as soon as it has one, which is what makes the in-flight run something a
+# different process can name, read, and act on.
 
 PARENT_THAT_EXITS = """
     project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
     run_id = os.environ["ACCEPTANCE02_RUN_ID"]
-    # The parent claims the request key, registers the run under the subject that
-    # key names, and records launch intent. Then it stops. This is the MCP-like
-    # shape: a client that asked for a run and went away without answering. The
-    # run id is supplied rather than generated so the retry below can be compared
-    # against it; letting `begin` mint the subject would leave nothing to compare.
+    # The parent claims the request key, then starts the run under the subject
+    # that key names, and stops. This is the MCP-like shape: a client that asked
+    # for a run and went away without reading the verdict. The run id is supplied
+    # rather than generated so the retry below can be compared against it; letting
+    # `begin` mint the subject would leave nothing to compare.
     subject = idempotency.begin(store, request_id="req-6", operation="check.start",
                                 payload={"check_id": "hangs"}, subject_id=run_id)
-    manifest = parse_manifest(project, project.runs_root / "probe")
-    spec = manifest.require("hangs")
-    store.register_run(run_id, "hangs", task_id=None, attempt=None,
-                       source=compute_source_identity(project).to_json(),
-                       configuration_digest=manifest.digest(), fixture_digest=None)
-    store.mark_running(run_id, {"pid": None, "ownership": None, "exit_code": None,
-                                "timed_out": False, "launch_intent": "recorded",
-                                "job_name": job_name_for(run_id), "check_id": "hangs",
-                                "command": {"argv": list(spec.argv), "cwd": str(spec.cwd)}})
-    emit(registered=True, run_id=run_id)
-    time.sleep(300)
+    handoff = start_run(project, store, "hangs", run_id=run_id)
+    emit(registered=True, run_id=run_id, lifecycle=handoff.lifecycle)
 """
 
 REATTACHING_CLIENT = """
@@ -908,9 +898,20 @@ REATTACHING_CLIENT = """
     # the run as that key's subject, so asking again must return the same one.
     subject = idempotency.begin(store, request_id="req-6", operation="check.start",
                                 payload={"check_id": "hangs"})
-    outcome, _ = cancel_run(store, run_id,
-                            identity=ProcessIdentity(identity.get("pid") or 0, 0))
-    emit(subject=subject, read=read, cancel=outcome.to_json())
+    # Read and stop are separate calls, and the caller observes the process between
+    # them. A single call could not report both that the owner was running and that
+    # the cancel stopped it, because the second observation would be made by the
+    # same call that destroyed the thing it was observing.
+    emit(subject=subject, read=read)
+"""
+
+CANCELLING_CLIENT = """
+    project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
+    run_id = os.environ["ACCEPTANCE02_RUN_ID"]
+    # The cancel names the run and nothing else. It used to carry a client-chosen
+    # pid, which was a second authority for a fact only the record holds.
+    outcome, view = cancel_run(store, run_id, requested_by="acceptance02:row-6")
+    emit(cancel=outcome.to_json(), cancelled=view.get("cancelled"))
 """
 
 
@@ -928,8 +929,6 @@ RIVAL_CLIENT = """
 def row_parent_exits() -> None:
     """An MCP-like parent exits; a second process reattaches and says what is true."""
     row = _row(6)
-    # The check is registered but launched by nothing, so nothing can execute it
-    # and the row cannot leave a 300 second sleeper behind.
     repo = make_repo("parent-exits", checks=[dict(hang_check(Path("unused.pid")))])
     _, store = store_for(repo)
     run_id = uuid.uuid4().hex
@@ -954,53 +953,68 @@ def row_parent_exits() -> None:
         if "__error__" in read_report(rival, timeout=90):
             unestablished(row, f"the rival client never finished: {rival}")
             return
-        # A start into the run the dead parent registered. The run row exists, so
-        # the registration is refused rather than a second execution begun.
-        start_run_rejected = ""
+        # A start into the run the dead parent already launched. A run id with a
+        # recorded launch is a replay, so this attaches to it rather than
+        # beginning a second execution of the same check.
+        second_start = ""
         try:
-            start_run(open_project(repo), store, "hangs", run_id=run_id)
+            replay = start_run(open_project(repo), store, "hangs", run_id=run_id)
+            second_start = f"replayed={replay.replayed} lifecycle={replay.lifecycle}"
         except Exception as exc:
-            start_run_rejected = f"{type(exc).__name__}: {exc}"
+            second_start = f"{type(exc).__name__}: {exc}"
 
-    # A different process, holding nothing of the parent's in memory, reads and acts.
-    client = child(REATTACHING_CLIENT, env)
-    if "__error__" in client:
-        unestablished(row, f"the reattaching client failed: {client}")
+    # A different process, holding nothing of the parent's in memory, reads.
+    reader = child(REATTACHING_CLIENT, env)
+    if "__error__" in reader:
+        unestablished(row, f"the reattaching client failed: {reader}")
         return
-    read = client["read"]
+    read = reader["read"]
+    # Observed here, between the reading process and the cancelling one, and by
+    # `tasklist` rather than by this package's own identity code: the owner the
+    # dead parent's supervisor published really is still running, and a second
+    # process really can see that it is.
+    launched = read["identity_pid"] is not None and process_alive(read["identity_pid"])
+    # A second different process, still holding nothing of the parent's, acts.
+    canceller = child(CANCELLING_CLIENT, env)
+    if "__error__" in canceller:
+        unestablished(row, f"the cancelling client failed: {canceller}")
+        return
     final = [r for r in run_rows(store._db_path) if r["run_id"] == run_id]
+    cancel = canceller["cancel"]
     checks = {
         "the run was readable after the parent exited": read["row"] is not None,
         "it was not yet terminal": read["row"] is not None
         and read["row"]["lifecycle"] in ("preparing", "running"),
         "it had no result": read["row"] is not None and read["row"]["result"] is None,
-        "it named no process": read["identity_pid"] is None,
+        "it published an owner the parent had exited": read["identity_pid"] is not None,
+        "that owner was still running": launched,
         "no report had been published": read["report_exists"] is False,
-        "the retry found the dead parent's subject": client["subject"] == run_id,
-        "a second client could not execute beside it": start_run_rejected.startswith("SupervisorError")
-        and "registered but has published no report" in start_run_rejected,
-        "the cancel was refused, not honoured": client["cancel"]["result"] == "BLOCKED"
-        and client["cancel"]["reason"] == "ownership_lost",
-        "the run ended BLOCKED and never reported a result":
-        bool(final) and final[0]["result"] == "BLOCKED",
+        "the retry found the dead parent's subject": reader["subject"] == run_id,
+        "a second start did not execute beside it": second_start.startswith("replayed=True"),
+        "the cancel was honoured, not refused": cancel["result"] == "BLOCKED"
+        and cancel["reason"] == "cancelled" and canceller["cancelled"] is True,
+        "the run ended terminal and reported that reason":
+        bool(final) and final[0]["result"] == "BLOCKED" and final[0]["reason"] == "cancelled",
     }
     observed(
         row,
         all(checks.values()),
         f"after the parent exited a separate OS process read the run as "
-        f"{read['row']['lifecycle']} with no result, a stored process identity with "
-        f"pid={read['identity_pid']}, and no report on disk; a retry of the same "
-        f"request id returned the same subject {client['subject'][:12]}..., so the dead "
-        f"parent's request cannot be re-executed; a second client trying to start the "
-        f"same run was refused because {start_run_rejected.split('registered but')[1].split(',')[0].strip()!r} "
-        f"rather than executed beside it; its cancel was "
-        f"refused as {client['cancel']['reason']} and published a terminal "
-        f"{final[0]['result']}. "
-        f"No result was ever reported for the check and none was invented. Measured "
-        f"limit: this build has no surviving supervisor, because start_run executes in "
-        f"the calling process and the pid is attached only after the command returns, "
-        f"so the in-flight run named no process for a second process to continue"
-        f" Unmet: {[name for name, ok in checks.items() if not ok] or 'none'}",
+        f"{read['row']['lifecycle']} with no result and no report on disk, and the "
+        f"supervisor that outlived the parent had published an owner: pid "
+        f"{read['identity_pid']}, still running when an outside reader looked for it "
+        f"with tasklist ({launched}). "
+        f"A retry of the same request id returned the same subject "
+        f"{reader['subject'][:12]}..., so the dead parent's request cannot be "
+        f"re-executed, and a second start into that run attached to it "
+        f"({second_start}) rather than executing beside it. "
+        f"Most of all the second process could act on it: naming the run and nothing "
+        f"else, its cancel was honoured and stopped the owned tree, reported as "
+        f"{cancel['result']}/{cancel['reason']} and recorded on the run as terminal "
+        f"{final[0]['result']}/{final[0]['reason']}. "
+        f"The check never finished on its own and no result was invented for it: the "
+        f"only verdict on this run is the cancellation the second process performed. "
+        f"Unmet: {[name for name, ok in checks.items() if not ok] or 'none'}",
     )
 
 
@@ -1012,8 +1026,7 @@ REPEAT_CANCEL = """
     cancels = []
     for _ in range(3):
         try:
-            outcome, _report = cancel_run(store, run_id,
-                                          identity=ProcessIdentity(999999, 12345))
+            outcome, _report = cancel_run(store, run_id, requested_by="acceptance02:row-7")
             cancels.append(outcome.to_json())
         except Exception as exc:
             cancels.append({"error": type(exc).__name__})
@@ -1037,12 +1050,20 @@ def row_cancel_repeated() -> None:
     try:
         # The run records the bystander's live pid with a creation time that does
         # not belong to it: exactly the record a pid-recycled cancel would face.
+        # The wrong time is a neighbouring real one rather than 0, because a bare
+        # pid with no usable creation time is now refused earlier and for a
+        # different reason -- ownership cannot be proven from it at all -- which
+        # would measure that refusal instead of the one this row is about.
+        real = read_identity(bystander.pid)
+        assert real is not None, f"the bystander at pid {bystander.pid} cannot be read"
+        wrong_creation_time = max(1, real.creation_time - 100_000)
         store.register_run(run_id, "totals-behavior", task_id=None, attempt=None,
                            source={"head": "x", "inventory_digest": "y", "dirty": False},
                            configuration_digest="d", fixture_digest=None)
         store.mark_running(run_id, {
             "pid": bystander.pid, "ownership": "windows_job_object",
-            "exit_code": None, "timed_out": False, "creation_time": 0,
+            "exit_code": None, "timed_out": False,
+            "creation_time": wrong_creation_time, "boot_id": real.boot_id,
             "job_name": job_name_for(run_id), "check_id": "totals-behavior",
             "command": {"argv": ["python", "x.py"], "cwd": str(repo)},
         }, command={"argv": ["python", "x.py"], "cwd": str(repo)})
@@ -1492,7 +1513,7 @@ def row_required_check_absent() -> None:
 # pinned to is the one measured from the policy in force.
 
 SMALLER_SELECTION_CLIENT = """
-    import sys
+    import sys, time
     sys.path.insert(0, {src!r})
     from vkit.mcp import Server
     server = Server({root!r})
@@ -1501,11 +1522,31 @@ SMALLER_SELECTION_CLIENT = """
         "request_id": "req-12",
     }})
     task_id = begin.content["task_id"]
-    # The client runs the one check it asked for.
+
+    def await_outcome(run_id, timeout=120.0):
+        deadline = time.monotonic() + timeout
+        while True:
+            got = server.call_tool("run_get", {{"run_id": run_id}})
+            if got.is_error:
+                raise SystemExit("run_get refused: " + str(got.content))
+            if got.content.get("lifecycle") == "terminal" and got.content.get("outcome"):
+                return got.content
+            if time.monotonic() >= deadline:
+                raise SystemExit("run " + run_id + " was still "
+                                 + repr(got.content.get("lifecycle")) + " after " + str(timeout) + "s")
+            time.sleep(0.1)
+
+    # The client runs the one check it asked for. `check_start` returns at the
+    # launch, so the verdict is read afterwards the way a caller now has to.
     start = server.call_tool("check_start", {{
         "task_id": task_id, "check_ids": {asked!r}, "request_id": "req-12-run",
     }})
+    ran = [r["check_id"] + "=" + await_outcome(r["run_id"])["result"]
+           for r in start.content["runs"]]
     # And asks to finalize against a selection of one, naming only what it ran.
+    # Ordered after the verdict deliberately: a finalize issued while the run was
+    # still in flight would be refused a different gap, and this row is about the
+    # gap a *completed* check leaves behind, not about the window before one.
     small = server.call_tool("task_finalize", {{"task_id": task_id,
                                                "check_ids": {asked!r}}})
     # Read back what that decision actually recorded, before anything else runs.
@@ -1514,13 +1555,16 @@ SMALLER_SELECTION_CLIENT = """
     from vkit import tasks as task_module
     stored_after_small = task_module.get_task(
         Store(open_project({root!r}).db_path), task_id).readiness
-    # The check the client never asked for has now actually run.
-    server.call_tool("check_start", {{"task_id": task_id, "check_ids": {unasked!r},
-                                     "request_id": "req-12-run-2"}})
+    # The check the client never asked for has now actually run, and is read the
+    # same way: a start names the run, and the verdict arrives later.
+    second = server.call_tool("check_start", {{"task_id": task_id, "check_ids": {unasked!r},
+                                              "request_id": "req-12-run-2"}})
+    unasked = [r["check_id"] + "=" + await_outcome(r["run_id"])["result"]
+               for r in second.content["runs"]]
     full = server.call_tool("task_finalize", {{"task_id": task_id}})
     emit(task_id=task_id, floor_at_begin=begin.content["required_checks"],
          pinned_digest=begin.content["policy_digest"],
-         ran=[r["check_id"] + "=" + r["result"] for r in start.content["runs"]],
+         ran=ran, unasked=unasked,
          small=small.content, stored_after_small=stored_after_small, full=full.content)
 """
 
@@ -1560,6 +1604,7 @@ def row_smaller_check_selection() -> None:
         # compared against, because the tool no longer accepts one.
         and client["pinned_digest"] == policy_digest
         and client["ran"] == [f"{PASSING_CHECK_ID}=PASS"]
+        and client["unasked"] == [f"{SECOND_PASSING_CHECK['id']}=PASS"]
         and small["readiness"] == "BLOCKED"
         and small["gaps"] == [unasked_gap]
         and small["required_checks"] == policy_checks

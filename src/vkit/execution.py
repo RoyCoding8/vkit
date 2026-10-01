@@ -29,7 +29,7 @@ from .outcome import (
     Passed,
     ScenarioResult,
 )
-from .procs import run_command
+from .procs import await_exit, launch, run_command
 from .schemas import CHECK_ARTIFACT, RUN_REPORT, SchemaValidationError, parse_artifact, validate
 from .storage import Store, StoreError
 
@@ -270,10 +270,11 @@ def run_check(
     # Register before anything else can conclude. A missing prerequisite is a
     # real answer about this run and has to be recorded as one, and a report can
     # only be published against a row that exists. The task and attempt are
-    # carried here rather than left to a later `attach_task`, because the caller
-    # that knows them is the one that decides whether this run counts as
-    # evidence for the attempt, and leaving the column null would silently
-    # remove the run from that attempt's readiness.
+    # carried here rather than bound afterwards, because the caller that knows them
+    # is the one that decides whether this run counts as evidence for the attempt,
+    # and leaving the column null would silently remove the run from that attempt's
+    # readiness. `Store.attach_task` is therefore unused in the tree and goes with
+    # the last caller in `scripts/acceptance02.py`.
     store.register_run(
         run_id, check.id, task_id=task_id, attempt=attempt,
         source=source.to_json(), configuration_digest=manifest.digest(),
@@ -297,7 +298,33 @@ def run_check(
     # The interpreter a check should use, and the run directory it should write
     # into, are the only two substitutions. The manifest may not name a shell.
     argv = check.resolved_argv_for(run_dir, env.python)
-    result = _launch(argv, check, stdout_path, stderr_path, env)
+    if env.plugin_root is None:
+        # Launched and waited separately, so the identity is durable while the
+        # check is still running. The earlier version called `run_command`, which
+        # blocks until the command exits, and only then wrote the pid: so for the
+        # whole run the durable record said `preparing` with no process, which is
+        # indistinguishable from a run that never launched. Recovery read that as
+        # "nothing is running" and released the task's claim while this process was
+        # still writing.
+        lease = launch(
+            argv, cwd=check.cwd, stdout_path=stdout_path, stderr_path=stderr_path,
+            timeout_seconds=check.timeout_seconds,
+        )
+        try:
+            if lease.pid is not None:
+                store.publish_identity(run_id, lease.identity())
+            result = await_exit(lease)
+        finally:
+            lease.close()
+    else:
+        result = _launch(argv, check, stdout_path, stderr_path, env)
+        if result.pid is not None:
+            store.publish_identity(run_id, {
+                "pid": result.pid,
+                "creation_time": result.creation_time,
+                **({"boot_id": result.boot_id} if result.boot_id else {}),
+                "ownership": result.ownership,
+            })
     process = ProcessResult(
         pid=result.pid,
         ownership=result.ownership,
@@ -307,13 +334,6 @@ def run_check(
         creation_time=result.creation_time,
         boot_id=result.boot_id,
     )
-    store.mark_running(run_id, {
-        "pid": process.pid,
-        "creation_time": process.creation_time,
-        **({"boot_id": process.boot_id} if process.boot_id else {}),
-        "ownership": process.ownership,
-        "exit_code": process.exit_code, "timed_out": process.timed_out,
-    })
 
     artifact = store.resolve_artifact(run_id, check.artifact_name)
     outcome = _derive(check, process, artifact if artifact.is_file() else None)

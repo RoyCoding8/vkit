@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -116,15 +117,56 @@ def begin(repo_path: Path, contract: Path, request_id: str = "req-1") -> str:
 
 
 def start(repo_path: Path, task_id: str, check: str = TOTAL, request_id: str = "run-1") -> dict:
-    """Start one check and return its payload.
+    """Start one check and return the payload of the *finished* run.
 
-    A FAIL exits 1 and is still a complete, well-formed answer, so the payload
-    is returned whatever the exit code. Reading the exit code is the caller's
-    job.
+    `check start` now records a launch and returns while the check is still
+    running, which is the point of the change: the run is owned by a supervisor
+    that outlives the client. So the verdict is not in that payload, and a test
+    that wants the verdict asks for it the way a caller now has to.
+
+    The wait is here rather than in the command for the same reason. A `check
+    start` that blocked for the check would be the synchronous contract this
+    milestone removes, and the tests would pass against a shape that no longer
+    exists.
+    """
+    started = start_only(repo_path, task_id, check, request_id)
+    return await_outcome(repo_path, started["run_id"])
+
+
+def start_only(repo_path: Path, task_id: str, check: str = TOTAL, request_id: str = "run-1") -> dict:
+    """Start one check and return the payload as the command actually returns it.
+
+    No outcome, because the command exits 0 the moment the launch is durably
+    recorded. This is the shape a real caller sees, and the tests that assert on
+    it use this rather than the waited-on payload above.
     """
     done = vkit("check", "start", "--project", str(repo_path), "--task", task_id,
                 "--check", check, "--request-id", request_id, "--json")
+    assert done.returncode == EXIT_OK, done.stdout + done.stderr
     return one_json_object(done)
+
+
+def await_outcome(repo_path: Path, run_id: str, timeout: float = 120.0) -> dict:
+    """Poll `run show` until the run is terminal, and return that payload.
+
+    Polled with a deadline rather than slept for a fixed time: the check is a real
+    process whose duration is not this test's to predict, and a fixed sleep would
+    be either slow on a fast machine or flaky on a loaded one.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        done = vkit("run", "show", "--project", str(repo_path), "--run", run_id, "--json")
+        assert done.returncode in (EXIT_OK, EXIT_CHECK_FAILED, EXIT_BLOCKED), (
+            done.stdout + done.stderr
+        )
+        payload = one_json_object(done)
+        if payload.get("lifecycle") == "terminal" and payload.get("outcome"):
+            return payload
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"run {run_id} was still {payload.get('lifecycle')!r} after {timeout}s"
+            )
+        time.sleep(0.1)
 
 
 # ------------------------------------------------------------ task begin
@@ -192,14 +234,16 @@ def test_check_start_produces_a_run_that_run_show_reads(repo: Path, tmp_path: Pa
     assert run["run_id"]
     assert run["task_id"] == task_id
     assert run["attempt"] == 1
-    assert run["outcome"]["result"] == "PASS"
+    # The command returns the run and the lifecycle it has recorded so far. It has
+    # no outcome to return, and it does not wait for one: the check belongs to a
+    # supervisor that outlives this process, which is the whole reason a cancel
+    # from another terminal can reach it.
+    assert run["lifecycle"] in ("preparing", "launching", "running", "terminal")
+    assert "outcome" not in run
 
-    shown = vkit("run", "show", "--project", str(repo), "--run", run["run_id"], "--json")
-    assert shown.returncode == EXIT_OK, shown.stdout + shown.stderr
-    report = one_json_object(shown)
-    assert report["run_id"] == run["run_id"]
+    report = await_outcome(repo, run["run_id"])
+    assert report["outcome"]["result"] == "PASS"
     assert report["lifecycle"] == "terminal"
-    assert report["outcome"] == run["outcome"]
 
 
 def test_a_retry_of_check_start_returns_the_same_run_without_running_again(
@@ -212,7 +256,13 @@ def test_a_retry_of_check_start_returns_the_same_run_without_running_again(
     first = one_json_object(vkit(*args))
     second = one_json_object(vkit(*args))
     assert first["run_id"] == second["run_id"]
-    assert second["outcome"] == first["outcome"]
+    # The retry attaches to the recorded run rather than executing a second time.
+    # What it must never do is mint a second run id, so that is what is asserted;
+    # the outcome is not part of the start payload and never was in this contract.
+    assert second["replayed"] is True
+    assert first["replayed"] is False
+    assert await_outcome(repo, first["run_id"])["outcome"]["result"] == "PASS"
+
 
     # Exactly one run exists, so the retry attached rather than starting a second.
     with sqlite3.connect(f"file:{_state(repo) / 'state.sqlite3'}?mode=ro", uri=True) as conn:
@@ -415,19 +465,23 @@ def _sha256(path: Path) -> str:
 def test_a_run_recorded_without_a_creation_time_cannot_be_cancelled() -> None:
     """A pid with no creation time is not a partial identity, it is no identity.
 
-    `_identity_of` used to pass `recorded.get("creation_time")` straight into
-    `ProcessIdentity`, whose field is typed `int`. A record that stored a pid
-    but not its creation time therefore produced `creation_time=None`, which
-    fails every comparison in `still_the_same_process`. The cancellation was
-    refused as `ownership_lost` -- the safe direction -- but the user was told
-    a process was not theirs when it was, and the type contract was violated at
-    a boundary that is supposed to be checked.
-    """
-    from vkit.cli import _identity_of
-    from vkit.cli import Refused
+    The check used to live in `cli._identity_of`, which passed
+    `recorded.get("creation_time")` straight into `ProcessIdentity`, whose field is
+    typed `int`. A record that stored a pid but not its creation time therefore
+    produced `creation_time=None`, which fails every comparison in
+    `still_the_same_process`. The cancellation was refused as `ownership_lost` --
+    the safe direction -- but the user was told a process was not theirs when it
+    was, and the type contract was violated at a boundary that is supposed to be
+    checked.
 
-    with pytest.raises(Refused) as caught:
-        _identity_of({"pid": 4242, "check_id": "demo"})
+    It now lives in the core, next to the decision to cancel, because the client
+    no longer supplies an identity at all and so there is no longer a CLI-shaped
+    place for it to live.
+    """
+    from vkit.supervisor import SupervisorError, _recorded_identity
+
+    with pytest.raises(SupervisorError) as caught:
+        _recorded_identity("r1", {"pid": 4242, "check_id": "demo"})
 
     message = str(caught.value)
     assert "creation time" in message
@@ -436,10 +490,11 @@ def test_a_run_recorded_without_a_creation_time_cannot_be_cancelled() -> None:
 
 def test_a_recorded_pid_with_a_creation_time_is_cancellable() -> None:
     """The guard must not refuse a well-formed identity, or it is a new bug."""
-    from vkit.cli import _identity_of
+    from vkit.supervisor import _recorded_identity
 
-    identity = _identity_of({"pid": 4242, "creation_time": 133000000000000000,
-                             "check_id": "demo"})
+    identity = _recorded_identity(
+        "r1", {"pid": 4242, "creation_time": 133000000000000000, "check_id": "demo"}
+    )
 
     assert identity.pid == 4242
     assert identity.creation_time == 133000000000000000
@@ -451,12 +506,11 @@ def test_a_zero_creation_time_is_refused_like_a_missing_one() -> None:
     It is falsy and it compares unequal to every real FILETIME, so it is the
     same defect as absent and is refused the same way.
     """
-    from vkit.cli import _identity_of
-    from vkit.cli import Refused
+    from vkit.supervisor import SupervisorError, _recorded_identity
 
     for bad in (0, None, -1, "133", True):
-        with pytest.raises(Refused):
-            _identity_of({"pid": 4242, "creation_time": bad, "check_id": "demo"})
+        with pytest.raises(SupervisorError):
+            _recorded_identity("r1", {"pid": 4242, "creation_time": bad, "check_id": "demo"})
 
 
 def test_mcp_serve_lists_the_bound_project_tools(tmp_path: Path) -> None:

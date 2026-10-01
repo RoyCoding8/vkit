@@ -73,13 +73,14 @@ from __future__ import annotations
 
 import contextlib
 import os
+import secrets
 import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from .outcome import BlockedReason
 
@@ -122,6 +123,149 @@ class LaunchError(Exception):
     "nothing was executed" from "execution produced a nonzero exit", because the
     first is BLOCKED with `launch_failed` and the second is a real result.
     """
+
+
+@dataclass(frozen=True)
+class JobLease:
+    """The named job, and the handle that keeps it alive.
+
+    Both halves are needed and neither substitutes for the other. The name is
+    what another process passes to `OpenJobObject`, which is the whole reason the
+    job is named rather than anonymous; the handle is what
+    `AssignProcessToJobObject` takes, and holding it open across the client's
+    disconnect is what makes `KILL_ON_JOB_CLOSE` fire at the right moment.
+
+    The earlier form of this function was annotated `-> str` and returned the
+    handle. Either reading breaks something: the name alone cannot assign the
+    child to the job, so the containment the whole design rests on is never
+    established and the tree survives cancellation; the handle alone cannot be
+    opened by a second process, so a cancel from another terminal cannot find
+    the tree at all. Returning the name and letting the caller reopen the job is
+    also wrong. The lease is precisely what must not be reopened, because the last
+    handle closing is what fires the kill.
+
+    **Measured on this host:** a named job does not survive its creator. Once the
+    creating process exits, `OpenJobObject` on that name fails with WinError 2
+    even though a member process is still running. So the supervisor, not this
+    module, is what has to stay alive: it holds the handle, and its death fires
+    `KILL_ON_JOB_CLOSE`, which measured to kill the member as well. The name in
+    `launches` is therefore durable evidence of a job that existed, not a handle a
+    later reader can count on reopening.
+    """
+
+    name: str
+    handle: Any
+    pid: int | None = None
+    creation_time: int | None = None
+    boot_id: str = ""
+    argv: tuple[str, ...] = ()
+    cwd: Path | None = None
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
+    timeout_seconds: float = 0.0
+    started_at: float = 0.0
+    detail_reason: BaseException | None = None
+    _process: Any = None
+    _posix: Any = None
+    _closed: bool = False
+
+    @property
+    def ownership(self) -> str:
+        return WINDOWS_OWNERSHIP if IS_WINDOWS else POSIX_OWNERSHIP
+
+    def identity(self) -> dict[str, object]:
+        """The durable identity of the launched process, for `publish_identity`.
+
+        `ownership_known` is deliberately absent. This is what the caller publishes
+        once it has verified the lease; until then the only honest statement is
+        that something was started.
+        """
+        record: dict[str, object] = {"pid": self.pid, "ownership": self.ownership}
+        if self.creation_time is not None:
+            record["creation_time"] = self.creation_time
+        if self.boot_id:
+            record["boot_id"] = self.boot_id
+        if self.name:
+            record["job_name"] = self.name
+        return record
+
+    def close(self) -> None:
+        """Release the handles this lease owns.
+
+        Idempotent, because `PyHANDLE.Close` zeroes the handle value and closing a
+        stale reference would otherwise act on a handle the OS has since reused.
+        On Windows this is the kill: the last handle to the job closing is what
+        `KILL_ON_JOB_CLOSE` acts on.
+        """
+        if self._closed:
+            return
+        object.__setattr__(self, "_closed", True)
+        for handle in (self._process, getattr(self, "_posix", None), self.handle):
+            if handle is None:
+                continue
+            close = getattr(handle, "Close", None)
+            if close is None:
+                close = getattr(handle, "close", None)
+            if close is not None:
+                with contextlib.suppress(Exception):
+                    close()
+
+
+def job_name_for(run_id: str) -> str:
+    """A job name only this machine's vkit can guess.
+
+    Minted separately from the job itself because a detached supervisor has to
+    create the job from a name that was recorded durably before it was started.
+    The creator cannot be the process that registers the run: it has to let go of
+    the job handle before the supervisor is spawned, and closing the last handle
+    is the kill. So the name is minted and persisted first, and the supervisor
+    creates the job from it.
+
+    The name is the capability to terminate the run, so it must not be derivable
+    from anything an outside party already knows. A random token per run is the
+    whole defence; deriving it from the run id would be security by obscurity.
+    """
+    return f"Local\\vkit-run-{run_id}-{secrets.token_hex(8)}"
+
+
+def prepare_job(run_id: str, name: str | None = None) -> JobLease:
+    """Create the named job. No process exists yet.
+
+    Windows-only, and the only place `CreateJobObject` is called. The name
+    carries a random token rather than being derived from the run id, because
+    the name is the capability to terminate the run: anyone who can open it can
+    kill the tree, so a name an outside party could compute from the run id
+    would be no protection at all.
+
+    `name` is how a detached supervisor creates the job its launcher already
+    recorded. Re-creating a name that exists fails with ERROR_ALREADY_EXISTS,
+    which is the right outcome: two supervisors for one run is a bug, and a
+    second one silently taking over the job would be worse than refusing.
+
+    The handle is returned rather than closed, and the caller holds it until the
+    run is terminal. That is the entire mechanism: closing the last handle is a
+    kill, so a supervisor that exits early would kill the tree it was supposed to
+    supervise.
+    """
+    if not IS_WINDOWS:
+        return JobLease(name="", handle=None)
+    resolved = name or job_name_for(run_id)
+    job = win32job.CreateJobObject(None, resolved)
+    try:
+        info = win32job.QueryInformationJobObject(
+            job, win32job.JobObjectExtendedLimitInformation
+        )
+        info["BasicLimitInformation"]["LimitFlags"] |= (
+            win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        )
+        win32job.SetInformationJobObject(
+            job, win32job.JobObjectExtendedLimitInformation, info
+        )
+    except Exception:
+        with contextlib.suppress(Exception):
+            job.Close()
+        raise
+    return JobLease(name=resolved, handle=job)
 
 
 @dataclass(frozen=True)
@@ -495,11 +639,111 @@ def _run_windows(
     stderr_path: Path,
     timeout_seconds: float,
 ) -> ExecutionResult:
+    """Run to completion inside a job of this module's own making.
+
+    Kept as the reference implementation and as the path every caller that does
+    not own a run's lifecycle across a client disconnect still takes. The
+    difference from `launch` is only who holds the job: here this function makes
+    an anonymous job and closes it on the way out, and the supervisor holds a
+    named one open in a `JobLease` instead.
+    """
     started = time.monotonic()
-    job = _new_job()
+    lease = _launch_windows(argv, cwd, stdout_path, stderr_path, job=None)
+    if lease.pid is None:
+        return _launch_failure(
+            argv, cwd, stdout_path, stderr_path,
+            lease.detail_reason or LaunchError("the command never started"),
+            started,
+        )
+    try:
+        exit_code, timed_out = _wait_windows(lease._process, timeout_seconds)
+        if timed_out:
+            exit_code = _terminate_job(lease.handle, lease._process)
+    finally:
+        lease.close()
+    return ExecutionResult(
+        argv=argv,
+        cwd=cwd,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        ownership=WINDOWS_OWNERSHIP,
+        pid=lease.pid,
+        creation_time=lease.creation_time,
+        exit_code=exit_code,
+        timed_out=timed_out,
+        started_at=started,
+        ended_at=time.monotonic(),
+    )
+
+
+def launch(
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout_seconds: float,
+    job: JobLease | None = None,
+) -> JobLease:
+    """Create the process and return immediately, holding it owned.
+
+    The two halves of a run are separate calls because a supervisor has to
+    publish the run's identity to the durable record *between* them. If
+    launching and waiting were one call, that write could only happen after the
+    command finished, which is the window this whole module exists to close.
+
+    `job` is the prepared lease from `prepare_job`. Passing None makes an
+    anonymous one, which is correct only for a caller that will not outlive the
+    process it launched.
+    """
+    argv = tuple(str(part) for part in argv)
+    if not argv:
+        raise LaunchError("argv must name at least one executable")
+    cwd = Path(cwd)
+    if not cwd.is_dir():
+        raise LaunchError(f"working directory does not exist: {cwd}")
+    if not (timeout_seconds > 0) or timeout_seconds == float("inf"):
+        raise LaunchError(
+            f"timeout must be a positive finite number of seconds, got {timeout_seconds!r}"
+        )
+    stdout_path = Path(stdout_path)
+    stderr_path = Path(stderr_path)
+    for path in (stdout_path, stderr_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    if IS_WINDOWS:
+        return _launch_windows(
+            argv, cwd, stdout_path, stderr_path, timeout_seconds, job=job
+        )
+    return _launch_posix(argv, cwd, stdout_path, stderr_path, timeout_seconds)
+
+
+def _launch_windows(
+    argv: tuple[str, ...],
+    cwd: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout_seconds: float = 0.0,
+    job: JobLease | None = None,
+) -> JobLease:
+    """Create the process suspended, contain it, read its identity, resume it.
+
+    The ordering is the whole mechanism. The child is created SUSPENDED so it has
+    executed no instruction; it is assigned to the job before it can run at all,
+    so there is no window in which a live process is outside containment; the
+    creation FILETIME is read while the process is suspended and its handle is
+    open, because afterwards it may have exited and nothing can recover the
+    value; and only then is it resumed.
+
+    A failure before the resume terminates the child rather than releasing it,
+    because a resumed process that was never assigned to a job is exactly the
+    uncontrolled work this module refuses to start.
+    """
+    started = time.monotonic()
+    prepared = job is not None
+    lease = job if job is not None else JobLease(name="", handle=_new_job())
     h_stdout = h_stderr = h_stdin = h_process = h_thread = None
     pid: int | None = None
-
     try:
         try:
             h_stdout = _open_inheritable(
@@ -512,7 +756,8 @@ def _run_windows(
                 Path("NUL"), win32con.GENERIC_READ, win32con.OPEN_EXISTING
             )
         except pywintypes.error as exc:
-            return _launch_failure(argv, cwd, stdout_path, stderr_path, exc, started)
+            return _failed_lease(lease, argv, cwd, stdout_path, stderr_path,
+                                 timeout_seconds, started, exc, prepared)
 
         startup = win32process.STARTUPINFO()
         startup.dwFlags = win32con.STARTF_USESTDHANDLES
@@ -533,17 +778,15 @@ def _run_windows(
                 startup,
             )
         except pywintypes.error as exc:
-            return _launch_failure(argv, cwd, stdout_path, stderr_path, exc, started)
+            return _failed_lease(lease, argv, cwd, stdout_path, stderr_path,
+                                 timeout_seconds, started, exc, prepared)
 
-        # The process now exists but has not run. Every failure past this point
-        # terminates it rather than resuming it, because a resumed process that
-        # was never assigned to a job is exactly the uncontrolled work this
-        # module refuses to start.
         try:
-            win32job.AssignProcessToJobObject(job, h_process)
+            win32job.AssignProcessToJobObject(lease.handle, h_process)
         except pywintypes.error as exc:
             _terminate_unstarted(h_process)
-            return _launch_failure(argv, cwd, stdout_path, stderr_path, exc, started)
+            return _failed_lease(lease, argv, cwd, stdout_path, stderr_path,
+                                 timeout_seconds, started, exc, prepared)
 
         # Read here, while the process is suspended and the handle is open. After
         # the wait the process may have exited and the handle is closed by the
@@ -554,34 +797,182 @@ def _run_windows(
             win32process.ResumeThread(h_thread)
         except pywintypes.error as exc:
             _terminate_unstarted(h_process)
-            return _launch_failure(argv, cwd, stdout_path, stderr_path, exc, started)
-
-        exit_code, timed_out = _wait_windows(h_process, timeout_seconds)
-        if timed_out:
-            exit_code = _terminate_job(job, h_process)
+            return _failed_lease(lease, argv, cwd, stdout_path, stderr_path,
+                                 timeout_seconds, started, exc, prepared)
     finally:
-        for handle in (h_thread, h_process, h_stdin, h_stderr, h_stdout, job):
+        # The std handles and the thread handle belong to the launch, not to the
+        # lease. The process handle must stay open for `await_exit`, and the job
+        # handle must stay open for the life of the run, so both are handed on.
+        for handle in (h_thread, h_stdin, h_stderr, h_stdout):
             if handle is not None:
-                # PyHANDLE.Close() zeroes the handle value, so a second call is a
-                # no-op and a stale reference cannot close a handle the OS has
-                # since reused. win32api.CloseHandle does not do that: measured,
-                # closing the same PyHANDLE twice succeeded both times, which
-                # means the second call acted on a recycled handle.
-                handle.Close()
+                with contextlib.suppress(Exception):
+                    handle.Close()
+
+    return _lease_with(
+        lease, pid=pid, creation_time=creation_time, h_process=h_process,
+        argv=argv, cwd=cwd, stdout_path=stdout_path, stderr_path=stderr_path,
+        timeout_seconds=timeout_seconds, started=started,
+    )
+
+
+def _failed_lease(
+    lease: JobLease, argv: tuple[str, ...], cwd: Path, stdout_path: Path,
+    stderr_path: Path, timeout_seconds: float, started: float,
+    exc: BaseException, prepared: bool,
+) -> JobLease:
+    """A launch that never happened, carrying the reason rather than a pid.
+
+    The two log files exist and are empty so a report can cite them without
+    special-casing, and the lease has no pid, so nothing downstream can read this
+    as an execution that happened. A lease the caller supplied is closed here: a
+    prepared job with no member would otherwise hold `KILL_ON_JOB_CLOSE` open
+    until the caller noticed.
+    """
+    for path in (stdout_path, stderr_path):
+        with contextlib.suppress(OSError):
+            path.touch()
+    if prepared:
+        lease.close()
+    return _lease_with(
+        lease, pid=None, creation_time=None, h_process=None, argv=argv, cwd=cwd,
+        stdout_path=stdout_path, stderr_path=stderr_path,
+        timeout_seconds=timeout_seconds, started=started,
+        detail_reason=exc,
+    )
+
+
+def _lease_with(
+    lease: JobLease, *, pid: int | None, creation_time: int | None, h_process: Any,
+    argv: tuple[str, ...], cwd: Path, stdout_path: Path, stderr_path: Path,
+    timeout_seconds: float, started: float, boot_id: str = "", posix: Any = None,
+    detail_reason: BaseException | None = None,
+) -> JobLease:
+    """A new lease carrying the launch's outcome.
+
+    Frozen, so this returns a replacement rather than mutating. The caller keeps
+    the lease it passed in only for the job handle; this one is what it waits on.
+    """
+    return JobLease(
+        name=lease.name, handle=lease.handle, pid=pid, creation_time=creation_time,
+        boot_id=boot_id or lease.boot_id, argv=argv, cwd=cwd,
+        stdout_path=stdout_path, stderr_path=stderr_path,
+        timeout_seconds=timeout_seconds, started_at=started,
+        detail_reason=detail_reason, _process=h_process, _posix=posix, _closed=False,
+    )
+
+
+def _launch_posix(
+    argv: tuple[str, ...],
+    cwd: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout_seconds: float = 0.0,
+) -> JobLease:
+    """POSIX ownership. The process group is the unit; see the module docstring for
+    the boundary this covers and the one it does not.
+
+    Verified on WSL2 Ubuntu 26.04, kernel 6.18.33.2-microsoft-standard-WSL2, by
+    scripts/measure_posix_group.py and tests/test_procs_posix_real.py: a timeout
+    signalled the group and the child, the grandchild and the great-grandchild
+    were all dead afterwards, with no survivor anywhere in the group.
+    """
+    started = time.monotonic()
+    try:
+        out = open(stdout_path, "wb")
+        err = open(stderr_path, "wb")
+    except OSError as exc:
+        return _failed_lease(JobLease(name="", handle=None), argv, cwd, stdout_path,
+                             stderr_path, timeout_seconds, started, exc, False)
+    try:
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(cwd),
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            return _failed_lease(JobLease(name="", handle=None), argv, cwd,
+                                 stdout_path, stderr_path, timeout_seconds, started,
+                                 exc, False)
+    finally:
+        # The child holds its own duplicates of these; the parent's copies are
+        # not needed to keep it running and holding them would block a reader.
+        out.close()
+        err.close()
+
+    # Read the identity here, while the process is certainly alive. After the
+    # wait it may have exited and its /proc entry may be gone, and afterwards
+    # this module holds nothing that identifies it. A run record without this is
+    # a bare pid, and a bare pid is what a cancellation must refuse to act on
+    # because pids get recycled.
+    creation_time, boot_id = _posix_identity(proc.pid)
+    return _lease_with(
+        JobLease(name="", handle=None), pid=proc.pid, creation_time=creation_time,
+        h_process=None, argv=argv, cwd=cwd, stdout_path=stdout_path,
+        stderr_path=stderr_path, timeout_seconds=timeout_seconds, started=started,
+        boot_id=boot_id, posix=proc,
+    )
+
+
+def await_exit(lease: JobLease) -> ExecutionResult:
+    """Wait for a launched lease, and turn the wait into a result.
+
+    The timeout is the lease's, recorded at launch, so a caller that publishes
+    the run's identity between `launch` and here does not have to carry the
+    number as well.
+    """
+    started = lease.started_at or time.monotonic()
+    argv = lease.argv
+    cwd = lease.cwd if lease.cwd is not None else Path(".")
+    stdout_path = lease.stdout_path if lease.stdout_path is not None else Path("stdout.log")
+    stderr_path = lease.stderr_path if lease.stderr_path is not None else Path("stderr.log")
+
+    if lease.pid is None:
+        reason = getattr(lease, "detail_reason", None) or LaunchError("the command never started")
+        return _launch_failure(argv, cwd, stdout_path, stderr_path, reason, started)
+
+    if IS_WINDOWS:
+        exit_code, timed_out = _wait_windows(lease._process, lease.timeout_seconds)
+        if timed_out:
+            exit_code = _terminate_job(lease.handle, lease._process)
+    else:
+        exit_code, timed_out = _wait_posix(lease._posix, lease.timeout_seconds)
 
     return ExecutionResult(
         argv=argv,
         cwd=cwd,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
-        ownership=WINDOWS_OWNERSHIP,
-        pid=pid,
-        creation_time=creation_time,
+        ownership=lease.ownership,
+        pid=lease.pid,
+        creation_time=lease.creation_time,
+        boot_id=lease.boot_id,
         exit_code=exit_code,
         timed_out=timed_out,
         started_at=started,
         ended_at=time.monotonic(),
     )
+
+
+def _wait_posix(proc, timeout_seconds: float) -> tuple[int | None, bool]:
+    """The POSIX half of the wait, split out so both platforms share one caller."""
+    try:
+        return proc.wait(timeout=timeout_seconds), False
+    except subprocess.TimeoutExpired:
+        _kill_process_group(proc.pid)
+        try:
+            # The group was signalled, so this normally succeeds and returns the
+            # code the kill produced. It must be assigned on this path too:
+            # leaving it to the except below made every ordinary POSIX timeout
+            # raise UnboundLocalError instead of reporting a timeout.
+            return proc.wait(timeout=REAP_TIMEOUT_SECONDS), True
+        except subprocess.TimeoutExpired:
+            # Signalled, and the leader has not reaped. The command is killed
+            # either way; the code is simply unknown.
+            return None, True
 
 
 def _terminate_unstarted(h_process) -> None:
@@ -629,8 +1020,12 @@ def _terminate_job(job, h_process) -> None:
 
 __all__ = [
     "ExecutionResult",
+    "JobLease",
     "LaunchError",
     "POSIX_OWNERSHIP",
     "WINDOWS_OWNERSHIP",
+    "await_exit",
+    "launch",
+    "prepare_job",
     "run_command",
 ]

@@ -66,10 +66,20 @@ ADD COLUMN launch_state -> ok, then 'launching' -> still REJECTED
 
 So migration 5 must do the documented 12-step table rebuild for `runs`: create `runs_new` with the widened CHECK, copy, drop, rename. That rebuild carries `claim_holders`/`claim_members`/`runs_by_task`, which reference `runs`, so foreign keys must be handled explicitly around it — `PRAGMA foreign_keys` cannot be changed inside a transaction, and `_migrate` relies on `executescript` making the script itself the transaction.
 
-Two decisions an implementer must make before writing migration 5, neither of which the current spec settles:
+Two decisions an implementer must make before writing migration 5, neither of which the current spec settles. Both are now settled below, because both were verified rather than reasoned (`review/probe_migrate_rebuild.py`).
 
-1. **Rebuild, or don't narrow the CHECK?** Rebuilding `runs` is the only way to keep the constraint honest. Dropping the CHECK entirely is the smaller diff and makes the database unable to reject a typo'd lifecycle — which is exactly the class of bug this product exists to prevent. Recommend the rebuild.
-2. **`_migrate` must tolerate the rebuild.** It currently assumes each script is a sequence of `CREATE ... IF NOT EXISTS`. A rebuild needs its version INSERT still inside the same transaction, or a crash between drop and rename loses the table.
+**1. Rebuild, and `_migrate` has to grow one capability.** Rebuilding `runs` is the only way to keep the constraint honest. Dropping the CHECK entirely is the smaller diff and makes the database unable to reject a typo'd lifecycle — which is exactly the class of bug this product exists to prevent. Use the rebuild.
+
+The rebuild does not run inside the existing `_migrate`. With foreign keys on — SQLite's default — `DROP TABLE runs` fails against any table referencing it:
+
+```
+fk ON,  referencing table present -> IntegrityError: FOREIGN KEY constraint failed
+fk OFF -> schema_version = 2, rows preserved, 'launching' ACCEPTED, no FK violations
+```
+
+And `PRAGMA foreign_keys` is a **silent no-op inside a transaction**, so a migration cannot switch it off in its own script — `executescript` wraps the script in one. So `_migrate` needs a per-migration "foreign keys must be off around this" flag, set *outside* the script, with the setting restored afterwards. That is the one structural change to storage this milestone needs, and it is worth naming as such rather than discovering it as a mysterious `IntegrityError`.
+
+The version INSERT still rides at the end of the same script, so the `DROP`, the `RENAME` and the recorded version commit together — a crash mid-rebuild rolls the whole migration back and leaves `runs` intact. That property survives the rebuild, which is the main thing the existing runner already gets right.
 
 | value | written by | meaning |
 | --- | --- | --- |

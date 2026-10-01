@@ -16,7 +16,9 @@ import ctypes
 import json
 import os
 import sqlite3
+import sys
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
@@ -159,6 +161,145 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
 
     CREATE INDEX IF NOT EXISTS acceptances_by_integration ON acceptances(integration_id);
     """),
+    (5, """
+    -- A run's lifecycle reaches two states beyond the three migration 1 allowed.
+    -- `launching` is the window between CreateProcess returning and the identity
+    -- being published, and `cancelling` is the window between a cancel being
+    -- requested and the terminal outcome being known. Both are states a recovery
+    -- reader must be able to tell apart from "finished", so both are named.
+    --
+    -- SQLite cannot widen a CHECK constraint in place. `ALTER TABLE runs ADD
+    -- COLUMN` adds the column and leaves the old constraint standing, so the
+    -- three-step rename dance below is the only way to keep the constraint
+    -- honest -- which matters because an unconstrained lifecycle column is exactly
+    -- the class of typo this product exists to reject. Measured on this schema: a
+    -- 'launching' insert is rejected before the rebuild and accepted after it,
+    -- and a typo'd 'prepring' is still rejected after it.
+    --
+    -- The explicit BEGIN/COMMIT is load-bearing and is not decoration.
+    -- `executescript` on an autocommit connection commits statement by statement,
+    -- so without it a failure after the DROP would leave `runs` absent while the
+    -- recorded version still said 4. Measured, with the version INSERT failing
+    -- after the rebuild: without the transaction the old table was gone; with it
+    -- the rebuild committed as one unit. The surrounding statements stay outside
+    -- it so that the version INSERT `_migrate` appends to the script still runs
+    -- as its own statement.
+    BEGIN IMMEDIATE;
+
+    CREATE TABLE runs_new (
+        run_id               TEXT PRIMARY KEY,
+        check_id             TEXT NOT NULL,
+        task_id              TEXT,
+        attempt              INTEGER,
+        lifecycle            TEXT NOT NULL
+            CHECK (lifecycle IN ('preparing','launching','cancelling','running','terminal')),
+        result               TEXT CHECK (result IS NULL OR result IN ('PASS','FAIL','BLOCKED')),
+        reason               TEXT,
+        source_json          TEXT NOT NULL,
+        configuration_digest TEXT NOT NULL,
+        fixture_digest       TEXT,
+        process_json         TEXT,
+        registered_at        TEXT NOT NULL,
+        ended_at             TEXT
+    );
+
+    INSERT INTO runs_new (
+        run_id, check_id, task_id, attempt, lifecycle, result, reason, source_json,
+        configuration_digest, fixture_digest, process_json, registered_at, ended_at
+    )
+    SELECT run_id, check_id, task_id, attempt, lifecycle, result, reason, source_json,
+           configuration_digest, fixture_digest, process_json, registered_at, ended_at
+    FROM runs;
+
+    DROP TABLE runs;
+    ALTER TABLE runs_new RENAME TO runs;
+
+    -- `DROP TABLE` takes the index with it, and nothing fails when it goes: the
+    -- query that most needs it, `recover`'s lookup of the runs holding a claim,
+    -- would quietly become a full table scan on the one path that decides whether
+    -- a resource may be released. Measured before and after: SEARCH runs USING
+    -- INDEX runs_by_task, then SCAN runs, then SEARCH again once re-issued.
+    CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id);
+
+    COMMIT;
+
+    -- What was launched, recorded before it was launched.
+    --
+    -- This row is the durable half of a run's ownership. `process_json` cannot
+    -- hold it, because that column is written once the child exists and a crash
+    -- between the two writes would leave a run with no record that anything was
+    -- ever started. The two pieces of ownership are therefore persisted at the
+    -- two moments they first exist: the job name here, before CreateProcess, and
+    -- the pid in `process_json`, immediately after it. A reader takes the union.
+    --
+    -- `state_dir` and `project_root` are absolute so the detached supervisor
+    -- re-opens this database rather than guessing it from a working directory
+    -- that a client may not have set. `argv_json` is the resolved argv, written
+    -- before the spawn, so a run that never produced a report can still say what
+    -- it was going to run.
+    --
+    -- `job_name` and the three `abandon*` columns are here because the two
+    -- features that need them are named against this table elsewhere: the job
+    -- name is what a second process opens to cancel the tree, and `abandoned` is
+    -- what `recover`'s ABANDON_LAUNCH writes once a human has supplied the
+    -- evidence that an unresolved launch is over. Neither belongs in
+    -- `process_json`, which is written later and by a different writer.
+    CREATE TABLE IF NOT EXISTS launches (
+        run_id            TEXT PRIMARY KEY REFERENCES runs(run_id),
+        project_root      TEXT NOT NULL,
+        state_dir         TEXT NOT NULL,
+        manifest_dir      TEXT NOT NULL,
+        check_id          TEXT NOT NULL,
+        argv_json         TEXT NOT NULL,
+        cwd               TEXT NOT NULL,
+        stdout_path       TEXT NOT NULL,
+        stderr_path       TEXT NOT NULL,
+        env_json          TEXT NOT NULL,
+        timeout_seconds   REAL NOT NULL,
+        job_name          TEXT,
+        supervisor_pid    INTEGER NOT NULL,
+        supervisor_start  INTEGER,
+        requested_at      TEXT NOT NULL,
+        kind              TEXT NOT NULL CHECK (kind IN ('detached','inline')),
+        abandoned         INTEGER NOT NULL DEFAULT 0,
+        abandoned_at      TEXT,
+        abandon_evidence  TEXT
+    );
+
+    -- Which attempt asked for which run, and the only reader of "which generation
+    -- of a task does this run belong to".
+    --
+    -- `runs.attempt` records the generation too, and this table is not a second
+    -- copy of that column: it is the membership relation recovery needs, and it
+    -- is written in the same transaction as the launch it describes. A run is
+    -- either a member of exactly one generation of exactly one task, or it is not
+    -- a member of any, and the second case is a run registered by a caller that
+    -- never had a task -- which is every inline `run_check` caller, and none of
+    -- them holds a claim.
+    CREATE TABLE IF NOT EXISTS run_intents (
+        run_id     TEXT NOT NULL,
+        task_id    TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        operation  TEXT NOT NULL CHECK (operation IN ('check_start','run_cancel')),
+        requested_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, operation, task_id, generation)
+    );
+
+    CREATE INDEX IF NOT EXISTS run_intents_by_task ON run_intents(task_id, generation);
+
+    -- A cancel asked for before the run had an identity to cancel.
+    --
+    -- The row is what makes a cancel that arrives early a deferred cancel rather
+    -- than a lost one. The supervisor checks for it at the two points where it
+    -- would otherwise begin executing, so a cancel that lands during startup is
+    -- honoured before any check code runs.
+    CREATE TABLE IF NOT EXISTS cancel_intents (
+        run_id       TEXT PRIMARY KEY,
+        requested_at TEXT NOT NULL,
+        requested_by TEXT NOT NULL,
+        resolved     INTEGER NOT NULL DEFAULT 0
+    );
+    """),
 )
 
 
@@ -172,6 +313,31 @@ class ConflictError(StoreError):
     Separate from StoreError because a conflict is a legitimate answer the caller
     shows the user, while a StoreError means the store itself could not decide.
     """
+
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    """Everything needed to start a run, decided before anything is started.
+
+    Named rather than passed as fourteen arguments because the ordering is the
+    point: this is one value, it is complete, and a caller cannot record a launch
+    with half of it. The paths are absolute because the detached supervisor
+    re-opens the store and re-reads the manifest from a working directory no
+    client controls.
+    """
+
+    project_root: Path
+    state_dir: Path
+    manifest_dir: Path
+    check_id: str
+    argv: tuple[str, ...]
+    cwd: Path
+    stdout_path: Path
+    stderr_path: Path
+    env: dict[str, str]
+    timeout_seconds: float
+    job_name: str
+    kind: str
 
 
 def probe_state(state_root: Path, db_path: Path) -> tuple[bool, str]:
@@ -206,6 +372,35 @@ _RUN_COLUMNS = (
     "run_id", "check_id", "task_id", "attempt", "lifecycle", "result", "reason",
     "registered_at", "ended_at", "source_json", "configuration_digest", "fixture_digest",
 )
+
+# The `launches` columns `load_launch` returns, named beside the query that fills
+# them for the same reason `_RUN_COLUMNS` is.
+_LAUNCH_COLUMNS = (
+    "run_id", "project_root", "state_dir", "manifest_dir", "check_id", "argv_json",
+    "cwd", "stdout_path", "stderr_path", "env_json", "timeout_seconds", "job_name",
+    "supervisor_pid", "supervisor_start", "requested_at", "kind", "abandoned",
+    "abandoned_at", "abandon_evidence",
+)
+
+
+def _supervisor_start() -> int | None:
+    """This process's creation FILETIME, or None where that has no meaning.
+
+    Recorded beside the supervisor's pid so a reader can tell "this supervisor is
+    gone" from "this pid belongs to a process that started later". Windows
+    recycles pids, so the pid alone cannot answer that, and an answer of "the
+    supervisor is gone" is what `recover` needs before it will clear an
+    unresolved launch.
+    """
+    if sys.platform != "win32":
+        return None
+    with contextlib.suppress(Exception):
+        from .procidentity import read_identity
+
+        identity = read_identity(os.getpid())
+        if identity is not None:
+            return identity.creation_time
+    return None
 
 
 def open_task(conn: sqlite3.Connection, task_id: str, contract: dict, policy_digest: str) -> None:
@@ -422,30 +617,262 @@ class Store:
                 (task_id, attempt, run_id),
             )
 
-    def attach_job_name(self, run_id: str, job_name: str) -> None:
-        """Name the job object that owns this run's tree.
+    # ------------------------------------------------------------- launches
 
-        Written beside the process record rather than inside the report, because
-        the report is already published by the time a caller knows which process
-        ran the check. The two are read together when a second process cancels
-        the run, so the name has to live where that read happens.
+    def record_launch(
+        self, *, run_id: str, task_id: str | None, generation: int | None, plan: LaunchPlan
+    ) -> None:
+        """Record what is about to be launched, before it is launched.
+
+        One transaction for the `launches` row, the `run_intents` row and the
+        move to `preparing`-with-known-intent, because a launch that recorded one
+        of the two without the other would be exactly the unreadable state this
+        row exists to prevent: a claim that cannot be told from a run that never
+        started.
+
+        A second call for the same run id is refused rather than overwritten. The
+        first one is the truth about what was launched; a caller that disagrees
+        with it is a caller that would put two launches under one identity.
         """
-        with self.transaction() as conn:
-            row = conn.execute(
-                "SELECT process_json FROM runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
-            if row is None:
-                raise StoreError(f"cannot attach a job name: run {run_id} is unknown")
-            process = json.loads(row[0]) if row[0] else {}
-            if not process.get("pid"):
-                raise StoreError(
-                    f"cannot attach a job name to run {run_id}: it records no process"
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = conn.execute(
+                    "SELECT run_id FROM launches WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if existing is not None:
+                    raise ConflictError(
+                        f"run {run_id} already has a recorded launch; a second launch under "
+                        "one run id would be two executions with one identity"
+                    )
+                conn.execute(
+                    "INSERT INTO launches (run_id, project_root, state_dir, manifest_dir,"
+                    " check_id, argv_json, cwd, stdout_path, stderr_path, env_json,"
+                    " timeout_seconds, job_name, supervisor_pid, supervisor_start, requested_at,"
+                    " kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        run_id, str(plan.project_root), str(plan.state_dir),
+                        str(plan.manifest_dir), plan.check_id, _dumps(list(plan.argv)),
+                        str(plan.cwd), str(plan.stdout_path), str(plan.stderr_path),
+                        _dumps(plan.env), float(plan.timeout_seconds), plan.job_name,
+                        os.getpid(), _supervisor_start(), _now(), plan.kind,
+                    ),
                 )
-            process["job_name"] = job_name
-            conn.execute(
-                "UPDATE runs SET process_json = ? WHERE run_id = ?",
-                (_dumps(process), run_id),
+                if task_id is not None and generation is not None:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO run_intents (run_id, task_id, generation,"
+                        " operation, requested_at) VALUES (?,?,?,'check_start',?)",
+                        (run_id, task_id, int(generation), _now()),
+                    )
+            except BaseException:
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+
+    def load_launch(self, run_id: str) -> dict | None:
+        """The recorded launch, or None when nothing was ever launched for this run."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT " + ", ".join(_LAUNCH_COLUMNS) + " FROM launches WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(_LAUNCH_COLUMNS, row))
+
+    def mark_launching(self, run_id: str, process: dict) -> None:
+        """Record that a process was created and its identity is not yet published.
+
+        `ownership_known` false is the whole content of this write. The window it
+        names is the dangerous one: a child exists, the tree is contained by a
+        job nobody else can name yet, and the only truthful answer to "is
+        anything running" is "something was started and I cannot yet prove what".
+        A reader that treated the absent pid as proof of absence would release a
+        claim this run's task still holds.
+        """
+        payload = dict(process)
+        payload["ownership_known"] = False
+        payload["launch_state"] = "started"
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE runs SET lifecycle = 'launching', process_json = ?"
+                " WHERE run_id = ? AND lifecycle != 'terminal'",
+                (_dumps(payload), run_id),
             )
+            if cursor.rowcount == 0:
+                raise StoreError(
+                    f"cannot mark launching: {run_id} is unknown or already terminal"
+                )
+
+    def publish_identity(self, run_id: str, identity: dict) -> None:
+        """Publish the verified owner of a running run.
+
+        Distinct from `mark_launching` and guarded the same way, so a cancel that
+        has already published a terminal outcome wins over a late identity write.
+        That is the correct outcome rather than a lost update: the run was
+        cancelled, and a cancelled run does not become running again because its
+        supervisor was slow.
+        """
+        payload = dict(identity)
+        payload["ownership_known"] = True
+        payload["launch_state"] = "identity_published"
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE runs SET lifecycle = 'running', process_json = ?"
+                " WHERE run_id = ? AND lifecycle != 'terminal'",
+                (_dumps(payload), run_id),
+            )
+            if cursor.rowcount == 0:
+                raise StoreError(
+                    f"cannot publish identity: {run_id} is unknown or already terminal"
+                )
+
+    def mark_cancelling(self, run_id: str) -> None:
+        """Record that termination has been asked for and the outcome is not yet known."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE runs SET lifecycle = 'cancelling'"
+                " WHERE run_id = ? AND lifecycle NOT IN ('terminal', 'cancelling')",
+                (run_id,),
+            )
+
+    def record_cancel_intent(self, run_id: str, requested_by: str) -> dict:
+        """Note a cancel for a run, and whether it can be acted on yet.
+
+        Returns the row so the caller can tell a deferred cancel from an applied
+        one. `applied` is false when the run has no published owner, which is not
+        a refusal: it is the window the intent exists to cover, and the
+        supervisor picks it up at the next point it would have started work.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT lifecycle, process_json FROM runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if row is None:
+                    raise StoreError(f"no run is recorded under {run_id!r}")
+                conn.execute(
+                    "INSERT INTO cancel_intents (run_id, requested_at, requested_by, resolved)"
+                    " VALUES (?,?,?,0) ON CONFLICT(run_id) DO UPDATE SET requested_at = excluded.requested_at",
+                    (run_id, _now(), requested_by),
+                )
+                process = json.loads(row[1]) if row[1] else None
+                ownership_known = bool((process or {}).get("ownership_known"))
+                if not ownership_known and row[0] != "terminal":
+                    conn.execute(
+                        "UPDATE runs SET lifecycle = 'cancelling'"
+                        " WHERE run_id = ? AND lifecycle != 'terminal'",
+                        (run_id,),
+                    )
+            except BaseException:
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        return {
+            "run_id": run_id,
+            "requested_by": requested_by,
+            "ownership_known": ownership_known,
+            "applied": ownership_known,
+            "lifecycle": "terminal" if row[0] == "terminal" else "cancelling",
+        }
+
+    def cancel_intent(self, run_id: str) -> dict | None:
+        """The pending cancel for a run, or None when nothing asked for one."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT run_id, requested_at, requested_by, resolved FROM cancel_intents"
+                " WHERE run_id = ? AND resolved = 0",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(("run_id", "requested_at", "requested_by", "resolved"), row))
+
+    def resolve_cancel_intent(self, run_id: str) -> None:
+        """Mark a cancel as answered, so it is not re-applied to a later run."""
+        with self._connect() as conn:
+            conn.execute("UPDATE cancel_intents SET resolved = 1 WHERE run_id = ?", (run_id,))
+
+    def abandon_launch(self, run_id: str, evidence: str) -> None:
+        """Record that an unresolved launch was reconciled by a human.
+
+        Never deletes and never touches a claim. The claim is released by
+        `recover`'s own RELEASE_CLAIM, which asks again whether any holder is
+        live; this row only records that the unresolved state was decided, so a
+        second request to decide it is refused rather than answered afresh.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE launches SET abandoned = 1, abandoned_at = ?, abandon_evidence = ?"
+                " WHERE run_id = ?",
+                (_now(), evidence, run_id),
+            )
+            if cursor.rowcount == 0:
+                raise StoreError(
+                    f"cannot abandon the launch of {run_id!r}: no launch was recorded for it"
+                )
+
+    def launch_abandoned(self, run_id: str) -> bool:
+        """Whether this run's launch was already reconciled by a human."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT abandoned FROM launches WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return bool(row and row[0])
+
+    def runs_for_task(self, task_id: str, generation: int) -> tuple[dict, ...]:
+        """The runs belonging to one generation of one task.
+
+        Read from `run_intents` rather than from `runs.task_id`, because the
+        question recovery asks is about membership of a generation and the
+        intent row is where that membership is recorded. A run with no intent
+        belongs to no generation and holds no claim, so it is correctly absent
+        rather than being read as a member of whatever is current.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT " + ", ".join(_RUN_COLUMNS) + " FROM runs WHERE run_id IN"
+                " (SELECT run_id FROM run_intents WHERE task_id = ? AND generation = ?)"
+                " ORDER BY rowid",
+                (task_id, int(generation)),
+            ).fetchall()
+        return tuple(dict(zip(_RUN_COLUMNS, row)) for row in rows)
+
+    def run_status(self, run_id: str) -> dict | None:
+        """What is known about a run that may not have published a report.
+
+        Every in-flight run is report-less by design, so a status read of one is a
+        valid request with a valid answer. This is that answer: the recorded
+        lifecycle, the identity if one is known, and no outcome. None is returned
+        only for a run id that does not exist at all, which is the one case where
+        a reader has named something this store has never heard of.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT run_id, check_id, task_id, attempt, lifecycle, result, reason,"
+                " registered_at, ended_at, process_json FROM runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        status = {
+            "run_id": row[0], "check_id": row[1], "task_id": row[2], "attempt": row[3],
+            "lifecycle": row[4], "result": row[5], "reason": row[6],
+            "registered_at": row[7], "ended_at": row[8],
+        }
+        launch = self.load_launch(run_id)
+        if launch is not None:
+            status["job_name"] = launch["job_name"]
+        process = json.loads(row[9]) if row[9] else None
+        if process is not None:
+            status["process"] = process
+        report = self.run_dir(run_id) / REPORT_NAME
+        if report.is_file():
+            status["report_path"] = str(report)
+        return status
 
     def publish(self, run_id: str, report: dict) -> None:
         """Put the report where a reader expects it, atomically, and exactly once.

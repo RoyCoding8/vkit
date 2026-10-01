@@ -133,6 +133,30 @@ def begin_task(client: StdioClient, request_id: str = "req-begin-1", **extra) ->
     return json.loads(result["content"][0]["text"])["task_id"]
 
 
+def await_outcome(client: StdioClient, run_id: str, timeout: float = LIFECYCLE_TIMEOUT) -> dict:
+    """Poll `run_get` over the wire until the run is terminal, and return that body.
+
+    `check_start` now records the launch and returns while the check is still
+    running, which is what lets a run outlive the client that asked for it. The
+    verdict is therefore not in the `check_start` payload, and a test that wants
+    it asks for it the way a caller now must: over the wire, by run id.
+
+    Polled with a deadline rather than slept for a fixed time: the check is a
+    real process whose duration is not this test's to predict, and a fixed sleep
+    would be either slow on a fast machine or flaky on a loaded one.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        body = client.call_body("run_get", {"run_id": run_id})
+        if body.get("lifecycle") == "terminal" and body.get("outcome"):
+            return body
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"run {run_id} was still {body.get('lifecycle')!r} after {timeout}s"
+            )
+        time.sleep(0.1)
+
+
 # --- the handshake -----------------------------------------------------------
 
 def test_the_server_completes_a_handshake_and_negotiates_a_version(connected) -> None:
@@ -227,7 +251,12 @@ def test_a_client_drives_the_python_example_to_ready_over_the_wire(tmp_path: Pat
 
     Inspect, begin a task, start a real check, read the evidence it produced,
     and finalize. Every value asserted is one read off the wire; the run itself
-    is a real `python verify_totals.py` launched by the server.
+    is a real `python verify_totals.py` launched by the server, owned by a
+    supervisor that outlives the `check_start` call that asked for it.
+
+    The start returns before the check finishes, so the verdict is read with
+    `run_get` afterwards -- the way a caller now has to -- and the rest of the
+    row runs on that awaited body.
     """
     project = make_repo(tmp_path, "lifecycle")
     with StdioClient(project) as client:
@@ -244,11 +273,18 @@ def test_a_client_drives_the_python_example_to_ready_over_the_wire(tmp_path: Pat
         }, timeout=LIFECYCLE_TIMEOUT)
         assert started["isError"] is False, started
         run = json.loads(started["content"][0]["text"])["runs"][0]
-        assert run["result"] == "PASS"
-        assert run["launched"] is True
+        # The start payload names the run and carries no verdict, because the
+        # check is executing in another process right now. `launched` is not
+        # asserted here: it is derived from the lifecycle recorded at handoff, and
+        # at that instant a detached run is always still `preparing`, so the flag
+        # says nothing this test could act on. Whether a process was really
+        # launched is now a question about the run, answered below.
+        assert run["result"] is None
+        assert run["outcome"] is None
         assert len(run["run_id"]) == 32
+        assert run["replayed"] is False
 
-        fetched = client.call_body("run_get", {"run_id": run["run_id"], "log_limit": 4096})
+        fetched = await_outcome(client, run["run_id"])
         assert fetched["lifecycle"] == "terminal"
         assert fetched["result"] == "PASS"
         assert fetched["check_id"] == "totals-behavior"
@@ -257,6 +293,12 @@ def test_a_client_drives_the_python_example_to_ready_over_the_wire(tmp_path: Pat
             "negatives-only", "cancels-to-zero",
         ]
         assert all(s["result"] == "PASS" for s in fetched["scenarios"])
+        # A real process really ran and was really reaped, which is what the
+        # start payload can no longer say. A server that answered PASS without
+        # launching anything would publish no owner and no exit code, so these two
+        # are what make this the end-to-end proof rather than a shape check.
+        assert fetched["ownership_known"] is True
+        assert isinstance(fetched["process"]["pid"], int)
         assert fetched["process"]["exit_code"] == 0
         assert fetched["artifacts"]["result"]["exists"] is True
         assert "PASS" in fetched["summary"]
@@ -275,6 +317,11 @@ def test_the_cli_and_the_wire_report_the_same_run(tmp_path: Path) -> None:
     The CLI reads the same durable store the server wrote, so this is the check
     that an MCP answer and a shell answer are the same fact rather than a
     parallel implementation of it.
+
+    The wire answer is awaited first, because `check_start` returns at the launch
+    and the CLI would otherwise be asked about a run that had not finished. Both
+    surfaces are read after the run is terminal, which is the only point at which
+    they can be compared at all.
     """
     project = make_repo(tmp_path, "same-run")
     with StdioClient(project) as client:
@@ -284,7 +331,7 @@ def test_the_cli_and_the_wire_report_the_same_run(tmp_path: Path) -> None:
             {"task_id": task_id, "check_ids": ["totals-behavior"], "request_id": "req-same"},
             timeout=LIFECYCLE_TIMEOUT,
         )
-        run = started["runs"][0]
+        run = await_outcome(client, started["runs"][0]["run_id"])
         client.close()
 
     report = cli_json(["run", "show", "--project", str(project), "--run", run["run_id"]])
@@ -328,13 +375,10 @@ def test_a_real_defect_comes_back_as_a_verdict_not_a_failed_call(tmp_path: Path)
         }, timeout=LIFECYCLE_TIMEOUT)
         assert result["isError"] is False, result
 
-        body = json.loads(result["content"][0]["text"])
-        run = body["runs"][0]
-        assert run["result"] == "FAIL"
-        assert {s["id"] for s in run["outcome"]["scenarios"] if s["result"] == "FAIL"}
-
-        refetched = client.call_body("run_get", {"run_id": run["run_id"]})
+        run_id = json.loads(result["content"][0]["text"])["runs"][0]["run_id"]
+        refetched = await_outcome(client, run_id)
         assert refetched["result"] == "FAIL"
+        assert {s["id"] for s in refetched["outcome"]["scenarios"] if s["result"] == "FAIL"}
         assert "FAIL" in refetched["summary"]
 
         finalized = client.call_body("task_finalize", {"task_id": task_id})
@@ -366,14 +410,15 @@ def test_a_stored_fail_still_reads_as_fail_on_a_second_connection(tmp_path: Path
             timeout=LIFECYCLE_TIMEOUT,
         )
         run_id = started["runs"][0]["run_id"]
-        assert started["runs"][0]["result"] == "FAIL"
+        first_read = await_outcome(first, run_id)
+        assert first_read["result"] == "FAIL"
         first.close()
 
     with StdioClient(project) as second:
         again = second.call_body("run_get", {"run_id": run_id})
         assert again["result"] == "FAIL"
         assert [s["id"] for s in again["scenarios"]] == [
-            s["id"] for s in started["runs"][0]["outcome"]["scenarios"]
+            s["id"] for s in first_read["outcome"]["scenarios"]
         ]
 
         replay = second.call_body(
@@ -383,7 +428,10 @@ def test_a_stored_fail_still_reads_as_fail_on_a_second_connection(tmp_path: Path
         )
         assert replay["runs"][0]["run_id"] == run_id
         assert replay["runs"][0]["replayed"] is True
-        assert replay["runs"][0]["result"] == "FAIL"
+        # A replay attaches to the recorded run rather than executing a second
+        # time, so it too carries no verdict of its own; the verdict is still the
+        # one the first session recorded.
+        assert await_outcome(second, run_id)["result"] == "FAIL"
         second.close()
 
 
@@ -659,7 +707,7 @@ def test_a_check_that_times_out_is_recorded_as_blocked_not_passed(tmp_path: Path
             {"task_id": task_id, "check_ids": ["totals-behavior"], "request_id": "req-timeout"},
             timeout=LIFECYCLE_TIMEOUT,
         )
-        run = started["runs"][0]
+        run = await_outcome(client, started["runs"][0]["run_id"])
         assert run["result"] == "BLOCKED"
         assert run["outcome"]["reason"] == "timeout"
 

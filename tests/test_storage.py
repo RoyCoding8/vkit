@@ -234,7 +234,7 @@ def test_an_interrupted_report_write_leaves_no_acceptance_record(
 
     Both halves were implemented and neither had a test. `publish` stages the
     report to a temp name, fsyncs it, claims the row, and swaps the temp into
-    place last; `tmp/research/KIT_ACCEPTANCE.md` advertises the row and
+    place last; `review/KIT_ACCEPTANCE.md` advertises the row and
     `scripts/acceptance02.py` row 13 concedes in its own note that a full disk is
     "NOT induced". What was measured was the locking half of the row, not this.
 

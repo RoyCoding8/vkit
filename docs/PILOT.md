@@ -70,7 +70,7 @@ a comparison that looks like an improvement and is a measurement error.
 
 GAP-8 applies to the reporting shape. The plan asks for every row of an
 acceptance table to be mapped, and the matrix is tracked at
-`tmp/research/KIT_ACCEPTANCE.md` with 59 data rows, none of which is mapped. So
+`review/KIT_ACCEPTANCE.md` with 59 data rows, none of which is mapped. So
 there is nothing to map against yet, and the pilot report records the gaps that
 were open instead. The mapping is written when the release candidate is
 assembled.
@@ -150,7 +150,7 @@ plans/STATUS.md
 docs/RELEASE-CHECKLIST.md
 
 # GAP-8's acceptance matrix, whose 59 data rows the report is written around.
-tmp/research/KIT_ACCEPTANCE.md
+review/KIT_ACCEPTANCE.md
 
 # The plugin manifest whose server command is GAP-1 and GAP-4.
 plugin/.mcp.json

@@ -56,7 +56,7 @@ from vkit.manifest import parse_manifest  # noqa: E402
 from vkit.paths import open_project  # noqa: E402
 from vkit.procidentity import ProcessIdentity, read_identity  # noqa: E402
 from vkit.procs import run_command  # noqa: E402
-from vkit.storage import MIGRATIONS, Store, StoreError  # noqa: E402
+from vkit.storage import MIGRATIONS, Store  # noqa: E402
 from vkit.supervisor import cancel_run, job_name_for, start_run  # noqa: E402
 from vkit.tasks import TaskRecord  # noqa: E402
 
@@ -224,6 +224,12 @@ def raw_rows(db_path: Path, table: str, columns: str, *, newest_first: bool = Fa
 def claim_rows(db_path: Path) -> list[dict]:
     return raw_rows(db_path, "claim_holders",
                     "resource_key, kind, capacity, held, task_id, generation")
+
+
+def task_rows(db_path: Path) -> list[dict]:
+    """Task rows as they actually sit in the file, for a before-and-after compare."""
+    return raw_rows(db_path, "tasks",
+                    "task_id, status, generation, policy_digest, readiness")
 
 
 def run_rows(db_path: Path) -> list[dict]:
@@ -1471,11 +1477,19 @@ def row_required_check_absent() -> None:
 #
 # The row is driven through `Server.call_tool`, the same entry point an MCP SDK
 # adapter forwards to, because the surface that holds the baseline is the tool
-# rather than the readiness function. `task_finalize` computes the required set
-# as the union of the manifest's checks and whatever the caller passes, so a
-# client naming a smaller list narrows nothing. A row that only called
-# `compute_readiness` would have measured the wrong thing, and would have
-# reported a failure that the product does not actually have.
+# rather than the readiness function. The floor is derived at admission and
+# unioned again at the decision, so a client naming a smaller list narrows
+# nothing at either point. A row that only called `compute_readiness` would have
+# measured the wrong thing, and would have reported a failure that the product
+# does not actually have.
+#
+# The client sends the arguments `task_begin` accepts and nothing else. It named
+# neither `policy_digest` nor `checkout_ref`: R1 removed both from the schema
+# because a caller-supplied digest let a task bind to a checkout and a policy
+# and then be compared against evidence it chose itself (F04). Both are derived
+# inside admission now, and this row is also what proves it -- the client cannot
+# name a digest because the tool refuses the call, so the digest the task is
+# pinned to is the one measured from the policy in force.
 
 SMALLER_SELECTION_CLIENT = """
     import sys
@@ -1483,29 +1497,29 @@ SMALLER_SELECTION_CLIENT = """
     from vkit.mcp import Server
     server = Server({root!r})
     begin = server.call_tool("task_begin", {{
-        "contract": {{"required_checks": ["second-behavior"]}},
-        "policy_digest": "policy-v2", "checkout_ref": "w:checkout",
+        "contract": {{"required_checks": {asked!r}}},
         "request_id": "req-12",
     }})
     task_id = begin.content["task_id"]
     # The client runs the one check it asked for.
     start = server.call_tool("check_start", {{
-        "task_id": task_id, "check_ids": ["totals-behavior"], "request_id": "req-12-run",
+        "task_id": task_id, "check_ids": {asked!r}, "request_id": "req-12-run",
     }})
     # And asks to finalize against a selection of one, naming only what it ran.
     small = server.call_tool("task_finalize", {{"task_id": task_id,
-                                               "check_ids": ["totals-behavior"]}})
+                                               "check_ids": {asked!r}}})
     # Read back what that decision actually recorded, before anything else runs.
     from vkit.paths import open_project
     from vkit.storage import Store
     from vkit import tasks as task_module
     stored_after_small = task_module.get_task(
         Store(open_project({root!r}).db_path), task_id).readiness
-    # The baseline check has now actually run.
-    server.call_tool("check_start", {{"task_id": task_id, "check_ids": ["second-behavior"],
+    # The check the client never asked for has now actually run.
+    server.call_tool("check_start", {{"task_id": task_id, "check_ids": {unasked!r},
                                      "request_id": "req-12-run-2"}})
     full = server.call_tool("task_finalize", {{"task_id": task_id}})
-    emit(task_id=task_id, claim=begin.content.get("claim"),
+    emit(task_id=task_id, floor_at_begin=begin.content["required_checks"],
+         pinned_digest=begin.content["policy_digest"],
          ran=[r["check_id"] + "=" + r["result"] for r in start.content["runs"]],
          small=small.content, stored_after_small=stored_after_small, full=full.content)
 """
@@ -1515,34 +1529,76 @@ def row_smaller_check_selection() -> None:
     """A smaller selection cannot produce READY while the baseline is missing."""
     row = _row(12)
     repo = make_repo("smaller-selection", checks=[*example_checks(), SECOND_PASSING_CHECK])
+    # What the policy registers is read from the policy, not assumed from the
+    # fixture it was built with, so the row can say it asked for a strict subset
+    # rather than a list that happens to look smaller.
+    project = open_project(repo)
+    policy_checks = sorted(parse_manifest(project, project.runs_root / "probe").checks)
+    policy_digest = parse_manifest(project, project.runs_root / "probe").digest()
+    # The client narrows to a single check, and the policy registers another it
+    # never mentions. It asks the same question twice -- at admission, and again
+    # when it finalizes naming only what it ran -- so a tool that honoured either
+    # request would report a floor of one and the row would fail.
+    asked = [PASSING_CHECK_ID]
+    unasked = [SECOND_PASSING_CHECK["id"]]
 
-    client = child(SMALLER_SELECTION_CLIENT.format(src=str(SRC), root=str(repo)))
+    client = child(SMALLER_SELECTION_CLIENT.format(
+        src=str(SRC), root=str(repo), asked=asked, unasked=unasked))
     if "__error__" in client:
         unestablished(row, f"the client failed: {client}")
         return
     small = client["small"]
     full = client["full"]
-    baseline_gap = "no completed run for required check 'second-behavior'"
+    unasked_gap = f"no completed run for required check '{SECOND_PASSING_CHECK['id']}'"
     observed(
         row,
-        client["ran"] == [f"{PASSING_CHECK_ID}=PASS"]
+        # The selection was genuinely narrower than the floor, at both points.
+        policy_checks == sorted([*asked, *unasked])
+        and client["floor_at_begin"] == policy_checks
+        and client["floor_at_begin"] != asked
+        # And the client did not get to choose the digest its evidence is
+        # compared against, because the tool no longer accepts one.
+        and client["pinned_digest"] == policy_digest
+        and client["ran"] == [f"{PASSING_CHECK_ID}=PASS"]
         and small["readiness"] == "BLOCKED"
-        and small["gaps"] == [baseline_gap]
-        and small["required_checks"] == sorted([PASSING_CHECK_ID, "second-behavior"])
+        and small["gaps"] == [unasked_gap]
+        and small["required_checks"] == policy_checks
         and client["stored_after_small"] == "BLOCKED"
         and full["readiness"] == "READY"
         and full["gaps"] == [],
-        f"the client opened a task and ran {client['ran']} only, then called "
-        f"task_finalize naming just that one check; the tool refused to narrow the "
-        f"selection and computed readiness over {small['required_checks']}, so the "
-        f"answer was {small['readiness']} with gaps {small['gaps']} and the task "
-        f"recorded {client['stored_after_small']!r}. The mandatory baseline was "
-        f"required rather than skipped. Once {SECOND_PASSING_CHECK['id']} actually "
-        f"ran, the same task became {full['readiness']} with no gaps",
+        f"the policy registers {len(policy_checks)} checks {policy_checks} and the "
+        f"client asked for only {asked}, naming neither a policy digest nor a "
+        f"checkout; the task was still frozen against all of {client['floor_at_begin']}, "
+        f"pinned to policy digest {client['pinned_digest'][:12]}... as measured rather "
+        f"than supplied. The client ran {client['ran']} only, then called task_finalize "
+        f"naming just that one check; the tool refused to narrow the selection and "
+        f"computed readiness over {small['required_checks']}, so the answer was "
+        f"{small['readiness']} with gaps {small['gaps']} and the task recorded "
+        f"{client['stored_after_small']!r}. The mandatory baseline was required "
+        f"rather than skipped. Once {SECOND_PASSING_CHECK['id']} actually ran, the "
+        f"same task became {full['readiness']} with no gaps",
     )
 
 
 # --- row 13: a disk or locking failure --------------------------------------
+#
+# The row asserts the CLAIM and not the exception's class name. "A locking
+# failure is diagnosable and fabricates nothing" is a statement about what is in
+# the database afterwards, and that is what is asserted: both refusals were
+# raised rather than swallowed, no verdict was written, no claim was invented,
+# and an outside reader still sees exactly the rows there were before. The class
+# a refusal arrives as is an implementation detail R1 already changed once -- it
+# wrapped a raw `sqlite3.OperationalError` in `StoreError` (c884de9) -- and this
+# row was written before that (7e20fae), so pinning the class bought nothing and
+# went stale for free. A row that would fail the next time the wrapping moved is
+# a row that measures the wrapping, not the behaviour.
+#
+# What replaces it is not weaker. The refusals are still required to have been
+# RAISED (an empty string means the call succeeded and the row fails), the
+# message is still required to name the contended write lock rather than
+# something vaguer, and the state assertions are checked over a connection that
+# shares nothing with the code under test, which is stricter than the old
+# `isinstance(observations, list)`.
 
 def row_disk_or_locking_failure() -> None:
     """A store that cannot take the write lock must not produce a verdict."""
@@ -1552,6 +1608,10 @@ def row_disk_or_locking_failure() -> None:
     open_task(store, repo, "t13", "d13", required_checks=[PASSING_CHECK_ID])
     run_one(store, repo, task_id="t13", attempt=1)
     before = tasks.compute_readiness(store, "t13", required_check_ids=[PASSING_CHECK_ID])
+    # What an outside reader sees before anything is attempted, and again after.
+    # A row that only compared the store to itself would prove the store is
+    # self-consistent, which is not the question.
+    baseline = task_rows(store._db_path)
 
     # Induce a genuine lock failure: another process holds the write lock. This is
     # induced on the store rather than by making a file read-only, so what is
@@ -1564,7 +1624,7 @@ def row_disk_or_locking_failure() -> None:
         failure = ""
         try:
             claims.acquire(store, "t13", 1, [ResourceSpec("w:checkout", "exclusive")])
-        except StoreError as exc:
+        except Exception as exc:
             failure = f"{type(exc).__name__}: {exc}"
         # A verdict that was already computed cannot be recorded while locked.
         record_failure = ""
@@ -1579,25 +1639,41 @@ def row_disk_or_locking_failure() -> None:
     after = tasks.compute_readiness(store, "t13", required_check_ids=[PASSING_CHECK_ID])
     observations = recover.inspect(store).to_json()["findings"]
     version = store.version()
+    survived = task_rows(store._db_path)
+    # `readiness` is None rather than `before.readiness`: the failure must have
+    # left the stored task exactly as it found it, which is a stricter reading
+    # than "the verdict still computes to the same answer".
+    recorded_after = tasks.get_task(store, "t13").readiness
     observed(
         row,
         before.readiness == "READY"
-        and failure.startswith("StoreError")
-        and "could not take the write lock" in failure
-        and record_failure.startswith("OperationalError")
+        # Both refusals were raised, and both said the write lock was the reason.
+        # The class is deliberately not asserted; see the note above this row.
+        and bool(failure) and "could not take the write lock" in failure
+        and bool(record_failure) and "could not take the write lock" in record_failure
         and after.readiness == "READY"
+        # Nothing fabricated: no claim, and the stored row is byte-for-byte what
+        # it was, read over a connection that shares nothing with the store.
         and claims.holder(store, "w:checkout") is None
+        and recorded_after is None
+        and survived == baseline
+        and claim_rows(store._db_path) == []
+        # And the failure stayed diagnosable rather than becoming a broken file:
+        # recovery reports on the store instead of raising, and the schema is intact.
         and version == LATEST_SCHEMA_VERSION
         and isinstance(observations, list),
         f"while another process held the write lock, acquiring a resource raised "
         f"{failure.split(':')[0]} ({failure.split(': ', 1)[1][:52]!r}) and recording a "
-        f"readiness raised {record_failure.split(':')[0]}; no claim was created, so "
-        f"nothing fabricated ownership, and the database stayed readable at schema "
-        f"version {version}. The verdict computed before the failure "
-        f"({before.readiness}) was unchanged afterwards ({after.readiness}) and the "
-        f"stored task row still read {tasks.get_task(store, 't13').readiness!r}, so the "
-        f"failure left the state diagnosable. NOT induced: a full disk, a read-only "
-        f"state directory, and a corrupted database, so those remain unmeasured",
+        f"readiness raised {record_failure.split(':')[0]}; both refusals named the "
+        f"contended write lock. No claim was created, so nothing fabricated ownership: "
+        f"claim_holders over a fresh connection holds [], and the task row read outside "
+        f"the store is unchanged from before the failure ({survived == baseline}), with "
+        f"its stored readiness still {recorded_after!r} rather than the {before.readiness} "
+        f"that had been computed. The database stayed readable at schema version "
+        f"{version} and recovery reported {len(observations)} finding(s) instead of "
+        f"raising, so the failure left the state diagnosable. NOT induced: a full disk, "
+        f"a read-only state directory, and a corrupted database, so those remain "
+        f"unmeasured",
     )
 
 

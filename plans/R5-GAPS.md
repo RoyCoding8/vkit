@@ -194,3 +194,40 @@ What was checked and came back clean, so it is not re-litigated:
   reports, admission decides — not a mirrored authority.
 - Every `compute_readiness` caller other than the hook is a bare `Store()` over
   a tempfile with no repository, which is the case that entry point exists for.
+
+## A warning about probes built from documents
+
+Twice this wave, a probe was written against what a design document *described*
+instead of what the code holds, and both times it produced a confident false
+claim:
+
+1. `review/probe_migrate_rebuild.py` invented a `claim_members` table with a
+   foreign key to `runs`, because the R2 design named such referents. It
+   "proved" that `_migrate` needed a foreign-keys-off flag. The real schema has
+   **zero** `REFERENCES` clauses — `PRAGMA foreign_key_list(runs)` is `[]`, and
+   the rebuild succeeds with foreign keys on and the pragma untouched.
+2. `review/probe_lifecycle.py` reported a schema shape taken from the same
+   document rather than from `storage.py`.
+
+A probe inherits the mistakes of its source. Before probing behaviour that
+depends on the shape of the code, read the shape out of the code: print the DDL,
+query `sqlite_master`, count the clauses. In both cases the failing half of the
+probe — the assertion that actually bit — was the part copied from the document,
+and the half that would have caught the mistake was the part I skipped.
+
+Retracted in `a267166`; the corrected probe prints what the schema declares
+before it touches anything.
+
+## The migration index loss, found while retracting it
+
+Re-verifying the retraction surfaced a real defect nobody had named: `DROP TABLE
+runs` takes `runs_by_task` with it. The rebuild "succeeds", the version is
+recorded, every row survives — and the query plan changes from
+`SEARCH runs USING INDEX runs_by_task (task_id=?)` to `SCAN runs`. Nothing
+fails. `_live_holder` reads `runs` by `task_id` on every claim release, which is
+the F13 path, so the one query that most needs to be current is the one that
+silently becomes a full scan.
+
+Migration 5 must re-issue the index after the rename, and the gate must assert
+the query plan rather than merely that the migration applied — a test asserting
+only "migration 5 ran" passes with the index gone.

@@ -501,14 +501,24 @@ def test_no_document_names_a_posix_script_that_is_not_one(doc: Path) -> None:
     nothing.
     """
     text = _read(doc)
+    _assert_no_stale_scripts(doc, _script_tokens(text))
+
+
+def _script_tokens(text: str) -> list[str]:
+    """Every `scripts/` path a reader would find, in prose or in a command."""
     prose = _strip_fences(text)
     commands = [
         line for block in _blocks(text).get("console command", [])
         for line in block
     ]
-    for token in _tokens(prose) + [
+    return _tokens(prose) + [
         token for line in commands for token in _tokens(line.lstrip("$ "))
-    ]:
+    ]
+
+
+def _assert_no_stale_scripts(doc: Any, tokens: list[str]) -> None:
+    """No `scripts/` path in `tokens` may fail to resolve in this tree."""
+    for token in tokens:
         if not token.startswith("scripts/"):
             continue
         assert (ROOT / token).exists(), (
@@ -521,25 +531,38 @@ def test_no_document_names_a_posix_script_that_is_not_one(doc: Path) -> None:
 def test_the_posix_script_probe_would_notice_a_document_naming_a_stale_path() -> None:
     """The check above has to be able to fail, and this is the evidence.
 
-    A guard that cannot fire is decoration. `_posix_probe` is one of the shell
-    scripts `scripts/posix_harness.py` replaced and is not in this tree. If the
-    check above could not fail on such a path, this test's own assertion is
-    what tells us.
+    A guard that cannot fire is decoration. This builds a document that names
+    `scripts/posix-run.sh`, one of the shell scripts `scripts/posix_harness.py`
+    replaced and not in this tree, and runs the same predicate the check above
+    runs over it. The predicate is factored out so this tests the real one
+    rather than a copy that could drift.
 
-    This asserts the probe is genuinely absent, which is what makes the mutation
-    in the report meaningful rather than a comment claiming it would work.
+    The probe is constructed per-run instead of being a path some committed
+    docstring names. Six `scripts/` docstrings used to print
+    `bash scripts/posix-run.sh ...` in their own `Run:` line as this probe,
+    which meant a reader who followed one got a command that cannot run, so
+    those six name `python scripts/<name>.py` and the self-test carries its own
+    path.
     """
-    assert not (ROOT / _posix_probe).exists(), (
-        f"{_posix_probe} is the negative probe for this check, and it now "
-        "exists. Pick a different path: the probe has to name something the "
-        "tree does not have, or the check it proves is not proving anything."
+    probe = "scripts/posix-run.sh"
+    assert not (ROOT / probe).exists(), (
+        f"{probe} is the path this test probes with, and it now exists. Pick a "
+        "different one: the probe has to name something the tree does not have, "
+        "or the check it proves is not proving anything."
     )
 
+    class _Probe:
+        name = "PROBE.md"
 
-# The path six `scripts/` measurement scripts still tell a reader to run.
-# It is a probe rather than an entry point because it does not exist and is not
-# coming back; CI runs the suite through `.github/workflows/ci.yml` instead.
+    with pytest.raises(AssertionError, match="nothing in this tree resolves"):
+        _assert_no_stale_scripts(_Probe(), [probe])
+
+
+# The path this test probes with: a shell script the harness replacement
+# removed, and not coming back. CI runs the suite through
+# `.github/workflows/ci.yml` instead.
 _posix_probe = "scripts/posix-run.sh"
+
 
 
 def _check_python(doc_name: str, tokens: list[str]) -> None:

@@ -197,7 +197,7 @@ $ <venv>/Scripts/python.exe -m pip install -e ".[test]"
 $ <venv>/Scripts/python.exe -m pytest tests/
 ```
 
-Observed on this host: `647 tests collected`. That is the collected count and
+Observed on this host: `712 tests collected`. That is the collected count and
 not a passed count. A passed count is not recorded here because the last full
 execution of this suite at this revision has not been run, and carrying a
 number forward from a revision where fewer tests existed would be a count
@@ -301,7 +301,7 @@ $ <venv>/Scripts/python.exe -m pip install ".[mcp]"
 $ <venv>/Scripts/python.exe -m pytest tests/test_mcp_stdio.py
 ```
 
-Observed on this host: `24 tests collected` in this file, and on the run below
+Observed on this host: `25 tests collected` in this file, and on the run below
 that collected `1 failed, 23 passed`. The failure was
 `test_a_client_that_disconnects_mid_lifecycle_loses_no_evidence`, and it does
 not reproduce in isolation, where it passes in 4.18s against 49.72s for the

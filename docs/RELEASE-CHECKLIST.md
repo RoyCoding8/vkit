@@ -5,7 +5,7 @@ release record. A step you did not run is a step you did not do, and the
 release is described by what ran, never by what the checklist says can run.
 
 The commands here are the ones that exist in this repository at revision
-`59a4eca`. `tests/test_release_docs.py` resolves every command below against
+`f7d542d`. `tests/test_release_docs.py` resolves every command below against
 `build_parser()` and the working tree, so a step that stops existing fails the
 suite instead of quietly misleading a maintainer. It also resolves every file
 this document cites as evidence *at that revision*, so a pin left behind HEAD
@@ -46,11 +46,11 @@ tests/test_enroll.py
 tests/test_integration.py
 tests/test_plan06_onboarding.py
 
-# GAP-2's POSIX entry points. Neither carries an `exit` statement that reflects
-# a failed suite, which is why GAP-2 names them as the reason no receipt is
-# recorded rather than claiming the run was clean.
-scripts/posix-suite-verbatim.sh
-scripts/posix-totals.sh
+# GAP-2's POSIX entry points. The harness returns the exit status of the process
+# it ran, so a verdict is a status and not a number parsed out of output. That is
+# the property the row turns on, and the row says what it does not settle.
+scripts/posix_harness.py
+scripts/posix_setup.py
 
 # The boundary schemas, and the test that loads them from the package.
 schemas/manifest.v1.json
@@ -89,6 +89,7 @@ tmp/research/KIT_ACCEPTANCE.md
 # GAP-2's POSIX record, and the milestone document that carried the other side
 # of the contradiction this row resolves.
 review/posix-triage.md
+review/posix-evidence.md
 scripts/measure_posix_escape.py
 plans/STATUS.md
 ```
@@ -119,7 +120,7 @@ work that closes it has run and left a receipt.
 | Gap | Status and what is unverified | Evidence for the claim |
 | --- | --- | --- |
 | GAP-1 | Closed. The `mcp` SDK stdio adapter was executed. | `mcp` 2.2.0 installed and `serve_stdio` run as a real subprocess. `tests/test_mcp_stdio.py` drives it with hand-written JSON-RPC frames. |
-| GAP-2 | Open. No POSIX suite run is recorded in this tree. | POSIX-CLAIM: no-receipt, derived by `tests/test_release_docs.py` from what this tree holds and not from anything written here. The evidence is `review/posix-triage.md`, a POSIX host agent's record at baseline `d198e88` re-verified against `2c91096`, and `scripts/measure_posix_escape.py` behind the limit that survived. What none of them is, is a suite run: `scripts/posix-suite-verbatim.sh` writes its per-file output under the invoking user's home directory, outside the repository, and `scripts/posix-totals.sh` carries no `exit` statement at all. A reader who wants the position in a sentence should read `_posix_position_derived_from_the_tree`, which is where it now lives; this row does not restate it, because a restatement is a second thing that can be wrong. |
+| GAP-2 | Open. The POSIX code path has been exercised, and no run of it is recorded in this tree. | POSIX-CLAIM: no-receipt, derived by `tests/test_release_docs.py` from what this tree holds and not from anything written here. What is verified is the path, not a receipt. A POSIX host ran this suite through a local WSL harness, and the numbers that run produced are quoted in `review/posix-evidence.md`, a dated record rather than an artifact a reader can re-check. The eighteen shell entry points that run used are gone. `scripts/posix_harness.py` is what runs a POSIX verification now, and its verdict is the exit status of the process it ran rather than a count parsed out of output; that is the property the shell scripts lacked, and this row no longer rests on the `exit` statement those scripts did not carry, because a replacement is not the thing the old reason described. What is not verified is a receipt. No run artifact is tracked, no CI job invokes the harness, and `scripts/posix_setup.py` puts the junit reports under the invoking user's home directory, so nothing in this tree would change if a POSIX run went red tomorrow. A reader who wants the position in a sentence should read `_posix_position_derived_from_the_tree`, which is where it now lives; this row does not restate it, because a restatement is a second thing that can be wrong. |
 | GAP-3 | Closed. A live Claude Code host session installed the plugin, attached the six tools, and delivered three hook events. | `docs/HOST-SESSION.md` quotes the session: Claude Code 2.1.285, driver `tests/test_plugin_host.py`, 16 tests, 57s. Every test in that driver skips rather than fails when the host cannot run, so the receipt is the transcript, not a red suite. |
 | GAP-4 | Closed. The `mcp serve` subcommand exists and both halves of its surface have run. | `vkit mcp serve --project . --json` lists the six tools, exit 0, and `tests/test_mcp_stdio.py` drives that server over real JSON-RPC frames, which is GAP-1's receipt. This row used to say `serve_stdio` had still not been driven by a client while GAP-1's row said it had; the two contradicted each other in the same table. |
 | GAP-5 | Open. The setup console is incomplete. | Plan 05 is the last build step and is still being built in parallel. |
@@ -161,7 +162,7 @@ only one of them needed running.
 ## Build the artifacts
 
 Every command below was run on Windows 11 with Python 3.13.14 at revision
-`59a4eca`. The only edits since that commit are to documents, which no command
+`f7d542d`. The only edits since that commit are to documents, which no command
 in this document measures.
 
 ```console command
@@ -178,8 +179,8 @@ $ <venv>/Scripts/python.exe -m pip wheel . --no-deps -w <dist>
 ```
 
 On this host the wheel build printed
-`Created wheel for vkit: filename=vkit-0.1.0-py3-none-any.whl size=255418`,
-rebuilt at revision `59a4eca`. The size is what makes this a receipt rather than
+`Created wheel for vkit: filename=vkit-0.1.0-py3-none-any.whl size=258158`,
+rebuilt at revision `f7d542d`. The size is what makes this a receipt rather than
 a claim that the wheel builds, and `tests/test_release_docs.py` checks it has a
 byte count without checking the value, because a wheel's size moves with the
 source it packages.
@@ -197,7 +198,7 @@ $ <venv>/Scripts/python.exe -m pip install -e ".[test]"
 $ <venv>/Scripts/python.exe -m pytest tests/
 ```
 
-Observed on this host: `712 tests collected`. That is the collected count and
+Observed on this host: `715 tests collected`. That is the collected count and
 not a passed count. A passed count is not recorded here because the last full
 execution of this suite at this revision has not been run, and carrying a
 number forward from a revision where fewer tests existed would be a count

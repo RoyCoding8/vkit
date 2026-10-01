@@ -1,5 +1,10 @@
 # POSIX evidence, measured 2026-10-01
 
+> Superseded entry points. The `scripts/posix-*.sh` files this record measured
+> were deleted; `scripts/posix_harness.py` runs a POSIX verification now. What
+> follows is unchanged, because a record that renames the thing it recorded stops
+> being a record.
+
 This file replaces an inherited claim with what the harness can actually prove.
 Branch `wt/posix-gate` at `59a4eca`. Every number below was produced by
 running the harness on Ubuntu under WSL2, through `scripts/posix-run.sh` and

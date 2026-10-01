@@ -1,5 +1,10 @@
 # Swarm sweep, 2026-10-01
 
+> Superseded entry points. The `scripts/posix-*.sh` files this sweep read were
+> deleted; `scripts/posix_harness.py` runs a POSIX verification now. What follows
+> is unchanged, because a record that renames the thing it recorded stops being a
+> record.
+
 Five read-only partitions, one per layer, hunting a single defect class: **something
 asserts a guarantee that no check stands behind.** Nine instances of it landed in this
 repository this month, in different clothes. This file is the evidence for the ones

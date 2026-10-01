@@ -46,7 +46,7 @@ REAL CONFIG UNCHANGED (60 entries identical)
 A marketplace route, because `claude plugin install` refuses a bare path.
 
 ```
-$ claude plugin marketplace add D:/AI/Poteto's Style/.claude/worktrees/agent-a2f21629e378cf48f
+$ claude plugin marketplace add <worktree>
 Adding marketplace…✔ Successfully added marketplace: vkit (declared in user settings)
 
 $ claude plugin install vkit@vkit \
@@ -54,9 +54,12 @@ $ claude plugin install vkit@vkit \
 Installing plugin "vkit@vkit"...✔ Successfully installed plugin: vkit@vkit (scope: user)
 ```
 
+The worktree was a scratch checkout at `agent-a2f21629e378cf48f` under
+`.claude/worktrees/`. It has since been removed, so the commands above are
+quoted with its path elided rather than as a command a reader can paste.
+
 The two `--config` values are not optional. Installing without them is a
-supported path and a broken one, and this is worth recording because the failure
-is silent:
+supported path, and it fails silently:
 
 ```
 2 userConfig options not yet set — run /plugin configure vkit@vkit in Claude Code
@@ -236,7 +239,7 @@ After the fix, the same live delivery:
 `{}` is the correct response here. The session is bound to no managed task, and
 a payload that matches no binding gets no gate.
 
-## Two host behaviours worth recording
+## Three host behaviours worth recording
 
 **PATH has to be in the spelling cmd.exe reads.** `.mcp.json` names a bare
 `vkit`, so the host resolves it on PATH, and on Windows the host spawns through
@@ -252,7 +255,7 @@ internal or external command, operable program or batch file.
 Every other surface at that moment reports the plugin loaded correctly:
 `plugin details` lists all six hooks, `mcp list` health-checks the server in its
 own process and prints Connected, and the SessionStart hook fires. The
-`test_the_model_calls_a_vkit_tool_and_the_server_answers` fixture puts the venv
+`test_the_model_calls_every_vkit_tool_and_the_server_answers` fixture puts the venv
 Scripts directory on PATH in Windows form, because that is part of getting a
 real server to start.
 
@@ -273,12 +276,11 @@ at the same time:
 08:48:00.313  Successfully connected in 3238ms
 ```
 
-This cost a day of the wrong answer and is worth stating precisely. The first
-reading was a race: a session where the server is slower reports `pending` and
-attaches no tools, so the test was made to retry. That did not hold up. Timings
-taken from the run that actually failed in the full suite show the server
-connecting in 1938ms to 3563ms, and in several of those sessions it finished
-*before* `turn 1 start`, and the tool list was still empty.
+The first reading of this was a race: a session where the server is slower
+reports `pending` and attaches no tools, so the test was made to retry. That did
+not hold up. Timings taken from the run that actually failed in the full suite
+show the server connecting in 1938ms to 3563ms, and in several of those sessions
+it finished *before* `turn 1 start`, and the tool list was still empty.
 
 The `init` event is a snapshot, not a gate. The host has a `WaitForMcpServers`
 tool it runs before the first model call and logs the result, and in the very
@@ -349,28 +351,26 @@ as not covered are GAP-10, and no part of this run bears on them.
 
 ## The two corrections, and where they landed
 
-This branch's first version of the tool-discovery test was wrong, and it was
-wrong in a way that merged. `8054c0c` in master, "Retry the host session that
-lost the connection race", is that version: it retries up to three sessions
-waiting for the server to attach the six tools. That theory was wrong, and it
-fails in a full suite. Timings from the run that failed it show the server
-connecting in 1938ms to 3563ms, and in several sessions finishing before
-`turn 1 start` with the tool list still empty, because `init` is a snapshot on
-a different schedule from the connection. In the same sessions the host logged
+The first version of the tool-discovery test was wrong, and it was wrong in a
+way that merged. `8054c0c`, "Retry the host session that lost the connection
+race", is that version: it retries up to three sessions waiting for the server
+to attach the six tools. That theory was wrong, and it fails in a full suite.
+Timings from the run that failed it show the server connecting in 1938ms to
+3563ms, and in several sessions finishing before `turn 1 start` with the tool
+list still empty, because `init` is a snapshot on a different schedule from the
+connection. In the same sessions the host logged
 `connected=plugin:vkit:vkit` and the model called the tool.
 
-Master's `test_the_model_calls_a_vkit_tool_and_the_server_answers` also asked
-for one tool, which proves the host can reach a tool and not that it discovered
-six.
+At `c268e9d` master's `test_the_model_calls_a_vkit_tool_and_the_server_answers`
+also asked for one tool, which proves the host can reach a tool and not that it
+discovered six.
 
-Both are corrected in `9689a24` and `4201cb8`, and both are in master as of
-`c268e9d`. This paragraph used to say they were not yet in master and that
-master's copy was the version that failed under load. That was true when it was
-written and stopped being true when they merged, and a record that keeps
-describing a superseded state is the reason this file and the release checklist
-came to disagree about GAP-3. The corrections are measured here rather than
-asserted: `git merge-base --is-ancestor 9689a24 master` and the same for
-`4201cb8` both exit 0 at the revision the checklist pins.
+Both are corrected in `9689a24` and `4201cb8`. Both are ancestors of the revision
+the checklist pins, which `git merge-base --is-ancestor` reports for each. An
+earlier version of this paragraph said they were not yet in master. That was true
+when it was written and stopped being true when they merged, and a record that
+keeps describing a superseded state is the reason this file and the release
+checklist came to disagree about GAP-3.
 
 ## Repeating it
 
@@ -380,5 +380,5 @@ python -m pytest tests/test_plugin_host.py
 ```
 
 Every test skips, rather than fails, when the `claude` executable is absent or
-this environment cannot authenticate a model call. A host that will not run
-here is a fact to record, not a test to satisfy.
+this environment cannot authenticate a model call. See "What is still open"
+above for what that means for the closure.

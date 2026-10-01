@@ -1,16 +1,22 @@
 # Integration CI, and what has actually been run
 
+Two different CI stories live in this repository and only one of them has run.
+`.github/workflows/ci.yml` runs the suite on three operating systems and is
+green. `examples/ci/integration.yml` is Plan 07's integration example and has
+never run on the forge. The two are unrelated files, and this document is about
+both, so it separates them before it says anything else.
+
 Plan 07 requires a CI integration example for the repository's existing
 provider, and requires that a demonstration repository name the pinned baseline
-its tests use. Both are here. Neither has been executed on a forge, and this file
-says so before it says anything else.
+its tests use. Both are here. Neither has been executed on a forge.
 
-## Status: not executed
+## The integration example is not executed
 
-`examples/ci/integration.yml` has never run. The host this plan was built on has
-no GitHub remote, no runner, and no way to configure branch protection, so
-nothing in that file has been exercised by GitHub. Reading it as a working
-integration is exactly the failure this product exists to prevent, so:
+`examples/ci/integration.yml` has never run on the forge. No workflow on the
+remote references it, no pull request or merge group has triggered it, and the
+repository's branch protection is unconfigured, so nothing gates a merge on it.
+Reading it as a working integration is exactly the failure this product exists
+to prevent, so:
 
 - The workflow's syntax, its expression evaluation, and its behaviour on a
   `pull_request` and on a `merge_group` are **unverified**.
@@ -25,6 +31,20 @@ integration is exactly the failure this product exists to prevent, so:
 
 The command the workflow runs, in this exact form, was executed many times against
 a real repository. See "What was run" below.
+
+## The suite workflow has run and is green
+
+This workflow is separate from the example above and does something narrower. It
+runs `pytest tests/` on `ubuntu-latest`, `windows-latest` and `macos-latest`, and
+its verdict is pytest's exit status. It says nothing about integration context,
+branch protection, or `vkit integration verify`, and it makes no claim about any
+of them.
+
+At revision `2f1749e` the run is green on all three operating systems. Earlier
+runs on the same workflow were red, and the reasons are recorded in the GAP-2 row
+of the release checklist rather than here. The receipt is the forge's run log, not
+a file in this tree, so `tests/test_release_docs.py` derives the POSIX position
+from what this repository holds and records `no-receipt`.
 
 ## What was run
 
@@ -77,7 +97,7 @@ every arbitrary host tool or external session. What the app enforces:
 - The executed check set and the executed manifest, both from the approved
   revision.
 
-What the app cannot enforce: a process that ignores it. A second checkout, a
+What the app cannot enforce is a process that ignores it. A second checkout, a
 second SQLite file, or an agent with its own tools can run the same checks twice
 and reach its own answer. The forge is the layer that refuses to act on anything
 but the recorded decision, and that refusal is a branch-protection setting rather
@@ -97,5 +117,10 @@ than anything in this repository.
   trusted launcher captures the artifact after the last process to write it
   exits, so that is the strongest statement available without a sandbox. This is
   not a sandbox against hostile code and is not claimed to be.
-- **The POSIX process path is untested.** Plan 01 recorded this and nothing here
-  changes it; the launcher inherits the same untested path.
+- **The POSIX process path has a run, not a receipt.** `.github/workflows/ci.yml`
+  runs the suite on `ubuntu-latest` and that job is green at revision `2f1749e`,
+  so the path is exercised. No run artifact is tracked in this tree, so the
+  record is the forge's run log rather than something a reader of this checkout
+  can open. `tests/test_release_docs.py` derives the position as
+  `no-receipt` and GAP-2 stays open on exactly that. The launcher inherits the
+  same path and the same absence.

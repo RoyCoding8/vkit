@@ -281,6 +281,83 @@ def test_an_interrupted_report_write_leaves_no_acceptance_record(
     assert s.version() >= 1
 
 
+def test_a_failed_report_swap_leaves_no_acceptance_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The step `test_an_interrupted_report_write_leaves_no_acceptance_record`
+    cannot reach.
+
+    That test induces ENOSPC at `fsync`, which is the last write the staged file
+    makes and the last call inside the `try`. `publish` does two more things
+    after it: it claims the row, and then it swaps the temp into place. Both are
+    outside the `try`, so neither the cleanup that removes the staged file nor
+    the refusal that the test above asserts are in force here.
+
+    A swap is a `rename`, and a rename is the one step in the sequence that a
+    full volume can genuinely take away after everything has been written. So
+    this places ENOSPC at the real line -- `storage.os.replace` at
+    `storage.py:949` -- and then checks what a reader observes.
+
+    The row being claimed is that an interrupted report write leaves no complete
+    acceptance record. Three assertions say whether that held, and they are
+    checked against observable state rather than the exception:
+
+    * `load` refuses, so nothing can be read as a verdict. The direction matters.
+      A fabricated PASS is the failure this store is built to make impossible.
+    * The row is terminal with a result but no report, and recovery names exactly
+      that window instead of guessing at an outcome. `publish`'s docstring claims
+      this is "the correct failure direction: absent evidence, never a fabricated
+      PASS"; that claim is only worth anything if the window is reported.
+    * The staged file does not survive as debris. This is the assertion that
+      fails today, and it is the one that makes the record honest: the orphaned
+      `report.json.<pid>.tmp` is a complete, valid report file sitting in the run
+      directory under a name a reader or a later tool could mistake for evidence.
+      It is not merely untidy. `publish`'s cleanup is keyed on the `try`, and the
+      swap is outside it, so nothing removes it.
+    """
+    s = Store(tmp_path / "state.sqlite3")
+    s.register_run("r1", "unit", task_id=None, attempt=None, source={},
+                   configuration_digest="c", fixture_digest=None)
+
+    # ENOSPC, as the kernel reports a full volume, raised by the rename itself.
+    def no_space(_src, _dst):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(storage.os, "replace", no_space)
+
+    with pytest.raises(OSError):
+        s.publish("r1", make_report("r1"))
+
+    monkeypatch.undo()
+
+    run_dir = s.run_dir("r1")
+
+    # No complete acceptance record: the reader is refused rather than served a
+    # verdict that was never durably placed.
+    assert not (run_dir / REPORT_NAME).exists()
+    with pytest.raises(StoreError):
+        s.load("r1")
+
+    # The window is visible rather than silent. A terminal row with a result and
+    # no report is the documented state, and recovery names it as such.
+    status = s.run_status("r1")
+    assert status["lifecycle"] == "terminal"
+    assert status["result"] == "PASS"
+    assert "report_path" not in status
+
+    findings = recover.inspect(s).to_json()["findings"]
+    assert [f["kind"] for f in findings] == ["terminal_run_without_report"], (
+        f"the claim-without-report window was not reported: {findings}"
+    )
+
+    # No debris. The staged file was fully written and fsynced before the rename,
+    # so on this path it survives as a complete report under a temp name.
+    assert list(run_dir.iterdir()) == [], (
+        "the staged report outlived the failed swap: "
+        f"{sorted(p.name for p in run_dir.iterdir())}"
+    )
+
+
 def test_a_reported_environment_carries_no_credential(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:

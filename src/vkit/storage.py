@@ -914,6 +914,15 @@ class Store:
         A crash between the claim and the swap leaves a terminal row with no
         report, and `load` raises rather than inventing an outcome. That is the
         correct failure direction: absent evidence, never a fabricated PASS.
+
+        The swap is inside the `try` so the staged file is cleaned up however this
+        call fails. A rename is the one step that can still be refused after the
+        file is complete and fsynced, so leaving it outside left a fully formed
+        report stranded in the run directory under a temp name -- on a row that is
+        already terminal, so nothing would ever publish it and nothing would ever
+        remove it. A crash is a different matter from a failure, and the temp is
+        left for a crash, which is what makes `terminal_run_without_report`
+        recoverable rather than silent.
         """
         outcome = report.get("outcome")
         if report.get("run_id") != run_id or report.get("lifecycle") != "terminal":
@@ -942,11 +951,11 @@ class Store:
                 )
                 if cursor.rowcount == 0:
                     raise StoreError(f"cannot publish: {run_id} is unknown or already terminal")
+
+            os.replace(temp, run_dir / REPORT_NAME)
         except BaseException:
             temp.unlink(missing_ok=True)
             raise
-
-        os.replace(temp, run_dir / REPORT_NAME)
 
     def load(self, run_id: str) -> dict:
         """Read the published report back."""

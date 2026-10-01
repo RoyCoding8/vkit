@@ -131,24 +131,47 @@ def scripts_of(manifest: Manifest) -> dict[str, str]:
     reported as pinning nothing rather than guessed at -- which is also why the
     caller records the list: an empty one is a fact a reviewer needs.
 
-    Elements are matched by shape rather than by flag arity, because no manifest
-    declares which flag takes a value and a rule that guessed wrong would pin
-    the wrong file, which is worse than pinning none.
+    The operand of `-m` is a module name and is skipped before the shape test
+    runs, because a module name and a path are told apart by their position and
+    not by their spelling. `pkg.mod` is a file name to every path reader in this
+    module, so the shape test cannot refuse it: the earlier code ran the shape
+    test on it, pinned `pkg.mod`, and the three things that follow from pinning
+    a path that exists in no commit all went wrong together. `repoint_approved`
+    substituted the approved tree's path for the module name, so the approved
+    command was rewritten into one Python cannot resolve; `approved_oracle`
+    digested a path absent from both commits and reported no change; and
+    `verify.py`'s `checker_not_identifiable` refusal, which covers exactly this
+    case, never fired because the check looked pinned.
 
-    Whether a part pins a file is decided by `_pins_a_file`, which reads the
-    string in both path flavours. Deciding it with the host's own `Path` was the
-    defect: a manifest is portable data, so `C:/elsewhere/verify_price.py` is a
-    legitimate spelling that a POSIX host parses as relative, and such a check
-    was pinned as a repository-relative script. `repoint_approved` then joined
-    that onto `approved_root`, so the approved run executed a path outside the
-    approved tree -- on the very host the boundary exists to hold.
+    Only the element immediately after `-m` is skipped. Going further would mean
+    knowing which flags take a value, and no manifest declares that:
+    `pytest -m "not slow" verify.py` is a filter followed by a script this
+    module can pin, while `python -m pkg.mod verify.py` passes `verify.py` to
+    the module as an argument. The two are indistinguishable without flag arity,
+    and the shape rule above exists precisely because a rule that guessed wrong
+    here would pin the wrong file.
+
+    Elements are otherwise matched by shape rather than by flag arity, for the
+    same reason. Whether a part pins a file is decided by `_pins_a_file`, which
+    reads the string in both path flavours. Deciding it with the host's own
+    `Path` was the defect: a manifest is portable data, so
+    `C:/elsewhere/verify_price.py` is a legitimate spelling that a POSIX host
+    parses as relative, and such a check was pinned as a repository-relative
+    script. `repoint_approved` then joined that onto `approved_root`, so the
+    approved run executed a path outside the approved tree -- on the very host
+    the boundary exists to hold.
     """
     scripts: dict[str, str] = {}
     for check_id, check in manifest.checks.items():
+        module_names = {
+            part for before, part in zip(check.argv, check.argv[1:]) if before == "-m"
+        }
         for part in check.argv:
             if part.startswith("-"):
                 continue
             if "{{" in part:
+                continue
+            if part in module_names:
                 continue
             if part == check.argv[0] and "/" not in part and "\\" not in part:
                 continue

@@ -66,6 +66,22 @@ def a_repository(builder, **files: str):
     return builder(files or {"README": "a repository\n"})
 
 
+def _head(project) -> str:
+    """The commit the fixture repository points at.
+
+    `approved_oracle` needs a real revision on both sides of the comparison, and
+    reading it from the repository is what makes the `None` digests below mean
+    "this path is in no commit" rather than "this test passed a bad sha".
+    """
+    import subprocess
+
+    done = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=project.root, check=True,
+        capture_output=True, encoding="utf-8",
+    )
+    return done.stdout.strip()
+
+
 # --------------------------------------------------------------- scripts_of
 
 
@@ -78,6 +94,128 @@ def test_a_module_named_check_pins_no_script(repo) -> None:
     manifest = a_manifest(a_repository(repo), a_check("module", ("python", "-m", "verify_price")))
 
     assert scripts_of(manifest) == {}
+
+
+def test_a_dotted_module_name_pins_no_script(repo) -> None:
+    """`-m pkg.mod` names a module too, and the dot does not make it a file.
+
+    This is the case the test above could not reach. `verify_price` has no
+    suffix, so `_pins_a_file` refused it whatever the loop did, and the whole
+    `-m` guard was untested. A dotted module is a file name to every path
+    reader in the module, so with the operand left to the shape test this check
+    pinned `pkg.mod` -- a path that exists in no commit.
+
+    The three consequences are what make it worth a test of its own rather than
+    one more row in the parametrization above, so each is asserted here. A
+    reviewer reads `{}` and learns nothing about what a false pin caused; the
+    oracle, the refusal and the repointed command are where the damage lands.
+    """
+    from vkit.integration.oracle import _pins_a_file, approved_oracle
+
+    project = a_repository(repo)
+    manifest = a_manifest(
+        project, a_check("module", ("python", "-m", "pkg.mod"))
+    )
+
+    # The shape test cannot be the one that refuses this. If it could, deleting
+    # the loop's `-m` guard would still leave this test green.
+    assert _pins_a_file("pkg.mod"), (
+        "pkg.mod is refused by the shape test, so this test is not exercising "
+        "the `-m` guard at all and the guard is untested"
+    )
+
+    assert scripts_of(manifest) == {}
+
+    # The oracle must not report a path as measured just because it was pinned.
+    revision = _head(project)
+    oracle = approved_oracle(project, revision, manifest, revision)
+
+    assert oracle.approved == {}, "the oracle digested a path that exists in no commit"
+    assert oracle.changed == {}, (
+        f"the oracle compared nothing and still called it equal: {oracle.changed}"
+    )
+    assert "pkg.mod" not in oracle.to_json()["approved_digests"]
+
+
+def test_a_module_check_is_refused_rather_than_left_looking_pinned(repo, tmp_path) -> None:
+    """The whole chain, as `verify.py` runs it, for a required `-m` check.
+
+    Each function here is right on its own and the run was still wrong, which is
+    why the case is worth a test that drives them in the order the caller does.
+    `scripts_of` pinned `pkg.mod`; `approved_oracle` digested it at both commits
+    and got `None` on both sides, so `changed` was empty; `verify.py` computed
+    its `checker_not_identifiable` refusal from a `scripts` map that contained
+    the check, so nothing fired; and `repoint_approved` replaced the module name
+    with an approved-tree path, so the approved command was rewritten into one
+    Python cannot resolve. The run proceeded having certified as equal a check
+    whose code it had never read.
+
+    These are the three values `verify.py:250-262` and `repoint_approved` build
+    the decision from, asserted together because the defect lived in the space
+    between them.
+    """
+    from vkit.integration.oracle import approved_oracle
+
+    project = a_repository(repo)
+    manifest = a_manifest(
+        project, a_check("module", ("python", "-m", "pkg.mod", "--out", "{{run_dir}}/r.json"))
+    )
+    revision = _head(project)
+    approved_root = tmp_path / "approved"
+
+    scripts = scripts_of(manifest)
+    unpinned = sorted(c for c in ("module",) if c not in scripts)
+    oracle = approved_oracle(project, revision, manifest, revision)
+    repointed = repoint_approved(manifest, approved_root, scripts)
+
+    assert unpinned == ["module"], (
+        "checker_not_identifiable is the refusal that exists for exactly this "
+        "check, and it did not fire because the check looked pinned"
+    )
+    assert oracle.changed == {}
+    assert repointed.require("module").argv == (
+        "python", "-m", "pkg.mod", "--out", "{{run_dir}}/r.json",
+    ), (
+        "the approved command was rewritten, so the run executed neither the "
+        "approved command nor any code the oracle had measured"
+    )
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        pytest.param("C:/elsewhere/pkg.mod", id="windows-absolute"),
+        pytest.param("..\\..\\elsewhere\\pkg.mod", id="parent-escape-backslash"),
+        pytest.param("../../elsewhere/pkg.mod", id="parent-escape"),
+    ],
+)
+def test_a_module_operand_cannot_name_a_path_outside_the_tree(repo, module: str) -> None:
+    """No `-m` operand becomes a pinned path, whatever it is spelled like.
+
+    The `-m` operand is now skipped before the shape test, which is what makes
+    this hold for shapes the shape test would have decided differently. The
+    guarantee the boundary needs is not "the operand is well formed" but "the
+    operand is never joined onto `approved_root`", because `repoint_approved`
+    joins whatever `scripts_of` returns. An operand that survived as a pin would
+    become a path under the approved tree built from a string no reviewer read
+    as a path, which is the same class of defect as the absolute-spelling bug.
+
+    `../../elsewhere/pkg.mod` is the case that carries the argument. It is
+    refused by the shape test on its own, so a fix that only removed the join
+    from `repoint_approved` would pass the other two rows and this one too --
+    the assertion below is about `scripts_of`, which is where the path is born.
+    """
+    from vkit.integration.oracle import _pins_a_file
+
+    manifest = a_manifest(a_repository(repo), a_check("module", ("python", "-m", module)))
+
+    assert scripts_of(manifest) == {}, f"{module!r} was pinned as a repository-relative script"
+    # The control: a plain, unpinned dotted name is what the guard reads. Every
+    # row here is refused by the guard, not by accident of spelling.
+    assert _pins_a_file("pkg.mod"), (
+        "the shape test still refuses a dotted name, so the rows above are "
+        "measuring the shape test and not the `-m` guard"
+    )
 
 
 @pytest.mark.parametrize(
@@ -182,6 +320,65 @@ def test_only_the_pinnable_check_of_two_is_pinned(repo) -> None:
     )
 
     assert scripts_of(manifest) == {"pinnable": "verify_price.py"}
+
+
+def test_a_script_after_a_module_operand_is_still_pinned(repo) -> None:
+    """The guard covers the `-m` operand and nothing past it.
+
+    `pytest -m "not slow" verify.py` is a real command shape, and `verify.py` is
+    a repository-relative file that this module can pin. A guard that skipped
+    every element after a `-m` would report that check as pinning nothing and
+    the `checker_not_identifiable` refusal would fire on a perfectly pinnable
+    check, which is a false alarm rather than a guarantee.
+
+    So the operand is skipped by position and the rest of argv is still read for
+    shape, and this is the assertion that says so. Its complement is the
+    unfalsifiable case: a guard that pinned nothing at all would satisfy the
+    refusals above, which is why `test_only_the_pinnable_check_of_two_is_pinned`
+    sits in the same file.
+    """
+    manifest = a_manifest(
+        a_repository(repo),
+        a_check("filtered", ("python", "-m", "not_slow_marker", "verify_price.py")),
+    )
+
+    assert scripts_of(manifest) == {"filtered": "verify_price.py"}
+
+
+def test_the_module_guard_does_not_pin_the_operand_it_skips(repo) -> None:
+    """The guard skips exactly one element, and this measures which one.
+
+    `verify_price.py` is what the command above pins, and the skipped operand is
+    not silently pinned instead of it: an implementation that skipped
+    `verify_price.py` and fell through to the operand would return
+    `{'filtered': 'not_slow_marker'}` and fail here on the value.
+    """
+    manifest = a_manifest(
+        a_repository(repo),
+        a_check("filtered", ("python", "-m", "pkg.mod", "verify_price.py")),
+    )
+
+    assert scripts_of(manifest) == {"filtered": "verify_price.py"}
+
+
+def test_a_module_operand_is_skipped_and_not_merely_refused_by_shape(repo) -> None:
+    """The mutation control: the `-m` guard is the only thing refusing this.
+
+    A dotted name is a file name to both path flavours, so the shape test on its
+    own returns True for it. The fix works because the loop skips the operand,
+    not because the shape test grew stricter, and this is the assertion that
+    says which of the two shipped. Delete the operand skip and every refusal
+    above in this file still passes while this one fails.
+
+    The value asserted is the shape test's own answer rather than a restatement
+    of it, so a change to the shape rule that happened to also refuse dotted
+    names would have to be made here too, in the open.
+    """
+    from vkit.integration.oracle import _pins_a_file
+
+    assert _pins_a_file("pkg.mod") is True
+    assert _pins_a_file("verify.py") is True
+    assert _pins_a_file("pkg") is False
 
 
 # ---------------------------------------------------------- repoint_approved

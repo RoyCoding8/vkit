@@ -37,6 +37,7 @@ import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -57,6 +58,7 @@ from vkit.procidentity import ProcessIdentity, read_identity  # noqa: E402
 from vkit.procs import run_command  # noqa: E402
 from vkit.storage import MIGRATIONS, Store, StoreError  # noqa: E402
 from vkit.supervisor import cancel_run, job_name_for, start_run  # noqa: E402
+from vkit.tasks import TaskRecord  # noqa: E402
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 UNREACHED = "UNREACHED"
@@ -271,6 +273,54 @@ def make_repo(name: str, *, checks: list[dict] | None = None) -> Path:
 def store_for(repo: Path) -> tuple[object, Store]:
     project = open_project(repo)
     return project, Store(project.db_path)
+
+
+def task_contract(repo: Path, policy_digest: str,
+                  required_checks: Iterable[str]) -> dict:
+    """A contract this build will read back, bound to one fixture repository.
+
+    `open_task` validates the contract before storing it, so the `{"goal":
+    ...}` this harness used to write is refused: a contract with no mandatory
+    floor is exactly the shape that would let acceptance have nothing to
+    decide against. Two things about the result are load-bearing. The
+    repository is the one the store is actually reading, because the binding
+    is what a checkout is verified against. And `required_checks` names real
+    check ids from that fixture's own manifest -- a floor of invented ids
+    would test a contract no admission could have produced, and a floor
+    naming a check this repo does not register would test a manifest that
+    does not exist. So the floor is spelled at each call site, where the
+    fixture that has to satisfy it is visible.
+
+    This is separate from `open_task` because row 8 opens its task inside a
+    child process, which is handed the contract as JSON on the environment
+    rather than importing this module.
+    """
+    project = open_project(repo)
+    return {
+        "repository": {"root": str(project.root),
+                       "git_common_dir": str(project.git_common_dir)},
+        "policy_digest": policy_digest,
+        "required_checks": list(required_checks),
+        "scope": "acceptance",
+        "resources": [],
+        "declared": {},
+    }
+
+
+def open_task(store: Store, repo: Path, task_id: str, policy_digest: str,
+              *, required_checks: Iterable[str]) -> TaskRecord:
+    """Write a task row these rows can later compute readiness against.
+
+    The digest goes into the contract and is passed separately because
+    `open_task` takes the pair: a contract carrying one digest beside a column
+    naming another is a record that disagrees with itself, and row 10's
+    subject is a record disagreeing with itself.
+    """
+    return tasks.open_task(
+        store, task_id=task_id,
+        contract=task_contract(repo, policy_digest, required_checks),
+        policy_digest=policy_digest,
+    )
 
 
 def run_one(store: Store, repo: Path, check_id: str = PASSING_CHECK_ID, *,
@@ -770,7 +820,7 @@ def row_start_retried_around_disconnect() -> None:
     row = _row(5)
     repo = make_repo("retry-start")
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t5", contract={"goal": "ship"}, policy_digest="d5")
+    open_task(store, repo, "t5", "d5", required_checks=[PASSING_CHECK_ID])
     env = {"ACCEPTANCE02_ROOT": str(repo)}
 
     first = child(RETRY_BEFORE_DISCONNECT, env)
@@ -1037,7 +1087,8 @@ def row_cancel_repeated() -> None:
 SUPERVISOR_THAT_DIES = """
     project, store = open_repo(os.environ["ACCEPTANCE02_ROOT"])
     run_id = os.environ["ACCEPTANCE02_RUN_ID"]
-    tasks.open_task(store, task_id="t8", contract={"goal": "ship"},
+    tasks.open_task(store, task_id="t8",
+                    contract=json.loads(os.environ["ACCEPTANCE02_CONTRACT"]),
                     policy_digest="d8")
     claims.acquire(store, "t8", 1, [ResourceSpec("w:checkout", "exclusive")])
     store.register_run(run_id, "hangs", task_id="t8", attempt=1,
@@ -1062,8 +1113,15 @@ def row_supervisor_dies() -> None:
     repo = make_repo("supervisor-dies", checks=[hang_check(pid_file)])
     _, store = store_for(repo)
     run_id = uuid.uuid4().hex
+    # The row's subject is what happens to a killed supervisor's descendants and
+    # to the claim it held, so the contract's floor names this fixture's only
+    # registered check. Nothing here reaches acceptance, and the child is a real
+    # separate interpreter, so the contract is handed over as JSON rather than
+    # built by this module inside the child.
     env = {"ACCEPTANCE02_ROOT": str(repo), "ACCEPTANCE02_RUN_ID": run_id,
-           "ACCEPTANCE02_BODY": body}
+           "ACCEPTANCE02_BODY": body,
+           "ACCEPTANCE02_CONTRACT": json.dumps(
+               task_contract(repo, "d8", ["hangs"]))}
 
     with ExitStack() as stack:
         # The body is passed through the environment rather than formatted into
@@ -1205,7 +1263,7 @@ def row_stale_owner_submits() -> None:
     row = _row(9)
     repo = make_repo("supersession")
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t9", contract={"goal": "ship"}, policy_digest="d9")
+    open_task(store, repo, "t9", "d9", required_checks=[PASSING_CHECK_ID])
     claims.acquire(store, "t9", 1, [ResourceSpec("w:checkout", "exclusive"),
                                     ResourceSpec("w:other", "exclusive")])
     run_one(store, repo, task_id="t9", attempt=1)
@@ -1284,9 +1342,11 @@ def row_changed_contract_or_policy() -> None:
     _, store = store_for(repo)
     # The contract names the mandatory set for this attempt, and the policy digest
     # is pinned when the attempt opens rather than read from the manifest later.
-    tasks.open_task(store, task_id="t10",
-                    contract={"required_checks": [PASSING_CHECK_ID, "newly-required"]},
-                    policy_digest="policy-v1")
+    # The floor names the check this row installs afterwards, which is what makes
+    # the row's claim: a required check that has no evidence under the old policy,
+    # and evidence under the new one.
+    open_task(store, repo, "t10", "policy-v1",
+              required_checks=[PASSING_CHECK_ID, NEWLY_REQUIRED_CHECK["id"]])
     # Only the first check is registered, so the second has no evidence at all.
     run_one(store, repo, task_id="t10", attempt=1)
     under_v1 = tasks.compute_readiness(
@@ -1381,7 +1441,7 @@ def row_required_check_absent() -> None:
     row = _row(11)
     repo = make_repo("absent-check", checks=[*example_checks(), SECOND_PASSING_CHECK])
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t11", contract={"goal": "ship"}, policy_digest="d11")
+    open_task(store, repo, "t11", "d11", required_checks=[PASSING_CHECK_ID])
 
     first = run_one(store, repo, task_id="t11", attempt=1)
     second = run_one(store, repo, "second-behavior", task_id="t11", attempt=1)
@@ -1489,7 +1549,7 @@ def row_disk_or_locking_failure() -> None:
     row = _row(13)
     repo = make_repo("locking-failure")
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t13", contract={"goal": "ship"}, policy_digest="d13")
+    open_task(store, repo, "t13", "d13", required_checks=[PASSING_CHECK_ID])
     run_one(store, repo, task_id="t13", attempt=1)
     before = tasks.compute_readiness(store, "t13", required_check_ids=[PASSING_CHECK_ID])
 
@@ -1618,7 +1678,7 @@ def row_stateful_sequences() -> None:
     row = _row(14)
     repo = make_repo("stateful")
     _, store = store_for(repo)
-    tasks.open_task(store, task_id="t14", contract={"goal": "ship"}, policy_digest="d14")
+    open_task(store, repo, "t14", "d14", required_checks=[PASSING_CHECK_ID])
     claims.acquire(store, "t14", 1, [ResourceSpec("w:checkout", "exclusive")])
     env = {"ACCEPTANCE02_ROOT": str(repo)}
 

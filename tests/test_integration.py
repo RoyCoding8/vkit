@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fixtures as fx  # noqa: E402
+from conftest import console_script  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src"
@@ -53,18 +54,17 @@ def vkit(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str
     editable install pointing at the main checkout, so without it this would
     exercise code the tests did not write. tests/conftest.py does the same for
     the in-process case.
+
+    The script itself is located through the installation, because the same
+    `sys.executable` sibling assumption this replaced put it in the wrong place
+    on every runner but the maintainer's.
     """
-    exe = Path(sys.executable).parent / "vkit.exe"
-    if not exe.is_file():
-        exe = Path(sys.executable).parent / "vkit"
-    if not exe.is_file():
-        pytest.fail(f"no vkit console script beside {sys.executable}")
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(SRC), *([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])]
     )
     return subprocess.run(
-        [str(exe), *args], capture_output=True, text=True, timeout=900,
+        [str(console_script()), *args], capture_output=True, text=True, timeout=900,
         env=env, cwd=None if cwd is None else str(cwd),
     )
 

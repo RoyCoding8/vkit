@@ -11,7 +11,7 @@ input that lives outside the repository.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import sys
 
 import pytest
@@ -93,6 +93,80 @@ def test_a_path_outside_the_tree_pins_no_script(repo, script: str) -> None:
     manifest = a_manifest(a_repository(repo), a_check("outside", ("python", script)))
 
     assert scripts_of(manifest) == {}
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        pytest.param("C:/elsewhere/verify_price.py", id="windows-absolute"),
+        pytest.param("C:\\elsewhere\\verify_price.py", id="windows-absolute-backslash"),
+        pytest.param("/etc/verify_price.py", id="posix-absolute"),
+    ],
+)
+def test_an_absolute_path_in_either_spelling_pins_no_script_on_any_host(
+    repo, script: str
+) -> None:
+    """The refusal holds whichever way the host reads a path.
+
+    A manifest is portable data, so the spelling of a path is not the running
+    host's to decide. `pathlib.Path` parses with the platform's rules, which made
+    this refusal host-shaped: on the CI POSIX runners
+    `PurePosixPath("C:/elsewhere/verify_price.py")` is relative, so that check was
+    pinned as a repository-relative script, the `checker_not_identifiable`
+    refusal in `verify.py` never fired, and `repoint_approved` joined the value
+    onto `approved_root` and ran a path outside the approved tree.
+
+    Each spelling here is absolute to exactly one flavour, which is what makes it
+    the shape of that bug: a host reading it with the other rules treats it as
+    repository-relative. Asserting both readings is what pins host-independence
+    rather than "this one string is refused".
+    """
+    from vkit.integration.oracle import _pins_a_file
+
+    manifest = a_manifest(a_repository(repo), a_check("outside", ("python", script)))
+
+    assert scripts_of(manifest) == {}, f"{script!r} was pinned on this host"
+    assert not _pins_a_file(script), (
+        f"{script!r} pins a file when read with either path flavour, so the "
+        "refusal depends on which host is running"
+    )
+    absolute = (
+        PureWindowsPath(script).is_absolute(), PurePosixPath(script).is_absolute()
+    )
+    assert any(absolute) and not all(absolute), (
+        f"{script!r} is absolute under {absolute}, so it cannot be the shape of "
+        "the defect: it needs to be absolute to one flavour and relative to "
+        "another for the refusal to depend on the host"
+    )
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        pytest.param("../outside/verify_price.py", id="parent-relative"),
+        pytest.param("sub/../../outside/verify_price.py", id="escape-after-a-segment"),
+        pytest.param("..\\outside\\verify_price.py", id="parent-relative-backslash"),
+    ],
+)
+def test_a_parent_escape_in_either_spelling_pins_no_script(repo, script: str) -> None:
+    """A `..` escape is refused on every host, in either separator's spelling.
+
+    The complement of the absolute cases: these are relative to every flavour, so
+    they never depended on the host, and they are asserted here so the guarantee
+    is not mistaken for "absolute paths are the only thing being checked". A
+    check that only ever tested one spelling would pass on the host its spelling
+    happened to suit.
+    """
+    from vkit.integration.oracle import _pins_a_file
+
+    manifest = a_manifest(a_repository(repo), a_check("outside", ("python", script)))
+
+    assert scripts_of(manifest) == {}, f"{script!r} was pinned on this host"
+    assert not _pins_a_file(script)
+    assert ".." in PurePosixPath(script).parts or ".." in PureWindowsPath(script).parts, (
+        f"{script!r} names no parent segment, so this case is not the escape it "
+        "claims to be"
+    )
 
 
 def test_only_the_pinnable_check_of_two_is_pinned(repo) -> None:

@@ -17,11 +17,12 @@ import os
 import shutil
 import sqlite3
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import pytest
+
+from conftest import console_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src"
@@ -38,17 +39,13 @@ SECOND = "totals-behavior-second"
 
 def vkit(*args: str) -> subprocess.CompletedProcess[str]:
     """Invoke the real console entry point, never an import."""
-    exe = Path(sys.executable).parent / "vkit.exe"
-    if not exe.is_file():
-        exe = Path(sys.executable).parent / "vkit"
-    if not exe.is_file():
-        pytest.fail(f"the vkit console script is not installed beside {sys.executable}")
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(SRC), *([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])]
     )
     return subprocess.run(
-        [str(exe), *args], capture_output=True, text=True, timeout=300, env=env,
+        [str(console_script()), *args],
+        capture_output=True, text=True, timeout=300, env=env,
     )
 
 

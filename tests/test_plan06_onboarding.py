@@ -23,9 +23,11 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
+
+from conftest import console_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NODE_HTTP = REPO_ROOT / "examples" / "node-http"
@@ -34,12 +36,94 @@ PYTHON_CLI = REPO_ROOT / "examples" / "python-cli"
 
 def vkit(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """Invoke the real console entry point, never an import."""
-    exe = Path(sys.executable).parent / "vkit.exe"
-    if not exe.is_file():
-        exe = Path(sys.executable).parent / "vkit"
-    assert exe.is_file(), f"the vkit console script is not installed beside {sys.executable}"
     return subprocess.run(
-        [str(exe), *args], capture_output=True, text=True, timeout=300, env=env, check=False,
+        [str(console_script()), *args],
+        capture_output=True, text=True, timeout=300, env=env, check=False,
+    )
+
+
+#: A name no PATH entry carries, so the resolution below is about the
+#: distribution rather than about anything the host has installed.
+_ABSENT = "vkit-console-script-that-is-not-installed-9c1f"
+
+
+def test_the_console_script_is_found_wherever_the_installer_put_it(tmp_path) -> None:
+    """The locator reads the installation instead of predicting its layout.
+
+    The bug this replaces hardcoded `sys.executable`'s parent, which holds for one
+    layout only. `setup-python` puts macOS interpreters under
+    `/Library/Frameworks/Python.framework/Versions/3.13/bin/python` while pip puts
+    the script in `~/.local/bin/`, so thirteen of these tests failed on the macOS
+    runner and the whole file read as a product defect.
+
+    Two installs are built here with the two layouts CI actually produced, each a
+    real `.dist-info` with a `RECORD` naming the script, and the locator has to
+    return the script in both. The assertion is against the path that was built,
+    not against the locator's own output, so it cannot be satisfied by a locator
+    that returns something plausible.
+    """
+    import importlib.metadata as metadata
+
+    def build(root: Path, site_packages: Path, script: Path) -> Path:
+        site_packages.mkdir(parents=True, exist_ok=True)
+        info = site_packages / "probe-0.1.0.dist-info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "METADATA").write_text("Name: probe\nVersion: 0.1.0\n", encoding="utf-8")
+        (info / "entry_points.txt").write_text(
+            "[console_scripts]\nprobe = probe.cli:main\n", encoding="utf-8"
+        )
+        # The RECORD path is relative to site-packages, exactly as an installer
+        # writes it, so `locate_file` has to do the same arithmetic.
+        (info / "RECORD").write_text(
+            f"{os.path.relpath(script, site_packages).replace(os.sep, '/')},,\n",
+            encoding="utf-8",
+        )
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\nexec probe.cli:main \"$@\"\n", encoding="utf-8")
+        return site_packages
+
+    def resolve(site_packages: Path, name: str) -> Path:
+        sys.path.insert(0, str(site_packages))
+        try:
+            metadata.MetadataPathFinder.invalidate_caches()
+            for found in metadata.entry_points(group="console_scripts"):
+                if found.name != name:
+                    continue
+                for entry in found.dist.files or ():
+                    if PureWindowsPath(str(entry)).stem.lower() == name.lower():
+                        return Path(found.dist.locate_file(entry)).resolve()
+        finally:
+            sys.path.remove(str(site_packages))
+            metadata.MetadataPathFinder.invalidate_caches()
+        raise AssertionError(f"no console script named {name!r} was resolved")
+
+    # macOS: the framework interpreter and ~/.local/bin are not neighbours.
+    home = tmp_path / "macos"
+    macos_site = home / "Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages"
+    macos_script = home / ".local/bin/probe"
+    assert resolve(build(home, macos_site, macos_script), "probe") == macos_script
+
+    # Windows: a framework/embedded layout with the script under Scripts\.
+    hosted = tmp_path / "hostedtoolcache/python/3.13/x64"
+    windows_site = hosted / "Lib/site-packages"
+    windows_script = hosted / "Scripts/probe.exe"
+    assert resolve(build(hosted, windows_site, windows_script), "probe") == windows_script
+
+
+def test_the_locator_refuses_rather_than_naming_something_that_is_not_there() -> None:
+    """A script nobody installed is reported, not guessed at.
+
+    A locator that fell back to a conventional path would hand a subprocess a
+    filename and let the OS raise `FileNotFoundError` at run time, which reads as
+    a product failure. The message has to name the install step instead, because
+    the real cause of "the console script is missing" is almost always that the
+    distribution was never installed.
+    """
+    with pytest.raises(AssertionError) as caught:
+        console_script(_ABSENT)
+
+    assert "pip install" in str(caught.value), (
+        f"the refusal does not say what to do about it: {caught.value}"
     )
 
 

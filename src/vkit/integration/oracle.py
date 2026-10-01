@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from ..manifest import Manifest
@@ -134,6 +134,14 @@ def scripts_of(manifest: Manifest) -> dict[str, str]:
     Elements are matched by shape rather than by flag arity, because no manifest
     declares which flag takes a value and a rule that guessed wrong would pin
     the wrong file, which is worse than pinning none.
+
+    Whether a part pins a file is decided by `_pins_a_file`, which reads the
+    string in both path flavours. Deciding it with the host's own `Path` was the
+    defect: a manifest is portable data, so `C:/elsewhere/verify_price.py` is a
+    legitimate spelling that a POSIX host parses as relative, and such a check
+    was pinned as a repository-relative script. `repoint_approved` then joined
+    that onto `approved_root`, so the approved run executed a path outside the
+    approved tree -- on the very host the boundary exists to hold.
     """
     scripts: dict[str, str] = {}
     for check_id, check in manifest.checks.items():
@@ -144,13 +152,37 @@ def scripts_of(manifest: Manifest) -> dict[str, str]:
                 continue
             if part == check.argv[0] and "/" not in part and "\\" not in part:
                 continue
-            candidate = Path(part)
-            if candidate.is_absolute() or ".." in candidate.parts:
-                break
-            if candidate.suffix:
-                scripts[check_id] = candidate.as_posix()
+            if _pins_a_file(part):
+                scripts[check_id] = Path(part).as_posix()
                 break
     return scripts
+
+
+def _pins_a_file(part: str) -> bool:
+    """True when `part` is a repository-relative path to a script.
+
+    A check pins a file only when the string names one that lives inside the tree
+    the approved revision materializes. Everything else pins nothing: a module
+    name, a path with no suffix, an absolute path in either spelling, and a `..`
+    escape in either spelling.
+
+    Both flavours are read because the spelling is not the host's to decide.
+    `pathlib.Path` parses with the running platform's rules, so a Windows path in
+    a manifest is a relative path to a POSIX host, and a POSIX path is not
+    absolute to Windows at all. Testing only the host's reading is what let a
+    POSIX run pin `C:/elsewhere/verify_price.py` as a file of the repository, and
+    `repoint_approved` then joined it onto `approved_root` and ran whatever it
+    named.
+    """
+    if not PureWindowsPath(part).suffix and not PurePosixPath(part).suffix:
+        return False
+    for flavour in (PureWindowsPath, PurePosixPath):
+        candidate = flavour(part)
+        if candidate.is_absolute() or candidate.anchor or candidate.drive:
+            return False
+        if ".." in candidate.parts:
+            return False
+    return True
 
 
 def blob_digest(project: Project, commit: str, path: str) -> str | None:

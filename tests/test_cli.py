@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import console_script
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "python-cli"
 
@@ -38,17 +40,12 @@ EXIT_INTERNAL = 4
 def vkit(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Invoke the real console entry point, never an import.
 
-    Resolved next to the interpreter running the tests rather than through
-    `which`, because a venv's Scripts directory is frequently absent from PATH
-    and a skipped suite is a suite that proved nothing.
+    Located through the installation rather than beside `sys.executable`, because
+    that is not where pip puts a script in every layout. See `console_script`.
     """
-    exe = Path(sys.executable).parent / "vkit.exe"
-    if not exe.is_file():
-        exe = Path(sys.executable).parent / "vkit"
-    if not exe.is_file():
-        pytest.fail(f"the vkit console script is not installed beside {sys.executable}")
     return subprocess.run(
-        [str(exe), *args], capture_output=True, text=True, timeout=180, cwd=cwd,
+        [str(console_script()), *args],
+        capture_output=True, text=True, timeout=180, cwd=cwd,
     )
 
 

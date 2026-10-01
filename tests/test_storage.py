@@ -395,7 +395,14 @@ def test_a_reported_environment_carries_no_credential(
     # `tool_versions` of `{}` satisfied `all(...)` over its values -- the same
     # vacuous pass this file already guards against above. Every entry is now
     # pinned to the string the tool prints, so a missing one raises instead.
-    assert facts["platform"].startswith(platform.system())
+    # `platform.system()` is not the literal here: `_environment_facts` records
+    # `platform.platform()`, which renames a Darwin uname to `macOS` and its
+    # product release (platform.py:1343-1351) while `platform.system()` stays
+    # `Darwin`. Asserting the un-renamed name is what put this red on macOS.
+    reported_system = (
+        "macOS" if platform.system() == "Darwin" else platform.system()
+    )
+    assert facts["platform"].startswith(reported_system)
     assert set(facts) == {"python_version", "platform", "tool_versions"}
     assert set(facts["tool_versions"]) == {"git", "python"}
     assert facts["tool_versions"]["git"].startswith("git version")

@@ -16,6 +16,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import vkit.storage as storage  # noqa: E402
+from vkit import recover  # noqa: E402
+from vkit.execution import _environment_facts  # noqa: E402
 from vkit.storage import REPORT_NAME, Store, StoreError  # noqa: E402
 
 
@@ -221,6 +224,98 @@ def test_transaction_rolls_back_on_an_exception(tmp_path: Path) -> None:
             conn.execute("UPDATE runs SET lifecycle = 'running' WHERE run_id = 'r1'")
             raise RuntimeError("boom")
     assert s.list_runs()[0]["lifecycle"] == "preparing"
+
+
+def test_an_interrupted_report_write_leaves_no_acceptance_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The matrix row "Disk full or interrupted report write -> No complete
+    acceptance record; partial artifacts remain diagnosable".
+
+    Both halves were implemented and neither had a test. `publish` stages the
+    report to a temp name, fsyncs it, claims the row, and swaps the temp into
+    place last; `tmp/research/KIT_ACCEPTANCE.md` advertises the row and
+    `scripts/acceptance02.py` row 13 concedes in its own note that a full disk is
+    "NOT induced". What was measured was the locking half of the row, not this.
+
+    A full disk is not inducible here, so the failure is placed at the one call
+    that fails when the volume fills: `fsync`, which is the last write the staged
+    file does. That is the real error the kernel returns, and the real point in
+    the sequence at which it arrives, so what is exercised is the store's own
+    behaviour and not a synthetic exception raised at an arbitrary line.
+
+    The three assertions are the row's three claims, and they are checked against
+    what a reader can observe rather than against the exception's class, because
+    the class is a driver detail that R1 already changed once.
+    """
+    s = Store(tmp_path / "state.sqlite3")
+    s.register_run("r1", "unit", task_id=None, attempt=None, source={},
+                   configuration_digest="c", fixture_digest=None)
+
+    # ENOSPC, as the kernel reports a full volume.
+    full = OSError(28, "No space left on device")
+    full.errno = 28
+    monkeypatch.setattr(storage.os, "fsync", lambda _fd: (_ for _ in ()).throw(full))
+
+    with pytest.raises(OSError):
+        s.publish("r1", make_report("r1"))
+
+    monkeypatch.undo()
+
+    run_dir = s.run_dir("r1")
+    # No complete acceptance record: nothing a reader could mistake for evidence.
+    assert not (run_dir / REPORT_NAME).exists()
+    assert list(run_dir.iterdir()) == [], (
+        f"the staged report was left behind: {sorted(p.name for p in run_dir.iterdir())}"
+    )
+    with pytest.raises(StoreError):
+        s.load("r1")
+
+    # The run did not become terminal, so nothing claims a verdict exists.
+    assert s.run_status("r1")["lifecycle"] == "preparing"
+    assert s.run_status("r1")["result"] is None
+
+    # Partial artifacts remain diagnosable: recovery reports on the store rather
+    # than raising, and the schema is intact.
+    assert recover.inspect(s).to_json()["findings"] is not None
+    assert s.version() >= 1
+
+
+def test_a_reported_environment_carries_no_credential(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The matrix row "Secret appears in command output -> do not dump full
+    environment variables", for the half of it the report can enforce.
+
+    The report's `environment` block is the one place the product chooses what to
+    record about the machine a run happened on, and it is written by
+    `_environment_facts` rather than by a check. The row asks that a reader never
+    be handed the process environment, so the test sets a secret in the ambient
+    environment and asserts on what the report would carry.
+
+    The negative control is in the same body: the value is in `os.environ` and is
+    not in the facts, so the assertion is about the report's shape rather than
+    about a secret that was never set.
+
+    What this does NOT cover is the other half of the row, a secret the check
+    itself prints. `logs` names `stdout.log` and `stderr.log`, and those files
+    hold the raw bytes the check wrote with no filtering between the check and the
+    disk. There is no redaction in the product today (measured: no call to any
+    redaction routine anywhere under `src/`), so that half of the row is
+    unimplemented rather than untested. See `review/posix-triage.md`.
+    """
+    secret = "sk-do-not-persist-this-value"
+    monkeypatch.setenv("VKIT_TEST_SECRET", secret)
+
+    facts = _environment_facts(None)
+
+    assert secret not in repr(facts), "a credential from the environment reached the report"
+    # The facts a reader needs to reproduce the run are still there. A report that
+    # achieved the row by recording nothing would satisfy the assertion above.
+    assert facts["python_version"] == sys.version.split()[0]
+    assert facts["platform"]
+    assert set(facts) == {"python_version", "platform", "tool_versions"}
+    assert all(isinstance(v, str) for v in facts["tool_versions"].values())
 
 
 def test_transaction_releases_the_write_lock(tmp_path: Path) -> None:

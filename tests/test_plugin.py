@@ -54,11 +54,38 @@ def load_hook_module():
 
 # --- a real store, so the hooks read records rather than a stub ------------
 
+#: The one check this fixture's policy registers.
+CHECK_ID = "c1"
+
+#: The policy, in the shape `parse_manifest` validates. It declares no `inputs`,
+#: so the fixture identity is a measurement of nothing rather than a measurement
+#: that failed, which leaves the source identity as the one that can move.
+CHECK_POLICY = {
+    "schema_version": 1,
+    "description": "One check the plugin gate can read a readiness verdict from.",
+    "checks": [{
+        "id": CHECK_ID,
+        "description": "Recorded by the test, never executed by the hook.",
+        "command": ["{{python}}", "-c", "pass"],
+        "cwd": ".",
+        "timeout_seconds": 120,
+        "required_scenarios": ["s"],
+        "artifact": "result.json",
+    }],
+}
+
+#: The identities a passing run has to have recorded, measured from the fixture's
+#: own checkout. A run that records anything else was produced against a
+#: different tree or a different policy, which is the disagreement this file now
+#: exists to make impossible.
+IDENTITIES: dict[str, Any] = {}
+
+
 def _publish_run(store: Store, run_id: str, check_id: str, task_id: str,
                  result: str, reason: str | None = None) -> None:
     store.register_run(run_id, check_id, task_id=task_id, attempt=1,
-                       source={"inventory_digest": "src-1"},
-                       configuration_digest="pd", fixture_digest=None)
+                       source={"inventory_digest": IDENTITIES["source"]},
+                       configuration_digest=IDENTITIES["policy"], fixture_digest=None)
     if result == "BLOCKED":
         outcome: dict[str, Any] = {"result": "BLOCKED", "reason": reason or "timeout"}
     else:
@@ -69,7 +96,8 @@ def _publish_run(store: Store, run_id: str, check_id: str, task_id: str,
 
 
 def _managed_contract(session_id: str, *, agent_id: str | None = None,
-                      required: tuple[str, ...] = ("c1",)) -> dict[str, Any]:
+                      required: tuple[str, ...] = (CHECK_ID,),
+                      root: str = ".") -> dict[str, Any]:
     """A contract in the shape `TaskContract.from_json` validates.
 
     The flat `{"goal": ..., "required_checks": [...]}` form these tests used to
@@ -79,8 +107,8 @@ def _managed_contract(session_id: str, *, agent_id: str | None = None,
     `declared` because that is where the hook reads it from.
     """
     return {
-        "repository": {"root": ".", "git_common_dir": "."},
-        "policy_digest": "pd",
+        "repository": {"root": root, "git_common_dir": root},
+        "policy_digest": IDENTITIES["policy"],
         "required_checks": list(required),
         "scope": "ship",
         "resources": [],
@@ -91,24 +119,54 @@ def _managed_contract(session_id: str, *, agent_id: str | None = None,
 
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
-    """A Git repository with a vkit store holding one bound managed task.
+    """A Git repository with a real policy, holding one bound managed task.
 
-    The task is bound to `session_id` with no `agent_id`, so main-session events
+    The task is bound to `sess-1` with no `agent_id`, so main-session events
     match it and a subagent payload does not. That asymmetry is the property
     under test elsewhere, so it is built here rather than faked per test.
-    """
-    root = tmp_path / "repo"
-    root.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "commit", "-qm", "init", "--allow-empty"], cwd=root, check=True)
 
+    The policy is written and committed because the gate now measures it. A
+    repository with no manifest makes `tasks.acceptance_context` refuse, and a
+    refused context is BLOCKED by design, so a fixture asking "does a recorded
+    PASS let a bound task finish" has to be one where the pass is measurable at
+    all. Committing rather than leaving it untracked matters too: the source
+    identity reads untracked files, so a manifest written after the pass would
+    move the digest for a reason the test never caused.
+
+    `IDENTITIES` holds what a run has to record to be accepted here, measured
+    once from this checkout. Every task and run in this file is written against
+    it, so a test can only see a disagreement it caused by changing something.
+    """
+    from vkit.manifest import parse_manifest
     from vkit.paths import open_project
-    store = Store(open_project(root).db_path)
+    from vkit.tasks import acceptance_context
+
+    root = tmp_path / "repo"
+    (root / "verification").mkdir(parents=True)
+    (root / "verification" / "manifest.json").write_text(
+        json.dumps(CHECK_POLICY, indent=2) + "\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "a repository holding one check"],
+                   cwd=root, check=True)
+
+    resolved = open_project(root)
+    context = acceptance_context(
+        resolved, lambda: parse_manifest(resolved, resolved.runs_root)
+    )
+    assert context.usable, f"the fixture's own policy is not usable: {context.refusal}"
+    IDENTITIES.clear()
+    IDENTITIES.update(
+        source=context.source_inventory_digest, policy=context.policy_digest
+    )
+
+    store = Store(resolved.db_path)
     open_task(
         store, task_id="t1",
-        contract=_managed_contract("sess-1"),
-        policy_digest="pd",
+        contract=_managed_contract("sess-1", root=str(resolved.root)),
+        policy_digest=context.policy_digest,
     )
     return root
 
@@ -253,9 +311,9 @@ def test_a_hook_is_importable_and_well_formed_for_every_recorded_state(
     for state, (task_id, run_id, result, reason) in states.items():
         open_task(store, task_id=task_id,
                   contract=_managed_contract(f"sess-{task_id}"),
-                  policy_digest="pd")
+                  policy_digest=IDENTITIES["policy"])
         if run_id is not None:
-            _publish_run(store, run_id, "c1", task_id, result, reason)
+            _publish_run(store, run_id, CHECK_ID, task_id, result, reason)
 
         body = payload_for(event, session_id=f"sess-{task_id}")
         payload, code = hook.respond(event, body, str(project))
@@ -287,7 +345,7 @@ def test_a_blocked_run_never_yields_an_accepting_response(event: str, project: P
     hook = load_hook_module()
     from vkit.paths import open_project
     store = Store(open_project(project).db_path)
-    _publish_run(store, "r-blocked", "c1", "t1", "BLOCKED", "timeout")
+    _publish_run(store, "r-blocked", CHECK_ID, "t1", "BLOCKED", "timeout")
 
     for event_under_test in COMPLETION_EVENTS:
         response = hook.respond(event_under_test, payload_for(event_under_test),
@@ -316,11 +374,75 @@ def test_a_terminal_pass_is_the_only_state_that_releases_a_bound_task(
     hook = load_hook_module()
     from vkit.paths import open_project
     store = Store(open_project(project).db_path)
-    _publish_run(store, "r-pass", "c1", "t1", "PASS")
+    _publish_run(store, "r-pass", CHECK_ID, "t1", "PASS")
 
     response = hook.respond(event, payload_for(event), str(project))[0]
     assert accepts_the_finish(response), \
         f"{event} blocked a task whose required check has a recorded PASS: {response!r}"
+
+
+def test_a_pass_under_evidence_that_has_since_changed_does_not_release_a_task(
+    project: Path,
+) -> None:
+    """F15. The gate must compare the identities the pass was produced under.
+
+    A recorded PASS answers "did this code pass this check", and that answer goes
+    stale the moment the code or the policy moves. The gate answered READY from
+    the run row alone while `tasks.finalize` on the same task read BLOCKED, so a
+    session could end on evidence `finalize` would refuse — from the one place
+    that decides whether a stop is allowed.
+
+    Driven through `respond`, the entry point the host calls, because the whole
+    claim is about what a host event produces. The unfixed hook resolved a full
+    `Project` through `_open_store` and threw it away, then called
+    `compute_readiness` with no context, which is the branch where `_decide` gets
+    `expected is None` and no identity is ever compared.
+    """
+    hook = load_hook_module()
+    from vkit.paths import open_project
+    store = Store(open_project(project).db_path)
+    _publish_run(store, "r-pass", CHECK_ID, "t1", "PASS")
+
+    # The pass is current, so this is the case that has to keep working: the
+    # assertions below only mean something if the gate reads READY to begin with.
+    baseline = hook.respond("Stop", payload_for("Stop"), str(project))[0]
+    assert accepts_the_finish(baseline), \
+        f"the gate did not release a pass that is still current: {baseline!r}"
+
+    tracked = project / "tracked.py"
+    tracked.write_text("# written after the pass\n", encoding="utf-8")
+
+    after = hook.respond("Stop", payload_for("Stop"), str(project))[0]
+    assert not accepts_the_finish(after), (
+        "the gate reported READY on a pass recorded before the source changed, "
+        f"which tasks.finalize refuses on the same task: {after!r}"
+    )
+    assert "source" in after.get("reason", ""), \
+        f"the gate blocked without saying the source had changed: {after!r}"
+
+
+def test_a_gate_that_cannot_read_the_policy_does_not_report_ready(project: Path) -> None:
+    """A missing policy is an unresolved measurement, not an absent requirement.
+
+    The pass is still there and still says PASS. What is gone is the thing to
+    compare it against, so the honest answer is BLOCKED and the gate has to say
+    which measurement failed. This is the direction the fix must not invert: a
+    context that cannot be built must never read as acceptance, because that is
+    the failure this layer exists to prevent.
+    """
+    hook = load_hook_module()
+    from vkit.paths import open_project
+    store = Store(open_project(project).db_path)
+    _publish_run(store, "r-pass", CHECK_ID, "t1", "PASS")
+
+    (project / "verification" / "manifest.json").unlink()
+
+    response = hook.respond("Stop", payload_for("Stop"), str(project))[0]
+    assert not accepts_the_finish(response), (
+        f"the gate released a task whose policy it can no longer read: {response!r}"
+    )
+    assert "manifest.json" in response.get("reason", ""), \
+        f"the gate blocked without naming the policy it could not read: {response!r}"
 
 
 def test_an_unregistered_session_is_reported_and_never_gated(project: Path) -> None:
@@ -354,7 +476,7 @@ def test_a_sibling_subagent_never_inherits_another_workers_gate(project: Path) -
     hook = load_hook_module()
     from vkit.paths import open_project
     store = Store(open_project(project).db_path)
-    _publish_run(store, "r-blocked", "c1", "t1", "BLOCKED", "timeout")
+    _publish_run(store, "r-blocked", CHECK_ID, "t1", "BLOCKED", "timeout")
 
     response = hook.respond("SubagentStop", payload_for("SubagentStop", agent_id="a7"),
                             str(project))[0]
@@ -381,8 +503,8 @@ def test_an_ambiguous_binding_is_reported_rather_than_picked(project: Path) -> N
     store = Store(open_project(project).db_path)
     open_task(store, task_id="t2", contract=_managed_contract("sess-1"),
               policy_digest="pd")
-    _publish_run(store, "r-pass", "c1", "t1", "PASS")
-    _publish_run(store, "r-blocked", "c1", "t2", "BLOCKED", "timeout")
+    _publish_run(store, "r-pass", CHECK_ID, "t1", "PASS")
+    _publish_run(store, "r-blocked", CHECK_ID, "t2", "BLOCKED", "timeout")
 
     for event in COMPLETION_EVENTS:
         response = hook.respond(event, payload_for(event), str(project))[0]
@@ -407,8 +529,8 @@ def test_a_bound_task_is_never_displaced_by_a_sibling_registration(project: Path
     # t1 passes so the main session's gate accepts; t2 stays blocked so the
     # subagent's gate has something to say, and a subagent inheriting t1
     # instead of t2 would be visible as silence.
-    _publish_run(store, "r-pass", "c1", "t1", "PASS")
-    _publish_run(store, "r-blocked", "c1", "t2", "BLOCKED", "timeout")
+    _publish_run(store, "r-pass", CHECK_ID, "t1", "PASS")
+    _publish_run(store, "r-blocked", CHECK_ID, "t2", "BLOCKED", "timeout")
 
     main = hook.respond("Stop", payload_for("Stop"), str(project))[0]
     assert accepts_the_finish(main), \
@@ -435,7 +557,7 @@ def test_a_second_blocked_turn_records_the_blocker_instead_of_looping(
     hook = load_hook_module()
     from vkit.paths import open_project
     store = Store(open_project(project).db_path)
-    _publish_run(store, "r-blocked", "c1", "t1", "BLOCKED", "timeout")
+    _publish_run(store, "r-blocked", CHECK_ID, "t1", "BLOCKED", "timeout")
 
     response = hook.respond("Stop", payload_for("Stop", stop_hook_active=True),
                             str(project))[0]

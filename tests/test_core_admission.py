@@ -45,6 +45,7 @@ from vkit.tasks import (  # noqa: E402
     TaskError,
     acceptance_context,
     admit,
+    compute_readiness,
     finalize,
     get_task,
     supersede_task,
@@ -111,6 +112,16 @@ def _policy_checks(repo: Path) -> list[str]:
 
 
 _RUNS = itertools.count()
+
+
+def _current_source(repo: Path) -> dict:
+    """The `source` block a run recorded today would carry.
+
+    A pass has to be recorded against the identities in force to be eligible at
+    all, and a test that seeds an unrelated digest is testing the mismatch rather
+    than whatever it names.
+    """
+    return {"inventory_digest": compute_source_identity(open_project(repo)).inventory_digest}
 
 
 def _publish_pass(store: Store, task_id: str, attempt: int, source: dict | None = None,
@@ -463,6 +474,45 @@ def test_history_is_reported_separately_and_never_erased(repo: Path) -> None:
     )
     assert any(run["attempt"] == 1 for run in store.list_runs(task_id="t1")), (
         "acceptance deleted the old attempt's records"
+    )
+
+
+def test_an_unusable_context_blocks_instead_of_comparing_nothing(repo: Path) -> None:
+    """A refused context is not the same as no context at all.
+
+    `compute_readiness` takes a context so an adapter that can reach the
+    repository can compare identities. It used to drop a context that arrived
+    unusable and fall through to the branch that compares nothing, so an adapter
+    that had built one and found it unreadable still decided READY — the exact
+    shape of the hook defect, one layer down. Only a caller with no repository at
+    all may omit the context, and it says so by omitting it.
+
+    `finalize` already refused here; the two entry points disagreed about what an
+    unresolved measurement means, and the laxer one is the one an adapter reaches.
+    """
+    store = _store(repo)
+    _admit(repo, "t1")
+    _publish_pass(store, "t1", 1, source=_current_source(repo),
+                  policy_digest=_POLICY_DIGEST["value"])
+    (repo / "verification" / "manifest.json").unlink()
+    refused = _context(repo)
+    assert not refused.usable, "the fixture is not exercising a refused context"
+
+    with_context = compute_readiness(
+        store, "t1", required_check_ids=[CHECK_ID], context=refused
+    )
+    without = compute_readiness(store, "t1", required_check_ids=[CHECK_ID])
+
+    assert without.readiness == "READY", (
+        "a caller with no repository is the one case that may decide without an "
+        "identity comparison, and that case must keep working"
+    )
+    assert with_context.readiness == "BLOCKED", (
+        "a context that could not be measured was dropped and the verdict was "
+        f"reached on no comparison at all: {with_context.gaps}"
+    )
+    assert any("no usable policy" in gap for gap in with_context.gaps), (
+        f"the refusal does not name the measurement that failed: {with_context.gaps}"
     )
 
 

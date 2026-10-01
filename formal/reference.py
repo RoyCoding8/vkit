@@ -186,11 +186,45 @@ class Model:
         It does NOT filter by revision: the core keys evidence on the task, not on
         the source and policy pair. The reference deliberately does the same, so
         a divergence about revision filtering shows up as a disagreement rather
-        than being hidden by a stricter model. A consequence is recorded as a
-        known divergence: the core does not invalidate a task's readiness when
-        the project moves to a new revision, which is exactly what the TLA+
-        model's Property4 forbids. The two genuinely disagree there, and the
-        tests record which one is which.
+        than being hidden by a stricter model.
+
+        That is a statement about the TLA+ model, not about the core, and the
+        difference is a real one rather than a disagreement about wording. "The
+        project moves to a new revision" names at least two different movements,
+        and they are not equally visible. Measured by
+        `review/probe_revision_movement.py` over the real `Store` on a real
+        checkout, each case opening from a READY the same evidence produced:
+
+          empty commit, HEAD moves, no file changes
+              finalize READY. `SourceIdentity.head` moved and
+              `inventory_digest` did not, because `COMPARED_IDENTITIES` compares
+              the inventory digest and `source_unchanged` says the digest decides
+              and HEAD deliberately does not.
+          edit a declared input, then commit
+              finalize BLOCKED, gap names source.
+          rewrite verification/manifest.json, evidence not re-run
+              finalize BLOCKED, gap names SOURCE. The manifest is a tracked file,
+              so rewriting it moves the inventory digest, and the recorded run
+              genuinely still answers the contract this attempt was admitted
+              under.
+          rewrite verification/manifest.json, evidence re-run under it
+              finalize BLOCKED, gap names POLICY. The digest compared against is
+              the one pinned at ADMISSION, which does not follow the manifest.
+
+        The TLA+ model forbids acceptance after ANY `ChangeRevision`, because
+        `Accept` requires `evidence[c][o][g][r]` at `r = curRevision` and a result
+        is recorded per identity, so the new identity starts with no results at
+        all. Its `Revisions` are COMBINED source-and-policy identities, so a
+        movement that changes no file content is not a state that model can even
+        name. The core and this model agree with each other and both disagree
+        with it, on exactly one case: a movement that rewrites no file content.
+        Property4 is therefore genuinely violated rather than merely unmet, and
+        the violation is invisible to the correspondence tests because they call
+        `compute_readiness` with no `AcceptanceContext`, so no identity is
+        compared on either side. That blindness is a separate, larger gap, named
+        in the `acceptable` docstring below and measured in
+        `tests/test_identity_invalidation.py`, and it is not something this file
+        can close by filtering.
 
         `generation=None` deliberately ignores the generation, and exists for
         callers that want the recorded history rather than this attempt's
@@ -223,9 +257,26 @@ class Model:
         reference=REJECTED -- because it had never run before. Hypothesis being
         absent from the environment is what kept the disagreement invisible.
 
-        The revision is still not consulted. The core does not invalidate a
-        task's readiness when the project moves to a new revision either, so the
-        two agree about that and the known divergence is narrower than it was.
+        The revision is still not consulted here, and that no longer looks like
+        agreement. An earlier version of this comment said the core "does not
+        invalidate a task's readiness when the project moves to a new revision
+        either, so the two agree about that and the known divergence is narrower
+        than it was", while `_latest_by_check` said the opposite about the same
+        code. The sentence was true of a content change and false of an empty
+        commit, and the measured table in `_latest_by_check` is what separates
+        them. Summarised so the two docstrings cannot drift again: this method and
+        the core agree that a movement which rewrites file content invalidates
+        readiness, and both disagree with the TLA+ model about a movement which
+        does not.
+
+        The blindness that used to hide this is what the paragraph above is about.
+        Deciding without an `AcceptanceContext` compares no identity, so a source
+        or policy change is invisible to this method AND to the core. The
+        reference is not a weaker model of a stronger core here; it is a model of
+        the context-free decision, which is the decision
+        `tests/test_formal_correspondence.py` actually compares. Closing the gap
+        means changing which core call the comparison makes, not changing what
+        this method does.
         """
         latest = self._latest_by_check(owner, generation=generation)
         return all(latest.get(check) == "PASS" for check in REQUIRED_CHECKS)

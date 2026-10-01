@@ -553,12 +553,41 @@ def test_an_empty_check_id_is_refused_before_the_core_is_called(
     assert "a check id is required" in caught.value.reason
 
 
-def test_a_missing_run_report_surfaces_the_store_reason(context: operations.Context) -> None:
-    project = open_project(context.project.root)
-    expected = f"no published report for run nosuch: {project.runs_root / 'nosuch' / 'report.json'}"
+def test_a_run_that_does_not_exist_is_refused(context: operations.Context) -> None:
+    """An unknown run id is the one case that is a refusal.
+
+    It used to surface the store's "no published report for run nosuch: <path>",
+    which is the same message a run that has not finished produces. Every in-flight
+    run is report-less by design, so that message reported a working run as a
+    missing one, and the two states became indistinguishable to an operator. The
+    refusal is now reserved for a run this store has never heard of, which is what
+    it always meant to be.
+    """
     with pytest.raises(Refused) as caught:
         operations.run_detail_view(context, "nosuch")
-    assert caught.value.reason == expected
+    assert caught.value.reason == "no run is recorded under 'nosuch'"
+
+
+def test_a_run_that_has_not_finished_is_shown_as_pending(context: operations.Context) -> None:
+    """The read-path half of the same fix: an in-flight run is a valid request.
+
+    A run that is `preparing` has no report, and the old view refused on exactly
+    that. It now returns the recorded lifecycle and no outcome, so the page can
+    show a run in progress instead of an error.
+    """
+    store = context.store
+    store.register_run(
+        "0" * 32, CHECK_ID, task_id=None, attempt=None,
+        source={"head": "h", "inventory_digest": "i", "dirty": False},
+        configuration_digest="c", fixture_digest=None,
+    )
+
+    view = operations.run_detail_view(context, "0" * 32)
+
+    assert view["pending"] is True
+    assert view["lifecycle"] == "preparing"
+    assert view["report"] is None
+    assert view["check_id"] == CHECK_ID
 
 
 # ------------------------------------------------------------ bounded log read

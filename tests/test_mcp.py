@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,31 @@ def start(tools: Server, task_id: str, request_id: str = "req-check-1", checks=(
     return tools.call_tool(
         "check_start", {"task_id": task_id, "check_ids": list(checks), "request_id": request_id}
     )
+
+
+def await_outcome(tools: Server, run_id: str, timeout: float = 120.0) -> dict:
+    """Poll `run_get` until the run is terminal, and return that content.
+
+    `check_start` now records a launch and returns while the check is still
+    running, which is what lets a run outlive the client that asked for it. The
+    verdict is therefore not in the `check_start` payload and a test that wants it
+    asks for it the way a caller now must.
+
+    Polled with a deadline rather than slept for: the check is a real process whose
+    duration is not this test's to predict.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        result = tools.call_tool("run_get", {"run_id": run_id})
+        assert result.is_error is False, result.content
+        content = result.content
+        if content.get("lifecycle") == "terminal" and content.get("outcome"):
+            return content
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"run {run_id} was still {content.get('lifecycle')!r} after {timeout}s"
+            )
+        time.sleep(0.1)
 
 
 # --- the surface -------------------------------------------------------------
@@ -205,26 +231,30 @@ def test_a_real_check_produces_a_run_that_run_get_reads(tools: Server) -> None:
     assert started.is_error is False, started.content
     run = started.content["runs"][0]
     assert run["check_id"] == "totals-behavior"
-    assert run["result"] == "PASS"
-    assert run["launched"] is True
+    # `check_start` returns once the launch is durably recorded, so it has no
+    # outcome to report. That is the contract: the run belongs to a supervisor
+    # that outlives this call, which is what makes it cancellable later.
+    assert run["result"] is None
+    assert run["lifecycle"] in ("preparing", "launching", "running", "terminal")
     assert len(run["run_id"]) == 32
 
     fetched = tools.call_tool("run_get", {"run_id": run["run_id"]})
     assert fetched.is_error is False
-    assert fetched.content["lifecycle"] == "terminal"
-    assert fetched.content["result"] == "PASS"
-    assert fetched.content["check_id"] == "totals-behavior"
-    assert [s["id"] for s in fetched.content["scenarios"]] == [
+    final = await_outcome(tools, run["run_id"])
+    assert final["lifecycle"] == "terminal"
+    assert final["result"] == "PASS"
+    assert final["check_id"] == "totals-behavior"
+    assert [s["id"] for s in final["scenarios"]] == [
         "empty-cart", "single-positive", "several-positives", "mixed-sign",
         "negatives-only", "cancels-to-zero",
     ]
-    assert all(s["result"] == "PASS" for s in fetched.content["scenarios"])
-    assert fetched.content["process"]["exit_code"] == 0
-    assert fetched.content["artifacts"]["result"]["reference"] == (
+    assert all(s["result"] == "PASS" for s in final["scenarios"])
+    assert final["process"]["exit_code"] == 0
+    assert final["artifacts"]["result"]["reference"] == (
         f"run:{run['run_id']}/result.json"
     )
-    assert fetched.content["artifacts"]["result"]["exists"] is True
-    assert "PASS" in fetched.content["summary"]
+    assert final["artifacts"]["result"]["exists"] is True
+    assert "PASS" in final["summary"]
 
 
 def test_a_run_id_from_another_project_is_refused(tmp_path: Path, repo: Path) -> None:
@@ -307,7 +337,7 @@ def test_an_unknown_check_leaves_the_request_key_unclaimed(tools: Server) -> Non
     # The same key, now naming a real check, is accepted.
     accepted = start(tools, task_id, request_id="req-burn", checks=["totals-behavior"])
     assert accepted.is_error is False
-    assert accepted.content["runs"][0]["result"] == "PASS"
+    assert await_outcome(tools, accepted.content["runs"][0]["run_id"])["result"] == "PASS"
 
 
 # --- bounded logs ------------------------------------------------------------
@@ -369,7 +399,11 @@ def test_a_task_missing_a_required_check_cannot_reach_ready(tools: Server) -> No
     check the task has not run, or naming a check the policy does not register,
     cannot be."""
     task_id = begin_task(tools)
-    start(tools, task_id, request_id="req-partial", checks=["totals-behavior"])
+    started = start(tools, task_id, request_id="req-partial", checks=["totals-behavior"])
+    # Readiness reads a run's outcome, and the run has only just been started, so
+    # the run is read to its end first. Finalizing against a run that is still in
+    # flight is not a readiness question at all.
+    assert await_outcome(tools, started.content["runs"][0]["run_id"])["result"] == "PASS"
 
     result = tools.call_tool("task_finalize", {"task_id": task_id, "check_ids": []})
     assert result.is_error is False
@@ -408,9 +442,10 @@ def test_a_failing_check_finalizes_rejected(tools: Server, repo: Path) -> None:
 
     tools = Server(repo)
     task_id = begin_task(tools, request_id="req-defect")
-    run = start(tools, task_id, request_id="req-defect-check").content["runs"][0]
-    assert run["result"] == "FAIL"
-    assert {s["id"] for s in run["outcome"]["scenarios"] if s["result"] == "FAIL"}
+    started = start(tools, task_id, request_id="req-defect-check")
+    final = await_outcome(tools, started.content["runs"][0]["run_id"])
+    assert final["result"] == "FAIL"
+    assert {s["id"] for s in final["scenarios"] if s["result"] == "FAIL"}
 
     finalized = tools.call_tool("task_finalize", {"task_id": task_id})
     assert finalized.content["readiness"] == "REJECTED"
@@ -442,11 +477,24 @@ def test_run_cancel_refuses_when_the_record_carries_no_verified_identity(tools: 
 
     result = tools.call_tool("run_cancel", {"run_id": run_id, "request_id": "req-cancel-1"})
     assert result.is_error is True
-    assert "no creation time" in result.content["error"]
-    assert "claims are retained" in result.content["error"]
+    # The message names the defect precisely. A pid with no creation time is not a
+    # partial identity that can be completed later; it fails every comparison, so
+    # signalling on it would be signalling on a pid the record cannot prove it owns.
+    assert "without the creation time that identifies it" in result.content["error"]
+    assert "pids are recycled" in result.content["error"]
+    assert "reconcile this run instead" in result.content["error"]
 
 
-def test_run_cancel_refuses_a_pid_that_does_not_match_the_record(tools: Server) -> None:
+def test_run_cancel_takes_no_client_supplied_identity(tools: Server) -> None:
+    """The client cannot name the process to kill, at all.
+
+    The schema used to accept `owner_pid` and `owner_creation_time`, and the server
+    checked them against the record before acting on the record anyway. That made
+    a client's arguments a second authority for a fact the store already held, and
+    it is the reason a client could be told it was wrong about a run it had just
+    started. The parameters are removed, so a client that sends one is refused by
+    the schema rather than quietly ignored.
+    """
     task_id = begin_task(tools)
     run_id = start(tools, task_id).content["runs"][0]["run_id"]
 
@@ -454,7 +502,12 @@ def test_run_cancel_refuses_a_pid_that_does_not_match_the_record(tools: Server) 
         "run_cancel", {"run_id": run_id, "request_id": "req-cancel-2", "owner_pid": 4}
     )
     assert result.is_error is True
-    assert "is owned by pid" in result.content["error"]
+    assert "owner_pid" in result.content["error"]
+
+    from vkit.mcp import schemas
+
+    published = schemas()["run_cancel"]
+    assert set(published["properties"]) == {"run_id", "request_id"}
 
 
 # --- the schemas -------------------------------------------------------------

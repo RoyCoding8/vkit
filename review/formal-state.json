@@ -1,0 +1,71 @@
+{
+  "toolchain": {
+    "java": null,
+    "tla2tools_jar": null,
+    "lean": "C:\\Users\\roysh\\.elan\\bin\\lean.EXE"
+  },
+  "artifacts": {
+    "TLC finite model check": {
+      "receipt": "formal/results/OwnershipAcceptance-receipt.json",
+      "receipt_status": "PASS",
+      "tool": "TLC",
+      "tool_version": "TLC 2.19 (08)",
+      "finished_at": "2026-09-30T06:36:50.470544+00:00",
+      "digests": {
+        "formal/tla/OwnershipAcceptance.tla": {
+          "recorded": "ada5014de0b8fa9829b1f55fa8e0592155f760ba45bc67ad4bf4141e6c53e81f",
+          "recomputed": "ada5014de0b8fa9829b1f55fa8e0592155f760ba45bc67ad4bf4141e6c53e81f",
+          "reproduces": true
+        },
+        "formal/tla/OwnershipAcceptance.cfg": {
+          "recorded": "b4e1b4a765ded01daa15aa97feeece2ca4d715a51c791748525a1f916f1e155b",
+          "recomputed": "b4e1b4a765ded01daa15aa97feeece2ca4d715a51c791748525a1f916f1e155b",
+          "reproduces": true
+        }
+      },
+      "state": "VERIFIED",
+      "reason": "every digest in the receipt reproduces",
+      "scope": "A PASS establishes these properties for this model at this finite configuration only. It does not establish them for other worker counts, other revision counts, or any Python implementation. Safety properties only; no fairness or termination assumption was modelled, so no liveness claim is made."
+    },
+    "Lean theorem check": {
+      "receipt": "formal/results/Acceptance-lean-receipt.json",
+      "receipt_status": "PASS",
+      "tool": "Lean",
+      "tool_version": "Lean (version 4.34.1, x86_64-w64-windows-gnu, commit 5045d0056413266e57c625dcd7c365b10e377c52, Release)",
+      "finished_at": "2026-10-01T12:53:57.585694+00:00",
+      "digests": {
+        "formal/lean/Acceptance.lean": {
+          "recorded": "01b09a4792adba0be728315c2de94f7b99aa6836e0c758a68eb961eba56717da",
+          "recomputed": "01b09a4792adba0be728315c2de94f7b99aa6836e0c758a68eb961eba56717da",
+          "reproduces": true
+        }
+      },
+      "state": "VERIFIED",
+      "reason": "every digest in the receipt reproduces",
+      "scope": "The theorems hold for the Lean model in this file. They say nothing about the Python core."
+    },
+    "Python core mutation run": {
+      "receipt": "formal/results/python-core-mutants-receipt.json",
+      "receipt_status": "PASS",
+      "tool": "pytest",
+      "tool_version": null,
+      "finished_at": "2026-10-01T12:53:54.478530+00:00",
+      "digests": {
+        "src/vkit/tasks.py": {
+          "recorded": "da5e05b7a2e9411f0be2b593f61e0234cf53b5b3dae8cdcfc1e2406bb2df0316",
+          "recomputed": "da5e05b7a2e9411f0be2b593f61e0234cf53b5b3dae8cdcfc1e2406bb2df0316",
+          "reproduces": true
+        }
+      },
+      "state": "VERIFIED",
+      "reason": "every digest in the receipt reproduces",
+      "scope": "A CAUGHT result means one named guard in tasks.py was removed and one named test failed against the mutated copy, on this host, at the digest above. It does not establish that the guard is the only way to break the rule, and it establishes nothing about any other module."
+    },
+    "TLA+ mutation run": {
+      "state": "BLOCKED",
+      "receipt": null,
+      "reason": "formal/run_mutants.py writes no receipt, so its four results have nothing to verify against. It also cannot run here: java=absent, tla2tools.jar=absent",
+      "unblocked_by": "a JRE and tla2tools.jar under tmp/formal-tools, and a receipt written by run_mutants.py"
+    }
+  }
+}

@@ -44,6 +44,9 @@ LEAN_DIR = ROOT / "formal" / "lean"
 MODULE = "Acceptance.lean"
 OUT = ROOT / "formal" / "results"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from digest import NORMALIZATION, canonical_sha256  # noqa: E402
+
 # Lean's standard axioms. Classical.choice is absent from the current build,
 # which is strictly better than allowed, so the set is a ceiling and not an
 # expectation.
@@ -188,14 +191,14 @@ def _receipt(status: str, reason: str, lean, output: str, scanned: list[str]) ->
         "tool_version": version,
         "optional": True,
         "module": MODULE,
-        "module_sha256": __import__("hashlib").sha256(
-            (LEAN_DIR / MODULE).read_bytes()).hexdigest(),
+        "module_sha256": canonical_sha256(LEAN_DIR / MODULE),
         "allowed_axioms": sorted(ALLOWED_AXIOMS),
         "forbidden_constructs_found": scanned,
         "reason": reason,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "scope": "The theorems hold for the Lean model in this file. They say "
                  "nothing about the Python core.",
+        "digest_normalization": NORMALIZATION,
     }, indent=2) + "\n", encoding="utf-8")
 
 

@@ -32,6 +32,9 @@ TLA_DIR = ROOT / "formal" / "tla"
 MODULE = "OwnershipAcceptance"
 OUT = ROOT / "formal" / "results"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from digest import NORMALIZATION, canonical_sha256  # noqa: E402
+
 # The toolchain is opt-in and lives outside the repository. CONTRACT.md forbids
 # downloading a toolchain from a hook or an ordinary MCP call, so nothing here
 # fetches anything: it looks for a java and a tla2tools.jar the operator has
@@ -77,7 +80,22 @@ class Result:
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """Digest a text artifact: the model and the config.
+
+    Both are checked out through `text=auto`, so their bytes on this host depend
+    on the host's line-ending setting. See formal/digest.py.
+    """
+    return canonical_sha256(path)
+
+
+def _jar_sha256(jar: Path) -> str:
+    """Digest the jar over its exact bytes.
+
+    Deliberately not the normalizing helper: a jar is a downloaded binary, it
+    never passes through git's line-ending filter, and folding a byte pair out
+    of a compressed stream would be hashing something other than the file.
+    """
+    return hashlib.sha256(jar.read_bytes()).hexdigest()
 
 
 def _tool_version(java: Path, jar: Path) -> str:
@@ -275,7 +293,7 @@ def _classify(blob, returncode, java, jar, cfg_text, domain, started, elapsed) -
         status=status,
         tool="TLC",
         tool_version=_tool_version(java, jar),
-        tool_jar_sha256=_sha256(jar),
+        tool_jar_sha256=_jar_sha256(jar),
         model=f"{MODULE}.tla",
         model_sha256=_sha256(TLA_DIR / f"{MODULE}.tla"),
         config_sha256=_sha256(TLA_DIR / f"{MODULE}.cfg"),
@@ -341,6 +359,7 @@ def _emit(receipt: Result, java, jar, cfg_text, started, elapsed, status) -> Non
         "only; no fairness or termination assumption was modelled, so no liveness "
         "claim is made."
     )
+    payload["digest_normalization"] = NORMALIZATION
     _write_receipt(payload)
     print()
     print(f"status: {status}")
@@ -371,6 +390,7 @@ def _write(reason, status, java, jar, cfg_text, started, elapsed) -> None:
     )
     payload = receipt.to_json()
     payload["scope"] = "No run happened, so no property was established."
+    payload["digest_normalization"] = NORMALIZATION
     _write_receipt(payload)
 
 

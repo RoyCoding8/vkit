@@ -16,6 +16,16 @@ keeps this table honest. The table is per artifact, not per section, because
 which toolchain a section needs is what decides whether its claim is a result or
 an absence.
 
+Three further probes cover claims this file makes that no receipt covered, and
+each exits 1 when the product stops behaving as stated, so a stale sentence here
+turns a probe red rather than sitting here being believed:
+
+| Probe | The claim it keeps honest |
+| --- | --- |
+| `review/probe_revision_movement.py` | which kind of revision movement acceptance can see |
+| `review/probe_generation_filter.py` | that the core filters evidence by attempt generation |
+| `review/probe_redaction.py` | the three clauses of the "secret in command output" row |
+
 | Artifact | State | Receipt | Tool and version |
 | --- | --- | --- | --- |
 | A. TLC finite model check | VERIFIED | `formal/results/OwnershipAcceptance-receipt.json` | TLC 2.19 (08), jar sha256 `936a2620…` |
@@ -283,36 +293,83 @@ recent terminal run per check. On a check re-run under one identity the two
 answer different questions, and that divergence is recorded in the module
 rather than left for the counterchecks to paper over.
 
-## A finding about the core, not a test failure
+## A finding about the core, not a test failure. HALF REPAIRED, ONE REMAINS.
 
-`compute_readiness` reads every run attached to the task and filters by
-neither the attempt generation nor the source and policy revision. A
-generation 2 attempt therefore reaches READY on generation 1 evidence alone.
-Measured directly against the current code:
+This section originally read that `compute_readiness` "filters by neither the
+attempt generation nor the source and policy revision", that a generation 2
+attempt "reaches READY on generation 1 evidence alone", and that "there is no
+test in this repository asserting that the core invalidates a task's readiness
+on a revision or generation change, because the core does not do that". Two
+records in this repository then said opposite things about the same code:
+`formal/reference.py`'s `acceptable` docstring records the generation half as
+repaired, found by the property test on its first execution. The generation half
+of this section had become stale and the two records contradicted each other,
+which is the defect class R5 exists to remove. Both halves are now measured.
+
+**The generation half was repaired and the old text is false.** Measured by
+`python review/probe_generation_filter.py` over a real `Store` through the public
+API:
 
 ```text
-open_task(t1)                          -> generation 1, readiness None
-run c1 at attempt 1, PASS              -> compute_readiness == READY
-supersede_task(t1)                     -> generation 2
-compute_readiness, no new evidence     -> READY
-record_readiness                       -> task row reads READY at generation 2
+generation 1, its own evidence      READY
+generation 2, generation-1 evidence BLOCKED
+generation 2, its own evidence      READY
+current generation on the task      2
 ```
 
-The TLA+ model's Property 3 and Property 4 both forbid this, because its
-`RecordCheck` binds evidence to the generation its owner currently has and its
-`Accept` requires the current generation and the current revision.
+`decide` passes the generation through to `_latest_by_check`, and a superseded
+attempt's evidence no longer reaches the decision. `tests/
+test_identity_invalidation.py` covers this through the production path, and
+`tests/test_formal_correspondence.py` covers it against the reference model. The
+repair receipt is `review/generation-filter.json`.
+
+**The revision half is still open, and it is narrower than the old text said.**
+"The project moves to a new revision" names more than one movement, and the
+product does not treat them alike. Measured by `python
+review/probe_revision_movement.py`, each case opening from a READY that the same
+evidence produced:
+
+| Movement | HEAD moved | `inventory_digest` moved | `finalize` | Gap names |
+| --- | --- | --- | --- | --- |
+| none (control) | no | no | READY | none |
+| empty commit | yes | no | READY | none |
+| edit a declared input, then commit | yes | yes | BLOCKED | source |
+| rewrite the manifest, evidence not re-run | yes | yes | BLOCKED | source |
+| rewrite the manifest, evidence re-run under it | yes | yes | BLOCKED | policy |
+
+So a movement that rewrites no file content is invisible to acceptance, and that
+is the one the TLA+ model's Property4 forbids. `COMPARED_IDENTITIES` compares
+`source_inventory_digest`, `policy_digest` and `fixture_digest`, and
+`source_unchanged` says in so many words that "the digest decides, and HEAD
+deliberately does not", so an empty commit is invisible by design rather than by
+oversight. The two BLOCKED rows about the manifest are worth reading together:
+rewriting the manifest moves the SOURCE digest because the manifest is a tracked
+file, and the recorded run genuinely still answers the contract the attempt was
+admitted under, so no policy gap exists yet. Re-running under the new policy
+repairs the source gap and raises the policy one instead, against the digest
+pinned at admission, which does not follow the manifest. `fixtures` is
+unrecorded on every run in this build, so it is reported as an
+`unverified_identities` entry rather than compared.
 
 This is a divergence between the model and the core, and it is reported rather
-than tested around. There is no test in this repository asserting that the core
-invalidates a task's readiness on a revision or generation change, because the
-core does not do that. Whether it should is a question about the acceptance
-contract, and CONTRACT.md says the contract is reviewed policy. The fix is a
-change to the core's documented condition, not a change to a test.
+than tested around. There is no test asserting the core invalidates readiness on
+a HEAD-only movement, because the core does not do that. Whether it should is a
+question about the acceptance contract, and CONTRACT.md says the contract is
+reviewed policy. The fix is a change to the core's documented condition, not a
+change to a test.
+
+One caveat about the correspondence tests, and it is why this divergence has
+survived. `tests/test_formal_correspondence.py` calls `compute_readiness` with no
+`AcceptanceContext`, so no identity is compared on either side of that
+comparison. The reference model needs no identity for the same reason, and the
+two agree exactly as far as both are blind. The correspondence result therefore
+says nothing about the revision half above, and cannot be read as though it did.
 
 Note that the stale-generation guard in `record_readiness` is intact and does
-work. It refuses a verdict computed at an older generation. What is missing is
-the earlier guard: a verdict computed at a current generation from evidence
-that an older generation produced.
+work. It refuses a verdict computed at an older generation. That is a different
+guard from the one that was repaired: it compares the generation that computed
+the verdict against the one in force, where the repaired one filters which runs
+are eligible at all.
 
 ## What a summary of this work is allowed to say
 
@@ -354,6 +411,89 @@ artifact as VERIFIED or BLOCKED, and exits 1 if a receipt claims a result its ow
 digest cannot support. It needs no toolchain at all, so it runs on a host with
 neither a JRE nor Lean, which is exactly the host where the receipts go stale
 unnoticed.
+
+## Three acceptance-matrix rows, measured rather than inherited
+
+`tmp/research/KIT_ACCEPTANCE.md` is acceptance research, not an implementation
+list, and it says so at the top. Three of its rows were carried in
+`plans/R5-GAPS.md` as having no artifact of any kind. Each is measured below, and
+the record corrects R5-GAPS where it was wrong. `review/probe_redaction.py` is
+the receipt for the first.
+
+| Matrix row | State | Receipt |
+| --- | --- | --- |
+| Secret in command output is redacted | NOT IMPLEMENTED, one clause VERIFIED | `review/redaction.json` |
+| Disk full or interrupted report write | VERIFIED | `tests/test_storage.py` |
+| Agent teams enabled | NOT IMPLEMENTED, and not advertised outside research | grep, below |
+
+**"Secret appears in command output" is two claims in one row, and they have
+different answers.** The row reads "Apply the project's redaction rules before
+sharing evidence; do not dump full environment variables". A grep for
+`redact` across `src/vkit/` returns no redaction routine at all; the matches for
+`secret` are console session-token code (`secrets.token_urlsafe`,
+`secrets.compare_digest` in `console/api.py` and `procs.py`) and the exclusion
+lists in `identity.py`. So the row was reported as having no artifact, and that
+is right about the first clause and wrong about the second.
+
+| Clause | State | Measured by |
+| --- | --- | --- |
+| The report's `environment` block does not dump the environment | VERIFIED | `review/redaction.json`, and `tests/test_storage.py::test_a_reported_environment_carries_no_credential` |
+| A secret the check itself prints is kept out of the logs | NOT IMPLEMENTED | `review/redaction.json` |
+| Evidence is redacted before it is shared or exported | NOT IMPLEMENTED, and not reachable | `review/redaction.json` |
+
+The second clause is measured by running a check that prints a secret in an
+ambient environment variable and reading the artifact back off the disk:
+
+```text
+B. a secret the check itself prints is kept out of the logs
+  NOT IMPLEMENTED
+  secret_bytes_in_stdout_log         True
+  secret_bytes_in_stderr_log         True
+  stdout_log_contents                token=sk-live-...-0f3a91
+  stderr_log_contents                password=sk-live-...-0f3a91
+```
+
+There is no code between the check and the log. `procs._launch_posix` opens
+`stdout.log` and `stderr.log` and hands the file descriptors to
+`subprocess.Popen`, so the child's stdout IS the file. `execution._launch` and
+`supervisor` do the same through the platform launcher. `_read_page` in
+`vkit/mcp/_tools.py`, the bounded window every log surface reads, decodes the
+bytes and returns them unfiltered, so a secret that reached the log is served to
+the caller as well.
+
+The third clause is not reachable rather than merely unimplemented. There is no
+`export`, `share`, `bundle` or `redact` definition anywhere in `src/vkit/`, which
+`review/probe_redaction.py` decides by walking the AST rather than by grepping
+names. The row's "before sharing evidence" names a step the product does not
+have, so a redaction routine added today would have nothing to run on. The row is
+also under-specified independently of that: CONTRACT.md says shared and exported
+output "follows declared redaction rules", and no redaction rules are declared
+anywhere in the repository. A redaction milestone needs a rule set before it
+needs code, and this file does not invent one.
+
+**"Disk full or interrupted report write" is VERIFIED, and R5-GAPS was wrong to
+carry it.** `plans/R5-GAPS.md` lists it among "matrix rows with no artifact of
+any kind" and notes the concession in `scripts/acceptance02.py`. Both are stale.
+`tests/test_storage.py::test_an_interrupted_report_write_leaves_no_acceptance_
+record` now covers the row's three claims: it raises `OSError(28)` at the
+`fsync` that is the staged report's last write, then asserts that no report file
+exists, that the run directory is empty, that `load` raises, that the run did not
+become terminal, and that recovery still reports on the store. The full disk is
+not inducible on this host, which is why the fault is placed at `fsync`; that
+bound is stated in the test's own docstring.
+
+**"Agent teams enabled" is NOT IMPLEMENTED and not advertised outside research.**
+The row asks that "dedicated compatibility tests pass before this mode is
+advertised". Nothing in the product mentions agent teams: a case-insensitive grep
+for `agent.team` across the whole repository returns the matrix row itself, two
+research documents that treat the mode as experimental and explicitly defer it
+(`tmp/research/KIT_RESEARCH.md`: "Add support when a peer-to-peer workflow needs
+it and its acceptance tests pass"), and the `plans/R5-GAPS.md` line that carries
+the finding. There is no code, no config key and no test. The row is correctly
+NOT IMPLEMENTED and correctly not advertised, so it is a research backlog item
+rather than a false claim. The characterisation in R5-GAPS, "no artifact of any
+kind", is accurate for this row and is stated here so the three rows are not read
+as one verdict.
 
 ## A pre-existing flaky test, unrelated to this plan
 

@@ -24,7 +24,10 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 VENV="${VKIT_POSIX_VENV:-$HOME/.venvs/vkit-posix}"
 cd "$REPO_ROOT"
-export PATH="$VENV/bin:$PATH"
+# One definition of the PATH a POSIX run needs, so no entry point can silently
+# lose a directory. See scripts/posix-env.sh for why each is there.
+. "$(dirname "${BASH_SOURCE[0]}")/posix-env.sh"
+posix_path
 mkdir -p tmp
 
 echo "== host facts =="
@@ -57,6 +60,7 @@ touch /tmp/vkit-doctor-run
 trap 'rm -f /tmp/vkit-doctor-run; kill $WATCHER 2>/dev/null' EXIT
 
 killed_at=""
+failed_files=""
 for f in tests/test_*.py; do
     name=$(basename "$f" .py)
     setsid timeout --signal=KILL 900 \
@@ -68,7 +72,16 @@ for f in tests/test_*.py; do
         echo "DIED on $name with exit $status and no output"
         break
     fi
-    printf '%-32s exit=%s\n' "$name" "$status"
+    # `killed_at` is "the run stopped early", so the loop must stop when it is
+    # set. A file reporting a failure or an error is not that: it is what this
+    # script exists to diagnose, and the rest of the files still have
+    # something to say about it.
+    flagged=$(tr -d ' \n' < "tmp/doctor-$name.txt" | tr -cd 'FE')
+    if [ -n "$flagged" ]; then
+        failed_files="$failed_files $name"
+    fi
+    printf '%-32s exit=%-3s %s\n' "$name" "$status" \
+        "${flagged:+FAILED ($flagged)}${flagged:-}"
 done
 
 rm -f /tmp/vkit-doctor-run
@@ -102,6 +115,9 @@ if [ -n "$killed_at" ]; then
 else
     echo "  The run completed every file."
 fi
+if [ -n "$failed_files" ]; then
+    echo "  Files reporting a failure or an error:$failed_files"
+fi
 if dmesg 2>/dev/null | grep -qiE "oom-kill|killed process"; then
     echo "  The OOM killer fired, so memory pressure is the cause."
 elif [ -f /sys/fs/cgroup/memory.events ] && grep -qE "^[a-z_]*oom_kill [1-9]" /sys/fs/cgroup/memory.events; then
@@ -111,3 +127,15 @@ else
     echo "  is that something signsalled this process group, or the WSL VM was"
     echo "  reclaimed without a kernel record. Not established either way."
 fi
+
+# The exit code is the verdict, and it has to agree with the words just printed.
+# This script reports whether a run survived, and both answers are bad news: a
+# run that died is a broken run, and a run that completed with failures in it is
+# not a pass either. So a clean bill of health is the one thing this cannot
+# report, and it says so with the exit code too. The diagnosis it prints is the
+# answer to "why did the run die", which is not the same question as "did the
+# suite pass".
+if [ -n "$killed_at" ] || [ -n "$failed_files" ]; then
+    exit 1
+fi
+exit 0

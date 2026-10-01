@@ -67,13 +67,43 @@ echo "== the last 400 bytes it wrote =="
 tail -c 400 "$OUT/all.txt"
 echo
 echo "== verdict =="
-if [ -f "$OUT/all.xml" ]; then
-    echo "  It COMPLETED. A junit report was written, so the total in it covers"
-    echo "  a single-process run and is no longer unverified."
-else
+if [ ! -f "$OUT/all.xml" ]; then
     echo "  It did NOT complete: no junit report, so pytest never finished writing."
     echo "  The cause is still not established. Memory is ruled out by the figures"
     echo "  above, and the process-group theory was tested and did not hold. What"
     echo "  remains is that something external to WSL ends this run, and I cannot"
     echo "  show what from inside the distribution."
+    # A report is the only thing that says the run finished, so without one this
+    # script exits nonzero even though it got as far as writing a verdict. The
+    # verdict above is an explanation of a failed run, not a pass.
+    exit 1
 fi
+
+# A report exists, so the run finished. It is still a gate, and a gate that
+# reports PASS for a run with failures in it is the false green this whole tree
+# of scripts exists to avoid, so the counts decide rather than the presence of
+# the file.
+"$VENV/bin/python" - "$OUT/all.xml" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+suite = root.find("testsuite") if root.tag == "testsuites" else root
+if suite is None:
+    print("  The report holds no suite element, so it describes no run.")
+    sys.exit(1)
+failures = int(suite.get("failures", 0))
+errors = int(suite.get("errors", 0))
+print(f"  It COMPLETED: {suite.get('tests', 0)} tests, "
+      f"{failures} failed, {errors} errors, {suite.get('skipped', 0)} skipped.")
+sys.exit(1 if (failures or errors) else 0)
+PY
+verdict_rc=$?
+
+if [ "$verdict_rc" -eq 0 ]; then
+    echo "  The total in that report covers a single-process run and is no"
+    echo "  longer unverified."
+else
+    echo "  It COMPLETED but did not pass. See the counts above."
+fi
+exit "$verdict_rc"

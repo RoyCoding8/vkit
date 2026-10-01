@@ -288,7 +288,82 @@ This both guesses early and duplicates the core's own refusal at `supervisor.py:
 
 Q6 already settles the principle for `run_get` ("`preparing` with no identity is a valid, honest answer"), so this is the same answer applied consistently: a status read of an unfinished run returns the recorded lifecycle and the absence of an outcome, and reserves its error for a run id that does not exist at all. This was left UNKNOWN in the census; it is now decided.
 
-### 9.2 Further corrections from the design audit (2026-10-01)
+### 9.2 F13's severity, and two further findings (2026-10-01)
+
+**The release half of F13 is CRITICAL, reproduced end to end**
+(`review/probe_f13_release.py`, on master). The window is not the
+microsecond race it looks like in a code trace: `execution.run_check`
+inserts the run row at `:277`, then `_launch` blocks in
+`procs.py:559 _wait_windows` for the child's entire execution, bounded by
+`check.timeout_seconds`, and only then calls `mark_running` at `:310` —
+the sole writer of a pid. So `process_json` is NULL and `lifecycle` is
+`preparing` for the whole run, and forever after a crash.
+
+Driving the sequence with a real child process that is genuinely writing:
+
+```
+A admitted at generation 1 holding scope:checkout
+run row: lifecycle='preparing' process_json=None, child alive, writing
+supersede A -> generation 2 (claims deliberately kept, tasks.py:267-270)
+inspect -> CLAIM_STALE_GENERATION, action=RELEASE_CLAIM
+RELEASE SUCCEEDED
+B ADMITTED at generation 1 -> holder = Claim(...task_id='B'...)
+A's child alive = True, still advancing its output = True
+```
+
+Two tasks hold the same checkout and both write to it. The guard at
+`recover.py:763` asks `_live_holder`, which skips pidless runs at
+`:801-802`, finds nothing, and clears the claim. This is the finding that
+makes the record state critical rather than cosmetic, and §9's guard
+change is what closes it.
+
+On POSIX the consequence is worse than on Windows: `_run_posix`
+(`procs.py:279-286`) uses `start_new_session=True`, so after a supervisor
+crash nothing kills the orphan at all — the child survives indefinitely,
+still writing, while recovery reads a pidless row forever.
+
+**`supervisor.py:118-126`'s refusal keys on `report.json` alone and ignores
+`runs.lifecycle`.** That flattens three distinct states into one refusal:
+live right now, crashed and unreconciled, and terminal-but-unpublished.
+The third is simply wrong. `store.publish` claims the row before the swap
+(`storage.py:464-468`) and swaps last (`:475`), so a crash between them
+leaves `lifecycle='terminal'` with no `report.json` — and that row can
+never publish again, because the same `lifecycle != 'terminal'` guard
+makes every future `publish` raise. The refusal's stated reason, "a second
+run under one id", is already impossible: `register_run`'s PRIMARY KEY
+(`storage.py:364-365`) raises `already registered`. So the branch blocks
+retries while preventing nothing, and locks out permanently the one run
+that most needs a remedy. §6 deletes it in favour of the `launches` row;
+that is right, and this is the reason.
+
+**Two liveness implementations can disagree about the same pid.**
+`recover.py:265` probes with `PROCESS_QUERY_INFORMATION` and its own
+error-code table; `procidentity.py:338` probes with
+`PROCESS_QUERY_LIMITED_INFORMATION` and its own. `recover` calls
+`read_identity` only at `:331`, as a second opinion *after* it has already
+reached a verdict, so the two can disagree and only `procidentity`'s
+measurements are documented as measured (`procidentity.py:25-30`). Worse,
+`recover.py:263-308` treats WinError 6 and 1168 as DEAD alongside 87, while
+`procidentity.py:135-140` states as measured that 87 is *the one* WinError
+`OpenProcess` returns for a pid with no process behind it. A DEAD verdict
+from a code `procidentity` says nothing about is exactly the premise a
+claim release rests on.
+
+This is R2's to fix only insofar as §9's guard must not depend on it: the
+guard refuses on *unknown ownership* before asking about liveness at all,
+so the duplicated probe stops being load-bearing. Collapsing the two
+probes into one is a separate cleanup and is named here rather than
+silently absorbed into this milestone.
+
+Also verified SAFE, so it is not re-investigated: `claims.acquire_in` and
+`_release_claim` are correctly atomic and cannot by themselves grant a
+resource twice; `inspect()` on a pidless run is inert and no caller
+releases from it; `CannotConfirm` retains the claim at all four of its
+recovery call sites; `UnsupportedPlatform` is unreachable from `recover`.
+(`WrongProcess` does not exist in this codebase — the stranger case is
+`LivenessState.UNCERTAIN`.)
+
+### 9.3 Further corrections from the design audit (2026-10-01)
 
 Verified against merged master before being written down. These are
 corrections to the document, not to the code.

@@ -20,6 +20,21 @@ reference model were written from the same documented rules, so a
 misunderstanding of those rules shared between them would be invisible here.
 The core is the only one of the three under test.
 
+## What this file does not compare
+
+The decision compared here is the floor and the evidence: which runs count, at
+which generation, in what order, and what a failing one does. The IDENTITY
+comparison is not in it, because `compute_readiness` runs that only when it is
+given an `AcceptanceContext` and the reference model has no concept an identity
+could be compared against. `Core.decide` passes no context, which is a measured
+decision and not an omission; see the comment there.
+
+So "no disagreement was found" covers the generation and ownership rules, not
+the rule that a changed policy or source invalidates already-accepted
+evidence. That rule is checked against the real core in
+`tests/test_identity_invalidation.py`, which drives `admit`, `run_check` and
+`finalize` through the production path rather than seeding runs directly.
+
 ## Why the sequence is applied to a real database
 
 A reference model in a dictionary and a core in SQLite can only be compared if
@@ -69,7 +84,6 @@ from vkit.tasks import (  # noqa: E402
     current_generation,
     get_task,
     open_task,
-    record_readiness,
     supersede_task,
 )
 
@@ -183,6 +197,22 @@ class Core:
         supersede_task(self.store, owner)
 
     def decide(self, owner: str, revision: str) -> str:
+        # No `context`. That is a decision with a measured basis rather than an
+        # omission, and it is the one thing this file does not compare.
+        #
+        # `compute_readiness` only runs the identity comparison when it is given
+        # an `AcceptanceContext`, and giving it one here was measured, not
+        # assumed: the runs this wrapper records carry
+        # `configuration_digest="c"` against owners pinned at `"pd"`, so a
+        # context makes every one of them BLOCKED on a policy disagreement while
+        # the reference model, which has no identity concept, still answers
+        # READY. The two would disagree on almost every generated sequence, and
+        # the disagreement would be about a rule the reference does not model.
+        #
+        # What that leaves uncovered is real, so it is named. The identity
+        # comparison is checked against the real core in
+        # `tests/test_identity_invalidation.py`, which admits, runs and
+        # finalizes through the production path.
         result = compute_readiness(
             self.store, owner, required_check_ids=list(reference.REQUIRED_CHECKS)
         )

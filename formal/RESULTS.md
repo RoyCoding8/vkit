@@ -4,22 +4,68 @@ This file is the receipt for Plan 08. Read the scope sentences. A run that
 produced no counterexample is a real result, but it is a result about a bounded
 thing, and the bound is the interesting part.
 
-Everything here was measured on the host named below. Nothing is quoted from a
-document, a plan, or a memory of a previous run.
+Nothing here is quoted from a document, a plan, or a memory of a previous run.
+Each section names the run it rests on, and where that run happened: artifact A
+was measured on an earlier host, because this one has no JRE, and its receipt is
+the evidence for it rather than a rerun.
+
+**Every claim below is either VERIFIED against a receipt or BLOCKED with a
+reason.** `python review/probe_formal_state.py` recomputes the digest each
+receipt records and prints the state of all four artifacts; it is the check that
+keeps this table honest. The table is per artifact, not per section, because
+which toolchain a section needs is what decides whether its claim is a result or
+an absence.
+
+| Artifact | State | Receipt | Tool and version |
+| --- | --- | --- | --- |
+| A. TLC finite model check | VERIFIED | `formal/results/OwnershipAcceptance-receipt.json` | TLC 2.19 (08), jar sha256 `936a2620…` |
+| B. Lean theorem check (optional) | VERIFIED | `formal/results/Acceptance-lean-receipt.json` | Lean 4.34.1, commit 5045d00 |
+| C. Python core mutation run | VERIFIED | `formal/results/python-core-mutants-receipt.json` | pytest against the mutated copy |
+| D. TLA+ mutation run | BLOCKED | none | needs a JRE and `tla2tools.jar` |
+
+Artifact D is BLOCKED, not because the model is wrong and not because a counterexample
+was missed, but because `formal/run_mutants.py` writes no receipt at all and
+because this host has no JRE, so no result about it can be verified or repeated
+here. What would unblock it: a portable JRE and `tla2tools.jar` under
+`tmp/formal-tools/`, and a receipt written by that harness. The four TLA+ mutant
+results that used to be stated in this file without one are therefore not
+repeated as findings here. Section "The mutations" below says what it can.
 
 | | |
 | --- | --- |
 | Host | Windows 11 10.0.26200, x86_64 |
 | Python | 3.13.14 |
 | Git | 2.54.0 |
-| JRE | Eclipse Adoptium 17.0.20.1+1 (portable, under `tmp/`, not committed) |
+| JRE | absent on this host, so TLC did not run here |
 | TLC | 2.19, rev 5a47802, `tla2tools.jar` sha256 `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88` |
-| Lean | 4.32.2, commit f3b06c705e6c85f5314019d5d3baab0fec5b580c |
+| Lean | 4.34.1, commit 5045d0056413266e57c625dcd7c365b10e377c52 |
 | Hypothesis | 6.168.3 |
 
-## Deliverable A: finite model checking. Ran. PASS.
+The Lean row is 4.34.1 because that is the toolchain the receipt records and the
+one this file's Lean section was measured with. An earlier run of this plan
+recorded 4.32.2 (commit f3b06c7); the difference is a toolchain upgrade between
+two runs, and the earlier number is not a second result, only an older one.
+
+**How the digests in these receipts are computed.** sha256 over the file's bytes
+with CRLF folded to LF, which is the form git stores and the form a POSIX
+checkout reads. `.gitattributes` pins `eol=lf` for `*.py`, `*.json`, `*.md` and
+friends but not for `*.tla` or `*.lean`, so on a `core.autocrlf=true` checkout
+those two files arrive with CRLF. Hashing raw bytes there made a receipt
+written on this host unverifiable on any other, because the committed bytes and
+the working bytes differed without a single character of the artifact having
+changed. The bound the normalization leaves is stated in every receipt as
+`digest_normalization`: a line-ending-only change does not alter the digest. The
+jar is digested over exact bytes instead, because a binary never passes through
+git's filter and folding a byte pair out of a compressed stream would be hashing
+something other than the file.
+
+## Deliverable A: finite model checking. Ran on an earlier host. VERIFIED.
 
 `formal/tla/OwnershipAcceptance.tla`, run by `formal/run_tlc.py`.
+`formal/results/OwnershipAcceptance-receipt.json`, recorded 2026-09-30,
+reports `TLC 2.19 (08)` and both digests reproduce against the committed model
+and config. It did not rerun on this host, which has no JRE; the run it records
+stands on its receipt, not on a rerun.
 
 **The configuration the result is scoped to.** Two owners, two exclusive
 resources, two required checks, two source+policy revision identities, two
@@ -66,20 +112,33 @@ Python tests, where the reasons are recorded.
 
 ### The mutations
 
-`formal/run_mutants.py` removes one guard and requires a counterexample. A
-mutant that still passes means the property is not checking that rule, and the
-harness fails over it.
+**BLOCKED. No receipt exists for the TLA+ mutation run.**
 
-| Mutant | Guard removed | Caught by |
+`formal/run_mutants.py` removes one guard from the model and requires TLC to
+report a counterexample. That is the right shape for the check, and the harness
+does fail over a mutant that still passes. It writes no receipt, so nothing it
+prints can be checked by anyone else, and it cannot run on this host, which has
+no JRE and no `tla2tools.jar`.
+
+So the four guards below are named as what the harness is written to break, and
+nothing is claimed about whether it caught them. The earlier revision of this
+file stated that all four were caught, each by its intended property. That
+sentence had no receipt behind it, and it is withdrawn rather than repeated.
+
+| Mutant | Guard the harness targets | Property it would have to break |
 | --- | --- | --- |
 | MUTANT_STALE_GENERATION | `g = genOf[o]` in Accept | Property2 |
 | MUTANT_STALE_IDENTITY | `r = curRevision` in Accept | Property4 |
 | MUTANT_MISSING_CHECK | the full-coverage requirement in Accept | Property3 |
 | MUTANT_CRASH_RELEASES | `owner' = owner` and `owned' = owned` in Crash | Property5 |
 
-All four caught, each by its intended property.
+To close this: put a portable JRE and `tla2tools.jar` under
+`tmp/formal-tools/`, run `python formal/run_mutants.py`, and have it write a
+receipt naming the model digest it mutated. Until then artifact D in the table
+above is BLOCKED, and a reader should not treat Properties 1 through 5 as
+mutation-tested.
 
-## Correspondence testing. Ran. PASS, and it is the weaker claim.
+## Correspondence testing. Ran. VERIFIED, and it is the weaker claim.
 
 `formal/reference.py` is a second implementation of the ownership and
 acceptance rules, written from the documentation, holding everything in
@@ -121,26 +180,50 @@ The last two are the core being right and the reference being wrong.
 
 ### The mutations
 
-`formal/run_python_mutants.py` removes each guard from a copy of the core and
-runs the named test against the copy.
+`formal/run_python_mutants.py` removes one guard from a copy of `src/vkit/tasks.py`
+and runs the test that is supposed to cover it against the copy. Both were
+caught, and the receipt is
+`formal/results/python-core-mutants-receipt.json`.
 
-| Mutant | Guard removed | Test that goes red |
-| --- | --- | --- |
-| MUTANT_STALE_GENERATION | the generation comparison in `record_readiness` | `test_a_superseded_attempt_cannot_publish_ready` |
-| MUTANT_MISSING_CHECK | the last entry of the readiness loop | `test_one_missing_required_check_is_never_ready` |
+| Mutant | Guard removed | Test that went red | Counterexample |
+| --- | --- | --- | --- |
+| MUTANT_STALE_GENERATION | the generation comparison in `record_readiness` | `test_a_superseded_attempt_cannot_publish_ready` | `DID NOT RAISE ConflictError` |
+| MUTANT_MISSING_CHECK | the gap a required check with no completed run raises | `test_one_missing_required_check_is_never_ready` | `assert 'READY' == 'BLOCKED'` |
 
-Both caught. The counterexample for the first is a task that reads
-`readiness is None` against a mutated core that leaves it READY.
+**Both of these results were previously false, and the harness was reporting the
+falsehood as a pass.** The recorded verdict was "2 of 2 caught". Neither test
+had run. Each mutant named `test_formal_correspondence.py::…`, a node id that
+does not resolve, and pytest answers an unresolvable node id with exit 4. The
+harness read any nonzero exit as a catch, so a test that never executed was
+recorded as a test that observed the mutant.
 
-## Deliverable B: theorem checking. OPTIONAL. Ran. PASS.
+Two further faults sat behind that one. The temporary tree got a copy of `src`
+and `tests` but not of `formal`, and the covering test imports `reference`,
+which lives in `formal`, so even with a correct node id the test could not have
+been collected. And the MUTANT_MISSING_CHECK mutation was wrong on its own
+terms: it rewrote the readiness loop to iterate `required[:-1]`, and `required`
+is sorted, so it drops whichever required check sorts first. With the required
+set `("unit", "lint")` and the pass recorded for `unit`, the mutation dropped
+`unit` and left the absent `lint` unexamined, which is a pass. Measured
+directly: that mutation exits 0 against the core. The mutation now removes the
+line that raises the gap for an absent check, which is the guard the rule
+actually lives on, and it is caught.
+
+The exit codes are now read individually, so only pytest's 1 counts as a catch
+and 2, 4 and 5 are BLOCKED with the reason printed. A missing node id, a
+collection error and a real assertion failure used to be the same signal.
+
+## Deliverable B: theorem checking. OPTIONAL. Ran. VERIFIED.
 
 The plan labels Deliverable B optional and requires that it be labelled so.
-Lean 4.32.2 is present on this host, so the deliverable was built rather than
+Lean 4.34.1 is present on this host, so the deliverable was built rather than
 skipped. It blocks nothing: an absent Lean is a BLOCKED result for this category
 and no effect at all on any other, and no ordinary verification path requires
 it.
 
 `formal/lean/Acceptance.lean`, checked by `formal/run_lean.py`.
+`formal/results/Acceptance-lean-receipt.json` records the run; its module digest
+reproduces against the committed file.
 
 **The theorems.** `accept_correct : accept e o ctx = true ↔ AcceptsSpec e o ctx`,
 in both directions, plus `allSatisfied_correct` and `satisfies_correct`. The
@@ -264,6 +347,13 @@ all on any other. `python -m pytest` does not import `formal/`, and the
 correspondence tests skip cleanly without Hypothesis, which
 `tests/test_optional_toolchain.py` checks by actually hiding the package and
 asserting the skip rather than trusting it.
+
+`review/probe_formal_state.py` is the fifth script, and the one that reads the
+other four's output. It recomputes the digest in every receipt, prints each
+artifact as VERIFIED or BLOCKED, and exits 1 if a receipt claims a result its own
+digest cannot support. It needs no toolchain at all, so it runs on a host with
+neither a JRE nor Lean, which is exactly the host where the receipts go stale
+unnoticed.
 
 ## A pre-existing flaky test, unrelated to this plan
 

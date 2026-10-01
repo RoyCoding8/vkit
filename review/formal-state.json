@@ -4,6 +4,45 @@
     "tla2tools_jar": null,
     "lean": "C:\\Users\\roysh\\.elan\\bin\\lean.EXE"
   },
+  "digest_convention": {
+    "Acceptance-lean-receipt.json": {
+      "declared": true,
+      "digests": [
+        "module_sha256"
+      ],
+      "state": "DECLARED"
+    },
+    "OwnershipAcceptance-blocked-receipt.json": {
+      "declared": true,
+      "digests": [
+        "config_sha256",
+        "model_sha256",
+        "tool_jar_sha256"
+      ],
+      "state": "DECLARED"
+    },
+    "OwnershipAcceptance-receipt.json": {
+      "declared": false,
+      "digests": [
+        "config_sha256",
+        "model_sha256",
+        "tool_jar_sha256"
+      ],
+      "state": "UNDECLARED_EXCUSED",
+      "why": "written 2026-09-30, before formal/digest.py and the digest_normalization field existed; both arrived in 6c92860. Its model_sha256 and config_sha256 match the canonical form and the committed git blob, so the receipt is sound. It is not regenerated and not hand-edited, because the TLC run it records cannot be repeated on a host with no JRE. See the digest section of formal/RESULTS.md.",
+      "remeasured": {
+        "formal/tla/OwnershipAcceptance.cfg": "b4e1b4a765ded01daa15aa97feeece2ca4d715a51c791748525a1f916f1e155b",
+        "formal/tla/OwnershipAcceptance.tla": "ada5014de0b8fa9829b1f55fa8e0592155f760ba45bc67ad4bf4141e6c53e81f"
+      }
+    },
+    "python-core-mutants-receipt.json": {
+      "declared": true,
+      "digests": [
+        "target_sha256"
+      ],
+      "state": "DECLARED"
+    }
+  },
   "artifacts": {
     "TLC finite model check": {
       "receipt": "formal/results/OwnershipAcceptance-receipt.json",
@@ -53,13 +92,13 @@
       "digests": {
         "src/vkit/tasks.py": {
           "recorded": "da5e05b7a2e9411f0be2b593f61e0234cf53b5b3dae8cdcfc1e2406bb2df0316",
-          "recomputed": "da5e05b7a2e9411f0be2b593f61e0234cf53b5b3dae8cdcfc1e2406bb2df0316",
-          "reproduces": true
+          "recomputed": "246773c9110314dfad067ad4ac5fd5935680ec4050327212a6ff60843d703e6c",
+          "reproduces": false
         }
       },
-      "state": "VERIFIED",
-      "reason": "every digest in the receipt reproduces",
-      "scope": "A CAUGHT result means one named guard in tasks.py was removed and one named test failed against the mutated copy, on this host, at the digest above. It does not establish that the guard is the only way to break the rule, and it establishes nothing about any other module."
+      "state": "BLOCKED",
+      "reason": "the receipt claims PASS, but a digest it records does not reproduce against the file it names",
+      "unblocked_by": "rerunning the harness, or finding the revision the receipt was measured at"
     },
     "TLA+ mutation run": {
       "state": "BLOCKED",

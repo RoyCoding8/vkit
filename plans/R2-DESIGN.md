@@ -70,16 +70,29 @@ Two decisions an implementer must make before writing migration 5, neither of wh
 
 **1. Rebuild, and `_migrate` has to grow one capability.** Rebuilding `runs` is the only way to keep the constraint honest. Dropping the CHECK entirely is the smaller diff and makes the database unable to reject a typo'd lifecycle — which is exactly the class of bug this product exists to prevent. Use the rebuild.
 
-The rebuild does not run inside the existing `_migrate`. With foreign keys on — SQLite's default — `DROP TABLE runs` fails against any table referencing it:
+**The rebuild runs inside the existing `_migrate` unchanged.** An earlier revision of this document said otherwise and was wrong. It claimed that `DROP TABLE runs` fails with foreign keys on, and that `_migrate` therefore needs a new per-migration "foreign keys off" flag. That claim came from a probe that invented a `claim_members` table referencing `runs`, because this document named `claim_holders` / `claim_members` as such referents. **The real schema has no `REFERENCES` clause anywhere** — `grep -c REFERENCES src/vkit/storage.py` is `0`, and `PRAGMA foreign_key_list(runs)` returns `[]`. Verified against the real DDL:
 
 ```
-fk ON,  referencing table present -> IntegrityError: FOREIGN KEY constraint failed
-fk OFF -> schema_version = 2, rows preserved, 'launching' ACCEPTED, no FK violations
+tables : ['schema_version', 'runs']
+indexes: ['runs_by_task']
+foreign_key_list(runs): []
+rebuild with foreign_keys=ON -> SUCCEEDED, schema_version 5, rows carried over, 'launching' ACCEPTED
+typo 'prepring' -> REJECTED: CHECK constraint failed
 ```
 
-And `PRAGMA foreign_keys` is a **silent no-op inside a transaction**, so a migration cannot switch it off in its own script — `executescript` wraps the script in one. So `_migrate` needs a per-migration "foreign keys must be off around this" flag, set *outside* the script, with the setting restored afterwards. That is the one structural change to storage this milestone needs, and it is worth naming as such rather than discovering it as a mysterious `IntegrityError`.
+So: no flag, no pragma juggling, and `_migrate` stays exactly as it is. Treat any claim here that rests on a referent this schema does not have as unverified until it has been read out of `storage.py`.
 
-The version INSERT still rides at the end of the same script, so the `DROP`, the `RENAME` and the recorded version commit together — a crash mid-rebuild rolls the whole migration back and leaves `runs` intact. That property survives the rebuild, which is the main thing the existing runner already gets right.
+**What the rebuild does silently lose: `runs_by_task`.** It is an index (`storage.py:95`), not a table, and `DROP TABLE runs` takes it with the table. After the rebuild:
+
+```
+indexes now: []
+query plan: SCAN runs                        <- was SEARCH runs USING INDEX runs_by_task (task_id=?)
+after re-issuing it: SEARCH runs USING INDEX runs_by_task (task_id=?)
+```
+
+Nothing fails. The index simply stops existing, and `_live_holder` reads `runs` by `task_id` on every claim release — which is the F13 path, so the one query that most needs to be current is the one that silently becomes a full scan. Migration 5 must re-issue `CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id)` after the rename, and a test must assert the index exists and is used, not merely that the migration applied.
+
+The version INSERT still rides at the end of the same script, so the `DROP`, the `RENAME` and the recorded version commit together — a crash mid-rebuild rolls the whole migration back and leaves `runs` intact. That property survives, and is the main thing the existing runner already gets right.
 
 | value | written by | meaning |
 | --- | --- | --- |

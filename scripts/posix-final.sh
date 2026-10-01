@@ -21,5 +21,13 @@ echo "claude: $(command -v claude || echo NONE)"
 echo "GIT_DIR: ${GIT_DIR:-<unset>}"
 echo
 
+# PIPESTATUS, because a pipeline reports the LAST stage's status and `tail` is
+# always the last one. `set -o pipefail` does not help here: it reports that some
+# stage failed, not which, and it makes this script's exit status a fact about
+# a shell pipeline rather than about the suite. pytest's own status is the
+# verdict, so it is read out of PIPESTATUS rather than inferred from the log.
 "$VENV/bin/python" -m pytest tests/ -p no:cacheprovider --tb=line --color=no -rf \
     2>&1 | tee "$LOG" | tail -30
+status="${PIPESTATUS[0]}"
+[ "$status" -ne 0 ] && echo "the run above did not pass (pytest exit $status)" >&2
+exit "$status"

@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 RUNS_DIR_NAME = "runs"
 REPORT_NAME = "report.json"
@@ -632,6 +632,15 @@ class Store:
         A second call for the same run id is refused rather than overwritten. The
         first one is the truth about what was launched; a caller that disagrees
         with it is a caller that would put two launches under one identity.
+
+        `supervisor_pid` is left null here and filled in by whoever owns the job.
+        The launcher is not the supervisor in the detached case -- it starts one and
+        exits -- so recording the launcher's own pid would name a process that is
+        gone by the time anyone asks whether the supervisor is still alive. That
+        question is one of the three ABANDON_LAUNCH has to answer, so a wrong pid
+        there is a reconciliation that refuses forever. Measured: with the
+        launcher's pid recorded, a supervisor that had died was still reported
+        alive and the abandon was refused.
         """
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -648,13 +657,13 @@ class Store:
                     "INSERT INTO launches (run_id, project_root, state_dir, manifest_dir,"
                     " check_id, argv_json, cwd, stdout_path, stderr_path, env_json,"
                     " timeout_seconds, job_name, supervisor_pid, supervisor_start, requested_at,"
-                    " kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,?,?)",
                     (
                         run_id, str(plan.project_root), str(plan.state_dir),
                         str(plan.manifest_dir), plan.check_id, _dumps(list(plan.argv)),
                         str(plan.cwd), str(plan.stdout_path), str(plan.stderr_path),
                         _dumps(plan.env), float(plan.timeout_seconds), plan.job_name,
-                        os.getpid(), _supervisor_start(), _now(), plan.kind,
+                        _now(), plan.kind,
                     ),
                 )
                 if task_id is not None and generation is not None:
@@ -668,6 +677,24 @@ class Store:
                     conn.execute("ROLLBACK")
                 raise
             conn.execute("COMMIT")
+
+    def claim_supervisor(self, run_id: str) -> dict[str, Any]:
+        """Record that *this* process is the supervisor for a recorded launch.
+
+        Written by the supervisor and by nobody else, for the reason
+        `record_launch` leaves it null: the process that registers a run is not
+        the process that owns its job once the run is detached, and an identity
+        recorded from the wrong one is an identity that outlives the truth.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE launches SET supervisor_pid = ?, supervisor_start = ?"
+                " WHERE run_id = ?",
+                (os.getpid(), _supervisor_start(), run_id),
+            )
+            if cursor.rowcount == 0:
+                raise StoreError(f"no launch is recorded for run {run_id!r} to supervise")
+        return {"run_id": run_id, "supervisor_pid": os.getpid()}
 
     def load_launch(self, run_id: str) -> dict | None:
         """The recorded launch, or None when nothing was ever launched for this run."""

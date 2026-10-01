@@ -154,6 +154,12 @@ def supervise_run(
     if status["lifecycle"] == "terminal":
         return
 
+    # This process, not the launcher, is the supervisor. The launcher started a
+    # detached process and exited, so an identity recorded from it would name a
+    # process that is already gone by the time anything asks whether the run's
+    # owner is still alive.
+    store.claim_supervisor(run_id)
+
     if _cancel_if_requested(store, run_id):
         _publish_pending_cancel(store, run_id, launch_row)
         return

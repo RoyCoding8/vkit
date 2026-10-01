@@ -605,9 +605,6 @@ def _unfinished_run_finding(store: Store, run: _Run) -> Finding:
     )
     launch = store.load_launch(run.run_id)
     if run.pid is None or not run.ownership_known:
-        # A launch was recorded, so something was attempted and its outcome is not
-        # established. That is a different state from a run that never started,
-        # and it is the one that can be acted on.
         if launch is not None and not run.abandoned:
             return Finding(
                 kind=FindingKind.RUN_UNRESOLVED_LAUNCH,
@@ -621,6 +618,19 @@ def _unfinished_run_finding(store: Store, run: _Run) -> Finding:
                     "inferring from the absent pid that nothing was ever started"
                 ),
                 action=Action.ABANDON_LAUNCH,
+            )
+        if launch is not None and run.abandoned:
+            return Finding(
+                kind=FindingKind.RUN_UNRESOLVED_LAUNCH,
+                target=run.run_id,
+                detail=(
+                    f"{common} and its launch was already abandoned by an operator with "
+                    "the evidence they gave. The run itself is not reconciled and holds "
+                    "no outcome, so this remains visible; it simply is not the open "
+                    "question it was, and the claim may now be released"
+                ),
+                action=Action.ABANDON_LAUNCH,
+                reconciled=True,
             )
         return Finding(
             kind=FindingKind.RUN_WITHOUT_PROCESS,
@@ -898,12 +908,20 @@ def _abandon_launch(store: Store, run_id: str, evidence: str) -> None:
                 f"refusing to abandon the launch of {run_id!r}: its job {job_name!r} still "
                 "opens and reports live processes, so the run's tree is still there"
             )
-        state = liveness(supervisor_pid, creation_time=supervisor_start)
-        if state.state is not LivenessState.DEAD:
-            raise RecoveryRefused(
-                f"refusing to abandon the launch of {run_id!r}: {state.detail}. A supervisor "
-                "that is still running owns a run whose outcome is not yet known"
-            )
+        if supervisor_pid:
+            # Only asked once a supervisor has claimed the run. A launch whose
+            # supervisor never started -- it died between the registration and
+            # the claim, or the process that would have claimed it was killed --
+            # has nobody to ask about, and the job condition above is then the only
+            # evidence available. Refusing there would strand the run: the claim
+            # could never be released, and there would be no evidence a human could
+            # ever supply to change that.
+            state = liveness(supervisor_pid, creation_time=supervisor_start)
+            if state.state is not LivenessState.DEAD:
+                raise RecoveryRefused(
+                    f"refusing to abandon the launch of {run_id!r}: {state.detail}. A supervisor "
+                    "that is still running owns a run whose outcome is not yet known"
+                )
         process = json.loads(record["process_json"]) if record["process_json"] else None
         pid = (process or {}).get("pid")
         if isinstance(pid, int) and not isinstance(pid, bool):
@@ -1054,12 +1072,19 @@ def _live_holder(store: Store, task_id: str, generation: int | None = None) -> s
             # says. Its own reconciliation is a separate question.
             continue
         if run.lifecycle in ("preparing", "launching") or not run.ownership_known:
+            if run.abandoned:
+                # The unresolved launch was decided by a human, on evidence, and
+                # the decision is recorded. Refusing here again would make the
+                # abandon unreachable: the only action that can clear this state
+                # is the one this guard blocks, and a run nobody may ever release
+                # is a claim nobody may ever hand on.
+                continue
             return (
                 f"run {run.run_id!r} is {run.lifecycle} and has published no verified "
                 f"owner, so whether it is still writing cannot be ruled out. A missing "
-                "identity is not evidence that nothing is running"
-                + (f". Its launch was already abandoned at {run.job!r}"
-                   if run.abandoned and run.job else "")
+                "identity is not evidence that nothing is running. If an operator has "
+                "confirmed the launch is over, apply ABANDON_LAUNCH to this run with "
+                "that evidence first"
             )
         state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
         if state.state is LivenessState.ALIVE:

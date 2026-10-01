@@ -16,7 +16,7 @@ a running total — an earlier number is not evidence about a later one.
 | 06 | In progress | GAP-6 |
 | 07 | In progress | — |
 | 08 | In progress | — |
-| 09 | Release checklist and pilot gate merged; the release does not pass its own checklist | `docs/RELEASE-CHECKLIST.md`, `docs/PILOT.md`, `tests/test_release_docs.py` (32 collected) |
+| 09 | Release checklist and pilot gate merged; the release does not pass its own checklist | `docs/RELEASE-CHECKLIST.md`, `docs/PILOT.md`, `tests/test_release_docs.py` (36 collected) |
 
 
 ## Build order agreed with the owner, 2026-09-29
@@ -148,7 +148,9 @@ beside them and are not a claim about a later one.
   schemas present as `vkit/_schemas`. Rebuilt at `59a4eca` for the size the
   release checklist quotes: 255418 bytes.
 - `pytest tests/test_release_docs.py`: 10 passed. At `59a4eca` the same file
-  collects 32 and passes 32; the ten was true when this section was written.
+  collects 32; it collects 36 at `2490255`, which is this file's own gate
+  growing as the repairs land. The ten was true when this section was written
+  and the 32 was true at the revision the release checklist pins.
 
 At `59a4eca`, which is the revision the release checklist pins,
 `pytest tests/ --collect-only -q` collects **647** across 46 files. That is a

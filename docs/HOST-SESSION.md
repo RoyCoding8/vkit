@@ -322,7 +322,7 @@ The gap record, after this run:
   `project_inspect` was called through the host and returned the server's own
   JSON.
 - **Fixed as a result.** PreToolUse recognised no tool a real host sent, so that
-  gate was a silent no-op. Fixed in `3766431`, pinned by
+  gate was a silent no-op. Fixed in `d5c8f84`, pinned by
   `test_the_host_tool_names_address_this_plugin` and
   `test_the_pre_tool_use_context_reaches_a_real_host_delivery`, both of which
   fail on the reverted code with the `{}` response quoted above.
@@ -350,7 +350,7 @@ as not covered are GAP-10, and no part of this run bears on them.
 ## The two corrections, and where they landed
 
 This branch's first version of the tool-discovery test was wrong, and it was
-wrong in a way that merged. `9a2093a` in master, "Retry the host session that
+wrong in a way that merged. `8054c0c` in master, "Retry the host session that
 lost the connection race", is that version: it retries up to three sessions
 waiting for the server to attach the six tools. That theory was wrong, and it
 fails in a full suite. Timings from the run that failed it show the server
@@ -363,14 +363,14 @@ Master's `test_the_model_calls_a_vkit_tool_and_the_server_answers` also asked
 for one tool, which proves the host can reach a tool and not that it discovered
 six.
 
-Both are corrected in `8595953` and `5043135`, and both are in master as of
-`5087624`. This paragraph used to say they were not yet in master and that
+Both are corrected in `9689a24` and `4201cb8`, and both are in master as of
+`c268e9d`. This paragraph used to say they were not yet in master and that
 master's copy was the version that failed under load. That was true when it was
 written and stopped being true when they merged, and a record that keeps
 describing a superseded state is the reason this file and the release checklist
 came to disagree about GAP-3. The corrections are measured here rather than
-asserted: `git merge-base --is-ancestor 8595953 master` and the same for
-`5043135` both exit 0 at the revision the checklist pins.
+asserted: `git merge-base --is-ancestor 9689a24 master` and the same for
+`4201cb8` both exit 0 at the revision the checklist pins.
 
 ## Repeating it
 

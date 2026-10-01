@@ -78,7 +78,13 @@ from vkit.tasks import open_task, supersede_task  # noqa: E402
 CHECK_ID = "totals-behavior"
 EXCLUSIVE = "gate-exclusive-checkout"
 
-pytestmark = pytest.mark.skipif(
+#: Windows-only because the mechanism under test is the Windows job object: a
+#: named job, a handle held across a client disconnect, and a launch that
+#: publishes its owner before the check finishes. Scoped per test rather than
+#: applied to the module, because G11 asserts the POSIX *refusal* and so has to
+#: run there -- a module-level skip would turn the one gate that is about POSIX
+#: into a skip everywhere, and it would be a skip on the wrong host.
+requires_windows = pytest.mark.skipif(
     sys.platform != "win32",
     reason="the ownership mechanism under test is the Windows job object",
 )
@@ -257,7 +263,7 @@ def child_cancels(project_root: Path, run_id: str) -> dict:
 
 
 # ------------------------------------------------------------------- G1
-
+@requires_windows
 
 def test_check_start_returns_a_run_id_while_the_check_runs(
     project_root: Path, project: Project, tmp_path: Path
@@ -318,7 +324,7 @@ def test_check_start_returns_a_run_id_while_the_check_runs(
 
 
 # ------------------------------------------------------------------- G2
-
+@requires_windows
 
 def test_second_client_cancels_a_run_started_by_another_process(
     project_root: Path, project: Project, tmp_path: Path
@@ -358,7 +364,7 @@ def test_second_client_cancels_a_run_started_by_another_process(
 
 
 # ------------------------------------------------------------------- G3
-
+@requires_windows
 
 def test_cancel_does_not_kill_an_unrelated_control_process(
     project_root: Path, project: Project, tmp_path: Path
@@ -407,7 +413,7 @@ def test_cancel_does_not_kill_an_unrelated_control_process(
 
 
 # ------------------------------------------------------------------- G4
-
+@requires_windows
 
 def test_client_disconnect_leaves_the_run_owned(project_root: Path, project: Project, tmp_path: Path) -> None:
     """The supervisor holds the run, so the client that asked for it can die.
@@ -490,7 +496,7 @@ def test_client_disconnect_leaves_the_run_owned(project_root: Path, project: Pro
 
 
 # ------------------------------------------------------------------- G5
-
+@requires_windows
 
 def test_launch_crash_before_identity_publication(
     project_root: Path, project: Project, tmp_path: Path
@@ -565,7 +571,7 @@ def test_launch_crash_before_identity_publication(
 
 
 # ------------------------------------------------------------------- G6
-
+@requires_windows
 
 def test_release_while_child_alive_refuses(project_root: Path, project: Project, tmp_path: Path) -> None:
     """The original F13 reproduction, as a test.
@@ -621,7 +627,7 @@ def test_release_while_child_alive_refuses(project_root: Path, project: Project,
 
 
 # ------------------------------------------------------------------- G7
-
+@requires_windows
 
 def test_parent_crash_keeps_claims_until_the_run_ends(
     project_root: Path, project: Project, tmp_path: Path
@@ -679,7 +685,7 @@ def test_parent_crash_keeps_claims_until_the_run_ends(
 
 
 # ------------------------------------------------------------------- G8
-
+@requires_windows
 
 def test_repeated_mutation_request_does_not_duplicate_a_launch(
     project_root: Path, project: Project
@@ -726,7 +732,7 @@ def test_repeated_mutation_request_does_not_duplicate_a_launch(
 
 
 # ------------------------------------------------------------------- G9
-
+@requires_windows
 
 def test_no_second_owner_writes_concurrently(project_root: Path, project: Project) -> None:
     """Two processes racing for one *free* exclusive resource: exactly one wins.
@@ -791,7 +797,7 @@ def test_no_second_owner_writes_concurrently(project_root: Path, project: Projec
 
 
 # ------------------------------------------------------------------ G10
-
+@requires_windows
 
 def test_cancel_races_completion_to_one_outcome(project_root: Path, project: Project) -> None:
     """A cancel and a completion in the same instant produce exactly one outcome.
@@ -860,7 +866,7 @@ def test_posix_cancel_still_refuses() -> None:
 
 
 # ------------------------------------------------------------------ G12
-
+@requires_windows
 
 def test_run_report_schema_accepts_ownership_known_false(
     project_root: Path, project: Project

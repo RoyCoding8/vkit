@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
+import platform
 import sys
 from pathlib import Path
 
@@ -390,9 +390,16 @@ def test_a_reported_environment_carries_no_credential(
     # The facts a reader needs to reproduce the run are still there. A report that
     # achieved the row by recording nothing would satisfy the assertion above.
     assert facts["python_version"] == sys.version.split()[0]
-    assert facts["platform"]
+    # Named against literals, not against self-consistency. `_environment_facts`
+    # `continue`s past any tool it cannot resolve (execution.py:187 and :195), so a
+    # `tool_versions` of `{}` satisfied `all(...)` over its values -- the same
+    # vacuous pass this file already guards against above. Every entry is now
+    # pinned to the string the tool prints, so a missing one raises instead.
+    assert facts["platform"].startswith(platform.system())
     assert set(facts) == {"python_version", "platform", "tool_versions"}
-    assert all(isinstance(v, str) for v in facts["tool_versions"].values())
+    assert set(facts["tool_versions"]) == {"git", "python"}
+    assert facts["tool_versions"]["git"].startswith("git version")
+    assert facts["tool_versions"]["python"] == f"Python {sys.version.split()[0]}"
 
 
 def test_transaction_releases_the_write_lock(tmp_path: Path) -> None:

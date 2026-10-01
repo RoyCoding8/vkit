@@ -49,14 +49,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fixtures as fx  # noqa: E402
 from test_integration import (  # noqa: E402
-    EXIT_BLOCKED, EXIT_CHECK_FAILED, EXIT_INVALID, EXIT_OK,
+    EXIT_CHECK_FAILED, EXIT_INVALID, EXIT_OK,
     apply_edit, one_json_object, passing_manifest_only_candidate, verify, vkit,
 )
 from vkit.integration.verify import _conflict_id, _settle, summarize  # noqa: E402

@@ -31,6 +31,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from conftest import requires_procfs  # noqa: E402
+
 import vkit.procs as procs  # noqa: E402
 
 _THIS_SRC = (Path(__file__).resolve().parents[1] / "src").resolve()
@@ -44,11 +46,21 @@ if Path(procs.__file__).resolve() != (_THIS_SRC / "vkit" / "procs.py"):
 PYTHON = sys.executable
 LINE = b"\r\n" if os.name == "nt" else b"\n"
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="the ownership mechanism under test here is the POSIX process group; "
-           "the job object is covered by tests/test_procs.py",
-)
+#: Two independent reasons, and the order matters. On Windows the mechanism
+#: under test is a job object and tests/test_procs.py owns it. On a host with
+#: no /proc the file cannot run either, because the observation is a walk of
+#: /proc: the test has to find every live process in the group by reading procfs
+#: itself, not by remembering the pids it spawned. That is what makes the
+#: check independent of the pids this test happened to learn about, and it is
+#: also what a host without /proc cannot do. See tests/conftest.py.
+pytestmark = [
+    pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the ownership mechanism under test here is the POSIX process "
+               "group; the job object is covered by tests/test_procs.py",
+    ),
+    requires_procfs,
+]
 
 
 def is_alive(pid: int) -> bool:

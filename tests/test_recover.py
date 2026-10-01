@@ -26,6 +26,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from conftest import procfs_available  # noqa: E402
+
 from vkit.claims import ResourceSpec, acquire, holder  # noqa: E402
 from vkit.recover import (  # noqa: E402
     Action,
@@ -63,6 +65,39 @@ requires_windows = pytest.mark.skipif(
     sys.platform != "win32",
     reason="asserts a value only Windows produces: STILL_ACTIVE (259) from "
            "GetExitCodeProcess, or the Windows wording for a reclaimed pid",
+)
+
+#: The counterpart marker, for the same reason and at the same granularity.
+#:
+#: Six tests in this file call `procidentity.read_identity` on the `alive_pid`
+#: fixture and then assert the result is not None. The reason is that the
+#: stranger verdicts they check are only meaningful when the fixture process is
+#: actually readable -- one of them says so outright, "the fixture process must
+#: be readable for this to mean anything". The read goes through whichever
+#: backend `read_identity` dispatches to, so the predicate has to ask about that
+#: backend rather than about procfs alone.
+#:
+#: **The platform check is load-bearing and is the easy one to get wrong.**
+#: `read_identity` reads a FILETIME through `OpenProcess` on Windows, so those
+#: four of the six run on Windows today. Gating them on procfs alone skips them
+#: on Windows too, which silently deletes passing coverage of the exact policy
+#: they exist to pin -- a test that stops running is invisible in a green report,
+#: and this suite is about a false pass. So: Windows needs no procfs and is
+#: always allowed; a POSIX host needs procfs to read field 22 of a stat line.
+#:
+#: This is a fixture that cannot run, not a test that cannot. The subjects are
+#: recovery POLICY -- whether a mismatched creation time reads UNCERTAIN rather
+#: than DEAD, and whether the claim survives -- and policy does not vary by
+#: platform. So these six are marked rather than the module: the rest of the file
+#: never reads an identity and runs everywhere, and marking the whole module
+#: would leave recovery policy unverified on every POSIX host that is not Linux.
+requires_readable_identity = pytest.mark.skipif(
+    sys.platform != "win32" and not procfs_available(),
+    reason="reads a live process's start time to decide whether a stranger's pid "
+           "is UNCERTAIN rather than DEAD. On POSIX that read is "
+           "/proc/<pid>/stat, and this host has no /proc, so the fixture process "
+           "cannot be described and the verdict under test cannot be established. "
+           "Windows reads the FILETIME through OpenProcess and needs no procfs.",
 )
 
 
@@ -698,6 +733,7 @@ def test_releasing_a_claim_whose_holder_run_is_dead_succeeds(
     assert holder(store, "build") is None
 
 
+@requires_readable_identity
 def test_a_recycled_pid_does_not_release_its_claim(store: Store, alive_pid: int) -> None:
     """The end-to-end consequence, and the reason the identity check exists.
 
@@ -746,6 +782,7 @@ def test_a_recycled_pid_does_not_release_its_claim(store: Store, alive_pid: int)
     )
 
 
+@requires_readable_identity
 def test_marking_a_run_dead_refuses_when_its_pid_was_recycled(
     store: Store, alive_pid: int
 ) -> None:
@@ -820,6 +857,7 @@ def test_liveness_distinguishes_a_real_process_from_an_absent_one(alive_pid: int
     assert "no process carries that pid" in dead.detail
 
 
+@requires_readable_identity
 def test_a_pid_now_held_by_a_stranger_is_uncertain_and_never_dead(alive_pid: int) -> None:
     """A recycled pid must not be read as our dead process.
 
@@ -866,6 +904,7 @@ def test_a_pid_now_held_by_a_stranger_is_uncertain_and_never_dead(alive_pid: int
     assert not state.dead
 
 
+@requires_readable_identity
 def test_a_matching_creation_time_still_reads_alive(alive_pid: int) -> None:
     """The pair must not make a genuinely running process look uncertain.
 
@@ -891,6 +930,7 @@ def test_a_matching_creation_time_still_reads_alive(alive_pid: int) -> None:
         assert state.exit_code is None
 
 
+@requires_readable_identity
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="boot_id is POSIX-only; a Windows FILETIME is absolute and needs no boot",
@@ -929,6 +969,7 @@ def test_a_record_from_another_boot_is_a_stranger(alive_pid: int) -> None:
     assert not state.dead
 
 
+@requires_readable_identity
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="a Windows FILETIME is absolute and needs no boot to be meaningful, so "

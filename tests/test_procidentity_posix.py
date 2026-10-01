@@ -26,6 +26,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from conftest import requires_pid_namespace_for_reuse, requires_procfs  # noqa: E402
+
 from vkit.procidentity import (  # noqa: E402
     CannotConfirm,
     ProcessIdentity,
@@ -45,11 +47,20 @@ if Path(_pi.__file__).resolve() != (THIS_SRC / "vkit" / "procidentity.py"):
         "against another owner's code."
     )
 
-pytestmark = pytest.mark.skipif(
+#: Two reasons this file does not run, kept separate because they are different
+#: claims. The first is ownership: on Windows the pair is a FILETIME and
+#: tests/test_procidentity.py covers it, so running these would assert the POSIX
+#: mechanism where there is none. The second is a missing facility: macOS is
+#: POSIX, so the first condition passes and the file ran there, and every test
+#: then failed reading a /proc that does not exist. Only the second is a defect
+#: in how this file was gated; the first is the arrangement working.
+requires_windows_counterpart = pytest.mark.skipif(
     sys.platform == "win32",
     reason="this covers the POSIX identity; the Windows FILETIME pair is covered "
            "by tests/test_procidentity.py",
 )
+
+pytestmark = [requires_windows_counterpart, requires_procfs]
 
 HERE = Path(__file__).resolve().parent.parent / "scripts" / "report_identity.py"
 
@@ -152,6 +163,7 @@ def test_a_pid_that_names_no_single_process_is_refused(sentinel: int) -> None:
         read_identity(sentinel)
 
 
+@requires_pid_namespace_for_reuse
 def test_a_recycled_pid_carries_a_new_start_time() -> None:
     """The case the whole module exists for, produced for real.
 
@@ -159,6 +171,15 @@ def test_a_recycled_pid_carries_a_new_start_time() -> None:
     namespace's 5th process is the same kernel pid as the first namespace's 5th
     process, without a live host ever wrapping past pid_max. If the pair could
     not tell those apart, a recorded identity would answer to a stranger.
+
+    The namespace is required, not preferred: `pid_max` is 4194304, so without
+    one the only way to reach a reuse is to spawn four million processes, which
+    is not a test. The gate is therefore on the CAPABILITY (can this host
+    create a pid namespace), and the skip reason names which half was missing --
+    no `unshare` binary at all, or the binary present and the syscall refused,
+    which is a container that dropped CAP_SYS_ADMIN. Those are different
+    problems for whoever reads the log, and "unshare is unavailable" would
+    have been wrong for the second.
     """
     assert HERE.is_file(), f"{HERE} is missing, so reuse cannot be produced"
 

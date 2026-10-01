@@ -86,7 +86,26 @@ def test_a_coordinator_that_stops_and_resumes_finds_its_work_and_replays_none(
     first_run = first["checks"][0]["run_id"]
 
     # A second candidate, in a second process, after the first has finished.
-    second_candidate = passing_manifest_only_candidate(repo)
+    #
+    # Not a second call to `passing_manifest_only_candidate`. That helper writes
+    # one fixed comment and commits it, so calling it twice edits nothing the
+    # second time and asks Git for a commit whose tree, parent, author and
+    # message are all byte-identical to the first. Git stamps commits in whole
+    # seconds, so the two collapse into one sha whenever they land in the same
+    # clock tick, and the gap between them is exactly how long the first verify
+    # took. Measured on Linux, that gap averaged 0.990s against a 1.000s tick:
+    # the test passed or failed according to how fast the host was. One more
+    # comment line makes the tree differ, so the second candidate is its own
+    # commit whatever the clock says.
+    rules = repo / fx.RULES_NAME
+    rules.write_text(
+        rules.read_text(encoding="utf-8")
+        + "# the resume row's second candidate, so this commit is its own\n",
+        encoding="utf-8",
+    )
+    second_candidate = fx.commit_all(repo, "a second candidate of its own")
+    assert second_candidate != first_candidate
+
     second_done, second = verify(repo, second_candidate, target, "@main")
     assert second_done.returncode == EXIT_OK, second
     assert second["checks"][0]["run_id"] != first_run

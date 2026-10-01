@@ -151,7 +151,7 @@ beside them and are not a claim about a later one.
   collects 32 and passes 32; the ten was true when this section was written.
 
 At `59a4eca`, which is the revision the release checklist pins,
-`pytest tests/ --collect-only -q` collects **645** across 46 files. That is a
+`pytest tests/ --collect-only -q` collects **646** across 46 files. That is a
 collection count and not a pass count. The last full execution at that revision
 has not been run, so no passed figure is quoted here. Both stale whole-suite
 numbers that used to sit in this file's neighbours were inherited from earlier

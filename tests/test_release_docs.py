@@ -711,6 +711,36 @@ def test_every_pilot_row_agrees_with_this_files_record_of_its_gaps() -> None:
 _ROW_RE = re.compile(r"^\|\s*(GAP-\d+|Claim)\b.*$", re.MULTILINE)
 
 
+def test_the_readme_suite_count_is_the_one_this_file_recomputes() -> None:
+    """The README is a document a first-time reader trusts before the checklist.
+
+    Measured: rewriting `645 tests collected` in `README.md` to `404` left
+    every gate green, because only `RELEASE-CHECKLIST.md` is read for a suite
+    count. So the number a new reader meets first was the one number in this
+    repository with nothing behind it, which is a bad way for the stale 404 to
+    have survived a sweep that indicts it by name.
+
+    The check compares the README against the same derived count the checklist
+    is checked against, so the two documents cannot drift from each other or
+    from the tree. It reads the README's own `console command` block, because
+    that is where the command and its output sit together and a reader runs
+    the one to see whether the other is true.
+    """
+    text = _read(README)
+    counted = _collected_count(text)
+    assert counted, (
+        "the README states no collected count. A README that names no number "
+        "is better than one that names a stale one, so this check is on the "
+        "count it does state."
+    )
+    assert int(counted.group(1)) == _actually_collected(), (
+        f"the README states {counted.group(1)} tests collected and this tree "
+        f"collects {_actually_collected()}. The command above that line prints "
+        "the number the reader will compare against, so a mismatch here is a "
+        "false receipt rather than a rounding error."
+    )
+
+
 def test_a_gap_row_cites_a_receipt_that_exists_and_does_not_call_one_missing() -> None:
     """A gap row's evidence cell has to name something a reader can open.
 
@@ -1364,14 +1394,24 @@ def _actually_collected(target: str = "tests/") -> int:
 
 
 def _collected_count(text: str) -> re.Match[str] | None:
-    """The suite's collected count, in the one shape the document states it in.
+    """The suite's collected count, in the shape a document states it in.
 
-    Named rather than inlined so the shape lives in one place: the document
-    says `644 tests collected` and nothing else, and a reader comparing the
-    document against a run should be able to find both the shape and what is
-    compared against it without hunting.
+    Two shapes are accepted because the two documents write it two ways. The
+    checklist quotes it in prose, where a backtick marks the number as an
+    observation, and the README prints it as the bare output line of the
+    command above it, where backticks would be wrong. What the two have in
+    common is the word `collected`, which is the part carrying the claim that
+    nothing was executed.
+
+    Named rather than inlined so the shape lives in one place: a reader
+    comparing a document against a run should be able to find both the shape
+    and what is compared against it without hunting.
     """
-    return _numbers(text, r"`(\d+) tests? collected`")
+    found = _numbers(text, r"`(\d+) tests? collected`")
+    if found:
+        return found
+    # The README's form, which sits under the command that prints it.
+    return _numbers(text, r"(?<![\d`])(\d+) tests? collected\b")
 
 
 def _acceptance_ratio_present(text: str) -> str:

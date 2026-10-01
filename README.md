@@ -203,11 +203,11 @@ with the server about a changed contract instead of disagreeing with it.
 ## Known limits
 
 The POSIX path is written from documented semantics. This milestone was
-verified on Windows 11 with Python 3.13.14. A POSIX host has exercised the
-process path, but **no POSIX run of this suite is recorded in this
-repository**: the scripts write their reports under the invoking user's home
-directory, so the tree holds the measurement scripts and the host agent's
-triage rather than a receipt a reader can re-check. POSIX-CLAIM: no-receipt.
+verified on Windows 11 with Python 3.13.14. CI runs this suite on
+`ubuntu-latest`, `windows-latest` and `macos-latest`, so the local POSIX harness
+has been deleted. **No POSIX run of this suite is recorded in this
+repository**: a CI job's receipt is the forge's run log rather than a file here,
+and that job is red at this revision. POSIX-CLAIM: no-receipt.
 `docs/RELEASE-CHECKLIST.md` carries this as GAP-2, and
 `tests/test_release_docs.py::_posix_position_derived_from_the_tree` is where
 the position is derived rather than restated.

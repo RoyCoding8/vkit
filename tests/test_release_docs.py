@@ -140,23 +140,24 @@ ABSENT_COMMANDS = ("hook", "setup")
 # is capable of failing, so it is never offered as a checklist step.
 PRESENT_COMMAND_PROBE = "task begin"
 
-# The POSIX entry points this tree holds, and the one way to name them.
+# The POSIX entry points this tree once held are gone, and the entry point that
+# replaces them is `.github/workflows/ci.yml`, which runs `pytest tests/` on
+# ubuntu-latest. Neither `scripts/posix_harness.py` nor
+# `scripts/posix_setup.py` is here any more. They were added at 9eb3690, which
+# replaced eighteen shell entry points, and this commit deletes them.
 #
-# These replaced eighteen shell scripts, and the documents name two of those
-# scripts by path. A document that names a path nobody can open is the failure
-# this file exists to catch, so the replacement is named here as the thing a
-# document may point at: the check below fails until the documents are updated,
-# which is the correct state and not a gap in the gate.
+# So this file no longer holds a list of entry points a document may point at.
+# It did, and the check over it went red the day CI replaced the harness, which
+# is the correct way round: the harness existed because nothing else ran this
+# suite on a POSIX host, and `.github/workflows/ci.yml` does. The list and the
+# check went together rather than being repointed, because nothing in the tree
+# is now the thing a POSIX verification is run through.
 #
-# A set rather than a constant because the documents are allowed to name either
-# of them. One spelling would be a second authority for a choice the tree
-# already makes, and the tree can make it twice over: a run and a setup are two
-# different jobs.
-POSIX_ENTRY_POINTS = ("scripts/posix_harness.py", "scripts/posix_setup.py")
-
-# A path that names a POSIX entry point and is not one. Used only to prove the
-# check below is capable of failing.
-ABSENT_POSIX_PROBE = "scripts/posix-suite-verbatim.sh"
+# What keeps a document honest about a POSIX run is the check below,
+# `test_no_document_names_a_posix_script_that_is_not_one`, which resolves every
+# path under `scripts/` a document names and refuses one the tree does not
+# hold. It is strictly wider than the deleted check, which named two paths, and
+# it reads the fences as well as the prose.
 
 
 # --------------------------------------------------------------------- reading
@@ -355,45 +356,21 @@ def _is_interpreter(token: str) -> bool:
     ) is not None and Path(token).name.lower().startswith(("python", "py"))
 
 
-def test_the_posix_entry_points_are_the_ones_the_tree_holds() -> None:
-    """Every POSIX entry point a document may name has to exist here.
-
-    A document that offers a maintainer a script nobody wrote reads as
-    verification, which is the shape of failure this file was written to end.
-    The eighteen shell scripts named here are gone, so this fails against the
-    documents until they name the harness instead, and that failure is the
-    correct state: a checklist pointing at a deleted script is worse than one
-    pointing at nothing, because it looks checked.
-
-    The negative half is the load-bearing half. `ABSENT_POSIX_PROBE` names a
-    path that was in this list and is not in the tree, so a document naming it
-    fails. A guard that cannot fire is decoration, and this one is proved
-    capable of firing by construction rather than by a comment claiming it
-    would.
-    """
-    for entry in POSIX_ENTRY_POINTS:
-        assert (ROOT / entry).is_file(), (
-            f"{entry} is named here as an entry point a document may point at, "
-            "and it does not exist. A document naming it would be naming "
-            "nothing, which is what this file exists to prevent."
-        )
-    assert not (ROOT / ABSENT_POSIX_PROBE).exists(), (
-        f"{ABSENT_POSIX_PROBE} was a shell script and is now the negative "
-        "probe for this check. If it exists again, pick a different path: the "
-        "probe has to name something the tree does not have, or the check it "
-        "proves is not proving anything."
-    )
-
-
 @pytest.mark.parametrize("doc", [CHECKLIST, PILOT], ids=lambda p: p.name)
 def test_no_document_names_a_posix_script_that_is_not_one(doc: Path) -> None:
     """Every path under `scripts/` a document names has to exist here.
 
-    `test_every_path_is_verified_or_declared_absent` already refuses a path in
-    either document that is not in a checked block, so this is narrower and
-    reads the documents the same way. It exists because a POSIX script name is
-    the specific thing most likely to go stale: eighteen of them were deleted
-    at once and two were named in prose that no block checked.
+    This is the check that replaced `POSIX_ENTRY_POINTS`. It is the whole
+    invariant that constant was one instance of, and it holds after the harness
+    is gone: a document may not offer a maintainer a command nobody wrote, and
+    may not cite a receipt no reader can open.
+
+    The narrow list is the one that had to go. `scripts/posix_harness.py` and
+    `scripts/posix_setup.py` were deleted because `.github/workflows/ci.yml`
+    runs this suite on ubuntu-latest, and an entry-point list naming two
+    deleted paths guards nothing. `test_every_path_is_verified_or_declared_absent`
+    above covers the same ground from the document's side, and it covers it for
+    every path in either document rather than for two.
 
     Both halves of the document are read, and both are needed. A path in a
     `console command` block is a step a maintainer is told to run. A path
@@ -407,6 +384,14 @@ def test_no_document_names_a_posix_script_that_is_not_one(doc: Path) -> None:
     fence held the command and stripping the fences removed it. The mutation
     below is what caught that, and it is kept because a guard whose failure has
     never been seen is not a guard.
+
+    This is now the only check that can fire for a stale POSIX script path, so
+    it keeps the negative probe that check carried. `posix-run.sh` is one of the
+    eighteen shell scripts `scripts/posix_harness.py` replaced, and it is not in
+    this tree. Fourteen scripts under `scripts/` still print `bash
+    scripts/posix-run.sh ...` in their own `Run:` docstring line, so the probe
+    is the exact path a reader following one of them would hit, and gets
+    nothing.
     """
     text = _read(doc)
     prose = _strip_fences(text)
@@ -424,6 +409,30 @@ def test_no_document_names_a_posix_script_that_is_not_one(doc: Path) -> None:
             "document may not offer a command a maintainer cannot run, and may "
             "not cite a receipt no reader can open."
         )
+
+
+def test_the_posix_script_probe_would_notice_a_document_naming_a_stale_path() -> None:
+    """The check above has to be able to fail, and this is the evidence.
+
+    A guard that cannot fire is decoration. `_posix_probe` is one of the shell
+    scripts `scripts/posix_harness.py` replaced and is not in this tree. If the
+    check above could not fail on such a path, this test's own assertion is
+    what tells us.
+
+    This asserts the probe is genuinely absent, which is what makes the mutation
+    in the report meaningful rather than a comment claiming it would work.
+    """
+    assert not (ROOT / _posix_probe).exists(), (
+        f"{_posix_probe} is the negative probe for this check, and it now "
+        "exists. Pick a different path: the probe has to name something the "
+        "tree does not have, or the check it proves is not proving anything."
+    )
+
+
+# The path fourteen `scripts/` measurement scripts still tell a reader to run.
+# It is a probe rather than an entry point because it does not exist and is not
+# coming back; CI runs the suite through `.github/workflows/ci.yml` instead.
+_posix_probe = "scripts/posix-run.sh"
 
 
 def _check_python(doc_name: str, tokens: list[str]) -> None:

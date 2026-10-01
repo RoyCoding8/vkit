@@ -17,7 +17,7 @@ collection count with no verdict attached.
 | Repo | `D:\AI\Poteto's Style`, branch `master`, commit `59a4eca` |
 | Suite collected | 647 collected, 0 run. Collected with `--collect-only`; no full execution at this revision. |
 | Windows suite passed | Unmeasured at this revision. The last observed full runs were 508 passed, 20 skipped at `14e21cb` and 444 passed, 2 skipped at `5087624`. Neither is a claim about `59a4eca`. |
-| Linux (WSL2) suite | No receipt in this repository. `scripts/posix_harness.py` writes its reports under the invoking user's home directory and no run artifact is tracked. See the POSIX section below. |
+| Linux (WSL2) suite | No receipt in this repository, and CI has not closed it. `.github/workflows/ci.yml` now runs this suite on `ubuntu-latest`, so the local POSIX harness it replaced is deleted; the job's receipt is the forge's run log rather than a file here, and it is red at this revision. See the POSIX section below. |
 | Acceptance rows | 22/22, observed on this host at `59a4eca` and re-derived on every run of `tests/test_release_docs.py` |
 | Release gate | Not a number. `docs/RELEASE-CHECKLIST.md` carries no enumerated gate and this report invented the 26. It carries a gap register and a nine-row may-not-say table, of which four rows read blocked or not verified. |
 
@@ -58,10 +58,11 @@ observed in the same run, under the product's own `_kill_process_group`, which i
 the function `_run_posix` calls on timeout.
 
 Both measurements below are quoted from their scripts, which are committed. The
-suite run they belong to is not: `scripts/posix_harness.py` writes its junit
-reports under the invoking user's home directory, so nothing about it is
-in this repository. That gap is GAP-2, and it is the one number in the table
-above with no receipt at all.
+suite run they belong to is not, and the local POSIX harness that would have
+carried it is gone: `.github/workflows/ci.yml` runs this suite on `ubuntu-latest`
+now, and its receipt is the forge's run log rather than a file in this
+repository. That gap is GAP-2, and it is the one number in the table above with
+no receipt at all.
 
 Result on WSL2 Ubuntu, kernel 6.18.33.2:
 

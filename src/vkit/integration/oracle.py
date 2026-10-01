@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..manifest import Manifest
-from ..paths import Project
+from ..paths import Project, ProjectError, open_project
 from . import gitidentity as gits
 
 
@@ -81,19 +81,28 @@ def package_identity(root: Path | None = None) -> dict[str, Any]:
 
 
 def _package_revision(root: Path) -> str | None:
-    """The commit the verifier's own checkout points at, when there is one."""
+    """The commit the verifier's own checkout points at, when there is one.
+
+    `None` is a real answer here and not a failure to be worked around. The
+    verifier is measured before any candidate is checked out, so this runs
+    against the vkit tree wherever the CLI was installed from. That tree is a
+    repository in a checkout and is not one in an installed wheel or in a
+    worktree git cannot resolve, and `package_identity` renders the fallback
+    itself. A directory with no repository therefore has to arrive here as a
+    value.
+
+    Both reasons a revision is unavailable are named, and neither is a guess:
+    `ProjectError` is what `open_project` raises for a path that is not a
+    project, and `GitError` is what git raises for a repository with no `HEAD`
+    to read. The earlier code caught the first as a bare `Exception` inside a
+    helper that returned `None`, and handed that `None` to `git` as if it were
+    a `Project`. The condition is caught where the answer is produced now,
+    which is also why the helper is gone: it had one caller, and the `None` it
+    returned was an untyped sentinel that only this line knew to mean anything.
+    """
     try:
-        return gits.git(_project_at(root), "rev-parse", "HEAD")
-    except gits.GitError:
-        return None
-
-
-def _project_at(root: Path):
-    from ..paths import open_project
-
-    try:
-        return open_project(root)
-    except Exception:  # noqa: BLE001 - not being in a repository is normal here
+        return gits.git(open_project(root), "rev-parse", "HEAD")
+    except (ProjectError, gits.GitError):
         return None
 
 

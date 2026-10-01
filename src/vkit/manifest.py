@@ -87,20 +87,17 @@ class CheckSpec:
     prerequisites: tuple[Prerequisite, ...]
     inputs: tuple[str, ...]
 
-    def resolved_argv(self, run_dir: Path, python: str) -> tuple[str, ...]:
+    def resolved_argv_for(self, run_dir: Path, python: str | None) -> tuple[str, ...]:
         """The exact list to execute. Only two placeholders exist, both documented
         in CONTRACT.md: the run artifact directory and the resolved interpreter.
         Nothing is ever passed through a shell or evaluated.
 
-        `python` defaults to the interpreter running vkit, which is the right
+        `python` is None for the interpreter running vkit, which is the right
         answer for every development run. A caller that must run the check
         against something other than itself passes that interpreter explicitly;
         Plan 07's trusted integration path does, so the checks of a candidate
         checkout are executed by the approved verifier revision rather than by
         whatever happens to be imported."""
-        return self.resolved_argv_for(run_dir, python)
-
-    def resolved_argv_for(self, run_dir: Path, python: str | None) -> tuple[str, ...]:
         interpreter = python if python is not None else sys.executable
         return tuple(
             part.replace("{{run_dir}}", str(run_dir)).replace("{{python}}", interpreter)

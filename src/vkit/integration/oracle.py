@@ -165,6 +165,12 @@ def repoint_approved(manifest: Manifest, approved_root: Path, scripts: dict[str,
     is a refusal by the caller rather than a guess here: a check the shape cannot
     explain has no approved code identified, and silently keeping the candidate's
     path would be the substitution this module exists to stop.
+
+    This runs only when every check the policy REQUIRES is pinnable, so a
+    required check never reaches this branch unrepointed. A check the policy does
+    not require, but the approved manifest happens to define, can reach it. That
+    is why the branch is here rather than an assertion: the loop covers the whole
+    manifest while the refusal covers only the required ids.
     """
     from dataclasses import replace
 

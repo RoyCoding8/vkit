@@ -19,6 +19,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from vkit.execution import ExecutionError, RunEnvironment, run_check  # noqa: E402
+from vkit.identity import compute_source_identity  # noqa: E402
 from vkit.integration.oracle import repoint_approved, scripts_of  # noqa: E402
 from vkit.manifest import (  # noqa: E402
     CheckSpec,
@@ -26,8 +28,13 @@ from vkit.manifest import (  # noqa: E402
     ManifestError,
     parse_manifest_bytes,
 )
+from vkit.outcome import Blocked, BlockedReason  # noqa: E402
+from vkit.storage import Store, StoreError  # noqa: E402
 
 DRIVER_ARGV = ("python", "verify_price.py")
+#: A name no PATH entry on a test machine will carry, so the prerequisite check
+#: reports the tool missing without the run depending on the host's contents.
+ABSENT_EXECUTABLE = "vkit-prerequisite-that-is-not-installed-9c1f"
 
 
 def a_check(check_id: str, argv: tuple[str, ...], inputs: tuple[str, ...] = ()) -> CheckSpec:
@@ -154,7 +161,9 @@ def a_manifest_declaring(project, *inputs: str) -> Manifest:
     return a_manifest(project, a_check("c", DRIVER_ARGV, inputs=inputs))
 
 
-def a_manifest_document(cwd: str, inputs: tuple[str, ...] = ()) -> bytes:
+def a_manifest_document(
+    cwd: str, inputs: tuple[str, ...] = (), prerequisites: list[dict] | None = None
+) -> bytes:
     import json
 
     return json.dumps({
@@ -169,6 +178,7 @@ def a_manifest_document(cwd: str, inputs: tuple[str, ...] = ()) -> bytes:
             "required_scenarios": ["one"],
             "artifact": "result.json",
             "inputs": list(inputs),
+            "prerequisites": prerequisites or [],
         }],
     }).encode("utf-8")
 
@@ -288,3 +298,70 @@ def test_an_absolute_cwd_inside_the_repository_is_refused_by_containment(repo) -
             a_manifest_document(str(outside)), project=project,
             run_dir=project.runs_root, origin="test",
         )
+
+
+# ------------------------------------------------------- ExecutionError
+
+
+def test_a_run_whose_report_cannot_be_published_raises_rather_than_reporting(
+    repo,
+) -> None:
+    """The report failing to publish is an `ExecutionError`, not a BLOCKED outcome.
+
+    This is the distinction the class docstring claims: a BLOCKED is a recorded
+    answer about the check and comes back as a value carrying a reason, while a
+    report that cannot be recorded leaves the caller with no answer at all. A
+    `run_check` that returned an outcome here would let an unrecoverable storage
+    failure read as a decided refusal, and `vkit check run` would print BLOCKED
+    and exit 3 rather than the internal error it is.
+
+    The check declares a prerequisite that is not installed, so the run blocks
+    before it launches anything and the publish is the only thing left to fail.
+    The store refuses that publish the way the real store does when a run is
+    already terminal.
+    """
+    project = a_repository(repo)
+    manifest = parse_manifest_bytes(
+        a_manifest_document(".", prerequisites=[{
+            "name": "a tool that is not installed", "executable": ABSENT_EXECUTABLE,
+        }]),
+        project=project, run_dir=project.runs_root, origin="test",
+    )
+
+    class PublishRefused(Store):
+        """A store whose publish always fails as a real one can."""
+
+        def publish(self, run_id: str, report: dict) -> None:
+            raise StoreError(f"cannot publish: {run_id} is unknown or already terminal")
+
+    with pytest.raises(ExecutionError, match="could not publish the report"):
+        run_check(
+            manifest, "c", store=PublishRefused(project.db_path),
+            source=compute_source_identity(project),
+            run_id="publish-refused", env=RunEnvironment(),
+        )
+
+
+def test_the_same_unpublishable_run_would_otherwise_have_been_blocked(repo) -> None:
+    """The control for the test above: with a working store, that run BLOCKS.
+
+    Without this, an `ExecutionError` raised from anywhere in `run_check` would
+    satisfy the test above, including one raised because the run blocked for an
+    unrelated reason. Here the identical manifest returns the BLOCKED value.
+    """
+    project = a_repository(repo)
+    manifest = parse_manifest_bytes(
+        a_manifest_document(".", prerequisites=[{
+            "name": "a tool that is not installed", "executable": ABSENT_EXECUTABLE,
+        }]),
+        project=project, run_dir=project.runs_root, origin="test",
+    )
+
+    result = run_check(
+        manifest, "c", store=Store(project.db_path),
+        source=compute_source_identity(project),
+        run_id="publishes-fine", env=RunEnvironment(),
+    )
+
+    assert isinstance(result.outcome, Blocked)
+    assert result.outcome.reason is BlockedReason.PREREQUISITE_MISSING

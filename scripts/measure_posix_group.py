@@ -11,7 +11,7 @@ but not the great-grandchild is still not containment. All three levels must be
 gone, and each one's death must be observed from OUTSIDE the group, because a
 process that cannot read /proc has not been shown to be gone.
 
-Run:  bash scripts/posix-run.sh scripts/measure_posix_group.py
+Run:  python scripts/measure_posix_group.py
 """
 from __future__ import annotations
 

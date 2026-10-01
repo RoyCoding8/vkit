@@ -9,7 +9,7 @@ implement or to keep raising UnsupportedPlatform rests on measurement.
 Every claim here is printed with the observation that produced it. Nothing is
 asserted that was not read out of /proc or out of a syscall on this host.
 
-Run:  bash scripts/posix-run.sh scripts/measure_posix_identity.py
+Run:  python scripts/measure_posix_identity.py
 """
 from __future__ import annotations
 

@@ -12,7 +12,7 @@ process. That case is produced here from sibling pid namespaces rather than
 assumed: on a live host the counter would have to wrap past pid_max, which is
 4194304.
 
-Run:  bash scripts/posix-run.sh -m pytest tests/test_procidentity_posix.py -q
+Run:  python -m pytest tests/test_procidentity_posix.py -q
 """
 from __future__ import annotations
 

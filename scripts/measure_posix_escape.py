@@ -24,7 +24,7 @@ Every death is observed from OUTSIDE the group, and the escaper's group is
 confirmed to differ from the victim's before the signal, because a survivor that
 was never really outside proves nothing.
 
-Run:  bash scripts/posix-run.sh scripts/measure_posix_escape.py
+Run:  python scripts/measure_posix_escape.py
 """
 from __future__ import annotations
 

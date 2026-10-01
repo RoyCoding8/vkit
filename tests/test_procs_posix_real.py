@@ -16,7 +16,7 @@ absence reports a live worker as dead, which is the one direction of error that
 destroys a run rather than merely mislabelling it.
 
 Skipped on Windows, where the job object is the mechanism and test_procs.py owns
-it. Run:  bash scripts/posix-run.sh -m pytest tests/test_procs_posix_real.py -q
+it. Run:  python -m pytest tests/test_procs_posix_real.py -q
 """
 from __future__ import annotations
 

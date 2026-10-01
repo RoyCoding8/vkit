@@ -17,7 +17,7 @@ Each child runs scripts/report_identity.py and reports its own pid and starttime
 from inside the namespace, because the parent's /proc is the host's and does not
 contain the namespace's pids. `--mount-proc` gives the namespace its own procfs.
 
-Run:  bash scripts/posix-run.sh scripts/measure_posix_reuse.py
+Run:  python scripts/measure_posix_reuse.py
 """
 from __future__ import annotations
 

@@ -9,7 +9,7 @@ argues the point. A process group is the nearest POSIX mechanism, and a group
 outlives the process that created it. The check is whether the descendant is
 still running, read from outside the group.
 
-Run:  bash scripts/posix-run.sh scripts/measure_supervisor_death.py
+Run:  python scripts/measure_supervisor_death.py
 """
 from __future__ import annotations
 

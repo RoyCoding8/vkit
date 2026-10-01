@@ -6,7 +6,7 @@ reads a neighbouring field, and every conclusion drawn from it is about the
 wrong number. This prints the neighbourhood so the index is checked by eye
 against proc(5) rather than trusted.
 
-Run:  bash scripts/posix-run.sh scripts/check_stat_fields.py
+Run:  python scripts/check_stat_fields.py
 """
 from __future__ import annotations
 

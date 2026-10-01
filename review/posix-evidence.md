@@ -137,7 +137,8 @@ specific to a POSIX run that lost `~/.local/bin`.
 | `posix-acceptance.sh` | exit 0 | exit 1 (child status) |
 | `posix-one-row.sh` | exit 0 | exit 1 (child status) |
 | `posix-row-detail.sh` | exit 0 | exit 1 (child status) |
-| `posix-suite.sh`, `posix-suite-status.sh`, `posix-final.sh`, `posix-run.sh`, `posix-deps.sh`, `posix-acceptance-rows.sh` | already exited nonzero | unchanged |
+| `posix-final.sh` | exit 0 | exit 1 (`PIPESTATUS[0]`) |
+| `posix-suite.sh`, `posix-suite-status.sh`, `posix-run.sh`, `posix-deps.sh`, `posix-acceptance-rows.sh` | already exited nonzero | unchanged |
 
 Reproduction, both directions, on a tree whose only test file fails and on a
 tree where every test passes or skips:
@@ -154,6 +155,19 @@ HOME=/tmp/posix-green/home VKIT_POSIX_VENV=/tmp/posix-green/venv \
 `VKIT_POSIX_VENV` pointed at a one-line shim that execs the real
 `/root/.venvs/vkit-posix/bin/python`, so the scripts ran unmodified against a
 tree of my choosing.
+
+### A tenth false green the sweep did not name
+
+`posix-final.sh` has no `exit` statement at all, and the sweep read that as
+proof it was safe. It is not. It piped pytest through `tee` and `tail`, and a
+pipeline reports its last stage's status, so it exited 0 on a fully failed
+suite. `set -o pipefail` was already on and did not help, because it reports
+that some stage failed without saying which; the verdict is now read out of
+`PIPESTATUS[0]`, so it is pytest's status and not a fact about a shell pipeline.
+Measured: exit 1 on the red tree, exit 0 on the green tree.
+
+The method lesson is the sweep's, not mine. Counting `exit` statements finds a
+missing exit; it does not find an exit code that a pipeline threw away.
 
 ## What this harness still cannot prove
 

@@ -21,3 +21,8 @@ tmp/*
 !tmp/source/
 
 # Decision trail. Committed deliberately: a reviewer needs it to trust the result.
+
+# Session scratch: probe scripts, run logs and sweep records from the repair
+# wave. They are evidence for that work, not part of the product, and nothing
+# in tests/ or scripts/ requires one to exist.
+review/

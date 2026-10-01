@@ -113,12 +113,12 @@ GAPS: list[tuple[str, tuple[str, ...]]] = [
     ("GAP-5", ("console", "Plan 05")),
     ("GAP-6", ("enroll", "integration verify")),
     ("GAP-7", ("editable install", "environment")),
-    # The matrix is tracked under `review/`, so the row names that path
+    # The matrix is tracked under `docs/`, so the row names that path
     # rather than the bare filename. The tokens are `unmapped` and the path,
     # because the false claim this replaces named the wrong path and said the
     # file was absent; `("KIT_ACCEPTANCE.md", "absent")` was satisfied by the
     # false row and by a true one alike.
-    ("GAP-8", ("review/KIT_ACCEPTANCE.md", "unmapped")),
+    ("GAP-8", ("docs/ACCEPTANCE-MATRIX.md", "unmapped")),
     ("GAP-9", (".cmd", "reverted")),
     # GAP-10 is the part of GAP-3 the live session did not reach. It carries a
     # separate id because "GAP-3 is closed" and "a BLOCKED run blocks a real
@@ -546,7 +546,7 @@ def test_every_known_gap_is_named(doc: Path) -> None:
     The tokens are looked for in the gap's own row rather than anywhere in the
     document. Measured: GAP-8's evidence was rewritten to say the acceptance
     matrix was absent, which is false, and this check passed. The reason is
-    that `review/KIT_ACCEPTANCE.md` was still named in the `text files`
+    that `docs/ACCEPTANCE-MATRIX.md` was still named in the `text files`
     block and `unmapped` in a comment beside it, so a document-wide search
     found both tokens in text that had nothing to do with the row. Reading the
     row is what makes the token mean something: it is the difference between
@@ -854,7 +854,7 @@ def test_the_acceptance_matrix_row_count_is_the_count_in_the_matrix() -> None:
     )
     assert int(counted.group(1)) == len(rows), (
         f"GAP-8's evidence cell says the matrix holds {counted.group(1)} data "
-        f"rows and review/KIT_ACCEPTANCE.md holds {len(rows)}. A row that "
+        f"rows and docs/ACCEPTANCE-MATRIX.md holds {len(rows)}. A row that "
         "describes a file has to describe the file that is there."
     )
 
@@ -1040,7 +1040,7 @@ def _posix_evidence() -> set[str]:
         if Path(name).name.startswith(("measure_posix", "verify_posix"))
     }
     if (ROOT / "review" / "posix-triage.md").is_file():
-        scripts.add("review/posix-triage.md")
+        scripts.add("review/posix-triage.md")  # noqa: keep
     return scripts
 
 

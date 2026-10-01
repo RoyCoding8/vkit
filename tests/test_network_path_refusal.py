@@ -1,6 +1,6 @@
 """The refusal of a network-backed state path, driven through the Store constructor.
 
-`_reject_network_path` existed and had no test. `review/KIT_ACCEPTANCE.md`
+`_reject_network_path` existed and had no test. `docs/ACCEPTANCE-MATRIX.md`
 advertises the row "Network filesystem for local SQLite coordination -> Refuse
 unsupported shared coordination", and the matrix row had no receipt behind it, so
 the guarantee was asserted by a document rather than by anything a reviewer could

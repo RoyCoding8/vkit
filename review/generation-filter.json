@@ -1,7 +1,0 @@
-{
-  "generation_1_with_its_own_evidence": "READY",
-  "generation_2_with_generation_1_evidence_only": "BLOCKED",
-  "generation_2_after_its_own_runs": "READY",
-  "current_generation": 2,
-  "gaps_at_generation_2": []
-}

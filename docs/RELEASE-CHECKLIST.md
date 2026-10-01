@@ -5,7 +5,7 @@ release record. A step you did not run is a step you did not do, and the
 release is described by what ran, never by what the checklist says can run.
 
 The commands here are the ones that exist in this repository at revision
-`0a00339`. `tests/test_release_docs.py` resolves every command below against
+`58a748a`. `tests/test_release_docs.py` resolves every command below against
 `build_parser()` and the working tree, so a step that stops existing fails the
 suite instead of quietly misleading a maintainer. It also resolves every file
 this document cites as evidence *at that revision*, so a pin left behind HEAD
@@ -82,9 +82,9 @@ verification/manifest.json
 ```
 
 ```text files
-# GAP-8's acceptance matrix, tracked under `review/`. Its 59 data rows
+# GAP-8's acceptance matrix, tracked under `docs/`. Its 59 data rows
 # are unmapped, which is what GAP-8 now says.
-review/KIT_ACCEPTANCE.md
+docs/ACCEPTANCE-MATRIX.md
 
 # GAP-2's POSIX record, and the milestone document that carried the other side
 # of the contradiction this row resolves.
@@ -126,7 +126,7 @@ work that closes it has run and left a receipt.
 | GAP-5 | Open. The setup console is incomplete. | Plan 05 is the last build step and is still being built in parallel. |
 | GAP-6 | Open. Guided enrollment and integration verification exist, but a pilot operator has no finished flow to drive them. | `vkit project enroll` and `vkit integration verify` are defined in `src/vkit/cli.py`. The 29 collected tests behind them are named rather than totalled, because a total with no filenames behind it can only be checked by guessing which three files were meant: `tests/test_enroll.py` (9), `tests/test_integration.py` (8), `tests/test_plan06_onboarding.py` (12). What is missing is the surface: a console that walks an operator through it, which is GAP-5. |
 | GAP-7 | Open. The acceptance script proves less than it appears to. | It resolves `vkit` from the environment, which is an editable install. |
-| GAP-8 | Open. The acceptance matrix exists and none of its rows is mapped. | `review/KIT_ACCEPTANCE.md` is tracked and holds 59 data rows across six sections, of which its own preamble marks 2 as observed. The mapping plan 09 asks for has not been produced, so every one of the 59 is unmapped. A row is unmapped when no receipt names it, so this gap closes on evidence rather than on the arrival of the file. |
+| GAP-8 | Open. The acceptance matrix exists and none of its rows is mapped. | `docs/ACCEPTANCE-MATRIX.md` is tracked and holds 59 data rows across six sections, of which its own preamble marks 2 as observed. The mapping plan 09 asks for has not been produced, so every one of the 59 is unmapped. A row is unmapped when no receipt names it, so this gap closes on evidence rather than on the arrival of the file. |
 | GAP-9 | Open. Two documented limits have no check behind them. | A `.cmd` launcher mangles a non-ASCII path. A reverted edit escapes the source digest. |
 | GAP-10 | Open. The parts of the host question GAP-3's session did not reach. | A subagent inheriting the six tools, and a BLOCKED run stopping a real turn, need their own live sessions. No test in `tests/test_plugin_host.py` drives either. |
 
@@ -162,7 +162,7 @@ only one of them needed running.
 ## Build the artifacts
 
 Every command below was run on Windows 11 with Python 3.13.14 at revision
-`0a00339`. The only edits since that commit are to documents, which no command
+`58a748a`. The only edits since that commit are to documents, which no command
 in this document measures.
 
 ```console command
@@ -180,7 +180,7 @@ $ <venv>/Scripts/python.exe -m pip wheel . --no-deps -w <dist>
 
 On this host the wheel build printed
 `Created wheel for vkit: filename=vkit-0.1.0-py3-none-any.whl size=258158`,
-rebuilt at revision `0a00339`. The size is what makes this a receipt rather than
+rebuilt at revision `58a748a`. The size is what makes this a receipt rather than
 a claim that the wheel builds, and `tests/test_release_docs.py` checks it has a
 byte count without checking the value, because a wheel's size moves with the
 source it packages.

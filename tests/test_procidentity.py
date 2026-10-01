@@ -346,30 +346,112 @@ def test_a_pid_above_the_maximum_process_id_reports_not_found() -> None:
     assert still_the_same_process(ProcessIdentity(0xFFFF_FFFE, 1)) is False
 
 
-def test_a_pid_in_use_but_unreadable_is_cannot_confirm() -> None:
+def _access_denied_from_openprocess():
+    """The error OpenProcess raises when a pid is in use but out of reach.
+
+    Recorded from a real denial rather than invented. On this host
+    `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, 4)` raises a
+    pywintypes.error whose winerror is 5 and whose strerror is "Access is
+    denied.", and the object built below carries those same two fields, which are
+    the only two this module reads. Constructed here rather than imported at
+    module scope because pywintypes does not exist on a POSIX host, and this file
+    is imported during collection on one.
+    """
+    import pywintypes
+
+    return pywintypes.error(5, "OpenProcess", "Access is denied.")
+
+
+def _a_pid_this_token_cannot_open() -> int | None:
+    """A live pid this process may not open, or None if it may open all of them.
+
+    Enumerated rather than hard-coded to the System process, because whether pid
+    4 is readable is a fact about the caller's token and not about this module.
+    Measured: a non-privileged token on this host cannot open 175 of 347 live
+    pids, while the windows-latest runner can open pid 4.
+    """
+    import pywintypes
+    import win32api
+    import win32con
+    import win32process
+
+    for pid in win32process.EnumProcesses():
+        if pid == 0:
+            # The pid a zeroed record carries. It names no process, so it is the
+            # one pid whose answer must be None rather than a refusal.
+            continue
+        try:
+            handle = win32api.OpenProcess(
+                win32con.PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+        except pywintypes.error as exc:
+            if exc.winerror == 5:
+                return pid
+        else:
+            handle.Close()
+    return None
+
+
+@pytest.fixture
+def unreadable_pid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """A pid that is in use, and then made unreadable the way the kernel does it.
+
+    The two halves of the precondition are established separately because they
+    are not equally available. In use is real: a process this file launched is
+    running, and the assertion below proves the kernel answers a query for its
+    pid right now. Unreadable is replayed at the module's single OS seam, because
+    a Windows host issues a denial only to a token that lacks the right, and a
+    runner holding SeDebugPrivilege is issued none. Without the replay these two
+    tests pass on one kind of Windows host and fail on the other, which is a fact
+    about the runner rather than about the code under test.
+
+    Everything downstream of the syscall is the real thing. `read_identity` runs
+    the module's own `_open`, takes the same branch a kernel denial takes, and
+    builds its message from the same error fields the kernel populates.
+    """
+    import win32api
+
+    process, pid = _launch_sleeping(tmp_path, "unreadable.py")
+    try:
+        # The pid is in use. Read it once, unpatched, so a pid that named nothing
+        # could not pass as one that is in use and out of reach.
+        assert read_identity(pid) is not None, "the pid this fixture denies is not in use"
+
+        def refused(access: int, inherit: bool, target: int):
+            raise _access_denied_from_openprocess()
+
+        monkeypatch.setattr(win32api, "OpenProcess", refused)
+        yield pid
+    finally:
+        process.kill()
+        process.wait(timeout=PROCESS_TIMEOUT)
+
+
+def test_a_pid_in_use_but_unreadable_is_cannot_confirm(unreadable_pid: int) -> None:
     """A pid that IS in use and cannot be opened is not reported as gone.
 
-    pid 4 is the System process. It exists, so returning None would be a false
-    statement about the world, but this account cannot open it, so there is
-    nothing to read. The caller is told it cannot confirm, which means it must
-    keep its claim.
+    The pid belongs to a live process, so returning None would be a false
+    statement about the world. It cannot be read, so there is nothing to measure,
+    and the caller is told it cannot confirm, which means it must keep its claim.
     """
     with pytest.raises(CannotConfirm) as caught:
-        read_identity(4)
+        read_identity(unreadable_pid)
 
-    assert caught.value.pid == 4
+    assert caught.value.pid == unreadable_pid
     assert "Access is denied" in caught.value.detail
     # The two callers answer differently, and the difference is deliberate.
     # still_the_same_process folds the denial into False because the report for
     # "unproven" and "gone" is the same. is_alive raises instead, because False
     # there would be a claim the process is not running and nothing established
     # that. What neither may do is answer True.
-    assert still_the_same_process(ProcessIdentity(4, 1)) is False
+    assert still_the_same_process(ProcessIdentity(unreadable_pid, 1)) is False
     with pytest.raises(CannotConfirm):
-        is_alive(ProcessIdentity(4, 1))
+        is_alive(ProcessIdentity(unreadable_pid, 1))
 
 
-def test_cannot_confirm_does_not_launder_into_a_different_process() -> None:
+def test_cannot_confirm_does_not_launder_into_a_different_process(
+    unreadable_pid: int,
+) -> None:
     """An unreadable identity is not evidence of a different process.
 
     Asserted through read_identity rather than still_the_same_process, because
@@ -377,13 +459,43 @@ def test_cannot_confirm_does_not_launder_into_a_different_process() -> None:
     distinction this test keeps visible.
     """
     with pytest.raises(CannotConfirm) as caught:
-        read_identity(4)
+        read_identity(unreadable_pid)
 
     message = str(caught.value)
-    assert "cannot read the identity of pid 4" in message
+    assert f"cannot read the identity of pid {unreadable_pid}" in message
     # It says the read failed. It does not say the process is a different one,
     # which is a claim nothing established.
     assert "different" not in message
+
+
+def test_a_denial_the_kernel_itself_issues_is_cannot_confirm() -> None:
+    """The same classification against a denial this host really issues.
+
+    The test above pins `_open` by replaying a recorded kernel error, which is
+    the only way to pin it on every Windows host. What a replay cannot show is
+    that the kernel's real denial carries the error fields the classification
+    reads. This test closes that gap where the host permits it, and it is
+    therefore not pinned by a green gate on a host that issues no denial.
+
+    Measured: the windows-latest runner reads pid 4 successfully and so has no
+    unreadable pid to hand this module. It is skipped there, not passed. A green
+    gate over this file on a privileged Windows host therefore rests on the
+    replayed classification alone.
+    """
+    pid = _a_pid_this_token_cannot_open()
+    if pid is None:
+        pytest.skip(
+            "this token may open every live pid, so the kernel issues no denial "
+            "to classify. A token holding SeDebugPrivilege, which the "
+            "windows-latest runner's does, has no unreadable pid to offer."
+        )
+
+    with pytest.raises(CannotConfirm) as caught:
+        read_identity(pid)
+
+    assert caught.value.pid == pid
+    assert "Access is denied" in caught.value.detail
+    assert still_the_same_process(ProcessIdentity(pid, 1)) is False
 
 
 # ------------------------------------------------------------- over the wire

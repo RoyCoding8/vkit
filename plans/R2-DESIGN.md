@@ -187,6 +187,21 @@ def runs_for_task(self, task_id, generation) -> tuple[dict, ...]   # for recover
 
 ## 9. Recovery changes (F13)
 
+**The defect, re-traced against merged master (2026-09-30).** Three facts compose:
+
+1. `storage.py:356` inserts the run row with `lifecycle='preparing'` and no process identity.
+2. `execution.run_check` calls `_launch(...)` *after* that insert, so there is a real window in which a child process exists and the row records no pid.
+3. `recover._live_holder` (`recover.py:802`) skips runs with `pid is None`, and `_holder_liveness` (`recover.py:671`) filters them the same way, returning the note *"No run of that task has a recorded process to check."*
+
+A run that launched and crashed before publishing its identity therefore reads exactly like a run that never launched. Recovery can release a claim while a live check is still writing — the F13 claim transfer.
+
+**One correction to §6's table.** `FindingKind.RUN_WITHOUT_PROCESS` is described there as "the old name encoding the bug". It is not the same finding as the one that drives the release, and deleting it would lose a real report:
+
+- `recover.py:543` `_unfinished_run_finding` returns `RUN_WITHOUT_PROCESS` for a **run** that is unfinished with no pid. It is a report, carries no action, and is correct to keep: an operator still wants to see it.
+- `recover.py:802` `_live_holder` is the **claim-release guard**, and its `pid is None: continue` is the F13 line. This is what must refuse.
+
+So `RUN_WITHOUT_PROCESS` survives as a *finding*, and what R2 replaces is the *guard* plus `_holder_liveness`'s "no recorded process" note. If `RUN_UNRESOLVED_LAUNCH` replaces the enum, it must replace the guard's refusal, not the report.
+
 `_live_holder` becomes the whole guard:
 
 ```

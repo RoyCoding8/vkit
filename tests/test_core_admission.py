@@ -594,7 +594,7 @@ def test_a_policy_digest_ignores_the_checkout_it_was_read_from(repo: Path) -> No
     The digest identifies the policy, not the directory it was read from. A
     digest that moved with the checkout would fail every worktree of one
     repository against the evidence the other produced, which is the property
-    `Manifest.with_root` exists to keep.
+    this row exists to keep.
     """
     project = open_project(repo)
     manifest = parse_manifest(project, project.runs_root)

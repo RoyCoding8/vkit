@@ -123,12 +123,20 @@ def readiness_view(context: Context) -> dict[str, Any]:
     """2. Readiness. What `vkit doctor` reports, running nothing.
 
     Deliberately not a call into `cli.cmd_doctor`: that writes an argparse
-    namespace and prints to stdout, and this returns a value. The readiness
-    rule itself is `storage.probe_state`, which `cmd_doctor` also calls, so the
-    two surfaces run one probe rather than each carrying a copy that can drift.
-    This view hardcoded `state_writable: True` while `cmd_doctor` opened the
-    store, and a project whose state store could not be opened read as ready
-    here and not ready there.
+    namespace and prints to stdout, and this returns a value. The state probe is
+    `storage.probe_state`, which `cmd_doctor` also calls, so the two surfaces run
+    one state probe rather than each carrying a copy that can drift. This view
+    hardcoded `state_writable: True` while `cmd_doctor` opened the store, and a
+    project whose state store could not be opened read as ready here and not
+    ready there.
+
+    The surrounding `ok` rule is not shared and does not fully agree.
+    `cmd_doctor` also folds in a `<source>` finding from
+    `compute_source_identity`, which this view does not compute at all, so on a
+    repository whose source identity cannot be measured the CLI reports not ready
+    and this reports ready. The state-store term and the per-prerequisite terms
+    do agree, and those are the ones a broken state store or a missing tool
+    exercises.
     """
     findings: list[dict[str, Any]] = []
     if context.manifest is None:

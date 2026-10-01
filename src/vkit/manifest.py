@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -122,24 +122,6 @@ class Manifest:
             raise ManifestError(
                 f"unknown check {check_id!r}; manifest defines: {known}"
             ) from None
-
-    def with_root(self, project: Project) -> "Manifest":
-        """The same policy, re-rooted at another checkout.
-
-        The check commands are unchanged; only the project they resolve against
-        changes. That matters because `execution.run_check` re-derives the source
-        identity from `manifest.project` after the process exits, and it must
-        re-derive it for the tree that actually ran, not for the tree the
-        manifest happened to be read from."""
-        if project.root == self.project.root:
-            return self
-        checks = {
-            check_id: replace(
-                check, cwd=_resolve_cwd(project.root, _relative(check.cwd, self.project.root), check_id)
-            )
-            for check_id, check in self.checks.items()
-        }
-        return replace(self, project=project, checks=checks)
 
     def canonical_form(self) -> dict[str, Any]:
         """The whole policy as plain data, with no absolute path in it.

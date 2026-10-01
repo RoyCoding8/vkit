@@ -329,6 +329,46 @@ class ExecutionResult:
         return document
 
 
+def _preflight(
+    argv: Sequence[str], cwd: Path, timeout_seconds: float
+) -> tuple[tuple[str, ...], Path]:
+    """Reject a launch that cannot be owned, before anything is created.
+
+    One place, because two copies of a rule is a mirrored authority: the two
+    entry points below used to carry this block each, and a guard that has to be
+    edited twice is a guard that will be. The empty-argv and infinite-timeout
+    halves are unreachable through a manifest -- `schemas/manifest.v1.json`
+    pins `command` to `minItems: 1` with `minLength: 1` items and
+    `timeout_seconds` to `exclusiveMinimum: 0` with `maximum: 86400`, and
+    `manifest.parse_manifest` runs that schema before these run. The missing-cwd
+    half is reachable and has been: `_resolve_cwd` checks containment only, so a
+    manifest may name a working directory inside the repository that does not
+    exist, and this is where that becomes a refusal instead of an OSError from
+    `CreateProcess`. Both entry points are also called directly, so the schema is
+    a property of one caller, not of this function's contract.
+
+    The `cwd` refusal is also a change in kind, and the only caller-visible one.
+    Measured on this host without it, a missing working directory is not an
+    exception: `CreateProcess` fails with `(267, 'CreateProcess', 'The directory
+    name is invalid.')` and `run_command` already returns a `launch_failed`
+    result carrying that text. Raising instead is refusing a caller's mistake in
+    the caller's own terms rather than reporting it as a command that would not
+    start, which is the right side of that line -- but no module under `src/`
+    catches `LaunchError`, so the refusal is the last statement about it.
+    """
+    argv = tuple(str(part) for part in argv)
+    if not argv:
+        raise LaunchError("argv must name at least one executable")
+    cwd = Path(cwd)
+    if not cwd.is_dir():
+        raise LaunchError(f"working directory does not exist: {cwd}")
+    if not (timeout_seconds > 0) or timeout_seconds == float("inf"):
+        raise LaunchError(
+            f"timeout must be a positive finite number of seconds, got {timeout_seconds!r}"
+        )
+    return argv, cwd
+
+
 def run_command(
     argv: Sequence[str],
     *,
@@ -343,20 +383,21 @@ def run_command(
     comes back with a `reason`, and that result carries no pid, so a caller
     cannot mistake it for an execution.
 
+    Raises `LaunchError` for the three pre-flight refusals in `_preflight`, and
+    for nothing else on this path. Every launch failure after that -- a missing
+    executable, a refused job assignment, an unopenable log -- comes back as a
+    result with `reason` set. The one exception between those two statements is
+    `mkdir` on the log files' parent: it is unguarded here, so an unwritable
+    destination raises `OSError` rather than becoming a `launch_failed` result.
+    That is deliberate on the near side of the boundary -- a log path this
+    process cannot create is a mistake in the caller, not a command that would
+    not start -- but it is named rather than implied.
+
     Output is streamed to the two caller-owned files by the child itself, so the
     bytes on disk are the child's, verbatim, whether it wrote 4 KB or 4 GB. This
     function buffers nothing on either stream.
     """
-    argv = tuple(str(part) for part in argv)
-    if not argv:
-        raise LaunchError("argv must name at least one executable")
-    cwd = Path(cwd)
-    if not cwd.is_dir():
-        raise LaunchError(f"working directory does not exist: {cwd}")
-    if not (timeout_seconds > 0) or timeout_seconds == float("inf"):
-        raise LaunchError(
-            f"timeout must be a positive finite number of seconds, got {timeout_seconds!r}"
-        )
+    argv, cwd = _preflight(argv, cwd, timeout_seconds)
 
     stdout_path = Path(stdout_path)
     stderr_path = Path(stderr_path)
@@ -695,17 +736,14 @@ def launch(
     `job` is the prepared lease from `prepare_job`. Passing None makes an
     anonymous one, which is correct only for a caller that will not outlive the
     process it launched.
+
+    Raises `LaunchError` for the three pre-flight refusals in `_preflight`, on
+    the same terms as `run_command`. A launch that fails after that -- the job
+    cannot be made, the child cannot be created or assigned -- does not raise;
+    it returns a lease with no pid, which `await_exit` turns into the same
+    `launch_failed` result `run_command` produces.
     """
-    argv = tuple(str(part) for part in argv)
-    if not argv:
-        raise LaunchError("argv must name at least one executable")
-    cwd = Path(cwd)
-    if not cwd.is_dir():
-        raise LaunchError(f"working directory does not exist: {cwd}")
-    if not (timeout_seconds > 0) or timeout_seconds == float("inf"):
-        raise LaunchError(
-            f"timeout must be a positive finite number of seconds, got {timeout_seconds!r}"
-        )
+    argv, cwd = _preflight(argv, cwd, timeout_seconds)
     stdout_path = Path(stdout_path)
     stderr_path = Path(stderr_path)
     for path in (stdout_path, stderr_path):

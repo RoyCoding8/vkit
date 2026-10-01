@@ -64,11 +64,15 @@ class TaskError(Exception):
 class AdmissionRefused(TaskError):
     """The task cannot be admitted, and the reason names what would fix it.
 
-    Separate from `TaskError` because both are refusals an adapter shows the
-    user, but only one means "the thing you asked for cannot be true here".
-    The distinction is what lets an adapter answer BLOCKED for a missing
-    required check while answering INVALID for a malformed request, without
-    either of them deciding the question itself.
+    Separate from `TaskError` so an adapter can answer INVALID for a malformed
+    request while still reserving BLOCKED for a recorded contract this build
+    cannot validate, without either of them deciding the question itself. Only
+    `task finalize` uses that split today; `task begin` reports both as INVALID,
+    because every reason admission gives there is a reason the request is
+    malformed rather than a conflict.
+
+    A required check that has never run is not this. That is a readiness
+    decision, not an exception: `finalize` returns BLOCKED from its gap list.
     """
 
 

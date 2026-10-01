@@ -1,11 +1,11 @@
 """Every receipt in `formal/results/` is checked against the files it names.
 
-`formal/results/` holds the receipts for four formal claims, and
-`review/probe_formal_state.py` verifies them. That probe is an audit run by
-hand, not a gate, so a receipt can go stale while the suite stays green. Worse,
-its `CLAIMS` table is a hand-written list of three of the four receipt files,
-so a receipt nobody remembered to add there is a claim with no check behind it
-at all.
+`formal/results/` holds the receipts for four formal claims. An earlier version
+of this file also checked them through `review/probe_formal_state.py`, which is
+an audit run by hand from `review/`, a directory `.gitignore` keeps out of every
+clone. That made the audit the only witness for one property, so the property
+could hold on the author's machine and nowhere else. Everything checked here is
+now read from a committed file.
 
 The gate below is derived from what is on disk rather than from a table. It
 walks `formal/results/*receipt.json`, and for each one pairs every
@@ -143,18 +143,69 @@ _PAIRS = _pairs()
 _PAIR_IDS = [f"{receipt}-{key}" for receipt, key, _ in _PAIRS]
 
 
-def test_there_are_receipts_to_check() -> None:
-    """A gate over an empty directory passes. Four receipts are committed."""
-    names = sorted(_receipts())
-    assert names == [
-        "Acceptance-lean-receipt.json",
-        "OwnershipAcceptance-blocked-receipt.json",
-        "OwnershipAcceptance-receipt.json",
-        "python-core-mutants-receipt.json",
-    ], (
-        "the receipts this gate checks are listed by hand in review/"
-        "probe_formal_state.py, so a receipt added here and not added there "
-        f"would be verified by nobody; formal/results/ now holds {names}"
+def _artifact_rows() -> list[tuple[str, str, str]]:
+    """(artifact, state, receipt cell) for each row of the RESULTS.md table.
+
+    Derived from the committed file by reading the table's own column positions
+    rather than by holding the four rows here, so a row edited or added in
+    RESULTS.md is checked by the assertions that use this instead of being a
+    second copy that can drift from the first.
+    """
+    rows = []
+    for line in (FORMAL / "RESULTS.md").read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.split("|")]
+        if len(cells) != 6 or cells[2] not in ("VERIFIED", "BLOCKED"):
+            continue
+        rows.append((cells[1], cells[2], cells[3]))
+    return rows
+
+
+def test_the_results_table_and_the_receipt_directory_agree() -> None:
+    """Every artifact row names a receipt that exists, and every receipt has a row.
+
+    These two files can drift apart in either direction, and both leave a result
+    nobody reads. A harness writes a receipt and nobody adds a row for it, so the
+    result sits in the tree pointed at by nothing. Or a row survives its receipt
+    being deleted, so the table cites evidence that is not there.
+
+    The direction that used to be unguarded is the second one. `review/`, where
+    the formal-state probe recorded which artifacts existed, is gitignored, so no
+    committed file said whether the table's rows still had receipts behind them.
+    """
+    rows = _artifact_rows()
+    assert rows, (
+        "the artifact table in formal/RESULTS.md could not be read, so this gate "
+        "would pass over a table nobody can check"
+    )
+
+    for artifact, state, receipt_cell in rows:
+        if receipt_cell == "none":
+            continue
+        relative = receipt_cell.strip("`")
+        assert (ROOT / relative).is_file(), (
+            f"{artifact} is {state} and cites {relative}, which is not in the tree. "
+            "A row citing evidence that is not here is a claim with nothing behind "
+            "it, which is the failure this gate exists to catch."
+        )
+
+    on_disk = _receipts()
+    assert on_disk, (
+        "formal/results/ holds no receipts, so every VERIFIED row above is a claim "
+        "against evidence that is not here"
+    )
+
+    # The artifact table is per artifact, not per receipt: artifact A has a PASS
+    # receipt from a host with a JRE and a BLOCKED receipt from this one, and the
+    # table cites the first. So a receipt is accounted for by being named anywhere
+    # in RESULTS.md, which the prose below the table does for the BLOCKED one.
+    results = (FORMAL / "RESULTS.md").read_text(encoding="utf-8")
+    unnamed = sorted(name for name in on_disk if name not in results)
+    assert not unnamed, (
+        f"these receipts are committed in formal/results/ but formal/RESULTS.md "
+        f"never names them: {unnamed}. A result the write-up does not point at is "
+        "not on the record, so either cite it or stop committing it."
     )
 
 
@@ -385,6 +436,14 @@ def test_the_harness_with_no_receipt_is_documented_as_blocked() -> None:
     classified by whether it names a receipt file to write, and the
     receipt-less ones are then required to appear as BLOCKED in both places a
     reader looks.
+
+    Both places are committed. An earlier version of this test also asserted the
+    same fact against `review/formal-state.json`, which `.gitignore` keeps out
+    of every clone, so that assertion could only ever pass on the machine that
+    wrote it. What made it meaningful is now checked against committed files
+    instead, and more strictly: the BLOCKED row's receipt cell has to be `none`,
+    which ties the row to the absence of a receipt rather than to a probe's
+    memory of one.
     """
     harnesses = sorted(path.name for path in FORMAL.glob("run_*.py"))
     assert harnesses, "no harness found in formal/, so this gate would pass vacuously"
@@ -407,17 +466,23 @@ def test_the_harness_with_no_receipt_is_documented_as_blocked() -> None:
         "reason its results are unverified rather than merely unrerun"
     )
 
-    state = json.loads((ROOT / "review" / "formal-state.json").read_text(encoding="utf-8"))
-    recorded = [
-        name for name, record in state["artifacts"].items() if record.get("state") == "BLOCKED"
-    ]
-    assert "TLA+ mutation run" in recorded, (
-        f"review/formal-state.json no longer records the TLA+ mutation run as "
-        f"BLOCKED; its BLOCKED artifacts are {recorded}. The probe is the receipt "
-        "of the receipts, and a silent harness it no longer names is invisible."
+    rows = _artifact_rows()
+    assert rows, "the artifact table in formal/RESULTS.md could not be read"
+
+    # One BLOCKED row per receipt-less harness, and no more. Fewer leaves a
+    # silent harness with no row; more means something is BLOCKED that still
+    # writes a receipt, which the receipt checks below would have to explain.
+    blocked = [row for row in rows if row[1] == "BLOCKED"]
+    assert len(blocked) == len(silent), (
+        f"{len(silent)} harness writes no receipt ({silent}) but the artifact table "
+        f"has {len(blocked)} BLOCKED rows ({[row[0] for row in blocked]}). Each "
+        "silent harness needs a row of its own, and a BLOCKED row with a receipt "
+        "behind it is a status the receipt checks contradict."
     )
-    assert state["artifacts"]["TLA+ mutation run"]["reason"].count("run_mutants.py") == 1, (
-        "the recorded BLOCKED reason must name run_mutants.py as the harness that "
-        "writes no receipt, so the row is about a specific file rather than about "
-        "the absence of a toolchain"
-    )
+
+    for artifact, _, receipt_cell in blocked:
+        assert receipt_cell == "none", (
+            f"{artifact} is BLOCKED yet its receipt cell names {receipt_cell!r}. A "
+            "BLOCKED row whose harness writes no receipt has to say so in the table "
+            "itself, or a reader counts a receipt that does not exist."
+        )

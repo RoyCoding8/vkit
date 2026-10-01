@@ -30,6 +30,11 @@ plugin/.claude-plugin/plugin.json
 tests/test_mcp_stdio.py
 tests/mcp_client.py
 
+# GAP-3's receipt, and the driver that produced it. The session transcript is
+# the evidence; the driver is how a reader would re-run it.
+docs/HOST-SESSION.md
+tests/test_plugin_host.py
+
 # The harness, the examples, and the acceptance walker.
 scripts/acceptance.py
 examples/python-cli
@@ -67,9 +72,11 @@ verification/manifest.json
 
 ## Read the verdict first
 
-This build does not pass its own checklist. Four steps are blockers, and
-GAP-1 through GAP-4 each describe a way the release can be wrong in front of a
-user while every test in this repository is green.
+This build does not pass its own checklist. The table at the end of this
+document carries the blocked rows, and the open gaps name the ways the release
+can be wrong in front of a user while every test in this repository is green.
+GAP-1, GAP-3 and GAP-4 are closed and say which receipt closed them; the rest
+are open and say what is missing.
 
 | Verdict | Meaning |
 | --- | --- |
@@ -86,17 +93,32 @@ gaps below name the code that does not exist yet.
 Each gap carries the evidence that produced it. Delete a gap only when the
 work that closes it has run and left a receipt.
 
-| Gap | What is unverified | Evidence for the claim |
+| Gap | Status and what is unverified | Evidence for the claim |
 | --- | --- | --- |
 | GAP-1 | Closed. The `mcp` SDK stdio adapter was executed. | `mcp` 2.2.0 installed and `serve_stdio` run as a real subprocess. `tests/test_mcp_stdio.py` drives it with hand-written JSON-RPC frames. |
-| GAP-2 | The POSIX process path is untested. | Verified on Windows 11 with Python 3.13.14 only. No POSIX host has run this package. |
-| GAP-3 | No live Claude Code host session has exercised the plugin. | `claude plugin validate --strict` passed. Install and hook delivery were not exercised. |
-| GAP-4 | The `mcp serve` subcommand exists but has never been run over a real transport. | `vkit mcp serve --project . --json` lists the six tools, exit 0. The command resolves; `serve_stdio` still has not been driven by a client, which is GAP-1. |
-| GAP-5 | The setup console is incomplete. | Plan 05 is the last build step and is still being built in parallel. |
-| GAP-6 | Guided enrollment and integration verification exist, but a pilot operator has no finished flow to drive them. | `vkit project enroll` and `vkit integration verify` are defined in `src/vkit/cli.py` and carry 29 tests. What is missing is the surface: a console that walks an operator through it, which is GAP-5. |
-| GAP-7 | The acceptance script proves less than it appears to. | It resolves `vkit` from the environment, which is an editable install. |
-| GAP-8 | There is no acceptance table to map. | `KIT_ACCEPTANCE.md` is absent from this repository. |
-| GAP-9 | Two documented limits have no check behind them. | A `.cmd` launcher mangles a non-ASCII path. A reverted edit escapes the source digest. |
+| GAP-2 | Open. The POSIX process path is untested. | Verified on Windows 11 with Python 3.13.14 only. No POSIX host has run this package. |
+| GAP-3 | Closed. A live Claude Code host session installed the plugin, attached the six tools, and delivered three hook events. | `docs/HOST-SESSION.md` quotes the session: Claude Code 2.1.285, driver `tests/test_plugin_host.py`, 16 tests, 57s. Every test in that driver skips rather than fails when the host cannot run, so the receipt is the transcript, not a red suite. |
+| GAP-4 | Closed. The `mcp serve` subcommand exists and both halves of its surface have run. | `vkit mcp serve --project . --json` lists the six tools, exit 0, and `tests/test_mcp_stdio.py` drives that server over real JSON-RPC frames, which is GAP-1's receipt. This row used to say `serve_stdio` had still not been driven by a client while GAP-1's row said it had; the two contradicted each other in the same table. |
+| GAP-5 | Open. The setup console is incomplete. | Plan 05 is the last build step and is still being built in parallel. |
+| GAP-6 | Open. Guided enrollment and integration verification exist, but a pilot operator has no finished flow to drive them. | `vkit project enroll` and `vkit integration verify` are defined in `src/vkit/cli.py` and carry 29 tests. What is missing is the surface: a console that walks an operator through it, which is GAP-5. |
+| GAP-7 | Open. The acceptance script proves less than it appears to. | It resolves `vkit` from the environment, which is an editable install. |
+| GAP-8 | Open. There is no acceptance table to map. | `KIT_ACCEPTANCE.md` is absent from this repository. |
+| GAP-9 | Open. Two documented limits have no check behind them. | A `.cmd` launcher mangles a non-ASCII path. A reverted edit escapes the source digest. |
+| GAP-10 | Open. The parts of the host question GAP-3's session did not reach. | A subagent inheriting the six tools, and a BLOCKED run stopping a real turn, need their own live sessions. No test in `tests/test_plugin_host.py` drives either. |
+
+The first word in a gap row's status cell is the row's verdict, and
+`tests/test_release_docs.py` holds a status for every gap here. Editing a row to
+say the opposite of what the gate holds fails the suite, which is why GAP-3's
+row had to be rewritten rather than left to disagree with `HOST-SESSION.md`.
+That test previously checked that the tokens `validate` and `host session`
+appeared somewhere in this file, which both the stale row and a closed receipt
+satisfied; it read the document's vocabulary rather than its claim.
+
+GAP-3 and GAP-10 are one question asked at two depths, which is why they are
+two rows rather than one row with a hedge in it. The session closed what it ran:
+install, component load, MCP connection, six tools, three hook events. It did
+not reach a subagent, and it did not put a BLOCKED run in front of a real turn,
+and neither is inferred from the part that did run.
 
 GAP-4 was a missing command and no longer is. It was the one a user would have
 hit first: `plugin/.mcp.json` starts the server with `vkit mcp serve
@@ -106,10 +128,12 @@ now exists, and both halves of that surface have since been exercised against
 each other, which is the receipt for GAP-1: the six tools and the stdio
 transport both run on this host.
 
-What no test here covers is the third participant. Nothing in this repository
-starts Claude Code and asks it to load the plugin, so the plugin manifest
-naming `vkit mcp serve` remains unproven as a host integration. That is GAP-3,
-and it is a different claim from the one the protocol suite makes.
+What no test here covers at the time was the third participant. Nothing in this
+repository used to start Claude Code and ask it to load the plugin. That is what
+GAP-3 was, and it is now closed by the session in `HOST-SESSION.md`: the host
+installs the plugin, connects the server, attaches the six tools, and delivers
+hooks. The protocol suite and a host session answer different questions, and
+only one of them needed running.
 
 ## Build the artifacts
 
@@ -244,7 +268,9 @@ loses no evidence, a 200 KB log comes back one bounded page at a time, and a
 missing SDK exits 5 with a message naming the extra rather than hanging.
 
 What it does not prove is that Claude Code loads the plugin. That is a different
-program and a different question, and it stays GAP-3.
+program and a different question, and it was GAP-3. It is closed now, on the
+session recorded in `HOST-SESSION.md` rather than on this suite, which is the
+whole reason the two are separate records.
 
 The SDK pin matters to a reader. 2.x rewrote the server API this binding is
 written against, so a 1.x pin and a 2.x pin are different bindings rather than
@@ -264,7 +290,8 @@ Observed on this host: `Validation passed` for
 This proves the manifest parses and its fields are well formed. It does not
 prove the plugin runs. It does not start the MCP server named in
 `plugin/.mcp.json`, and it does not deliver a single hook. That host question
-is GAP-3, and nothing here closes it.
+was GAP-3 and this step never closed it; the live session in
+`HOST-SESSION.md` did, and it is a separate command from this one.
 
 ## Verify the hook adapter
 
@@ -278,9 +305,10 @@ Observed on this host: a JSON object on stdout carrying `additionalContext`
 and the three skill names, exit code 0. This proves the adapter starts, reads
 its arguments, and emits the documented shape.
 
-It does not prove the host ever runs it. Claude Code's hook delivery is GAP-3,
-and the script is invoked here with a synthesized payload rather than a real
-host payload.
+It does not prove the host ever runs it, because the payload above is
+synthesized here rather than written by a host. Hook delivery was GAP-3, and it
+is closed on `HOST-SESSION.md`, which quotes the payload a live host wrote to
+stdin for SessionStart, PreToolUse and Stop.
 
 ## Verify the schemas
 
@@ -300,13 +328,14 @@ file existing.
 | Claim | Verdict | Why |
 | --- | --- | --- |
 | Runs a registered check and records a durable outcome | verified | `scripts/acceptance.py`, 22 of 22 rows. |
-| Installs from a wheel and validates its schemas outside the source tree | verified | Wheel built and installed from this revision. |
+| Installs from a wheel and validates its schemas outside the source tree | verified | Wheel built from this revision and installed into a clean `<venv>`; `tests/test_claims.py` loads the schemas through `src/vkit/schemas.py`, which is where the packaging is proven rather than the files merely existing. |
 | Exposes six MCP tools to an agent | verified | Six tools listed and called over real JSON-RPC frames on a real subprocess, `tests/test_mcp_stdio.py`. |
-| Installs into Claude Code as a plugin | not verified | The manifest validates. No live host session ran it, GAP-3. |
-| Supplies the plugin's MCP server | not verified | The subcommand exists and speaks the protocol. No Claude Code host session has loaded it, GAP-3. |
+| Installs into Claude Code as a plugin | verified | A live host session installed it and recorded it enabled, `HOST-SESSION.md`. The receipt is a transcript; the driver skips rather than fails where the host cannot run. |
+| Supplies the plugin's MCP server | verified | The host connected `plugin:vkit:vkit` and the model called a vkit tool through it, `HOST-SESSION.md`. The health check a session disagrees with is recorded there too. |
+| Holds a run in a subagent's turn | not verified | A subagent inheriting the six tools, and a BLOCKED run stopping a real turn, are GAP-10. The session that closed GAP-3 drove neither. |
 | Works on macOS or Linux | blocked | The POSIX path has never run, GAP-2. |
 | Enrolls a repository through a user flow | blocked | The command exists and the console operation exists, but no finished flow walks an operator through it, GAP-5 and GAP-6. |
-| Is ready for a pilot | blocked | See [PILOT.md](PILOT.md). |
+| Is ready for a pilot | blocked | The enrollment flow does not exist and no host session has run a BLOCKED run through an agent's turn, GAP-5, GAP-6 and GAP-10. See [PILOT.md](PILOT.md). |
 
 ## Release gate
 

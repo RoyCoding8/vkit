@@ -22,10 +22,20 @@ as loudly as an invented subcommand. A line whose shape the test does not
 understand is a failure rather than a skip, so extending the checklist means
 teaching this file, which is a deliberate act.
 
-**A gap has an id, and a row.** Both documents name every known gap by id, and
-the register carries one row per gap. Renaming or quietly dropping one fails
-here instead of reaching a release note. A gap closed here has to name the
-receipt that closed it, and that receipt has to still be in the tree.
+**A gap has an id, a row, and a status.** Both documents name every known gap
+by id, and the register carries one row per gap. What a gap *is* is held here,
+in `CLOSED_GAPS` and `_OPEN_GAPS`, and each row has to open with the word this
+file holds for it. Renaming or quietly dropping one fails here instead of
+reaching a release note. A gap closed here has to name the receipt that closed
+it, and that receipt has to still be in the tree.
+
+That status check is the repair for a gate that could not tell two states
+apart. Checking that a gap's tokens appear somewhere in a document reads its
+vocabulary, not its claim: the tokens `validate` and `host session` sat in
+GAP-3's row whether the row said no live host session had run or that one had,
+so a document denying a session and a document claiming one both passed. The
+row's own opening word is what carries the status, and a row claiming the
+opposite of what this file holds fails.
 
 **A number is an observation, not a shape.** The suite summary, the acceptance
 ratio, the protocol count and the wheel size are checked for the form that makes
@@ -84,19 +94,26 @@ _FENCE_RE = re.compile(r"^```(console command|text files|text absent)\s*$")
 
 # Every gap carried into the release, with the tokens that pin its meaning.
 # A gap that loses its evidence loses the ability to be reported honestly, so
-# the test fails on a rewording that drops the substance.
+# the test fails on a rewording that drops the substance. The tokens are the
+# secondary check. What a gap IS is decided by `CLOSED_GAPS` and `_OPEN_GAPS`,
+# and `test_a_gap_row_states_the_status_this_file_holds` is the gate on that.
 GAPS: list[tuple[str, tuple[str, ...]]] = [
     # GAP-1 is closed, so its tokens are the receipt rather than the absence:
     # a reword that drops the evidence has to fail here.
     ("GAP-1", ("mcp", "SDK", "test_mcp_stdio.py")),
     ("GAP-2", ("POSIX", "Windows", "unverified")),
-    ("GAP-3", ("validate", "host session")),
+    ("GAP-3", ("test_plugin_host.py", "host session")),
     ("GAP-4", ("mcp serve", "serve_stdio")),
     ("GAP-5", ("console", "Plan 05")),
     ("GAP-6", ("enroll", "integration verify")),
     ("GAP-7", ("acceptance.py", "editable install")),
     ("GAP-8", ("KIT_ACCEPTANCE.md", "absent")),
     ("GAP-9", (".cmd", "reverted")),
+    # GAP-10 is the part of GAP-3 the live session did not reach. It carries a
+    # separate id because "GAP-3 is closed" and "a BLOCKED run blocks a real
+    # turn" are different claims, and folding the second into the first is how
+    # the register loses a row without anyone noticing.
+    ("GAP-10", ("subagent", "BLOCKED")),
 ]
 
 # Commands named in prose as missing. Listing one of these as a runnable step
@@ -418,7 +435,14 @@ def _defined_commands() -> set[str]:
 
 @pytest.mark.parametrize("doc", [CHECKLIST, PILOT], ids=lambda p: p.name)
 def test_every_known_gap_is_named(doc: Path) -> None:
-    """No gap is dropped quietly between this commit and the next."""
+    """No gap is dropped quietly between this commit and the next.
+
+    This is the naming half. Whether a gap is closed is not decided here: it is
+    decided by `CLOSED_GAPS` and `_OPEN_GAPS`, and
+    `test_a_gap_row_states_the_status_this_file_holds` is what binds a row to
+    it. A presence check cannot tell those two states apart, which is why the
+    token list below is only the floor and not the claim.
+    """
     text = _read(doc)
     for gap_id, tokens in GAPS:
         assert gap_id in text, f"{doc.name} never names {gap_id}"
@@ -504,12 +528,13 @@ def test_the_pilot_has_entry_conditions() -> None:
         assert word in text.lower(), f"the pilot document never says {word}"
 
 
-# The gaps the pilot cannot start with. GAP-3, GAP-5 and GAP-6 each remove the
+# The gaps the pilot cannot start with. GAP-5, GAP-6 and GAP-10 each remove the
 # pilot's subject, so a pilot document that declares one of them met has stopped
-# being a gate. Measured: rewriting the GAP-3 row to say a live host session
-# installed the plugin and ran a hook left the gate green, which is the exact
-# claim the release checklist refuses to make.
-PILOT_BLOCKERS = ("GAP-3", "GAP-5", "GAP-6")
+# being a gate. GAP-10 replaced GAP-3 here: the live host session closed GAP-3,
+# and what it left unproven -- a subagent inheriting the six tools, and a BLOCKED
+# run stopping a real turn -- is the part a pilot would actually lean on. A pilot
+# run is the first thing that puts a managed task through an agent's turn.
+PILOT_BLOCKERS = ("GAP-5", "GAP-6", "GAP-10")
 
 
 def test_the_pilot_does_not_declare_a_blocker_met() -> None:
@@ -518,18 +543,28 @@ def test_the_pilot_does_not_declare_a_blocker_met() -> None:
     The pilot document is the stricter of the two, and its rows carry a verdict
     word. A row that says `Met` beside a blocker means a pilot would be started
     on a build whose subject has not been shown to exist.
+
+    The row set is derived from `PILOT_BLOCKERS` rather than written out again
+    as a second literal. Two spellings of the blocker list is one claim stated
+    twice, and when they drift the regex keeps matching a row whose gap stopped
+    being a blocker while the test still reports green.
     """
     text = _read(PILOT)
+    blocker_pattern = "|".join(re.escape(gap) for gap in PILOT_BLOCKERS)
     rows = [
         cells
         for line in text.splitlines()
         if line.startswith("|")
         for cells in [[c.strip() for c in line.split("|")[1:-1]]]
-        if len(cells) == 2 and re.search(r"GAP-3|GAP-5|GAP-6", cells[0])
+        if len(cells) == 2 and re.search(blocker_pattern, cells[0])
     ]
-    assert len(rows) >= 2, (
-        "the pilot document no longer has entry-condition rows for the gaps that "
-        "block a pilot"
+    # Counted as gaps, not rows: two blockers sharing one row is a presentational
+    # choice, and requiring one row per gap would make merging two related
+    # blockers into one condition a failure. What has to hold is that every
+    # blocker is spoken for.
+    covered = {gap for cells in rows for gap in PILOT_BLOCKERS if gap in cells[0]}
+    assert covered == set(PILOT_BLOCKERS), (
+        f"the pilot has no entry-condition row for {sorted(set(PILOT_BLOCKERS) - covered)}"
     )
     for cells in rows:
         blocked = [gap for gap in PILOT_BLOCKERS if gap in cells[0]]
@@ -537,10 +572,103 @@ def test_the_pilot_does_not_declare_a_blocker_met() -> None:
             f"the pilot declares {blocked or cells[0]} met while the release "
             f"checklist still lists it as a blocker: {cells[1]!r}"
         )
-        assert re.search(r"no |not |never|still being built", cells[1]), (
+        # Case-insensitive because a row opening a sentence with "No live
+        # session..." is the same statement as one opening "no live session...".
+        assert re.search(r"no |not |never|still being built", cells[1], re.I), (
             f"the pilot row for {cells[0]} gives no reason: {cells[1]!r}. An "
             "unmet row has to name what is missing."
         )
+
+
+def test_the_pilot_and_this_file_agree_on_which_gaps_block() -> None:
+    """No gap this file records as closed may still block the pilot.
+
+    A pilot blocker is a gap that removes the pilot's subject, which is a
+    subset of the open gaps rather than a second, independent list. Two sets
+    describing the same property are one set, so they are checked against each
+    other rather than each being trusted in isolation. Measured: with GAP-3
+    closed and its remainder split to GAP-10, leaving GAP-3 among the blockers
+    would have kept the pilot blocked on a gap that had already closed, and
+    nothing in either file would have said so.
+
+    This reads the document's own rows rather than the constant, so the check
+    is about what a reader of `PILOT.md` is told and not about a literal
+    restating a literal.
+    """
+    text = _read(PILOT)
+    blockers = {
+        gap
+        for gap in _OPEN_GAPS
+        if any(
+            len(cells := [c.strip() for c in line.split("|")[1:-1]]) == 2
+            and gap in cells[0]
+            for line in text.splitlines()
+            if line.startswith("|")
+        )
+    }
+    closed_and_blocking = blockers & set(CLOSED_GAPS)
+    assert not closed_and_blocking, (
+        f"{sorted(closed_and_blocking)} are recorded closed here, and the pilot "
+        "document still gates entry on them. Whatever a closed gap left "
+        "unproven carries its own id and its own row."
+    )
+    assert set(PILOT_BLOCKERS) <= blockers, (
+        f"this file holds {sorted(set(PILOT_BLOCKERS) - blockers)} among the "
+        "pilot blockers, but the pilot document has no entry-condition row for "
+        "them, so nothing tells a reader they block."
+    )
+
+
+def test_every_pilot_row_agrees_with_this_files_record_of_its_gaps() -> None:
+    """A pilot entry-condition row has to match the status this file holds.
+
+    `test_the_pilot_does_not_declare_a_blocker_met` reads the blocker list and
+    the rows that name a blocker. It cannot see a row that names some other
+    gap and gets its status wrong, because nothing looks at rows it has no
+    opinion about. This reads every entry-condition row in both directions: a
+    row that calls an open gap met, and a row that calls a closed gap unmet,
+    are each the document contradicting this file.
+    """
+    text = _read(PILOT)
+    checked = 0
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.split("|")[1:-1]]
+        if len(cells) != 2:
+            continue
+        named = set(re.findall(r"GAP-\d+", cells[0]))
+        if not named:
+            continue
+        checked += 1
+        says_met = bool(re.match(r"^Met\b", cells[1]))
+        for gap in sorted(named & _OPEN_GAPS):
+            assert not says_met, (
+                f"the pilot calls {gap} met, and this file holds it open: "
+                f"{cells[1]!r}"
+            )
+        # The other direction, and the one this file was written to repair: a
+        # condition headed "closed" whose own body denies the receipt. Measured
+        # on GAP-3, whose row read `| GAP-3 closed | ... no live host session
+        # has installed it or run a hook. |`. The heading and the body were
+        # each locally plausible and jointly false.
+        if re.search(r"closed", cells[0], re.I):
+            assert not re.search(
+                r"\bno\b|\bnot\b|\bnever\b|unmet|denies|not been", cells[1], re.I
+            ), (
+                f"the pilot's condition `{cells[0]}` is headed closed and its "
+                f"body denies it: {cells[1]!r}. A condition has to state one "
+                "status."
+            )
+        for gap in sorted(named & set(CLOSED_GAPS)):
+            assert not re.search(r"\bnot\b|\bnever\b|no live|unmet", cells[1]), (
+                f"the pilot row for {gap} denies it, and this file records it "
+                f"closed on {list(CLOSED_GAPS[gap])}: {cells[1]!r}"
+            )
+    assert checked >= 5, (
+        f"only {checked} entry-condition rows were read; the pilot's gap rows "
+        "have been cut down to something this test can no longer see"
+    )
 
 
 # ------------------------------------------------------- what the audit found
@@ -566,11 +694,7 @@ def test_the_gap_register_has_a_row_per_known_gap() -> None:
     """
     text = _read(CHECKLIST)
     for gap_id, _tokens in GAPS:
-        rows = [
-            line
-            for line in text.splitlines()
-            if line.startswith("|") and line.split("|")[1].strip() == gap_id
-        ]
+        rows = _gap_rows(text, gap_id)
         assert len(rows) == 1, (
             f"{gap_id} needs exactly one row in the gap register; found "
             f"{len(rows)}. A gap with no row is not tracked."
@@ -596,9 +720,18 @@ def test_every_gap_row_carries_an_evidence_cell() -> None:
 
 _VERDICTS = {"verified", "not verified", "blocked", "not run", "blocker"}
 
-# A gap id that is still open. GAP-1 and GAP-4 are closed, so a verified row
-# may legitimately rest on them.
-_OPEN_GAPS = {"GAP-2", "GAP-3", "GAP-5", "GAP-6", "GAP-7", "GAP-8", "GAP-9"}
+# A gap id that is still open. GAP-1, GAP-3 and GAP-4 are closed, so a verified
+# row may legitimately rest on them.
+#
+# GAP-3 closed on the receipt `docs/HOST-SESSION.md` records, and only for what
+# that receipt covers: the host installed the plugin, loaded its components,
+# connected the MCP server, attached the six tools, and delivered SessionStart,
+# PreToolUse and Stop with the documented payload. The part it did not reach --
+# a subagent inheriting tool access, and a BLOCKED run blocking a real turn --
+# is GAP-10, which is open. Splitting it is the reason the split is legal: an
+# unclosed remainder that keeps its own id cannot be quietly absorbed by the
+# closure next to it.
+_OPEN_GAPS = {"GAP-2", "GAP-5", "GAP-6", "GAP-7", "GAP-8", "GAP-9", "GAP-10"}
 
 
 def test_a_verified_claim_does_not_rest_on_an_open_gap() -> None:
@@ -611,22 +744,101 @@ def test_a_verified_claim_does_not_rest_on_an_open_gap() -> None:
     marked verified whose justification still names an open gap is the document
     contradicting itself, and that is checkable without knowing what the right
     verdict is.
+
+    The gap is read from the row's own claim text as well as its justification.
+    Measured on GAP-3: upgrading a claim to `verified` while naming the open
+    gap in the justification failed here, but upgrading it and dropping the gap
+    id from the same row passed every gate, because the justification became
+    just as true-sounding and named nothing. A gap named beside the verdict is
+    part of the same claim, so it counts.
     """
     text = _read(CHECKLIST)
     checked = 0
     for cells in _claim_rows(text):
         if cells[1] != "verified":
             continue
-        named = set(re.findall(r"GAP-\d+", cells[2]))
+        named = set(re.findall(r"GAP-\d+", f"{cells[0]} {cells[2]}"))
         contradicting = named & _OPEN_GAPS
         assert not contradicting, (
-            f"the claim `{cells[0]}` is marked verified, but its justification "
-            f"still rests on the open gap(s) {sorted(contradicting)}"
+            f"the claim `{cells[0]}` is marked verified, but its row still rests "
+            f"on the open gap(s) {sorted(contradicting)}"
         )
         checked += 1
     assert checked >= 3, (
         f"only {checked} verified claims were checked; the may-not-say table has "
         "been cut down to something this test can no longer see"
+    )
+
+
+def test_a_verified_claim_cites_a_receipt_that_exists() -> None:
+    """A verified claim has to point at something a reader can open.
+
+    Measured: upgrading the subagent row to `verified` and rewriting its
+    justification to name no gap left every gate green, because the two gates
+    above read gap ids out of the row and the edit removed the only one. The
+    claim then stood as a sentence with nothing behind it, which is the shape
+    this file exists to reject.
+
+    A receipt is a path in this repository, a file the document cites as
+    evidence, or a measurement bound elsewhere in this file. Prose that merely
+    asserts the observation is not one, because the assertion is the claim.
+    Checking that the named path exists is what makes this a receipt rather
+    than another vocabulary check.
+    """
+    text = _read(CHECKLIST)
+    cited = {
+        token
+        for block in _blocks(text).get("text files", [])
+        for entry in block
+        if not entry.startswith("#")
+        for token in _tokens(entry)
+    }
+    checked = 0
+    for cells in _claim_rows(text):
+        if cells[1] != "verified":
+            continue
+        claim = f"{cells[0]} {cells[2]}"
+        named = set(re.findall(r"GAP-\d+", claim))
+        receipts = set(_tokens(claim)) | {
+            path for path in cited if path.rsplit("/", 1)[-1] in claim
+        }
+        assert named or receipts, (
+            f"the claim `{cells[0]}` is marked verified and cites neither a gap "
+            f"nor a file in this repository: {cells[2]!r}. A verification with no "
+            "receipt behind it is the strongest edit this document allows and "
+            "it has to cost something."
+        )
+        checked += 1
+    assert checked >= 3, (
+        f"only {checked} verified claims were checked; the may-not-say table has "
+        "been cut down to something this test can no longer see"
+    )
+
+
+def test_a_claim_row_names_the_gaps_it_relies_on() -> None:
+    """A claim that declines to be verified has to name why, by gap id.
+
+    Measured: the previous version of this file checked a verified row's
+    justification for an open gap id and found none, because the row had just
+    had the id removed from it. The check was satisfied by silence. A claim row
+    that says `not verified` or `blocked` while naming no gap at all is a
+    conclusion with no receipt, which is the one shape no reader can check.
+    """
+    text = _read(CHECKLIST)
+    checked = 0
+    for cells in _claim_rows(text):
+        if cells[1] not in ("not verified", "blocked"):
+            continue
+        named = set(re.findall(r"GAP-\d+", f"{cells[0]} {cells[2]}")) & _OPEN_GAPS
+        assert named, (
+            f"the claim `{cells[0]}` is {cells[1]} but names no open gap: "
+            f"{cells[2]!r}. An unverified claim has to say which gap holds it "
+            "back, or it cannot be re-checked when that gap closes."
+        )
+        checked += 1
+    assert checked >= 2, (
+        f"only {checked} unverified claims were checked; the may-not-say table "
+        "has been cut down to something this test can no longer see"
     )
 
 
@@ -673,11 +885,7 @@ def test_no_open_gap_is_described_as_closed() -> None:
     """
     text = _read(CHECKLIST)
     for gap_id in _OPEN_GAPS:
-        rows = [
-            line
-            for line in text.splitlines()
-            if line.startswith("|") and line.split("|")[1].strip() == gap_id
-        ]
+        rows = _gap_rows(text, gap_id)
         assert len(rows) == 1, f"{gap_id} needs exactly one row in the register"
         cells = [c.strip() for c in rows[0].split("|")[1:-1]]
         assert not cells[1].lower().startswith("closed"), (
@@ -690,11 +898,83 @@ def test_no_open_gap_is_described_as_closed() -> None:
 # on. A closure is the strongest claim the register makes, so it is the one
 # whose words get checked here. GAP-1 and GAP-4 were closed by real work
 # (f00bd73 and f45b825); the receipt is that the code and the tests they name
-# are still in the tree at the revision the document pins.
+# are still in the tree at the revision the document pins. GAP-3 closed on the
+# live session `docs/HOST-SESSION.md` records, whose receipt is the driver that
+# produced it.
 CLOSED_GAPS: dict[str, tuple[str, ...]] = {
     "GAP-1": ("tests/test_mcp_stdio.py", "tests/mcp_client.py"),
+    "GAP-3": ("docs/HOST-SESSION.md", "tests/test_plugin_host.py"),
     "GAP-4": ("mcp serve", "plugin/.mcp.json"),
 }
+
+
+def test_a_gap_row_states_the_status_this_file_holds() -> None:
+    """A row's opening word has to be the status this file holds for that gap.
+
+    Measured: this is the repair for the gate that could not tell GAP-3 open
+    from GAP-3 closed. `test_every_known_gap_is_named` checked that the tokens
+    `validate` and `host session` appeared somewhere in the document, and both
+    the stale row and a closed receipt contain them, so rewriting the row to
+    deny a live host session and rewriting it to claim one both passed. A
+    presence check reads a document's vocabulary; this reads its verdict, and a
+    document claiming the opposite of what this file holds cannot satisfy it.
+
+    The status word is read from the row's own second cell, which is the cell
+    the register's header calls "What is unverified". A row that opens with
+    anything other than the word this file holds for it fails, so moving a gap
+    between the two sets is a deliberate edit to both at once.
+    """
+    text = _read(CHECKLIST)
+    held = {gap: "open" for gap in _OPEN_GAPS} | {
+        gap: "closed" for gap in CLOSED_GAPS
+    }
+    assert set(held) == {gap for gap, _ in GAPS}, (
+        f"the gaps this file holds a status for {sorted(set(held))} and the gaps "
+        f"it names {[g for g, _ in GAPS]} are not the same set. Every named gap "
+        "has to be in exactly one of them, or nothing checks its row."
+    )
+
+    for gap_id, want in held.items():
+        rows = _gap_rows(text, gap_id)
+        assert len(rows) == 1, f"{gap_id} needs exactly one row in the register"
+        status = rows[0].split("|")[2].strip()
+        first_word = status.split()[0].rstrip(".").lower() if status.split() else ""
+        assert first_word == want, (
+            f"{gap_id} is {want} by this file's record, but its row opens by "
+            f"saying {first_word!r}: {status!r}. Move the gap between "
+            "CLOSED_GAPS and _OPEN_GAPS and rewrite the row in the same commit, "
+            "or the document and the gate are telling a reader two things."
+        )
+
+
+def _gap_rows(text: str, gap_id: str) -> list[str]:
+    return [
+        line
+        for line in text.splitlines()
+        if line.startswith("|") and line.split("|")[1].strip() == gap_id
+    ]
+
+
+def test_the_gap_register_holds_no_status_the_gates_have_not_checked() -> None:
+    """Every row in the register is a gap some gate has an opinion about.
+
+    A row this file does not track is a row whose status nothing checks, and a
+    register grows rows faster than it grows gates. Measured against the
+    register itself rather than against `GAPS`, so adding a row without a
+    verdict behind it fails here instead of reading as tracked.
+    """
+    text = _read(CHECKLIST)
+    in_register = {
+        line.split("|")[1].strip()
+        for line in text.splitlines()
+        if line.startswith("|") and re.fullmatch(r"GAP-\d+", line.split("|")[1].strip())
+    }
+    tracked = set(CLOSED_GAPS) | _OPEN_GAPS
+    assert in_register == tracked, (
+        f"the register holds gaps this file has no status for: "
+        f"{sorted(in_register - tracked)}; this file tracks gaps the register "
+        f"does not: {sorted(tracked - in_register)}"
+    )
 
 
 def test_a_closed_gap_still_names_the_receipt_that_closed_it() -> None:
@@ -708,11 +988,7 @@ def test_a_closed_gap_still_names_the_receipt_that_closed_it() -> None:
     """
     text = _read(CHECKLIST)
     for gap_id, receipt in CLOSED_GAPS.items():
-        rows = [
-            line
-            for line in text.splitlines()
-            if line.startswith("|") and line.split("|")[1].strip() == gap_id
-        ]
+        rows = _gap_rows(text, gap_id)
         assert len(rows) == 1, (
             f"{gap_id} is recorded as closed here, so it needs exactly one row "
             f"in the register; found {len(rows)}"

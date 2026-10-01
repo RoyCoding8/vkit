@@ -5,7 +5,7 @@ release record. A step you did not run is a step you did not do, and the
 release is described by what ran, never by what the checklist says can run.
 
 The commands here are the ones that exist in this repository at revision
-`829bd77`. `tests/test_release_docs.py` resolves every command below against
+`5cc14e0`. `tests/test_release_docs.py` resolves every command below against
 `build_parser()` and the working tree, so a step that stops existing fails the
 suite instead of quietly misleading a maintainer. It also resolves every file
 this document cites as evidence *at that revision*, so a pin left behind HEAD
@@ -89,14 +89,25 @@ verification/manifest.json
 # are unmapped, which is what GAP-8 now says.
 docs/ACCEPTANCE-MATRIX.md
 
-# GAP-2's POSIX record, and the milestone document that carried the other side
-# of the contradiction this row resolves. The local POSIX entry points these
-# rows used to name were deleted: `.github/workflows/ci.yml` runs this suite on
-# ubuntu-latest instead, so nothing here names a script a reader cannot run.
-review/posix-triage.md
-review/posix-evidence.md
+# GAP-2's POSIX record. The local POSIX entry points this row used to name were
+# deleted, and with them the two review/ notes that recorded what a local POSIX
+# run produced. Those were session scratch under a directory .gitignore keeps
+# out of every clone, so a `text files` block could never have named them: a
+# reader checking out any revision of this repository finds no such file. What
+# exercises the path now is the workflow, and what is not verified is a receipt.
+.github/workflows/ci.yml
 scripts/measure_posix_escape.py
 plans/STATUS.md
+```
+
+```text absent
+# The POSIX notes the block above used to name. They are session scratch under
+# a directory .gitignore excludes, so no checkout of this repository has them
+# and no reader can open them. Declared absent so the gate checks the moment one
+# of them is committed, which is the moment the row above would be citing
+# evidence a reader can actually re-check.
+review/posix-triage.md
+review/posix-evidence.md
 ```
 
 CI runs this suite on ubuntu-latest, windows-latest and macos-latest, so the
@@ -131,7 +142,7 @@ work that closes it has run and left a receipt.
 | Gap | Status and what is unverified | Evidence for the claim |
 | --- | --- | --- |
 | GAP-1 | Closed. The `mcp` SDK stdio adapter was executed. | `mcp` 2.2.0 installed and `serve_stdio` run as a real subprocess. `tests/test_mcp_stdio.py` drives it with hand-written JSON-RPC frames. |
-| GAP-2 | Open. The POSIX code path has been exercised, and no run of it is recorded in this tree. | POSIX-CLAIM: no-receipt, derived by `tests/test_release_docs.py` from what this tree holds and not from anything written here. What is verified is the path, not a receipt. A POSIX host ran this suite through a local WSL harness, and the numbers that run produced are quoted in `review/posix-evidence.md`, a dated record rather than an artifact a reader can re-check. The eighteen shell entry points that run used are gone, and the Python harness that replaced them is gone too, deleted in the same commit as this row was rewritten. What exercises the path now is `.github/workflows/ci.yml`, which runs `python -m pytest tests/` on `ubuntu-latest`, `windows-latest` and `macos-latest`; its verdict is pytest's exit status, which is the property the shell scripts lacked. What is not verified is a receipt. No run artifact is tracked, and a CI job's receipt is the forge's run log rather than a file in this tree, so nothing here records that a POSIX run has ever passed. It has not: the ubuntu job is red at this revision. It collects and installs, then fails in `Test` for reasons that have nothing to do with POSIX. Four of its six failures are gates reading untracked session scratch, which a fresh clone does not have: `test_the_harness_with_no_receipt_is_documented_as_blocked` wants a receipt under `review/`, and `test_every_path_is_verified_or_declared_absent` plus `test_a_gap_row_cites_a_receipt_that_exists_and_does_not_call_one_missing` want the two `review/` files this row cites. Two more are shallow-clone failures, `test_the_record_cites_commits_that_exist` wanting `4201cb8` and `test_the_checklist_evidence_is_not_stale[pinned-revision]` wanting the revision pinned at the top of this document, neither of which the default checkout depth brings back. The sixth is a real limit of a hosted POSIX runner: `test_a_recycled_pid_carries_a_new_start_time` needs `unshare --fork --pid`, which the ubuntu runner refuses with `Operation not permitted`. That one is a genuine finding about what this repository's POSIX coverage depends on, and it is why GAP-2 stays open rather than closing on the existence of the workflow. A reader who wants the position in a sentence should read `_posix_position_derived_from_the_tree`, which is where it now lives; this row does not restate it, because a restatement is a second thing that can be wrong. |
+| GAP-2 | Open. The POSIX code path has been exercised, and no run of it is recorded in this tree. | POSIX-CLAIM: no-receipt, derived by `tests/test_release_docs.py` from what this tree holds and not from anything written here. What is verified is the path, not a receipt. What a reader of this checkout can check is `scripts/measure_posix_escape.py` and its three siblings under `scripts/`, which are tracked measurement scripts a POSIX host runs to produce numbers. What no reader can check is the run itself. The record of the local WSL run that exercised this suite was written to gitignored scratch outside the repository, so it exists on one maintainer's disk and in no clone; that is why this row states the position rather than the numbers, and it is the sense in which the receipt is missing rather than merely unfiled. The eighteen shell entry points that run used are gone, and the Python harness that replaced them is gone too. What exercises the path now is `.github/workflows/ci.yml`, which runs `python -m pytest tests/` on `ubuntu-latest`, `windows-latest` and `macos-latest`; its verdict is pytest's exit status, which is the property the shell scripts lacked. What is not verified is a receipt. No run artifact is tracked, and a CI job's receipt is the forge's run log rather than a file in this tree, so nothing here records that a POSIX run has ever passed. It has not: the ubuntu job is red at this revision. It collects and installs, then fails in `Test` for reasons that have nothing to do with POSIX. Two of its failures are gates reading untracked session scratch, which a fresh clone does not have: `test_the_harness_with_no_receipt_is_documented_as_blocked` wants a receipt under `review/`, and this document's own path gate used to want the two `review/` notes, which it no longer does now that a path claim is resolved against the committed tree rather than against whichever disk is running the suite. Two more are shallow-clone failures, `test_the_record_cites_commits_that_exist` wanting `4201cb8` and `test_the_checklist_evidence_is_not_stale[pinned-revision]` wanting the revision pinned at the top of this document, neither of which the default checkout depth brings back. The sixth is a real limit of a hosted POSIX runner: `test_a_recycled_pid_carries_a_new_start_time` needs `unshare --fork --pid`, which the ubuntu runner refuses with `Operation not permitted`. That one is a genuine finding about what this repository's POSIX coverage depends on, and it is why GAP-2 stays open rather than closing on the existence of the workflow. A reader who wants the position in a sentence should read `_posix_position_derived_from_the_tree`, which is where it now lives; this row does not restate it, because a restatement is a second thing that can be wrong. |
 | GAP-3 | Closed. A live Claude Code host session installed the plugin, attached the six tools, and delivered three hook events. | `docs/HOST-SESSION.md` quotes the session: Claude Code 2.1.285, driver `tests/test_plugin_host.py`, 16 tests, 57s. Every test in that driver skips rather than fails when the host cannot run, so the receipt is the transcript, not a red suite. |
 | GAP-4 | Closed. The `mcp serve` subcommand exists and both halves of its surface have run. | `vkit mcp serve --project . --json` lists the six tools, exit 0, and `tests/test_mcp_stdio.py` drives that server over real JSON-RPC frames, which is GAP-1's receipt. This row used to say `serve_stdio` had still not been driven by a client while GAP-1's row said it had; the two contradicted each other in the same table. |
 | GAP-5 | Open. The setup console is incomplete. | Plan 05 is the last build step and is still being built in parallel. |
@@ -173,7 +184,7 @@ only one of them needed running.
 ## Build the artifacts
 
 Every command below was run on Windows 11 with Python 3.13.14 at revision
-`829bd77`. The only edits since that commit are to documents, which no command
+`5cc14e0`. The only edits since that commit are to documents, which no command
 in this document measures.
 
 ```console command
@@ -191,7 +202,7 @@ $ <venv>/Scripts/python.exe -m pip wheel . --no-deps -w <dist>
 
 On this host the wheel build printed
 `Created wheel for vkit: filename=vkit-0.1.0-py3-none-any.whl size=258158`,
-rebuilt at revision `829bd77`. The size is what makes this a receipt rather than
+rebuilt at revision `5cc14e0`. The size is what makes this a receipt rather than
 a claim that the wheel builds, and `tests/test_release_docs.py` checks it has a
 byte count without checking the value, because a wheel's size moves with the
 source it packages.

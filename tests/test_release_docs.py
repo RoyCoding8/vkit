@@ -7,12 +7,23 @@ every claim in them against the repository.
 
 Six rules shape the checks.
 
-**A path is either verified or declared absent.** The documents use two closed
-worlds. A `text files` block lists a path that must exist. A `text absent` block
-lists a path that must NOT exist. Any other path-shaped token in either document
-is a failure, which is what stops a new claim from appearing in prose where no
-gate checks it. The absent block is checked in the other direction too, so a
-document cannot keep calling a file missing after the file arrives.
+**A path is either verified or declared absent, and it is resolved against the
+repository rather than the disk.** The documents use two closed worlds. A `text
+files` block lists a path that must exist. A `text absent` block lists a path
+the repository does not carry. Any other path-shaped token in either document is
+a failure, which is what stops a new claim from appearing in prose where no gate
+checks it. The absent block is checked in the other direction too, so a document
+cannot keep calling a tracked file missing after it is committed.
+
+Both blocks are resolved against the committed tree, because the claim a
+document makes is about what a reader of a checkout finds. Measured: the
+checklist named two notes under `review/`, a directory `.gitignore` keeps out of
+every clone, and the gate read the working tree. The same document therefore
+said those files existed on the maintainer's machine and did not exist on CI's,
+and no entry in either block was true in both places at once. A path is present
+when a revision of this repository carries it, and a gitignored path can never be
+present, because no clone has one. Where a path is not gitignored its absence
+is also checked on disk, since that is the half a user creating the file moves.
 
 **A command is either real or the test fails.** Every line of a
 `console command` block is resolved against the repository. A `vkit` line is
@@ -59,7 +70,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -215,6 +228,82 @@ def _strip_fences(text: str) -> str:
     return "\n".join(kept)
 
 
+# ------------------------------------------------------------ what a reader gets
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run one git command against this repository, with a timeout.
+
+    Every path claim in both documents is a question about the committed tree,
+    and git is what answers it. The working tree cannot, because a path the
+    maintainer holds as untracked scratch is a fact about their disk and not
+    about the repository, and CI checks out a different disk every time.
+    """
+    return subprocess.run(
+        ["git", "-C", str(ROOT), *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+@lru_cache(maxsize=None)
+def _gitignored(path: str) -> bool:
+    """Whether `.gitignore` excludes `path`, so no clone can ever carry it.
+
+    Asked per path rather than in one batch, because the question is about a
+    path the document named, which is often untracked and therefore absent from
+    any list of tracked files. `check-ignore` exits 0 for a match and 1 when no
+    pattern covers the path, so the exit status is the answer and the cache
+    keeps a document's repeated mentions to one call each.
+
+    An untracked path that no pattern covers is not ignored, and this is the
+    distinction that matters. It can still be committed, so its absence is a
+    claim about the tree and is checked against the tree. A gitignored path
+    cannot be committed without a deliberate `-f`, so its absence is structural
+    and no checkout will ever contradict the document.
+    """
+    return _git("check-ignore", "-q", "--", path).returncode == 0
+
+
+def _carried(path: str) -> bool:
+    """Whether a revision of this repository carries `path`.
+
+    The answer a document's `text files` entry asserts. It is a property of the
+    committed tree, so a path this returns true for resolves in every clone at
+    every revision that carries it, which is what makes the gate worth having.
+
+    `cat-file -e HEAD:<path>` rather than a set membership test, because the
+    document also names directories such as `examples/python-cli`, which appear
+    in `ls-files` only as the files beneath them. Resolving the directory the way
+    git does means one rule covers both shapes.
+    """
+    return _git("cat-file", "-e", f"HEAD:{path}").returncode == 0
+
+
+def _a_reader_finds(path: str) -> bool:
+    """Whether a path is one a reader of this checkout can open.
+
+    A path the repository carries, and a path the repository has not decided
+    about yet, are both open to a reader once they are committed, so both count
+    as findable only if committed. What a reader cannot open is anything
+    `.gitignore` excludes, and that is the same answer on every machine, which
+    is what makes a claim about it portable.
+    """
+    return _carried(path) and not _gitignored(path)
+
+
+def _cannot_exist_here(path: str) -> bool:
+    """Whether no checkout of this repository can hold `path`.
+
+    A gitignored path can be written by hand and no clone will ever have it, so
+    its absence is guaranteed rather than merely observed. Anything else can
+    appear the moment somebody writes or commits it, so its absence is a claim
+    about the tree and is checked against the tree.
+    """
+    return _gitignored(path) or not (ROOT / path).exists()
+
+
 # ----------------------------------------------------------------- vkit parser
 
 
@@ -262,7 +351,21 @@ def _valid_options(parser: argparse.ArgumentParser) -> set[str]:
 
 @pytest.mark.parametrize("doc", [CHECKLIST, PILOT], ids=lambda p: p.name)
 def test_every_path_is_verified_or_declared_absent(doc: Path) -> None:
-    """A path in either document is checked, or it is not allowed to exist."""
+    """A path in either document is checked, or it is not allowed to exist.
+
+    Measured: the checklist listed two notes under `review/` in the absent block,
+    and the gate read the working tree. `review/` is gitignored, so the maintainer
+    holds those notes and no clone has them. `text files` therefore failed on CI
+    and `text absent` failed on the maintainer's machine, and no rewrite of the
+    document made both green, because the entry was asserting a fact about a disk
+    rather than about a repository. The claim is resolved against the tree now, so
+    one document can state one thing and be right everywhere.
+
+    Both blocks still move. A tracked file that is deleted fails the `files`
+    block, and the `absent` block fires the moment a path it calls missing is
+    committed or created, which is what makes an absent entry the moment a gap
+    closes rather than a decoration.
+    """
     text = _read(doc)
     blocks = _blocks(text)
 
@@ -275,8 +378,10 @@ def test_every_path_is_verified_or_declared_absent(doc: Path) -> None:
                 continue
             for token in _tokens(entry):
                 present.add(token)
-                assert (ROOT / token).exists(), (
-                    f"{doc.name} claims {token} exists, but it does not"
+                assert _a_reader_finds(token), (
+                    f"{doc.name} claims {token} exists, but no checkout of this "
+                    "repository carries it. A reader cannot open what the "
+                    "document relies on."
                 )
 
     absent: set[str] = set()
@@ -286,8 +391,10 @@ def test_every_path_is_verified_or_declared_absent(doc: Path) -> None:
                 continue
             for token in _tokens(entry):
                 absent.add(token)
-                assert not (ROOT / token).exists(), (
-                    f"{doc.name} still calls {token} absent, but it now exists"
+                assert _cannot_exist_here(token), (
+                    f"{doc.name} still calls {token} absent, but a checkout of "
+                    "this repository can hold it. The entry is the moment a gap "
+                    "closes, so a stale one is the document asserting a falsehood."
                 )
 
     for token in _tokens(_strip_fences(text)):
@@ -388,7 +495,7 @@ def test_no_document_names_a_posix_script_that_is_not_one(doc: Path) -> None:
     This is now the only check that can fire for a stale POSIX script path, so
     it keeps the negative probe that check carried. `posix-run.sh` is one of the
     eighteen shell scripts `scripts/posix_harness.py` replaced, and it is not in
-    this tree. Fourteen scripts under `scripts/` still print `bash
+    this tree. Six scripts under `scripts/` still print `bash
     scripts/posix-run.sh ...` in their own `Run:` docstring line, so the probe
     is the exact path a reader following one of them would hit, and gets
     nothing.
@@ -429,7 +536,7 @@ def test_the_posix_script_probe_would_notice_a_document_naming_a_stale_path() ->
     )
 
 
-# The path fourteen `scripts/` measurement scripts still tell a reader to run.
+# The path six `scripts/` measurement scripts still tell a reader to run.
 # It is a probe rather than an entry point because it does not exist and is not
 # coming back; CI runs the suite through `.github/workflows/ci.yml` instead.
 _posix_probe = "scripts/posix-run.sh"
@@ -868,7 +975,10 @@ def test_the_acceptance_matrix_row_count_is_the_count_in_the_matrix() -> None:
     )
 
 
-_MATRIX = ROOT / "review" / "KIT_ACCEPTANCE.md"
+# The matrix moved to docs/ in commit 829bd77. This constant still named its
+# old home under review/, a directory .gitignore keeps out of every clone, so
+# every gate built on it failed to read the file it checks.
+_MATRIX = ROOT / "docs" / "ACCEPTANCE-MATRIX.md"
 
 
 def _matrix_data_rows() -> list[str]:
@@ -904,14 +1014,22 @@ def test_a_gap_row_cites_a_receipt_that_exists_and_does_not_call_one_missing() -
     `test_every_gap_row_carries_an_evidence_cell` only checks the cell is
     non-empty, which is what let prose sit there. So this walks the evidence
     cells twice. The first pass resolves every path-shaped token against the
-    working tree, so a row that names a file nobody can open fails. The second
-    rejects a sentence that calls a tracked path absent or missing, which is
-    the direction GAP-8's falsehood ran in.
+    committed tree, so a row that names a file no reader can open fails. The
+    second rejects a sentence that calls a tracked path absent or missing, which
+    is the direction GAP-8's falsehood ran in.
+
+    Resolving against the tree rather than the disk is what makes the check
+    portable, and it moved a real coupling. GAP-2's cell cited
+    `review/posix-evidence.md` as the record of a POSIX run. That file is
+    gitignored session scratch, so the row was citing a receipt that exists on
+    one machine and in no clone, which is the very reason a reader cannot
+    re-check the run the row describes. The row now states what a reader of the
+    checkout can actually verify, and this gate is what holds it to that.
 
     The cell's own `text absent` block is checked here too rather than in a
     separate test, because it is the same assertion about the same register
-    read from the other end: a path declared absent must not exist, and a path
-    called absent in prose must not exist either.
+    read from the other end: a path declared absent must be one no checkout can
+    hold, and a path called absent in prose must not be in the tree either.
 
     A cell that names no path at all is not a failure here. Some rows are
     evidenced by an observation rather than an artifact, and deciding which is a
@@ -928,10 +1046,10 @@ def test_a_gap_row_cites_a_receipt_that_exists_and_does_not_call_one_missing() -
         for token in _tokens(entry)
     }
     for token in sorted(absent):
-        assert not (ROOT / token).exists(), (
-            f"the checklist lists {token} under `text absent`, and it exists. "
-            "An absent-block entry is the moment a gap closes, so a stale one "
-            "is the register asserting a falsehood."
+        assert _cannot_exist_here(token), (
+            f"the checklist lists {token} under `text absent`, and a checkout "
+            "of this repository can hold it. An absent-block entry is the moment "
+            "a gap closes, so a stale one is the register asserting a falsehood."
         )
 
     resolved = 0
@@ -944,10 +1062,10 @@ def test_a_gap_row_cites_a_receipt_that_exists_and_does_not_call_one_missing() -
         for token in _tokens(f"{cells[0]} {cells[2]}"):
             if token.startswith(PLACEHOLDERS):
                 continue
-            assert (ROOT / token).exists(), (
-                f"{cells[0]} names {token} in its evidence cell, and nothing "
-                "here resolves. A row may not assert a receipt a reader cannot "
-                "open."
+            assert _a_reader_finds(token), (
+                f"{cells[0]} names {token} in its evidence cell, and no checkout "
+                "of this repository carries it. A row may not assert a receipt a "
+                "reader cannot open."
             )
             assert not _calls_it_missing(cells[2], token), (
                 f"{cells[0]} says {token} is absent or missing, and {token} is "
@@ -1034,21 +1152,22 @@ def _posix_evidence() -> set[str]:
     A measurement script that can only produce output on a POSIX host is the
     receipt. So is a triage written by a POSIX host agent. Neither is a suite
     run, which is the distinction `no-receipt` rests on.
-    """
-    import subprocess
 
-    listed = subprocess.run(
-        ["git", "-C", str(ROOT), "ls-files", "scripts/"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    ).stdout.splitlines()
+    The triage used to be read off the working tree, which made the position
+    this file derives depend on whose disk it ran on. `review/` is gitignored,
+    so the maintainer's copy made `no-receipt` reachable while a clone that had
+    no such file could derive nothing and fall through to `unverified`. The same
+    document then had to record two different claims depending on the machine,
+    which is the property that makes a derived claim worth deriving. It reads
+    the tree now, and the note survives here only if a commit carries it.
+    """
+    listed = _git("ls-files", "scripts/").stdout.splitlines()
     scripts = {
         name
         for name in listed
         if Path(name).name.startswith(("measure_posix", "verify_posix"))
     }
-    if (ROOT / "review" / "posix-triage.md").is_file():
+    if _carried("review/posix-triage.md"):
         scripts.add("review/posix-triage.md")  # noqa: keep
     return scripts
 
@@ -1069,14 +1188,7 @@ def _posix_position_derived_from_the_tree() -> str:
     full space of claims the documents have made, including the one that was
     wrong.
     """
-    import subprocess
-
-    artifacts = subprocess.run(
-        ["git", "-C", str(ROOT), "ls-files"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    ).stdout.splitlines()
+    artifacts = _git("ls-files").stdout.splitlines()
     run_receipt = [
         name
         for name in artifacts
@@ -1706,30 +1818,23 @@ def _pinned_revision_is_a_real_commit(text: str) -> str:
     revision is one claim stated twice, and the gate has to hold the claim, not
     the stray.
     """
-    import subprocess
-
     claimed = re.findall(r"at revision\s*\n?\s*`([^`]+)`", text)
     assert claimed, (
         "the checklist says what revision its commands were run at, but does "
         "not pin it to a commit"
     )
 
-    def git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", str(ROOT), *args], capture_output=True, text=True, timeout=60
-        )
-
     for revision in claimed:
         assert re.fullmatch(r"[0-9a-f]{7,40}", revision), (
             f"the revision pin {revision!r} is not a commit hash"
         )
-        assert git("cat-file", "-e", f"{revision}^{{commit}}").returncode == 0, (
+        assert _git("cat-file", "-e", f"{revision}^{{commit}}").returncode == 0, (
             f"the checklist pins revision {revision}, which is not a commit in "
             "this repository"
         )
-        assert git("merge-base", "--is-ancestor", revision, "HEAD").returncode == 0, (
+        assert _git("merge-base", "--is-ancestor", revision, "HEAD").returncode == 0, (
             f"the checklist pins revision {revision}, which is not an ancestor of "
-            f"HEAD ({git('rev-parse', '--short', 'HEAD').stdout.strip()}). Every "
+            f"HEAD ({_git('rev-parse', '--short', 'HEAD').stdout.strip()}). Every "
             "observation in the document belongs to the revision it names, so a "
             "pin behind HEAD silently detaches the whole receipt from the code."
         )
@@ -1746,9 +1851,14 @@ def _cited_files_at_the_pin(text: str) -> str:
     revision found a checklist citing tests that were not there. Existence in the
     working tree is checked elsewhere; this is the half that makes the pin mean
     something.
-    """
-    import subprocess
 
+    A path the document relies on has to be carried by the pinned revision as
+    well as by HEAD, and the two are not the same question. The checklist once
+    named two notes under `review/`, which no revision carries, so the pin could
+    not be satisfied by any edit to the document except committing them. That is
+    the right failure, and it is why the fix for those paths was to state the
+    position instead of citing a receipt rather than to move the pin.
+    """
     revision = _pinned_revision_is_a_real_commit(text)
     files = _blocks(text).get("text files", [])
     cited: list[str] = []
@@ -1762,12 +1872,7 @@ def _cited_files_at_the_pin(text: str) -> str:
     missing = [
         path
         for path in cited
-        if subprocess.run(
-            ["git", "-C", str(ROOT), "cat-file", "-e", f"{revision}:{path}"],
-            capture_output=True,
-            timeout=60,
-        ).returncode
-        != 0
+        if _git("cat-file", "-e", f"{revision}:{path}").returncode != 0
     ]
     assert not missing, (
         f"the checklist pins {revision} but cites {len(missing)} file(s) that do "

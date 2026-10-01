@@ -88,17 +88,17 @@
       "receipt_status": "PASS",
       "tool": "pytest",
       "tool_version": null,
-      "finished_at": "2026-10-01T12:53:54.478530+00:00",
+      "finished_at": "2026-10-01T16:44:07.854571+00:00",
       "digests": {
         "src/vkit/tasks.py": {
-          "recorded": "da5e05b7a2e9411f0be2b593f61e0234cf53b5b3dae8cdcfc1e2406bb2df0316",
+          "recorded": "246773c9110314dfad067ad4ac5fd5935680ec4050327212a6ff60843d703e6c",
           "recomputed": "246773c9110314dfad067ad4ac5fd5935680ec4050327212a6ff60843d703e6c",
-          "reproduces": false
+          "reproduces": true
         }
       },
-      "state": "BLOCKED",
-      "reason": "the receipt claims PASS, but a digest it records does not reproduce against the file it names",
-      "unblocked_by": "rerunning the harness, or finding the revision the receipt was measured at"
+      "state": "VERIFIED",
+      "reason": "every digest in the receipt reproduces",
+      "scope": "A CAUGHT result means one named guard in tasks.py was removed and one named test failed against the mutated copy, on this host, at the digest above. It does not establish that the guard is the only way to break the rule, and it establishes nothing about any other module."
     },
     "TLA+ mutation run": {
       "state": "BLOCKED",

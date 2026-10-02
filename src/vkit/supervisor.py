@@ -207,6 +207,7 @@ def start_run(
         store.register_run(
             run_id, check.id, task_id=task_id, attempt=generation,
             source=source.to_json(), configuration_digest=manifest.digest(),
+            # The supervisor re-measures fixtures at the execution boundary.
             fixture_digest=None,
         )
         plan = LaunchPlan(
@@ -351,6 +352,7 @@ def cancel_run(
             return outcome_from_report(stored), stored
 
     recorded = store.run_process_identity(run_id) or {}
+    recorded["fixture_digest"] = (store.run_status(run_id) or {}).get("fixture_digest")
     launch = store.load_launch(run_id)
     if not recorded.get("pid") or not recorded.get("ownership_known"):
         # The cancel arrived before the run had an owner it could be aimed at. It
@@ -577,7 +579,7 @@ def _cancel_report(
             "cwd": recorded_launch.get("cwd") or "<none>",
         },
         "configuration_digest": recorded.get("configuration_digest") or "unknown",
-        "fixture_digest": None,
+        "fixture_digest": recorded.get("fixture_digest"),
         "process": process,
         "artifacts": {},
         "environment": {},

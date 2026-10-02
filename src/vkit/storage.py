@@ -777,6 +777,16 @@ class Store:
                     f"cannot publish identity: {run_id} is unknown or already terminal"
                 )
 
+    def record_fixture_digest(self, run_id: str, fixture_digest: str | None) -> None:
+        """Persist the fixture identity measured by the supervisor at execution."""
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE runs SET fixture_digest = ? WHERE run_id = ? AND lifecycle != 'terminal'",
+                (fixture_digest, run_id),
+            )
+            if cursor.rowcount == 0:
+                raise StoreError(f"cannot record fixtures for {run_id}: run is terminal or unknown")
+
     def mark_cancelling(self, run_id: str) -> None:
         """Record that termination has been asked for and the outcome is not yet known."""
         with self._connect() as conn:
@@ -902,7 +912,7 @@ class Store:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT run_id, check_id, task_id, attempt, lifecycle, result, reason,"
-                " registered_at, ended_at, process_json FROM runs WHERE run_id = ?",
+                " registered_at, ended_at, fixture_digest, process_json FROM runs WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
         if row is None:
@@ -910,12 +920,12 @@ class Store:
         status = {
             "run_id": row[0], "check_id": row[1], "task_id": row[2], "attempt": row[3],
             "lifecycle": row[4], "result": row[5], "reason": row[6],
-            "registered_at": row[7], "ended_at": row[8],
+            "registered_at": row[7], "ended_at": row[8], "fixture_digest": row[9],
         }
         launch = self.load_launch(run_id)
         if launch is not None:
             status["job_name"] = launch["job_name"]
-        process = json.loads(row[9]) if row[9] else None
+        process = json.loads(row[10]) if row[10] else None
         if process is not None:
             status["process"] = process
         report = self.run_dir(run_id) / REPORT_NAME

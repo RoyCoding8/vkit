@@ -117,7 +117,7 @@ def _publish_pending_cancel(store: Store, run_id: str, launch_row: dict[str, Any
         BlockedReason.CANCELLED,
         f"cancelled before the check began executing; nothing was launched for run {run_id}",
     )
-    report = _cancel_report(run_id, {}, blocked, None, launch_row)
+    report = _cancel_report(run_id, store.run_status(run_id) or {}, blocked, None, launch_row)
     store.resolve_cancel_intent(run_id)
     try:
         store.publish(run_id, report)
@@ -159,6 +159,9 @@ def supervise_run(
     # process that is already gone by the time anything asks whether the run's
     # owner is still alive.
     store.claim_supervisor(run_id, project=project)
+    fixture = manifest.fixture_identity()
+    fixture_digest = None if fixture is None else fixture.digest
+    store.record_fixture_digest(run_id, fixture_digest)
 
     if _cancel_if_requested(store, run_id):
         _publish_pending_cancel(store, run_id, launch_row)
@@ -218,7 +221,10 @@ def supervise_run(
                 store.publish_identity(run_id, running.identity())
                 published_identity = True
                 result = await_exit(running)
-                _publish_outcome(store, run_id, launch_row, running, result, manifest, check, environment)
+                _publish_outcome(
+                    store, run_id, launch_row, running, result, manifest, check, environment,
+                    fixture_digest,
+                )
                 return
         if not published_identity:
             store.publish_identity(run_id, running.identity())
@@ -247,6 +253,7 @@ def _publish_cancelled(
         "ownership": running.ownership,
         "check_id": launch_row["check_id"],
         "registered_at": launch_row["requested_at"],
+        "fixture_digest": (store.run_status(run_id) or {}).get("fixture_digest"),
     }
     blocked = Blocked(
         BlockedReason.CANCELLED,
@@ -264,6 +271,7 @@ def _publish_cancelled(
 def _publish_outcome(
     store: Store, run_id: str, launch_row: dict[str, Any], running: JobLease,
     result: Any, manifest: Manifest, check: Any, environment: RunEnvironment,
+    fixture_digest: str | None,
 ) -> None:
     """Turn the finished process into the run's one terminal outcome.
 
@@ -298,6 +306,7 @@ def _publish_outcome(
         run_dir=store.run_dir(run_id),
         executed_argv=list(_json.loads(launch_row["argv_json"])),
         provenance=environment.provenance(),
+        fixture_digest=fixture_digest,
     )
     _publish(store, run_id, report)
 

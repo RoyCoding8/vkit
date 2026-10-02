@@ -251,6 +251,7 @@ def _verify_checked_out(
             project, candidate_fact.sha, execution_manifest, policy.manifest_revision
         )
         scripts = oracles.scripts_of(execution_manifest)
+        expectations = oracles.expectations_of(execution_manifest)
         unpinned = sorted(check_id for check_id in policy.required_ids if check_id not in scripts)
         oracle_findings: list[policies.PolicyFinding] = []
         if unpinned:
@@ -260,14 +261,62 @@ def _verify_checked_out(
                 "script, so there are no trusted verification bytes this run can pin and "
                 "execute; review the command and approve one that names a file",
             ))
-        differing = measured.changed
-        if differing:
+        unresolved = sorted(
+            check_id for check_id in policy.required_ids
+            if (execution_manifest.checks.get(check_id) is not None
+                and execution_manifest.checks[check_id].expectations is None)
+        )
+        if policy.context == policies.PROTECTED and unresolved:
             oracle_findings.append(policies.PolicyFinding(
-                "checker_bytes_changed", ", ".join(sorted(differing)), "REJECT",
+                "expectation_boundary_unresolved", ", ".join(unresolved), "REJECT",
+                "the approved check does not say whether expected observations are embedded "
+                "in its driver or supplied by files; declare expectations: [] for embedded "
+                "values, or name each approved expectation file",
+            ))
+        if policy.context == policies.PROTECTED and not policy.manifest_revision:
+            oracle_findings.append(policies.PolicyFinding(
+                "expectation_oracle_unpinned", ", ".join(policy.required_ids), "REJECT",
+                "protected verification needs a pinned manifest revision to establish the "
+                "approved driver and expectation declaration",
+            ))
+
+        expected_paths = expectations
+        executed_expectations = oracles.expectation_identity(
+            candidate_checkout.path, expected_paths
+        )
+        missing_expectations = sorted(
+            path for path in expected_paths
+            if measured.approved.get(path) is None
+            or measured.candidate.get(path) is None
+            or executed_expectations.get(path) is None
+        )
+        if missing_expectations:
+            oracle_findings.append(policies.PolicyFinding(
+                "expectation_bytes_missing", ", ".join(missing_expectations), "REJECT",
+                "an approved expectation file is absent from the approved or candidate "
+                "commit or owned checkout, so its executed bytes cannot be established",
+            ))
+        changed = measured.changed
+        changed_expectations = {path: pair for path, pair in changed.items()
+                                if path in expected_paths}
+        if changed_expectations:
+            oracle_findings.append(policies.PolicyFinding(
+                "expectation_bytes_changed", ", ".join(sorted(changed_expectations)), "REJECT",
+                "the candidate changed expected observations from the approved revision "
+                + (f"{measured.approved_revision[:12]} " if measured.approved_revision else "")
+                + "the policy pins; changing what a check expects requires an explicit "
+                "policy review that pins the new expectation bytes",
+            ))
+        script_paths = set(scripts.values())
+        changed_checkers = {path: pair for path, pair in changed.items()
+                            if path in script_paths}
+        if changed_checkers:
+            oracle_findings.append(policies.PolicyFinding(
+                "checker_bytes_changed", ", ".join(sorted(changed_checkers)), "REJECT",
                 "the candidate's verification code differs from the approved revision "
                 + (f"{measured.approved_revision[:12]} " if measured.approved_revision else "")
                 + "the policy pins, in "
-                + ", ".join(sorted(differing))
+                + ", ".join(sorted(changed_checkers))
                 + ". A candidate that edits the code that decides whether it passes has "
                 "changed the oracle rather than the product. The way to change what a check "
                 "requires is an explicit policy review that establishes the new trusted bytes, "
@@ -347,7 +396,10 @@ def _verify_checked_out(
                 "through the protected configuration rather than this run"
             )
 
-        fixture = oracles.fixture_identity(project, candidate_fact.sha, execution_manifest, scripts)
+        fixture = oracles.fixture_identity(
+            project, candidate_fact.sha, execution_manifest, scripts, expected_paths,
+            executed_expectations,
+        )
         return _record(
             store, request, policy, identity,
             decision=decision, candidate_fact=candidate_fact, target_fact=target_fact,

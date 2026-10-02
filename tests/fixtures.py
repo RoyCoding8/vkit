@@ -286,6 +286,7 @@ def manifest_document(
                 "required_scenarios": list(scenarios),
                 "artifact": artifact,
                 "inputs": [*APP_NAMES, DRIVER_NAME],
+                "expectations": [],
             }
         ],
     }

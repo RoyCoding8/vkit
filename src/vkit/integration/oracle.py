@@ -7,11 +7,10 @@ candidate's *product* is the thing under test, so its bytes are free to move;
 the code that decides whether those bytes pass is not, and this module is the
 one place that says so.
 
-**Everything is read from commits and from the imported package, never from a
-checkout.** The context is therefore a property of the request rather than of
-whether a checkout happened to exist when it was computed, which is what lets
-one function answer for every decision path, including the ones that refuse
-before any checkout is made.
+Approved and candidate blob digests come from commits. The expectation digest
+also records the exact bytes materialized in the owned candidate checkout,
+because that is the path the approved driver reads. Product identity remains a
+property of the candidate commit.
 
 **The boundary that matters.** A trusted command string naming a path inside the
 candidate checkout is not a trusted oracle: the candidate supplies those bytes.
@@ -181,6 +180,15 @@ def scripts_of(manifest: Manifest) -> dict[str, str]:
     return scripts
 
 
+def expectations_of(manifest: Manifest) -> set[str]:
+    """The externally supplied expectation files named by each check."""
+    return {
+        path
+        for check in manifest.checks.values()
+        for path in (check.expectations or ())
+    }
+
+
 def _pins_a_file(part: str) -> bool:
     """True when `part` is a repository-relative path to a script.
 
@@ -214,6 +222,35 @@ def blob_digest(project: Project, commit: str, path: str) -> str | None:
         return hashlib.sha256(gits.git_blob(project, commit, path)).hexdigest()
     except gits.GitError:
         return None
+
+
+def expectation_identity(root: Path, paths: set[str]) -> dict[str, str | None]:
+    """Hash the exact regular-file bytes the approved driver can read."""
+    root = root.resolve()
+    measured: dict[str, str | None] = {}
+    for raw in sorted(paths):
+        path = Path(raw)
+        if path.is_absolute() or ".." in path.parts:
+            measured[raw] = None
+            continue
+        candidate = root / path
+        try:
+            current = root
+            for part in path.parts:
+                current /= part
+                if current.is_symlink():
+                    break
+            else:
+                resolved = candidate.resolve(strict=True)
+                if resolved == root or root not in resolved.parents or not resolved.is_file():
+                    measured[raw] = None
+                    continue
+                measured[raw] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+                continue
+        except OSError:
+            pass
+        measured[raw] = None
+    return measured
 
 
 def repoint_approved(manifest: Manifest, approved_root: Path, scripts: dict[str, str]) -> Manifest:
@@ -257,10 +294,9 @@ class Oracle:
     """The trusted side of one verification: what decided, and what was pinned.
 
     `approved_revision` is the commit the policy names, and `approved` holds the
-    digests of the verification code as that commit shipped it. `candidate` holds
-    the digests of the same paths as the candidate shipped them. A path present in
-    one and not the other is a difference, and that comparison is the only thing
-    that stands between a candidate's own driver and a decision about it.
+    digests of its checker and explicitly declared expectation files. `candidate`
+    holds the digests of the same paths as the candidate shipped them. A path
+    present in one and not the other is a difference.
     """
 
     approved_revision: str | None
@@ -290,63 +326,72 @@ class Oracle:
 def approved_oracle(
     project: Project, candidate: str, manifest: Manifest, approved_revision: str | None
 ) -> Oracle:
-    """Measure the trusted verification code and the candidate's copy of it.
+    """Measure the trusted checker/expectation files and the candidate's copies.
 
     With a pinned revision the approved side is read at that revision and the
     candidate side at the candidate commit, and any difference is a refusal. With
     no pinned revision there is no approved side to compare against: a local
-    policy pins nothing, so the candidate's own verification code is what runs.
+    policy pins nothing, so the candidate's own checker and declared expectations
+    are what run.
     Both sides are then the candidate's bytes and nothing differs, which is the
     honest reading rather than a difference manufactured to make the run refuse.
     `source` says which of the two it was, and a caller that wants approved
-    verification code is the caller that has to pin a revision.
+    checker and expectation bytes is the caller that has to pin a revision.
     """
     scripts = scripts_of(manifest)
-    candidate = {path: blob_digest(project, candidate, path) for path in scripts.values()}
+    protected = set(scripts.values()) | expectations_of(manifest)
+    candidate = {path: blob_digest(project, candidate, path) for path in sorted(protected)}
     if approved_revision is None:
         return Oracle(
             approved_revision=None,
             approved=dict(candidate),
             candidate=candidate,
             source="candidate-manifest: the policy pinned no approved revision, so the "
-                   "candidate's own verification code is what ran",
+                   "candidate's own checker and declared expectations are what ran",
         )
     return Oracle(
         approved_revision=approved_revision,
         approved={
-            path: blob_digest(project, approved_revision, path) for path in scripts.values()
+            path: blob_digest(project, approved_revision, path) for path in sorted(protected)
         },
         candidate=candidate,
-        source="approved-manifest: the verification code is the policy's pinned revision",
+        source="approved-manifest: checker and expectation bytes are policy-pinned",
     )
 
 
 def fixture_identity(
-    project: Project, candidate: str, manifest: Manifest, scripts: dict[str, str]
+    project: Project, candidate: str, manifest: Manifest, scripts: dict[str, str],
+    expectations: set[str] | None = None,
+    executed_expectations: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
-    """What the checks were given, measured at the candidate commit.
+    """What the checks were given, including exact external expectation bytes.
 
-    The manifest declares which files a check reads, which is a claim; the
-    digest of those files as the candidate shipped them is a fact. The two are
-    kept apart by role, because a check's product input and its verification
-    code are not the same kind of thing and a candidate is allowed to change
-    only the first.
+    The manifest declares which files a check reads, which is a claim. The
+    receipt keeps checker, expectation and product hashes under separate roles,
+    because only product inputs may change without policy review.
 
-    Read from the commit rather than from the checkout so that a decision's
-    receipt describes the candidate even after the checkout is gone. A declared
-    input the candidate does not ship is recorded as absent rather than skipped,
-    because an input that cannot be accounted for is a gap and gaps are not
-    success.
+    Product and checker entries use the candidate commit so the receipt remains
+    useful after the checkout is gone. An expectation entry hashes the exact
+    bytes in the owned checkout, where the approved driver reads it. A declared
+    input that is absent is recorded rather than skipped.
     """
     declared: set[str] = set()
     for check in manifest.checks.values():
         declared.update(check.inputs)
     executable = set(scripts.values())
+    expected = expectations if expectations is not None else expectations_of(manifest)
     inputs = [
         {
             "path": path,
-            "role": "checker" if path in executable else "product",
-            "sha256": blob_digest(project, candidate, path),
+            "role": (
+                "checker" if path in executable
+                else "expectation" if path in expected
+                else "product"
+            ),
+            "sha256": (
+                (executed_expectations or {}).get(path)
+                if path in expected else blob_digest(project, candidate, path)
+            ),
         }
         for path in sorted(declared)
     ]

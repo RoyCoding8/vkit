@@ -432,25 +432,56 @@ def a_manifest_declaring(project, *inputs: str) -> Manifest:
 
 
 def a_manifest_document(
-    cwd: str, inputs: tuple[str, ...] = (), prerequisites: list[dict] | None = None
+    cwd: str, inputs: tuple[str, ...] = (), prerequisites: list[dict] | None = None,
+    expectations: tuple[str, ...] | None = None,
 ) -> bytes:
     import json
 
+    check = {
+        "id": "c",
+        "description": "",
+        "command": list(DRIVER_ARGV),
+        "cwd": cwd,
+        "timeout_seconds": 60,
+        "required_scenarios": ["one"],
+        "artifact": "result.json",
+        "inputs": list(inputs),
+        "prerequisites": prerequisites or [],
+    }
+    if expectations is not None:
+        check["expectations"] = list(expectations)
     return json.dumps({
         "schema_version": 1,
         "description": "A check.",
-        "checks": [{
-            "id": "c",
-            "description": "",
-            "command": list(DRIVER_ARGV),
-            "cwd": cwd,
-            "timeout_seconds": 60,
-            "required_scenarios": ["one"],
-            "artifact": "result.json",
-            "inputs": list(inputs),
-            "prerequisites": prerequisites or [],
-        }],
+        "checks": [check],
     }).encode("utf-8")
+
+
+def test_expectation_declaration_distinguishes_omitted_from_embedded(repo, tmp_path) -> None:
+    project = a_repository(repo)
+    legacy = parse_manifest_bytes(
+        a_manifest_document("."), project=project, run_dir=tmp_path, origin="legacy"
+    )
+    embedded = parse_manifest_bytes(
+        a_manifest_document(".", expectations=()),
+        project=project, run_dir=tmp_path, origin="embedded",
+    )
+
+    assert legacy.require("c").expectations is None
+    assert embedded.require("c").expectations == ()
+    assert "expectations" not in legacy.canonical_form()["checks"][0]
+    assert embedded.canonical_form()["checks"][0]["expectations"] == []
+    assert legacy.digest() != embedded.digest()
+
+
+def test_expectation_paths_must_also_be_declared_inputs(repo, tmp_path) -> None:
+    project = a_repository(repo)
+
+    with pytest.raises(ManifestError, match="expectations must also be declared in inputs"):
+        parse_manifest_bytes(
+            a_manifest_document(".", expectations=("expected.json",)),
+            project=project, run_dir=tmp_path, origin="invalid expectations",
+        )
 
 
 def test_a_declared_input_inside_the_repository_is_measured(repo) -> None:

@@ -66,6 +66,12 @@
             "type": "array",
             "items": { "type": "string", "minLength": 1 },
             "description": "Repository-relative files the check reads. Part of source identity."
+          },
+          "expectations": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Explicit subset of inputs that supplies expected observations. [] means the approved driver contains its expectations; omission is unresolved in protected verification."
           }
         }
       }

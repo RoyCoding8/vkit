@@ -86,6 +86,7 @@ class CheckSpec:
     artifact_name: str
     prerequisites: tuple[Prerequisite, ...]
     inputs: tuple[str, ...]
+    expectations: tuple[str, ...] | None = None
 
     def resolved_argv_for(self, run_dir: Path, python: str | None) -> tuple[str, ...]:
         """The exact list to execute. Only two placeholders exist, both documented
@@ -157,6 +158,8 @@ class Manifest:
                         for p in check.prerequisites
                     ],
                     "inputs": list(check.inputs),
+                    **({"expectations": list(check.expectations)}
+                       if check.expectations is not None else {}),
                 }
                 for check in sorted(self.checks.values(), key=lambda c: c.id)
             ],
@@ -355,6 +358,16 @@ def parse_manifest_bytes(
                 f"check {check_id!r}: duplicate required scenarios {sorted(duplicates)}"
             )
 
+        inputs = tuple(entry.get("inputs", ()))
+        expectations = entry.get("expectations")
+        if expectations is not None:
+            undeclared = sorted(set(expectations) - set(inputs))
+            if undeclared:
+                raise ManifestError(
+                    f"check {check_id!r}: expectations must also be declared in inputs: "
+                    f"{', '.join(undeclared)}"
+                )
+
         checks[check_id] = CheckSpec(
             id=check_id,
             description=entry.get("description", ""),
@@ -367,7 +380,8 @@ def parse_manifest_bytes(
                 Prerequisite(p["name"], p["executable"], tuple(p.get("args", ())))
                 for p in entry.get("prerequisites", ())
             ),
-            inputs=tuple(entry.get("inputs", ())),
+            inputs=inputs,
+            expectations=None if expectations is None else tuple(expectations),
         )
 
     return Manifest(

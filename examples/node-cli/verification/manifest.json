@@ -33,7 +33,8 @@
           "args": ["--version"]
         }
       ],
-      "inputs": ["src/split-bill.js", "verify-split.js"]
+      "inputs": ["src/split-bill.js", "verify-split.js"],
+      "expectations": []
     }
   ]
 }

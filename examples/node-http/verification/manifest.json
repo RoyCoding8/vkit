@@ -31,7 +31,8 @@
           "args": ["--version"]
         }
       ],
-      "inputs": ["src/items-server.js", "verify-items.js"]
+      "inputs": ["src/items-server.js", "verify-items.js"],
+      "expectations": []
     }
   ]
 }

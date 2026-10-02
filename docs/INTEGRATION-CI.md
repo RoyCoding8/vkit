@@ -96,6 +96,11 @@ every arbitrary host tool or external session. What the app enforces:
 - One integration verification per repository at a time.
 - The executed check set and the executed manifest, both from the approved
   revision.
+- Every protected check must classify its expected observations in the approved
+  manifest. `expectations: []` means the pinned driver contains them; a nonempty
+  list names expectation files and must be a subset of `inputs`. Omitting the
+  field leaves the oracle unresolved and refuses protected verification. Other
+  declared inputs remain candidate product files and may change.
 
 What the app cannot enforce is a process that ignores it. A second checkout, a
 second SQLite file, or an agent with its own tools can run the same checks twice

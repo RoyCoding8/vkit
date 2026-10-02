@@ -51,6 +51,8 @@ from pathlib import Path
 
 import pytest
 
+import subproc
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "python-cli"
 
@@ -85,6 +87,25 @@ DRIVER = '''
 import base64, hashlib, json, shutil, subprocess, sys, urllib.error, urllib.request
 from pathlib import Path
 
+
+def hidden_window():
+    """`subprocess` keywords that keep a launched child off the operator's screen.
+
+    Written out rather than imported, because this driver runs with the install
+    on `sys.path` and no `tests/` directory, and the whole point of the gate is
+    that it runs where nothing from this checkout is importable. Same shape as
+    `tests/subproc.py`.
+    """
+    if sys.platform != "win32":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
+
+
 target, seed, scratch = sys.argv[1], sys.argv[2], sys.argv[3]
 
 # Drop every sys.path entry that could hand out a real `vkit` package, then put
@@ -108,11 +129,11 @@ static = Path(server.__file__).resolve().parent / "static"
 
 repo = Path(scratch) / "space repo"
 shutil.copytree(seed, repo)
-subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+subprocess.run(["git", "init", "-q"], cwd=repo, check=True, **hidden_window())
+subprocess.run(["git", "add", "-A"], cwd=repo, check=True, **hidden_window())
 subprocess.run(
     ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fixture"],
-    cwd=repo, check=True,
+    cwd=repo, check=True, **hidden_window(),
 )
 
 def get(port, path):
@@ -164,7 +185,7 @@ print(json.dumps({
 
 
 def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return subproc.run(
         args, cwd=cwd, capture_output=True, encoding="utf-8",
         errors="replace", timeout=600, check=False,
     )

@@ -678,22 +678,45 @@ class Store:
                 raise
             conn.execute("COMMIT")
 
-    def claim_supervisor(self, run_id: str) -> dict[str, Any]:
-        """Record that *this* process is the supervisor for a recorded launch.
+    def claim_supervisor(self, run_id: str, *, project=None) -> dict[str, Any]:
+        """Fence this supervisor against recovery and task ownership changes."""
+        from .tasks import verify_ownership_in
 
-        Written by the supervisor and by nobody else, for the reason
-        `record_launch` leaves it null: the process that registers a run is not
-        the process that owns its job once the run is detached, and an identity
-        recorded from the wrong one is an identity that outlives the truth.
-        """
-        with self._connect() as conn:
+        with self.transaction() as conn:
+            launch = conn.execute(
+                "SELECT abandoned, supervisor_pid FROM launches WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if launch is None:
+                raise StoreError(f"no launch is recorded for run {run_id!r} to supervise")
+            if launch[0]:
+                raise StoreError(f"launch for run {run_id!r} was abandoned")
+            if launch[1]:
+                raise StoreError(f"run {run_id!r} already has a supervisor")
+            run = conn.execute(
+                "SELECT lifecycle, task_id, attempt FROM runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise StoreError(f"run {run_id!r} is not registered")
+            lifecycle, task_id, generation = run
+            if lifecycle == "terminal":
+                raise StoreError(f"run {run_id!r} is already terminal")
+            if task_id is not None:
+                if generation is None:
+                    raise StoreError(f"task run {run_id!r} has no recorded generation")
+                if project is None:
+                    raise StoreError(f"task run {run_id!r} needs its pinned checkout to be verified")
+                verify_ownership_in(conn, task_id, generation, project=project)
             cursor = conn.execute(
                 "UPDATE launches SET supervisor_pid = ?, supervisor_start = ?"
-                " WHERE run_id = ?",
+                " WHERE run_id = ? AND abandoned = 0 AND supervisor_pid = 0"
+                " AND EXISTS (SELECT 1 FROM runs WHERE runs.run_id = launches.run_id"
+                " AND runs.lifecycle != 'terminal')",
                 (os.getpid(), _supervisor_start(), run_id),
             )
             if cursor.rowcount == 0:
-                raise StoreError(f"no launch is recorded for run {run_id!r} to supervise")
+                raise StoreError(f"run {run_id!r} cannot be claimed in its current state")
         return {"run_id": run_id, "supervisor_pid": os.getpid()}
 
     def load_launch(self, run_id: str) -> dict | None:

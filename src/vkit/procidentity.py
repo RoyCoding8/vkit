@@ -361,6 +361,23 @@ def is_alive(identity: ProcessIdentity) -> bool:
         handle.Close()
 
 
+def process_group_is_alive(pgid: int) -> bool:
+    """Whether any process remains in a POSIX process group."""
+    if IS_WINDOWS:
+        raise UnsupportedPlatform("process groups are POSIX-only")
+    if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0:
+        raise CannotConfirm(pgid, "the process-group id does not name one owned group")
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        raise CannotConfirm(pgid, f"process group {pgid} could not be checked: {exc}") from exc
+    return True
+
+
 def _require_windows() -> None:
     """The single guard, on the path every Windows public function takes.
 
@@ -579,6 +596,7 @@ __all__ = [
     "boot_id",
     "is_alive",
     "openprocess_failure_is_gone",
+    "process_group_is_alive",
     "read_identity",
     "still_the_same_process",
 ]

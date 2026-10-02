@@ -170,15 +170,15 @@ def start_run(
         return _handoff(store, run_id, check.id, task_id, generation, replayed=True)
 
     if task_id is not None:
-        # The caller must still own everything the task requires, and it must do
-        # so before a row or a job exists. Checked here rather than left to the
-        # supervisor, because the supervisor is a separate process by the time it
-        # could check, and a resource released in between would be a run writing
-        # to a checkout this attempt no longer holds.
+        # Avoid creating rows or a job for an already-stale task. The detached
+        # supervisor repeats this check atomically with its launch claim, so a
+        # release between here and launch cannot authorize an unowned run.
         from .tasks import ConflictError as _TaskConflict, TaskError, verify_ownership
 
         try:
-            verify_ownership(store, task_id, generation if generation is not None else 0)
+            verify_ownership(
+                store, task_id, generation if generation is not None else 0, project=project
+            )
         except (_TaskConflict, TaskError) as exc:
             raise SupervisorError(f"refusing to start run {run_id}: {exc}") from exc
 

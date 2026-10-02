@@ -83,6 +83,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .outcome import BlockedReason
+from .procidentity import CannotConfirm, process_group_is_alive
 
 if sys.platform == "win32":
     import pywintypes
@@ -977,7 +978,8 @@ def await_exit(lease: JobLease) -> ExecutionResult:
         if timed_out:
             exit_code = _terminate_job(lease.handle, lease._process)
     else:
-        exit_code, timed_out = _wait_posix(lease._posix, lease.timeout_seconds)
+        remaining = max(0.0, lease.timeout_seconds - (time.monotonic() - started))
+        exit_code, timed_out = _wait_posix(lease._posix, remaining)
 
     return ExecutionResult(
         argv=argv,
@@ -996,21 +998,51 @@ def await_exit(lease: JobLease) -> ExecutionResult:
 
 
 def _wait_posix(proc, timeout_seconds: float) -> tuple[int | None, bool]:
-    """The POSIX half of the wait, split out so both platforms share one caller."""
+    """Wait for the whole owned group, bounded by the command's timeout."""
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
     try:
-        return proc.wait(timeout=timeout_seconds), False
+        exit_code = proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        timed_out = False
     except subprocess.TimeoutExpired:
-        _kill_process_group(proc.pid)
+        exit_code = None
+        timed_out = True
+
+    if not timed_out:
+        while True:
+            try:
+                if not process_group_is_alive(proc.pid):
+                    return exit_code, False
+            except CannotConfirm as exc:
+                raise LaunchError(
+                    f"cannot confirm process group {proc.pid} is empty: {exc}"
+                ) from exc
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            time.sleep(min(0.02, remaining))
+
+    _kill_process_group(proc.pid)
+    try:
+        if exit_code is None:
+            exit_code = proc.wait(timeout=REAP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    reap_deadline = time.monotonic() + REAP_TIMEOUT_SECONDS
+    while True:
         try:
-            # The group was signalled, so this normally succeeds and returns the
-            # code the kill produced. It must be assigned on this path too:
-            # leaving it to the except below made every ordinary POSIX timeout
-            # raise UnboundLocalError instead of reporting a timeout.
-            return proc.wait(timeout=REAP_TIMEOUT_SECONDS), True
-        except subprocess.TimeoutExpired:
-            # Signalled, and the leader has not reaped. The command is killed
-            # either way; the code is simply unknown.
-            return None, True
+            if not process_group_is_alive(proc.pid):
+                return exit_code, True
+        except CannotConfirm as exc:
+            raise LaunchError(
+                f"cannot confirm process group {proc.pid} is empty after termination: {exc}"
+            ) from exc
+        remaining = reap_deadline - time.monotonic()
+        if remaining <= 0:
+            raise LaunchError(
+                f"process group {proc.pid} remains after termination; ownership is unresolved"
+            )
+        time.sleep(min(0.02, remaining))
 
 
 def _terminate_unstarted(h_process) -> None:

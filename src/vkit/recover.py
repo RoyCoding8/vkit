@@ -40,7 +40,8 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .procidentity import openprocess_failure_is_gone
+from .procidentity import CannotConfirm, openprocess_failure_is_gone, process_group_is_alive
+from .procs import POSIX_OWNERSHIP
 from .storage import REPORT_NAME, Store
 
 if sys.platform == "win32":
@@ -274,6 +275,25 @@ def liveness(
     if sys.platform == "win32":
         return _liveness_windows(pid, creation_time)
     return _liveness_posix(pid, creation_time, boot_id)
+
+
+def _owned_process_liveness(process: dict | None) -> Liveness:
+    pid = (process or {}).get("pid")
+    if sys.platform != "win32" and (process or {}).get("ownership") == POSIX_OWNERSHIP:
+        try:
+            alive = process_group_is_alive(pid)
+        except CannotConfirm as exc:
+            return Liveness(LivenessState.UNCERTAIN, str(exc))
+        detail = (
+            f"process group {pid} still has members"
+            if alive else f"process group {pid} has no members"
+        )
+        return Liveness(LivenessState.ALIVE if alive else LivenessState.DEAD, detail)
+    return liveness(
+        pid,
+        creation_time=(process or {}).get("creation_time"),
+        boot_id=(process or {}).get("boot_id", ""),
+    )
 
 
 def _liveness_windows(pid: int, creation_time: int | None = None) -> Liveness:
@@ -637,7 +657,7 @@ def _unfinished_run_finding(store: Store, run: _Run) -> Finding:
                 )
             ),
         )
-    state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
+    state = _owned_process_liveness(run.process)
     if state.state is LivenessState.ALIVE:
         return Finding(
             kind=FindingKind.RUN_LIVE_PROCESS,
@@ -688,8 +708,8 @@ def _terminal_run_findings(store: Store, run: _Run) -> list[Finding]:
                 "has no readable evidence, and recovery does not invent one."
             ),
         ))
-    if run.pid is not None:
-        state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
+    if run.process is not None:
+        state = _owned_process_liveness(run.process)
         if state.state is LivenessState.ALIVE:
             findings.append(Finding(
                 kind=FindingKind.RUN_TERMINAL_LIVE_PROCESS,
@@ -775,7 +795,7 @@ def _holder_liveness(runs: tuple[_Run, ...], task_id: str, generation: int) -> s
                 "presumed to be running until an operator reconciles it"
             )
             continue
-        state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
+        state = _owned_process_liveness(run.process)
         parts.append(f"run {run.run_id!r} is {run.lifecycle} at pid {run.pid}, {state.state.value}")
     return "; ".join(parts) + "."
 
@@ -915,9 +935,8 @@ def _abandon_launch(store: Store, run_id: str, evidence: str) -> None:
                 )
         process = json.loads(record["process_json"]) if record["process_json"] else None
         pid = (process or {}).get("pid")
-        if isinstance(pid, int) and not isinstance(pid, bool):
-            owner = liveness(pid, creation_time=(process or {}).get("creation_time"),
-                             boot_id=(process or {}).get("boot_id", ""))
+        if process is not None:
+            owner = _owned_process_liveness(process)
             if owner.state is not LivenessState.DEAD:
                 raise RecoveryRefused(
                     f"refusing to abandon the launch of {run_id!r}: its recorded process at "
@@ -1058,9 +1077,10 @@ def _live_holder(store: Store, task_id: str, generation: int | None = None) -> s
             continue
         if generation is not None and run.attempt != generation:
             continue
-        if not run.unfinished:
-            # A terminal run holds nothing further, whatever its process record
-            # says. Its own reconciliation is a separate question.
+        if not run.unfinished and not (
+            sys.platform != "win32"
+            and (run.process or {}).get("ownership") == POSIX_OWNERSHIP
+        ):
             continue
         if run.lifecycle in ("preparing", "launching") or not run.ownership_known:
             if run.abandoned:
@@ -1077,7 +1097,7 @@ def _live_holder(store: Store, task_id: str, generation: int | None = None) -> s
                 "confirmed the launch is over, apply ABANDON_LAUNCH to this run with "
                 "that evidence first"
             )
-        state = liveness(run.pid, creation_time=run.creation_time, boot_id=run.boot_id)
+        state = _owned_process_liveness(run.process)
         if state.state is LivenessState.ALIVE:
             return f"run {run.run_id!r} is {run.lifecycle} and its process is alive ({state.detail})"
         if state.state is LivenessState.UNCERTAIN:
@@ -1132,16 +1152,7 @@ def _mark_run_dead(store: Store, run_id: str, evidence: str) -> None:
                 "there is no pid whose death could be confirmed"
             )
 
-        recorded_creation_time = process.get("creation_time") if process else None
-        if not isinstance(recorded_creation_time, int) or isinstance(recorded_creation_time, bool):
-            recorded_creation_time = None
-        recorded_boot_id = process.get("boot_id") if process else None
-        if not isinstance(recorded_boot_id, str):
-            recorded_boot_id = ""
-
-        state = liveness(
-            pid, creation_time=recorded_creation_time, boot_id=recorded_boot_id
-        )
+        state = _owned_process_liveness(process)
         if state.state is LivenessState.ALIVE:
             raise RecoveryRefused(
                 f"refusing to mark run {run_id!r} dead: {state.detail}. A running process is "

@@ -154,6 +154,12 @@ class CheckSpec:
     #: with a v1-shaped command, so a v1 manifest is a `scenario` check by the
     #: only reading it has rather than a second shape with no category.
     variant: NativeCheckSpec | None = None
+    #: The manifest version this check was declared under. It is a field rather
+    #: than something derived from the variant, because a v1 check and a v2
+    #: `scenario` check carry the same fields and the two must still produce
+    #: different digests: the version is what tells a reader which contract the
+    #: evidence was produced under.
+    declared_version: int = 1
     subject: SubjectRef | None = None
     claim_id: str | None = None
 
@@ -231,8 +237,8 @@ class Manifest:
         derivation and the omission is invisible at the call site.
         """
         return {
-            "schema_version": schema_version(
-                MANIFEST_V2 if any(_is_v2(c) for c in self.checks.values()) else MANIFEST
+            "schema_version": max(
+                (c.declared_version for c in self.checks.values()), default=1
             ),
             "description": self.description,
             "checks": [
@@ -459,10 +465,6 @@ def parse_manifest_bytes(
     )
 
 
-def _is_v2(check: CheckSpec) -> bool:
-    return check.variant is not None
-
-
 def _build_check(
     entry: dict, *, project: Project, run_dir: Path, version: int
 ) -> CheckSpec:
@@ -515,7 +517,7 @@ def _build_check(
         _require_argv(check_id, command)
         variant = ScenarioCheck(**common, command=command,
                                 required_scenarios=tuple(CaseObligation(s) for s in required))
-        return _wrap(common, required, command, variant)
+        return _wrap(common, required, command, variant, 1)
 
     kind = CheckKind(entry["kind"])
     if kind in DECLARED_BUT_UNAVAILABLE:
@@ -528,16 +530,17 @@ def _build_check(
         )
 
     variant = _variant_for(kind, entry, common, check_id)
-    return _wrap(common, (), variant.argv, variant)
+    return _wrap(common, (), variant.argv, variant, 2)
 
 
 def _wrap(common: dict, required_scenarios: tuple[str, ...],
-          command: tuple[str, ...], variant) -> CheckSpec:
+          command: tuple[str, ...], variant, version: int) -> CheckSpec:
     return CheckSpec(
         **common,
         argv=command,
         required_scenarios=_scenario_names(variant, required_scenarios),
         variant=variant,
+        declared_version=version,
     )
 
 

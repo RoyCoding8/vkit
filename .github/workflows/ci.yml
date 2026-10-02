@@ -20,7 +20,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     defaults:
       run:
-        shell: bash
+        shell: python
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,13 +48,18 @@ jobs:
       # suite still reads green.
       - name: Install
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[test]"
+          import subprocess, sys
+          subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[test]"], check=True)
 
       # The count is collected rather than parsed out of a summary line, so
       # this reports what pytest would run whether or not the run is clean.
       - name: Collect
-        run: python -m pytest tests/ --collect-only -q -o addopts="" -p no:cacheprovider
+        run: |
+          import subprocess, sys
+          subprocess.run([sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q", "-o", "addopts=", "-p", "no:cacheprovider"], check=True)
 
       - name: Test
-        run: python -m pytest tests/ -o addopts="" -p no:cacheprovider
+        run: |
+          import subprocess, sys
+          subprocess.run([sys.executable, "-m", "pytest", "tests/", "-o", "addopts=", "-p", "no:cacheprovider", "-ra"], check=True)

@@ -1,11 +1,11 @@
 # Release checklist
 
 Run every command in this document yourself and paste the output into the
-release record. A step you did not run is a step you did not do, and the
-release is described by what ran, never by what the checklist says can run.
+release record. A step you did not run is a step you did not do. The release is
+described by what ran, never by what this checklist says can run.
 
 The commands here are the ones that exist in this repository at revision
-`5cc14e0`. `tests/test_release_docs.py` resolves every command below against
+`2f1749e`. `tests/test_release_docs.py` resolves every command below against
 `build_parser()` and the working tree, so a step that stops existing fails the
 suite instead of quietly misleading a maintainer. It also resolves every file
 this document cites as evidence *at that revision*, so a pin left behind HEAD
@@ -35,10 +35,27 @@ tests/mcp_client.py
 docs/HOST-SESSION.md
 tests/test_plugin_host.py
 
-# The harness, the examples, and the acceptance walker.
+# The harness, the examples, and the acceptance walker. The walker carries its
+# own tests, which are where GAP-7's evidence lives.
 scripts/acceptance.py
+tests/test_acceptance.py
 examples/python-cli
 examples/node-cli
+
+# The boundaries the schemas and the identity digest are enforced at, and the
+# tests that call both.
+src/vkit/identity.py
+tests/test_identity.py
+tests/test_r2_ownership.py
+
+# GAP-9's two proven limits, and the findings document that separates the bug
+# that was fixed from the limit that remains.
+tests/test_procs.py
+docs/GAP-7-AND-GAP-9-FINDINGS.md
+
+# What proves the plugin's resources survive packaging, and the one half of the
+# schema claim it does not cover.
+tests/test_plugin_resources.py
 
 # GAP-2 and GAP-6's named test files, so a row that totals their counts is
 # backed by the files it adds up rather than by a guess at which files it meant.
@@ -86,8 +103,10 @@ verification/manifest.json
 
 ```text files
 # GAP-8's acceptance matrix, tracked under `docs/`. Its 59 data rows
-# are unmapped, which is what GAP-8 now says.
+# are unmapped, which is what GAP-8 now says, and the mapping the plan asks
+# for has not been produced.
 docs/ACCEPTANCE-MATRIX.md
+plans/09-release-and-pilot.md
 
 # GAP-2's POSIX record. The local POSIX entry points this row used to name were
 # deleted, and with them the two review/ notes that recorded what a local POSIX
@@ -119,9 +138,9 @@ distinction rather than collapsing it.
 ## Read the verdict first
 
 This build does not pass its own checklist. The table at the end of this
-document carries the blocked rows, and the open gaps name the ways the release
-can be wrong in front of a user while every test in this repository is green.
-GAP-1, GAP-3 and GAP-4 are closed and say which receipt closed them; the rest
+document carries the blocked rows. The open gaps name the ways this release can
+be wrong in front of a user while every test in this repository is green.
+GAP-1, GAP-3 and GAP-4 are closed and say which receipt closed them. The rest
 are open and say what is missing.
 
 | Verdict | Meaning |
@@ -142,14 +161,14 @@ work that closes it has run and left a receipt.
 | Gap | Status and what is unverified | Evidence for the claim |
 | --- | --- | --- |
 | GAP-1 | Closed. The `mcp` SDK stdio adapter was executed. | `mcp` 2.2.0 installed and `serve_stdio` run as a real subprocess. `tests/test_mcp_stdio.py` drives it with hand-written JSON-RPC frames. |
-| GAP-2 | Open. The POSIX code path has been exercised, and no run of it is recorded in this tree. | POSIX-CLAIM: no-receipt, derived by `tests/test_release_docs.py` from what this tree holds and not from anything written here. What is verified is the path, not a receipt. What a reader of this checkout can check is `scripts/measure_posix_escape.py` and its three siblings under `scripts/`, which are tracked measurement scripts a POSIX host runs to produce numbers. What no reader can check is the run itself. The record of the local WSL run that exercised this suite was written to gitignored scratch outside the repository, so it exists on one maintainer's disk and in no clone; that is why this row states the position rather than the numbers, and it is the sense in which the receipt is missing rather than merely unfiled. The eighteen shell entry points that run used are gone, and the Python harness that replaced them is gone too. What exercises the path now is `.github/workflows/ci.yml`, which runs `python -m pytest tests/` on `ubuntu-latest`, `windows-latest` and `macos-latest`; its verdict is pytest's exit status, which is the property the shell scripts lacked. What is not verified is a receipt. No run artifact is tracked, and a CI job's receipt is the forge's run log rather than a file in this tree, so nothing here records that a POSIX run has ever passed. It has not: the ubuntu job is red at this revision. It collects and installs, then fails in `Test` for reasons that have nothing to do with POSIX. Two of its failures are gates reading untracked session scratch, which a fresh clone does not have: `test_the_harness_with_no_receipt_is_documented_as_blocked` wants a receipt under `review/`, and this document's own path gate used to want the two `review/` notes, which it no longer does now that a path claim is resolved against the committed tree rather than against whichever disk is running the suite. Two more are shallow-clone failures, `test_the_record_cites_commits_that_exist` wanting `4201cb8` and `test_the_checklist_evidence_is_not_stale[pinned-revision]` wanting the revision pinned at the top of this document, neither of which the default checkout depth brings back. The sixth is a real limit of a hosted POSIX runner: `test_a_recycled_pid_carries_a_new_start_time` needs `unshare --fork --pid`, which the ubuntu runner refuses with `Operation not permitted`. That one is a genuine finding about what this repository's POSIX coverage depends on, and it is why GAP-2 stays open rather than closing on the existence of the workflow. A reader who wants the position in a sentence should read `_posix_position_derived_from_the_tree`, which is where it now lives; this row does not restate it, because a restatement is a second thing that can be wrong. |
+| GAP-2 | Open. The POSIX code path has been exercised, and no run of it is recorded in this tree. | POSIX-CLAIM: no-receipt, derived by `tests/test_release_docs.py` from what this tree holds and not from anything written here. What is verified is the path, not a receipt. A reader of this checkout can open `scripts/measure_posix_escape.py` and its three siblings, which are tracked measurement scripts a POSIX host runs to produce numbers, and `.github/workflows/ci.yml`, which runs this suite on `ubuntu-latest`, `windows-latest` and `macos-latest` and takes pytest's exit status as the verdict. What no reader can check is the run itself. A CI job's receipt is the forge's run log rather than a file in this tree, so nothing here records that a POSIX run has ever passed, and the record of the local WSL run that exercised this suite was written to gitignored scratch outside the repository. The eighteen shell entry points that run used are gone, and so is the Python harness that replaced them. One failure is a real limit of a hosted POSIX runner rather than a gap in this repository: `test_a_recycled_pid_carries_a_new_start_time` needs `unshare --fork --pid`, which hosted runners refuse with `Operation not permitted`. That is why GAP-2 stays open rather than closing on the existence of the workflow. A reader who wants the position in one sentence should read `_posix_position_derived_from_the_tree`, which is where it lives; this row does not restate it, because a restatement is a second thing that can be wrong. |
 | GAP-3 | Closed. A live Claude Code host session installed the plugin, attached the six tools, and delivered three hook events. | `docs/HOST-SESSION.md` quotes the session: Claude Code 2.1.285, driver `tests/test_plugin_host.py`, 16 tests, 57s. Every test in that driver skips rather than fails when the host cannot run, so the receipt is the transcript, not a red suite. |
 | GAP-4 | Closed. The `mcp serve` subcommand exists and both halves of its surface have run. | `vkit mcp serve --project . --json` lists the six tools, exit 0, and `tests/test_mcp_stdio.py` drives that server over real JSON-RPC frames, which is GAP-1's receipt. This row used to say `serve_stdio` had still not been driven by a client while GAP-1's row said it had; the two contradicted each other in the same table. |
 | GAP-5 | Open. The setup console is incomplete. | Plan 05 is the last build step and is still being built in parallel. |
-| GAP-6 | Open. Guided enrollment and integration verification exist, but a pilot operator has no finished flow to drive them. | `vkit project enroll` and `vkit integration verify` are defined in `src/vkit/cli.py`. The 29 collected tests behind them are named rather than totalled, because a total with no filenames behind it can only be checked by guessing which three files were meant: `tests/test_enroll.py` (9), `tests/test_integration.py` (8), `tests/test_plan06_onboarding.py` (12). What is missing is the surface: a console that walks an operator through it, which is GAP-5. |
-| GAP-7 | Open. The acceptance script proves less than it appears to. | It resolves `vkit` from the environment, which is an editable install. |
-| GAP-8 | Open. The acceptance matrix exists and none of its rows is mapped. | `docs/ACCEPTANCE-MATRIX.md` is tracked and holds 59 data rows across six sections, of which its own preamble marks 2 as observed. The mapping plan 09 asks for has not been produced, so every one of the 59 is unmapped. A row is unmapped when no receipt names it, so this gap closes on evidence rather than on the arrival of the file. |
-| GAP-9 | Open. Two documented limits have no check behind them. | A `.cmd` launcher mangles a non-ASCII path. A reverted edit escapes the source digest. |
+| GAP-6 | Open. Guided enrollment and integration verification exist, but a pilot operator has no finished flow to drive them. | `vkit project enroll` and `vkit integration verify` are defined in `src/vkit/cli.py`. The 31 collected tests behind them are named rather than totalled, because a total with no filenames behind it can only be checked by guessing which three files were meant: `tests/test_enroll.py` (9), `tests/test_integration.py` (8), `tests/test_plan06_onboarding.py` (14). What is missing is the surface, which is GAP-5. |
+| GAP-7 | Open. The acceptance script cannot prove what it would prove from a foreign tree. | The rows used to run the console script beside `sys.executable`, which in an environment shared with another checkout is an editable install pointing at that checkout. They now pin the child's `PYTHONPATH` to the `src` tree under test, and `main` asks a real child where `vkit` resolves, exiting 4 when the answer is not the `src/vkit/cli.py` beside the script. The script names the tree it tested on its first line. `tests/test_acceptance.py` runs it against a deliberately broken copy of this tree and asserts the count falls and the defect row is reported, and `test_a_script_with_no_tree_of_its_own_refuses_rather_than_counting` exercises the exit 4 guard. What stays unproved is the old resolution itself. `test_the_reverted_resolution_reaches_another_tree` is the test that would show the pre-fix expression reaching a second checkout, and it skips on this host because this environment's `vkit` is an editable install of the tree under test, so there is no second checkout for it to reach. A release host holding a built wheel skips it for the same reason. |
+| GAP-8 | Open. The acceptance matrix exists and 57 of its rows have no receipt. | `docs/ACCEPTANCE-MATRIX.md` is tracked and holds 59 data rows across six sections. Its own preamble marks 2 as observed, so those two have receipts and the other 57 do not. A row is unmapped when no receipt names it, so this gap closes on evidence rather than on the arrival of the file, which already happened. The mapping `plans/09-release-and-pilot.md` asks for, to an executed test, an optional capability, or an explicit unsupported boundary, has not been produced. |
+| GAP-9 | Open. Two documented limits are proven rather than detected. | Part 1 is a `.cmd` launcher whose own bytes the active ANSI code page cannot represent, so a non-ASCII path written inside the file reads back as different characters. `tests/test_procs.py` forces code page 437 and asserts the payload never runs, and a control test runs the identical launcher under this host's own code page and asserts it works. The trigger is the code page, not the non-ASCII character. The launch bug that hid behind this limit is fixed: `procs._command_line` no longer wraps a batch file in `cmd.exe /c`, so all four launcher paths deliver their arguments, and the corrected wording is in `docs/GAP-7-AND-GAP-9-FINDINGS.md`. Part 2 is an edit made and reverted during a run, which escapes the source digest. `tests/test_identity.py` demonstrates it through the product's own report and asserts the digest is unchanged and the outcome still reads PASS, with a contrast test beside it holding the same edit in place and asserting BLOCKED. Both parts are demonstrated and neither has a detector, because a watcher would be a second authority over what the source was and a poll cannot catch an edit inside its own gap. |
 | GAP-10 | Open. The parts of the host question GAP-3's session did not reach. | A subagent inheriting the six tools, and a BLOCKED run stopping a real turn, need their own live sessions. No test in `tests/test_plugin_host.py` drives either. |
 
 The first word in a gap row's status cell is the row's verdict, and
@@ -184,8 +203,9 @@ only one of them needed running.
 ## Build the artifacts
 
 Every command below was run on Windows 11 with Python 3.13.14 at revision
-`5cc14e0`. The only edits since that commit are to documents, which no command
-in this document measures.
+`2f1749e`. The wheel size and the protocol run were measured at that revision.
+The suite is reported as a collected count because no full execution of
+`tests/` was run at it.
 
 ```console command
 $ uv venv --seed <venv>
@@ -201,14 +221,13 @@ $ <venv>/Scripts/python.exe -m pip wheel . --no-deps -w <dist>
 ```
 
 On this host the wheel build printed
-`Created wheel for vkit: filename=vkit-0.1.0-py3-none-any.whl size=258158`,
-rebuilt at revision `5cc14e0`. The size is what makes this a receipt rather than
+`Created wheel for vkit: filename=vkit-0.1.0-py3-none-any.whl size=260697`,
+rebuilt at revision `2f1749e`. The size is what makes this a receipt rather than
 a claim that the wheel builds, and `tests/test_release_docs.py` checks it has a
 byte count without checking the value, because a wheel's size moves with the
 source it packages.
-The build depends on `hatchling`, which is not installed in the shared
-virtualenv, and `pip` fetches it into an isolated build environment. A release
-host that blocks network access cannot build the wheel with this command.
+`pip` fetches the build backend into an isolated environment, so this command
+reaches a package index. A release host that blocks network access cannot run it.
 
 ## Verify the test suite
 
@@ -220,11 +239,10 @@ $ <venv>/Scripts/python.exe -m pip install -e ".[test]"
 $ <venv>/Scripts/python.exe -m pytest tests/
 ```
 
-Observed on this host: `740 tests collected`. That is the collected count and
-not a passed count. A passed count is not recorded here because the last full
-execution of this suite at this revision has not been run, and carrying a
-number forward from a revision where fewer tests existed would be a count
-measured about a different tree.
+Observed on this host: `740 tests collected`. That is the collected count, not a
+passed count. No full execution of `tests/` was run at this revision, and a
+passed count carried forward from a revision where fewer tests existed would be a
+count measured about a different tree.
 
 Collection is the number that can be measured without a fifteen-minute run and
 without claiming any test passed, so it is the number that is kept current.
@@ -233,11 +251,11 @@ when the two disagree, so this line cannot drift the way an inherited number
 drifts.
 
 What collection does not say is the part a reader most wants. A test that
-collects and skips is collected; a test that collects and fails is collected;
-a test whose module fails to import is not collected at all and is a count that
+collects and skips is collected. A test that collects and fails is collected. A
+test whose module fails to import is not collected at all, which is a count that
 quietly shrank. Two of those three read as a smaller number rather than as a
-defect, which is why the passed and skipped halves are separate observations
-and why an unrun suite reports its collection total with no verdict attached.
+defect, which is why an unrun suite reports its collection total with no verdict
+attached.
 
 The skips this suite can take are named rather than counted, because a skip
 count is not a rounding error. Two tests that never run and two that run and
@@ -264,13 +282,12 @@ $ <venv>/Scripts/python.exe scripts/acceptance.py
 
 Observed on this host: `22/22 acceptance rows pass`.
 
-GAP-7 was this number proving less than it appeared to. The rows resolved the
-command under test from `sys.executable`'s directory, so in a worktree they
-exercised whichever `vkit` the shared virtualenv had on its path — an editable
-install pointing at a different checkout. They now pin the child's `PYTHONPATH`
-to the tree under test, and `main` asks a real child where `vkit` resolves,
-refusing with exit 4 when it is not this tree. The script names the tree it
-tested in its own output.
+GAP-7 was this number proving less than it appeared to. The rows used to resolve
+the command under test from the console script beside `sys.executable`, so in a
+checkout sharing a virtualenv they exercised an editable install pointing at
+another tree. They now pin the child's `PYTHONPATH` to the tree under test, and
+`main` asks a real child where `vkit` resolves, refusing with exit 4 when it is
+not this tree. The script names the tree it tested in its own output.
 
 The rows now run the module rather than the console script, which means this
 step no longer exercises the installed entry point. The next step does, against
@@ -279,9 +296,9 @@ did the first would ship an entry point nobody ran.
 
 ## Verify the installed entry point
 
-This is the command a user types. The rows above run the module; this runs the
-script the wheel installs, which is the only thing that proves the packaging
-works — a `pyproject.toml` entry point that names a function which no longer
+This is the command a user types. The rows above run the module. This one runs
+the script the wheel installs, which is the only thing that proves the packaging
+works, because a `pyproject.toml` entry point naming a function that no longer
 exists fails only here.
 
 ```console command
@@ -294,8 +311,8 @@ this project. It prints the catalogue rather than opening the transport, so it
 can be read instead of watched.
 
 `doctor` is deliberately not in this list. Run `vkit doctor --project .` and
-read the output rather than trusting its exit code: on this repository it exits
-3, correctly, because there is no manifest here — vkit's own source tree is not
+read the output rather than trusting its exit code. On this repository it exits
+3, correctly, because there is no manifest here. vkit's own source tree is not
 an enrolled project. A release step that passed on a non-zero exit would be
 asserting that this repository is verified, which it is not and does not need to
 be.
@@ -324,32 +341,30 @@ $ <venv>/Scripts/python.exe -m pip install ".[mcp]"
 $ <venv>/Scripts/python.exe -m pytest tests/test_mcp_stdio.py
 ```
 
-Observed on this host: `25 tests collected` in this file, and on the run below
-that collected `1 failed, 23 passed`. The failure was
-`test_a_client_that_disconnects_mid_lifecycle_loses_no_evidence`, and it does
-not reproduce in isolation, where it passes in 4.18s against 49.72s for the
-file. That is a flake in the suite under load, not a stable green, and it is
-recorded here rather than as `24 passed` because the passing number was not
-observed twice. Re-run this step before a release and treat a repeat of that
-name as a real failure.
+Observed on this host: `25 tests collected` in this file, and `25 passed in
+69.96s`. An earlier revision of this document recorded a run of `1 failed, 23
+passed` here and named
+`test_a_client_that_disconnects_mid_lifecycle_loses_no_evidence` as a flake. That
+run did not reproduce, and the collected count is 25 rather than 24 because one
+test is parameterised over five explicit ids. Re-run this step before a release
+and treat a repeat of that name as a real failure rather than as noise.
 
-The count itself was the second stale number in this document. It read 23,
-which matched neither the 20 module-level `def test_` in this file nor the 24
-pytest collects, because one test is parameterised over five explicit ids. The
-collected count is the one a reader can reproduce with `--collect-only`. The
-pinned SDK is `mcp` 2.2.0, and the negotiated protocol version on the wire was
-`2025-06-18`.
+The count was the second stale number in this document. It read 23, which
+matched neither the 21 module-level `def test_` in this file nor what pytest
+collects. The collected count is the one a reader can reproduce with
+`--collect-only`. The pinned SDK is `mcp` 2.2.0, and the negotiated protocol
+version on the wire was `2025-06-18`.
 
-What that proves, and it is worth being exact about the boundary. A real client
-process, one that does not import `mcp` or `vkit`, wrote JSON-RPC frames to the
-server's stdin and read frames off its stdout. It listed the six tools, called
-all of them, drove `examples/python-cli` to `READY`, introduced a real defect and
-got `REJECTED`, and confirmed a stored `FAIL` still reads as `FAIL` on a second
-connection. It proved a malformed frame is survivable, an unknown method returns
-`-32601`, a refused request returns `isError: true` rather than a protocol error,
-an internal fault returns `-32603` with no verdict-shaped body, a killed server
-loses no evidence, a 200 KB log comes back one bounded page at a time, and a
-missing SDK exits 5 with a message naming the extra rather than hanging.
+The boundary here is worth stating exactly. A real client process, one that does
+not import `mcp` or `vkit`, wrote JSON-RPC frames to the server's stdin and read
+frames off its stdout. It listed the six tools, called all of them, drove
+`examples/python-cli` to `READY`, introduced a real defect and got `REJECTED`,
+and confirmed a stored `FAIL` still reads as `FAIL` on a second connection. It
+proved a malformed frame is survivable, an unknown method returns `-32601`, a
+refused request returns `isError: true` rather than a protocol error, an internal
+fault returns `-32603` with no verdict-shaped body, a killed server loses no
+evidence, a 200 KB log comes back one bounded page at a time, and a missing SDK
+exits 5 with a message naming the extra rather than hanging.
 
 What it does not prove is that Claude Code loads the plugin. That is a different
 program and a different question, and it was GAP-3. It is closed now, on the
@@ -396,23 +411,43 @@ stdin for SessionStart, PreToolUse and Stop.
 
 ## Verify the schemas
 
+The schemas are enforced at every boundary a check crosses, inside the running
+code rather than in a schema test file.
+
 ```console command
-$ <venv>/Scripts/python.exe -m pytest tests/test_claims.py
+$ <venv>/Scripts/python.exe -m pytest tests/test_identity.py tests/test_r2_ownership.py
 ```
 
 The three authoritative schemas are `schemas/manifest.v1.json`,
 `schemas/check-artifact.v1.json`, and `schemas/run-report.v1.json`. They are
 force-included into the wheel as `vkit/_schemas`, so validation works from an
-installed package with no source tree present. The suite loads them through
-`src/vkit/schemas.py`, which is what proves the packaging works rather than the
-file existing.
+installed package with no source tree present. `src/vkit/schemas.py` finds them
+through `importlib.resources`, which is what makes the packaging the thing being
+proven rather than the files merely existing.
+
+Measured on this host, installing the wheel built above into a clean
+environment and running from a directory holding no source tree: the schemas
+resolve out of the installed package's `_schemas` directory, a manifest with no
+checks is rejected, and a run report and a check artifact that are missing their
+required fields are each rejected with the field named. That was an ad-hoc
+probe rather than a gate, so a reader cannot re-run it from this document
+alone.
+
+Two boundaries carry a test that calls `src/vkit/schemas.py` directly, which is
+where the gate stands today. `tests/test_r2_ownership.py` rejects a report that
+does not match `RUN_REPORT`, and `tests/test_identity.py` validates the report
+the run writes. `tests/test_plugin_resources.py` proves the plugin's own
+resources survive packaging by building and installing a wheel, and it does not
+look at `vkit/_schemas`. No test asserts that the three schema files are inside
+the wheel, so a packaging change that dropped them would pass every gate in this
+suite and fail only at a user's first malformed document.
 
 ## What the release may and may not say
 
 | Claim | Verdict | Why |
 | --- | --- | --- |
 | Runs a registered check and records a durable outcome | verified | `scripts/acceptance.py`, 22 of 22 rows. |
-| Installs from a wheel and validates its schemas outside the source tree | verified | Wheel built from this revision and installed into a clean `<venv>`; `tests/test_claims.py` loads the schemas through `src/vkit/schemas.py`, which is where the packaging is proven rather than the files merely existing. |
+| Installs from a wheel and validates its schemas outside the source tree | verified | Measured by hand at this revision: the wheel installed into a clean `<venv>` holding no source tree resolved the three schemas out of the installed package, and rejected a manifest with no checks, a run report missing `run_id`, and a check artifact missing `scenarios`. Those boundaries are enforced in the running code and exercised from the checkout by `tests/test_r2_ownership.py` and `tests/test_identity.py`, which both call `src/vkit/schemas.py`. No test asserts the wheel ships the files, so the packaging half is a recorded observation rather than a gate. |
 | Exposes six MCP tools to an agent | verified | Six tools listed and called over real JSON-RPC frames on a real subprocess, `tests/test_mcp_stdio.py`. |
 | Installs into Claude Code as a plugin | verified | A live host session installed it and recorded it enabled, `HOST-SESSION.md`. The receipt is a transcript; the driver skips rather than fails where the host cannot run. |
 | Supplies the plugin's MCP server | verified | The host connected `plugin:vkit:vkit` and the model called a vkit tool through it, `HOST-SESSION.md`. The health check a session disagrees with is recorded there too. |

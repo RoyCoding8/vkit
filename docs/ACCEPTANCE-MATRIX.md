@@ -2,6 +2,8 @@
 
 This is the acceptance research for the reusable kit. It is not an implementation task list and does not claim these checks have passed. Only rows marked observed were exercised during research.
 
+A required outcome is what a check has to produce. Most rows say nothing about how that is proved, so most have no receipt naming them. GAP-8 in the release checklist is the register entry for that, and it is open. Two rows are marked observed because a run produced the numbers in the cell, and those two rows are the only ones here with a receipt.
+
 ## Compatibility and installation
 
 | Check | Required outcome |
@@ -64,7 +66,7 @@ This is the acceptance research for the reusable kit. It is not an implementatio
 | Disk full or interrupted report write | No complete acceptance record; partial artifacts remain diagnosable |
 | Path traverses a symlink outside its assigned root | Boundary validation catches it where path confinement is required |
 | Network filesystem for local SQLite coordination | Refuse unsupported shared coordination or use a separately specified backend |
-| Secret appears in command output | Apply the project's redaction rules before sharing evidence; do not dump full environment variables |
+| Secret appears in command output | Apply the project's redaction rules before sharing evidence; do not dump full environment variables. The environment half is enforced and holds. The output half is not implemented: the report's `environment` block is written by `_environment_facts` and never carries the process environment, which `tests/test_storage.py` asserts. Nothing between the check and the disk filters `stdout.log` or `stderr.log`, and there is no redaction routine anywhere under `src/`, so a secret the check itself prints is persisted verbatim. |
 
 ## Hooks and trust boundaries
 

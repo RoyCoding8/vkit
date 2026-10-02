@@ -59,6 +59,7 @@ CHECK_ID = "totals-behavior"
 #: comparison is only meaningful when the one field under test is the one that
 #: differs.
 _POLICY_DIGEST: dict[str, str] = {}
+_FIXTURE_DIGEST: dict[str, str] = {}
 
 
 def _git_init(root: Path) -> None:
@@ -94,6 +95,9 @@ def _context(repo: Path):
     def loader():
         manifest = parse_manifest(project, project.runs_root)
         _POLICY_DIGEST["value"] = manifest.digest()
+        fixture = manifest.fixture_identity()
+        if fixture is not None:
+            _FIXTURE_DIGEST["value"] = fixture.digest
         return manifest
 
     return acceptance_context(project, loader)
@@ -125,19 +129,22 @@ def _current_source(repo: Path) -> dict:
 
 
 def _publish_pass(store: Store, task_id: str, attempt: int, source: dict | None = None,
-                  policy_digest: str | None = None) -> None:
+                  policy_digest: str | None = None,
+                  fixture_digest: str | None | object = Ellipsis) -> None:
     """One terminal passing run, the way a completed check records itself.
 
-    `fixture_digest` is null because that is what the execution path records in
-    this build; acceptance names it as unverified rather than pretending to
-    compare it.
+    Fixture identity is measured from the same policy as admission.
     """
     run_id = f"r-{task_id}-{attempt}-{next(_RUNS)}"
     if policy_digest is None:
         policy_digest = _POLICY_DIGEST.get("value", "pd")
     store.register_run(run_id, CHECK_ID, task_id=task_id, attempt=attempt,
                        source=source or {"inventory_digest": "an-unrelated-inventory"},
-                       configuration_digest=policy_digest, fixture_digest=None)
+                       configuration_digest=policy_digest,
+                       fixture_digest=(
+                           _FIXTURE_DIGEST["value"] if fixture_digest is Ellipsis
+                           else fixture_digest
+                       ))
     store.publish(run_id, {
         "run_id": run_id, "lifecycle": "terminal", "ended_at": "t",
         "outcome": {"result": "PASS", "scenarios": [
@@ -342,7 +349,7 @@ def test_a_claim_conflict_is_rechecked_before_launch(repo: Path) -> None:
     release(store, "t1", admitted.generation)
 
     with pytest.raises(ConflictError):
-        verify_ownership(store, "t1", admitted.generation)
+        verify_ownership(store, "t1", admitted.generation, project=open_project(repo))
 
 
 def test_a_superseded_attempt_cannot_publish_a_verdict(repo: Path) -> None:
@@ -374,9 +381,9 @@ def test_a_superseded_attempt_no_longer_owns_its_resources(repo: Path) -> None:
     supersede_task(store, "t1")
 
     with pytest.raises(ConflictError):
-        verify_ownership(store, "t1", admitted.generation)
+        verify_ownership(store, "t1", admitted.generation, project=open_project(repo))
     with pytest.raises(ConflictError) as fresh:
-        verify_ownership(store, "t1", 2)
+        verify_ownership(store, "t1", 2, project=open_project(repo))
     assert "checkout" in str(fresh.value), (
         "the successor is expected to re-take the resource its predecessor held; "
         f"the refusal does not name it: {fresh.value}"
@@ -545,22 +552,18 @@ def test_an_identity_mismatch_blocks_the_attempt_and_is_not_a_veto(repo: Path) -
     )
 
 
-def test_an_unrecorded_identity_is_named_rather_than_treated_as_a_pass(repo: Path) -> None:
-    """What acceptance does not compare is stated, not passed over in silence.
-
-    The execution path records a null fixture digest in this build. An identity
-    nothing records is an absence, not a disagreement, so it is named in the
-    decision context and does not block; what it is not is invisible.
-    """
+def test_a_missing_fixture_identity_blocks_until_the_check_runs_again(repo: Path) -> None:
+    """A passing run without fixture provenance cannot satisfy acceptance."""
     store = _store(repo)
     _admit(repo, "t1")
     _publish_pass(store, "t1", 1, source={
         "inventory_digest": compute_source_identity(open_project(repo)).inventory_digest,
-    })
+    }, fixture_digest=None)
 
     result = finalize(store, "t1", context=_context(repo))
 
-    assert result.readiness == "READY"
+    assert result.readiness == "BLOCKED"
+    assert any("no recorded fixtures identity" in gap for gap in result.gaps)
     assert "fixtures" in result.context["unverified_identities"], (
         f"the uncompared identity was not named: {result.context}"
     )

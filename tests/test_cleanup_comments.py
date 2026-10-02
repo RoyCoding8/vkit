@@ -233,6 +233,48 @@ PRESERVED_CASES: tuple[tuple[str, bytes, list[int], str, bytes], ...] = (
         "KEEP_MARKER",
         b"# vkit: keep this one",
     ),
+    (
+        "a pyre suppression",
+        b"value = other()  # pyre-ignore[7]\n",
+        [1],
+        "PYRE_SUPPRESSION",
+        b"# pyre-ignore[7]",
+    ),
+    (
+        "a pyre fixme",
+        b"value = other()  # pyre-fixme[56]: infer later\n",
+        [1],
+        "PYRE_SUPPRESSION",
+        b"# pyre-fixme[56]: infer later",
+    ),
+    (
+        "a pyre local mode",
+        b"# pyre-strict\nvalue = other()  # note\n",
+        [2],
+        "PYRE_SUPPRESSION",
+        b"# pyre-strict",
+    ),
+    (
+        "a CodeQL lgtm suppression",
+        b"value = other()  # lgtm[py/unused-import]\n",
+        [1],
+        "CODEQL_SUPPRESSION",
+        b"# lgtm[py/unused-import]",
+    ),
+    (
+        "a CodeQL codeql suppression",
+        b"value = other()  # codeql[py/clear-text-logging]\n",
+        [1],
+        "CODEQL_SUPPRESSION",
+        b"# codeql[py/clear-text-logging]",
+    ),
+    (
+        "a pytype directive",
+        b"value = other()  # pytype: disable=wrong-arg-types\n",
+        [1],
+        "UNKNOWN_DIRECTIVE",
+        b"# pytype: disable=wrong-arg-types",
+    ),
 )
 
 
@@ -258,6 +300,59 @@ def test_a_preserved_category_survives_and_is_reported_under_its_own_rule(
     assert isinstance(preview, Proposal), preview
     assert fragment in preview.after_bytes, f"{description} was not preserved"
     assert expected_rule in rules_by_line(preview).values(), rules_by_line(preview)
+
+
+#: (source, the one comment that must be removable from it)
+ORDINARY_PROSE: tuple[tuple[bytes, str], ...] = (
+    (b"owner = who  # e-mail the owner\n", "# e-mail the owner"),
+    (b"delta = right - left  # off-by-one case\n", "# off-by-one case"),
+    (
+        b"url = 'https://example.com/a-b'  # see the docs at https://example.com\n",
+        "# see the docs at https://example.com",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b"value = other()  # notalinter-ignore[7]\n",
+        b"value = other()  # unknowntool-strict\n",
+        b"value = other()  # somelinter[rule-name]\n",
+    ],
+    ids=["hyphen plus bracket", "hyphenated local mode", "hyphen plus rule name"],
+)
+def test_a_colonless_directive_from_an_unlisted_tool_is_still_preserved(
+    tmp_path: Path, source: bytes
+) -> None:
+    """No rule names these tools, which is the point: an enumeration of
+    recognised tools cannot say "or any tool not in the table", so the shape
+    layer has to. These three are the colonless family that a colon requirement
+    cannot see, and each is the shape pyre and CodeQL actually use."""
+    project = project_with(tmp_path, "sample.py", source)
+
+    preview = preview_comment_cleanup(project, "sample.py", changed_lines=[1])
+
+    assert isinstance(preview, Proposal), preview
+    assert preview.removed == (), rules_by_line(preview)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"), ORDINARY_PROSE, ids=[case[1] for case in ORDINARY_PROSE]
+)
+def test_the_hyphenated_shape_does_not_swallow_ordinary_prose(
+    tmp_path: Path, source: bytes, expected: str
+) -> None:
+    """The shape rule matches a hyphenated tool name, and a hyphenated English
+    word has the same shape. This is the counter-test: without it the rule would
+    quietly stop removing ordinary comments, which is as wrong as removing a
+    directive."""
+    project = project_with(tmp_path, "sample.py", source)
+
+    preview = preview_comment_cleanup(project, "sample.py", changed_lines=[1])
+
+    assert isinstance(preview, Proposal), preview
+    assert [c.text for c in preview.removed] == [expected]
 
 
 def test_a_license_header_in_another_language_is_still_a_license_header(

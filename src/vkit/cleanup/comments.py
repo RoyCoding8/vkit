@@ -213,28 +213,57 @@ _PRESERVED: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ),
     (
         "CODEQL_SUPPRESSION",
-        "CodeQL's `# security: ignore` suppression comment for Python. "
-        "https://docs.github.com/en/code-security/code-scanning",
-        re.compile(r"^security\s*:", re.IGNORECASE),
+        "CodeQL's Python suppression markers, `# lgtm` and `# codeql`, both with "
+        "optional bracketed rules such as `# lgtm[py/unused-import]`. CodeQL also "
+        "treats `# noqa` as a suppression marker, which NOQA above already covers. "
+        "Read from the query itself, not from documentation prose: "
+        "https://github.com/github/codeql/blob/main/python/ql/src/AlertSuppression.ql",
+        re.compile(r"^(?:lgtm|codeql)\b", re.IGNORECASE),
+    ),
+    (
+        "PYRE_SUPPRESSION",
+        "pyre's family: the line-level `# pyre-ignore`, `# pyre-ignore[code]`, "
+        "`# pyre-fixme[code]: reason`, and `# pyre-ignore-all-errors[code]`, plus "
+        "the file-level `# pyre-strict` and `# pyre-unsafe` local-mode comments. "
+        "These matter here more than most entries because pyre's spelling is "
+        "HYPHENATED and carries NO colon for four of the six, so the "
+        "`tool: keyword` shape below cannot see them and this rule is the only "
+        "thing standing between a real suppression and deletion. "
+        "https://github.com/facebook/pyre-check/blob/main/documentation/website/docs/errors.md",
+        re.compile(
+            r"^pyre-(?:ignore-all-errors|ignore|fixme|strict|unsafe)\b", re.IGNORECASE
+        ),
     ),
     (
         "SPDX",
         "SPDX tag-value license headers, `# SPDX-License-Identifier:` and "
         "`# SPDX-FileCopyrightText:`. The tag is the standard's, not this "
         "project's, so a header written for a different license still matches. "
-        "https://spdx.github.io/spdx-spec/v2.3/tag-values/",
+        "https://spdx.github.io/spdx-spec/v2.3/file-tags/",
         re.compile(r"^SPDX-[A-Za-z0-9-]+\s*:"),
     ),
     (
         "UNKNOWN_DIRECTIVE",
-        "The `tool: keyword` shape, which is how every tool in this table and "
-        "every tool NOT in it writes its directive. This is the layer that makes "
-        "an enumerated list honest: an unrecognised tool has to survive too, and "
-        "a closed list of recognised tools cannot say that. A bare URL (`:` not "
+        "Three shapes, because the tools do not agree on one. The `tool: keyword` "
+        "shape covers every entry above and every tool NOT in this table. The "
+        "bracketed shape (`name[...]`) and the hyphenated shape (`name-word`, "
+        "`name-word[code]`, `name-word on file`) cover the COLONLESS families a "
+        "colon requirement cannot see: pyre's `# pyre-ignore[7]` and `# "
+        "pyre-strict`, CodeQL's `# lgtm[py/rule]`, and any future tool that spells "
+        "its directive that way. The colonless shapes were added after pyre and "
+        "CodeQL were measured as REMOVABLE by the colon-only rule, which is the "
+        "exact failure an enumeration exists to prevent. A bare URL (`:` not "
         "followed by `//`) is excluded so a reference link in prose is not read "
-        "as a directive. The cost is that `# TODO: ...` and `# Note: ...` are "
+        "as a directive, and the hyphenated shape requires a bracket, end of "
+        "comment, or a preposition so an ordinary hyphenated English word is still "
+        "removable. The cost is that `# TODO: ...` and `# Note: ...` are "
         "preserved, which narrows removal rather than widening it.",
-        re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*\s*:(?!//)"),
+        re.compile(
+            r"^(?:[A-Za-z][A-Za-z0-9_.-]*\s*:(?!//)"
+            r"|[A-Za-z][A-Za-z0-9_.-]*\["
+            r"|[a-z][a-z0-9]*(?:-[a-z0-9]+)+(?:\[|$|\s+(?:on|for|in|at)\b))",
+            re.IGNORECASE,
+        ),
     ),
 )
 

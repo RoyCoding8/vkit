@@ -1,28 +1,9 @@
 # Shared implementation contract
 
-Status: the required design baseline for Plans 01-09, and still the authority
-the product cites. Names were provisional until Plan 01 froze its public
-interface. This file states meanings and invariants, not an implementation
-status, so it does not carry per-plan state. Three clauses have been amended as
-the code settled them; each amendment says what changed and why, because a
-reviewer needs to know the contract moved rather than was always this way.
-
-## Amendments
-
-1. **Run lifecycle gained two values.** This section originally said a run is
-   preparing, running, or terminal. R2 added `launching` and `cancelling`, so the
-   full set is preparing, launching, cancelling, running, terminal. The original
-   three were a description of what a foreground check did, and the record could
-   no longer say what was happening between register and identity publish. See
-   [R2-DESIGN.md](R2-DESIGN.md).
-2. **`integration verify` is a public command.** The command table below
-   assigns it to Plan 07 and it shipped as `vkit integration verify`, wired
-   through the same dispatch table as every other verb.
-3. **A lost connection does not mean the work stopped.** "Run lifetime and
-   recovery" originally said Plan 01 runs in the foreground and Plan 02 adds a
-   per-run supervisor, which left the foreground path as the only described one.
-   Both paths ship. A detached supervisor outlives its initiating request; the
-   foreground path is for callers that want the verdict when the call returns.
+Status: existing application invariants at the e211eb2 baseline. This is a
+reference contract, not a completed-plan status report. Start implementation
+from [MASTER-PLAN.md](../MASTER-PLAN.md), and apply
+[NEXT-CONTRACT.md](NEXT-CONTRACT.md) as its checkpoints land.
 
 ## Scope and ownership
 
@@ -40,10 +21,10 @@ Suggested layout, adjustable by the engineer:
 pyproject.toml
 src/vkit/              # core, CLI, MCP and hook entry points
 schemas/              # authoritative versioned boundary schemas
-plugin/               # Claude plugin distribution, introduced in Plan 04
+plugin/               # Claude plugin distribution
 examples/             # actual Python and Node applications
 tests/                # behavior and failure checks
-plans/                # implementation handoffs and acceptance receipts
+plans/                # active implementation details and contracts
 ```
 
 Create files when their milestone needs them. Do not scaffold later modules with placeholder implementations.
@@ -138,7 +119,9 @@ Bind each MCP process to one configured project root. Before enrollment, expose 
 
 ## Authority and installation
 
-Installing the plugin is not blanket permission to spawn agents, install more packages, or merge. Follow the user's active session and project policy. The planning session that produced these documents authorized no delegation; the repository owner has since authorized bounded parallel subagents for implementation, recorded per plan. Future builders can use additional skills, but skill instructions do not override explicit user limits. A plan's own delegation paragraph is the authority for that plan and outranks any earlier planning-session default.
+Installing the plugin is not blanket permission to spawn agents, install
+packages, or merge. Follow the current human instructions and repository
+policy. A plan or skill cannot grant permission that the human withheld.
 
 The setup app asks the user to select components and scope, then displays exact changes before applying them. Subsequent operations already authorized by that selection should finish without repeated questions. Use official host installation mechanisms where available. Protect unrelated settings and preserve recoverable prior values.
 
@@ -146,4 +129,4 @@ MCP, CLI, and hooks share the core. Hooks are fast local checks over existing re
 
 ## Completion evidence
 
-For each milestone provide actual commands, exit codes, expected-failure observations, artifact paths, supported environments, and unresolved limits. Record the implemented interface changes in plans/STATUS.md. Do not claim Windows, Linux, Claude hook, live-model, or high-concurrency support from a test double alone.
+For each milestone provide actual commands, exit codes, expected-failure observations, artifact paths, supported environments, and unresolved limits. Record implemented interface changes and checkpoint evidence in MASTER-PLAN.md. Do not claim Windows, Linux, Claude hook, live-model, or high-concurrency support from a test double alone.

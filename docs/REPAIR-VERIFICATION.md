@@ -1,6 +1,6 @@
 # Repair verification
 
-Repair branch: `codex/vkit-recheck-repairs`. Review baseline: `76aef82dcb28649bcc076646c9bd0f45293b2d79`.
+Repair implementation recorded at `e211eb2`; active branch is `main`. Review baseline: `76aef82dcb28649bcc076646c9bd0f45293b2d79`.
 
 ## Changes
 

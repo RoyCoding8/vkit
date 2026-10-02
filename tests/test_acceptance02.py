@@ -25,7 +25,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "acceptance02.py"
-PLAN = REPO_ROOT / "plans" / "02-ownership-and-runs.md"
+PLAN = REPO_ROOT / "docs" / "OWNERSHIP-ACCEPTANCE.md"
 
 sys.path.insert(0, str(SCRIPT.parent))
 

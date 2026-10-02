@@ -1,5 +1,10 @@
 # vkit
 
+Implementation workers start at [MASTER-PLAN.md](MASTER-PLAN.md). It is the
+current build queue. The existing CLI instructions below describe shipped
+behavior; the native verification engine, checked cleanup, and dashboard
+upgrades are planned there.
+
 Run a registered check in a Git repository and keep a durable, trustworthy
 outcome. A real defect fails. Missing evidence cannot pass.
 

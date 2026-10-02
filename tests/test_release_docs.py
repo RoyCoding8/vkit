@@ -1143,7 +1143,7 @@ def test_the_posix_claim_is_stated_the_same_way_everywhere_it_is_stated() -> Non
     derived = _posix_position_derived_from_the_tree()
     recorded = {
         path.name: _posix_claim(_read(path))
-        for path in (CHECKLIST, PILOT, STATUS, README)
+        for path in (CHECKLIST, PILOT, README)
     }
     for name, position in recorded.items():
         assert position, (
@@ -1247,7 +1247,6 @@ POSIX_CLAIMS = {
 # The documents that discuss POSIX. Adding one is a deliberate act, because a
 # document that discusses the subsystem without recording the claim is how this
 # disagreement started.
-STATUS = ROOT / "plans" / "STATUS.md"
 README = ROOT / "README.md"
 
 _POSIX_CLAIM_RE = re.compile(r"POSIX-CLAIM:\s*([a-z-]+)")
@@ -1944,4 +1943,3 @@ def test_the_checklist_evidence_is_not_stale(label: str) -> None:
     for name, check in EVIDENCE:
         if name == label:
             check(text)
-

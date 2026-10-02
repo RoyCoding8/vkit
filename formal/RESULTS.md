@@ -1,5 +1,9 @@
 # Plan 08 results: what was checked, at which bounds, and what that does not cover
 
+Historical formal measurements and regression evidence. These concern the
+recorded models and examples. They do not implement the native project verifier
+in [Plan 10](../plans/10-native-verifiers.md).
+
 This file is the receipt for Plan 08. Read the scope sentences. A run that
 produced no counterexample is a real result, but it is a result about a bounded
 thing, and the bound is the interesting part.
@@ -447,8 +451,8 @@ unnoticed.
 
 `tmp/research/KIT_ACCEPTANCE.md` is acceptance research, not an implementation
 list, and it says so at the top. Three of its rows were carried in
-`plans/R5-GAPS.md` as having no artifact of any kind. Each is measured below, and
-the record corrects R5-GAPS where it was wrong. `review/probe_redaction.py` is
+the historical R5 audit as having no artifact of any kind. Each is measured below, and
+the record corrects the historical R5 audit where it was wrong. `review/probe_redaction.py` is
 the receipt for the first.
 
 | Matrix row | State | Receipt |
@@ -502,8 +506,8 @@ output "follows declared redaction rules", and no redaction rules are declared
 anywhere in the repository. A redaction milestone needs a rule set before it
 needs code, and this file does not invent one.
 
-**"Disk full or interrupted report write" is VERIFIED, and R5-GAPS was wrong to
-carry it.** `plans/R5-GAPS.md` lists it among "matrix rows with no artifact of
+**"Disk full or interrupted report write" is VERIFIED, and the historical R5 audit was wrong to
+carry it.** the historical R5 audit lists it among "matrix rows with no artifact of
 any kind" and notes the concession in `scripts/acceptance02.py`. Both are stale.
 `tests/test_storage.py::test_an_interrupted_report_write_leaves_no_acceptance_
 record` now covers the row's three claims: it raises `OSError(28)` at the
@@ -519,10 +523,10 @@ advertised". Nothing in the product mentions agent teams: a case-insensitive gre
 for `agent.team` across the whole repository returns the matrix row itself, two
 research documents that treat the mode as experimental and explicitly defer it
 (`tmp/research/KIT_RESEARCH.md`: "Add support when a peer-to-peer workflow needs
-it and its acceptance tests pass"), and the `plans/R5-GAPS.md` line that carries
+it and its acceptance tests pass"), and the the historical R5 audit line that carries
 the finding. There is no code, no config key and no test. The row is correctly
 NOT IMPLEMENTED and correctly not advertised, so it is a research backlog item
-rather than a false claim. The characterisation in R5-GAPS, "no artifact of any
+rather than a false claim. The characterisation in the historical R5 audit, "no artifact of any
 kind", is accurate for this row and is stated here so the three rows are not read
 as one verdict.
 

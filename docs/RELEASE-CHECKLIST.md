@@ -1,5 +1,10 @@
 # Release checklist
 
+Historical release reference with revision-bound regression assertions.
+It is not the current implementation queue or a current release verdict.
+Use the root master plan for current work and the repair-verification record
+for later receipts. This document retains historical regression inputs.
+
 Run every command in this document yourself and paste the output into the
 release record. A step you did not run is a step you did not do. The release is
 described by what ran, never by what this checklist says can run.
@@ -106,7 +111,7 @@ verification/manifest.json
 # are unmapped, which is what GAP-8 now says, and the mapping the plan asks
 # for has not been produced.
 docs/ACCEPTANCE-MATRIX.md
-plans/09-release-and-pilot.md
+docs/PILOT.md
 
 # GAP-2's POSIX record. The local POSIX entry points this row used to name were
 # deleted, and with them the two review/ notes that recorded what a local POSIX
@@ -116,7 +121,7 @@ plans/09-release-and-pilot.md
 # exercises the path now is the workflow, and what is not verified is a receipt.
 .github/workflows/ci.yml
 scripts/measure_posix_escape.py
-plans/STATUS.md
+README.md
 ```
 
 ```text absent
@@ -167,7 +172,7 @@ work that closes it has run and left a receipt.
 | GAP-5 | Open. The setup console is incomplete. | Plan 05 is the last build step and is still being built in parallel. |
 | GAP-6 | Open. Guided enrollment and integration verification exist, but a pilot operator has no finished flow to drive them. | `vkit project enroll` and `vkit integration verify` are defined in `src/vkit/cli.py`. The 31 collected tests behind them are named rather than totalled, because a total with no filenames behind it can only be checked by guessing which three files were meant: `tests/test_enroll.py` (9), `tests/test_integration.py` (8), `tests/test_plan06_onboarding.py` (14). What is missing is the surface, which is GAP-5. |
 | GAP-7 | Open. The acceptance script cannot prove what it would prove from a foreign tree. | The rows used to run the console script beside `sys.executable`, which in an environment shared with another checkout is an editable install pointing at that checkout. They now pin the child's `PYTHONPATH` to the `src` tree under test, and `main` asks a real child where `vkit` resolves, exiting 4 when the answer is not the `src/vkit/cli.py` beside the script. The script names the tree it tested on its first line. `tests/test_acceptance.py` runs it against a deliberately broken copy of this tree and asserts the count falls and the defect row is reported, and `test_a_script_with_no_tree_of_its_own_refuses_rather_than_counting` exercises the exit 4 guard. What stays unproved is the old resolution itself. `test_the_reverted_resolution_reaches_another_tree` is the test that would show the pre-fix expression reaching a second checkout, and it skips on this host because this environment's `vkit` is an editable install of the tree under test, so there is no second checkout for it to reach. A release host holding a built wheel skips it for the same reason. |
-| GAP-8 | Open. The acceptance matrix exists and 57 of its rows have no receipt. | `docs/ACCEPTANCE-MATRIX.md` is tracked and holds 59 data rows across six sections. Its own preamble marks 2 as observed, so those two have receipts and the other 57 do not. A row is unmapped when no receipt names it, so this gap closes on evidence rather than on the arrival of the file, which already happened. The mapping `plans/09-release-and-pilot.md` asks for, to an executed test, an optional capability, or an explicit unsupported boundary, has not been produced. |
+| GAP-8 | Open. The acceptance matrix exists and 57 of its rows have no receipt. | `docs/ACCEPTANCE-MATRIX.md` is tracked and holds 59 data rows across six sections. Its own preamble marks 2 as observed, so those two have receipts and the other 57 do not. A row is unmapped when no receipt names it, so this gap closes on evidence rather than on the arrival of the file, which already happened. The mapping `docs/PILOT.md` asks for, to an executed test, an optional capability, or an explicit unsupported boundary, has not been produced. |
 | GAP-9 | Open. Two documented limits are proven rather than detected. | Part 1 is a `.cmd` launcher whose own bytes the active ANSI code page cannot represent, so a non-ASCII path written inside the file reads back as different characters. `tests/test_procs.py` forces code page 437 and asserts the payload never runs, and a control test runs the identical launcher under this host's own code page and asserts it works. The trigger is the code page, not the non-ASCII character. The launch bug that hid behind this limit is fixed: `procs._command_line` no longer wraps a batch file in `cmd.exe /c`, so all four launcher paths deliver their arguments, and the corrected wording is in `docs/GAP-7-AND-GAP-9-FINDINGS.md`. Part 2 is an edit made and reverted during a run, which escapes the source digest. `tests/test_identity.py` demonstrates it through the product's own report and asserts the digest is unchanged and the outcome still reads PASS, with a contrast test beside it holding the same edit in place and asserting BLOCKED. Both parts are demonstrated and neither has a detector, because a watcher would be a second authority over what the source was and a poll cannot catch an edit inside its own gap. |
 | GAP-10 | Open. The parts of the host question GAP-3's session did not reach. | A subagent inheriting the six tools, and a BLOCKED run stopping a real turn, need their own live sessions. No test in `tests/test_plugin_host.py` drives either. |
 

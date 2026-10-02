@@ -1,12 +1,16 @@
 # GAP-7 and GAP-9: what was found, and where each answer lives
 
+Historical measurements retained for release regression checks. Current work
+starts at [MASTER-PLAN.md](../MASTER-PLAN.md). These findings do not establish
+current readiness.
+
 An audit found two defects and one limit. All three were closed in the month
 after it was written. This file records what each one was, so a reader who
 arrives later can tell a settled question from an open one. The reasoning lives
 in the code that implements it, and each entry below names that code rather than
 restating it.
 
-Written by a worktree worker. The owner owns `plans/STATUS.md` and
+Written by a worktree worker. The owner owns the historical implementation status and
 `docs/RELEASE-CHECKLIST.md`; this file is the receipt for those two entries and
 edits neither.
 
@@ -93,7 +97,7 @@ would block a check that works, which is worse than the silent case. The failure
 is loud instead. A mangled launcher exits nonzero, writes no artifact, and the
 run is BLOCKED with `artifact_missing`.
 
-**The corrected wording for `plans/STATUS.md`.** The limit that remains is that
+**The corrected wording for the historical implementation status.** The limit that remains is that
 `cmd.exe` reads a batch file's own bytes in the active ANSI code page, so a
 non-ASCII path written *inside* the file mangles. The launcher path and the
 arguments do not mangle, and did not, as of `e4634e3`. `9a4a33b` then corrected

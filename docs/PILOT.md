@@ -1,5 +1,10 @@
 # Pilot plan
 
+Historical release reference with revision-bound regression assertions.
+It is not the current implementation queue or a current release verdict.
+Use the root master plan for current work and the repair-verification record
+for later receipts. This document retains historical regression inputs.
+
 A pilot is the first real repository, not a demo. It exists to find out whether
 this product helps anyone, and it can only answer that if the thing underneath
 it works. This document states what must be true before a pilot starts.
@@ -68,7 +73,7 @@ Run the pilot baseline from a virtualenv holding the built wheel anyway, and
 record the revision it reports. The script's own guard and a wheel are
 different checks, and only the second exercises the artifact a pilot ships.
 
-GAP-8 applies to the reporting shape. `plans/09-release-and-pilot.md` asks for
+GAP-8 applies to the reporting shape. `docs/PILOT.md` asks for
 every row of an acceptance table to be mapped, and the matrix is tracked at
 `docs/ACCEPTANCE-MATRIX.md` with 59 data rows, none of which is unmapped. So
 there is nothing to map against yet, and the pilot report records the gaps that
@@ -147,9 +152,9 @@ complete and acceptable entry. A filled-in guess is not.
 
 ```text files
 # The plan this pilot implements, and the release gate it depends on.
-plans/09-release-and-pilot.md
+docs/PILOT.md
 plans/CONTRACT.md
-plans/STATUS.md
+README.md
 docs/RELEASE-CHECKLIST.md
 
 # GAP-8's acceptance matrix, whose 59 data rows the report is written around.

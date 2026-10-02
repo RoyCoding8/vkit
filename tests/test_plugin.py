@@ -85,7 +85,8 @@ def _publish_run(store: Store, run_id: str, check_id: str, task_id: str,
                  result: str, reason: str | None = None) -> None:
     store.register_run(run_id, check_id, task_id=task_id, attempt=1,
                        source={"inventory_digest": IDENTITIES["source"]},
-                       configuration_digest=IDENTITIES["policy"], fixture_digest=None)
+                       configuration_digest=IDENTITIES["policy"],
+                       fixture_digest=IDENTITIES["fixtures"])
     if result == "BLOCKED":
         outcome: dict[str, Any] = {"result": "BLOCKED", "reason": reason or "timeout"}
     else:
@@ -97,7 +98,8 @@ def _publish_run(store: Store, run_id: str, check_id: str, task_id: str,
 
 def _managed_contract(session_id: str, *, agent_id: str | None = None,
                       required: tuple[str, ...] = (CHECK_ID,),
-                      root: str = ".") -> dict[str, Any]:
+                      root: str | None = None,
+                      git_common_dir: str | None = None) -> dict[str, Any]:
     """A contract in the shape `TaskContract.from_json` validates.
 
     The flat `{"goal": ..., "required_checks": [...]}` form these tests used to
@@ -107,7 +109,10 @@ def _managed_contract(session_id: str, *, agent_id: str | None = None,
     `declared` because that is where the hook reads it from.
     """
     return {
-        "repository": {"root": root, "git_common_dir": root},
+        "repository": {
+            "root": root or IDENTITIES.get("root", "."),
+            "git_common_dir": git_common_dir or IDENTITIES.get("git_common_dir", root or "."),
+        },
         "policy_digest": IDENTITIES["policy"],
         "required_checks": list(required),
         "scope": "ship",
@@ -159,7 +164,9 @@ def project(tmp_path: Path) -> Path:
     assert context.usable, f"the fixture's own policy is not usable: {context.refusal}"
     IDENTITIES.clear()
     IDENTITIES.update(
-        source=context.source_inventory_digest, policy=context.policy_digest
+        source=context.source_inventory_digest, policy=context.policy_digest,
+        fixtures=context.fixture_digest,
+        root=str(resolved.root), git_common_dir=str(resolved.git_common_dir),
     )
 
     store = Store(resolved.db_path)

@@ -325,6 +325,12 @@ def _on_session_start(store, payload: dict[str, Any]) -> dict[str, Any]:
     task_id = _bound_task_id(store, payload)
     if task_id is not None:
         pointers += f" This session is registered against managed task {task_id}."
+    session_id = payload.get("session_id")
+    if isinstance(session_id, str) and session_id:
+        pointers += (
+            " To bind a task to this completion gate, pass "
+            f"host={json.dumps({'session_id': session_id})} to task_begin."
+        )
     return _with_context("SessionStart", {}, pointers)
 
 
@@ -336,13 +342,21 @@ def _on_subagent_start(store, payload: dict[str, Any]) -> dict[str, Any]:
     """
     task_id = _bound_task_id(store, payload)
     if task_id is None:
-        return {}
-    return _with_context(
-        "SubagentStart", {},
-        f"You are registered against vkit managed task {task_id}. Its contract and "
-        "required checks are records in the vkit store; read them with run_get and "
-        "task_finalize rather than assuming a check has run.",
-    )
+        text = ""
+    else:
+        text = (
+            f"You are registered against vkit managed task {task_id}. Its contract and "
+            "required checks are records in the vkit store; read them with run_get and "
+            "task_finalize rather than assuming a check has run. "
+        )
+    session_id, agent_id = payload.get("session_id"), payload.get("agent_id")
+    if isinstance(session_id, str) and session_id and isinstance(agent_id, str) and agent_id:
+        text += (
+            " To bind a task to your completion gate, pass "
+            f"host={json.dumps({'session_id': session_id, 'agent_id': agent_id})} "
+            "to task_begin."
+        )
+    return _with_context("SubagentStart", {}, text)
 
 
 def _on_pre_tool_use(store, payload: dict[str, Any]) -> dict[str, Any]:

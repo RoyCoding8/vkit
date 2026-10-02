@@ -43,9 +43,10 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable, Literal
 
-from .claims import ResourceSpec, acquire_in, holders
+from .claims import ResourceSpec, acquire_in
 from .identity import compute_source_identity
 from .paths import Project
 from .storage import ConflictError, Store, open_task as insert_task_row
@@ -174,14 +175,32 @@ class TaskContract:
         resources = document.get("resources")
         if not isinstance(resources, list):
             raise AdmissionRefused("this task recorded a malformed required-resources list")
+        declared = document.get("declared") or {}
+        if not isinstance(declared, dict):
+            raise AdmissionRefused("this task recorded malformed declared metadata")
+        if "host" in declared:
+            validate_host_binding(declared["host"])
         return cls(
             repository=dict(repository),
             policy_digest=document["policy_digest"],
             required_checks=tuple(required),
             scope=document["scope"],
             resources=tuple(dict(entry) for entry in resources),
-            declared=dict(document.get("declared") or {}),
+            declared=dict(declared),
         )
+
+
+def validate_host_binding(value: Any) -> dict[str, str]:
+    """Validate the host identity used by completion hooks."""
+    if not isinstance(value, dict) or set(value) - {"session_id", "agent_id"}:
+        raise AdmissionRefused("host must contain only session_id and optional agent_id")
+    session_id = value.get("session_id")
+    agent_id = value.get("agent_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise AdmissionRefused("host.session_id must be a non-empty string")
+    if agent_id is not None and (not isinstance(agent_id, str) or not agent_id.strip()):
+        raise AdmissionRefused("host.agent_id must be a non-empty string when given")
+    return {"session_id": session_id, **({"agent_id": agent_id} if agent_id else {})}
 
 
 @dataclass(frozen=True)
@@ -563,31 +582,68 @@ def _floor(context: AcceptanceContext, selected: Iterable[str] | None) -> tuple[
     return floor
 
 
-def verify_ownership(store: Store, task_id: str, generation: int) -> None:
+def verify_ownership_in(
+    conn: sqlite3.Connection,
+    task_id: str,
+    generation: int,
+    *,
+    project: Project,
+) -> None:
     """Confirm this generation still holds every resource its contract requires.
 
-    Called before a launch. A conflict found at admission cannot stay found: a
-    resource can be released by recovery while the attempt is still open, and
-    an attempt whose resources vanished under it must not go on to run.
+    The caller supplies its transaction so a launch fence can coordinate this
+    decision with recovery. Admission records these facts atomically; launch and
+    acceptance recheck them here.
     """
-    record = get_task(store, task_id)
+    record = _row_to_task(conn, task_id)
     if record.generation != generation:
         raise ConflictError(
             f"task {task_id} was reassigned from generation {generation} to "
             f"{record.generation}; this attempt no longer owns anything"
         )
     specs = record.pinned().resource_specs()
-    if not specs:
-        return
-    held = {claim.resource_key: claim for claim in holders(store, task_id)}
+    repository = record.pinned().repository
+    expected_root = Path(str(repository["root"])).resolve()
+    if expected_root != project.root.resolve():
+        raise ConflictError(
+            f"task {task_id} is pinned to checkout {expected_root}, not "
+            f"the current checkout {project.root.resolve()}"
+        )
+    expected_common = repository.get("git_common_dir")
+    if (
+        expected_common is not None
+        and Path(str(expected_common)).resolve() != project.git_common_dir.resolve()
+    ):
+        raise ConflictError(
+            f"task {task_id} is pinned to Git common directory {expected_common}, not "
+            f"the current directory {project.git_common_dir}"
+        )
+    held = {
+        (row[0], row[1])
+        for row in conn.execute(
+            "SELECT resource_key, generation FROM claim_members WHERE task_id = ?",
+            (task_id,),
+        )
+    }
     for spec in specs:
-        current = held.get(spec.key)
-        if current is None or current.generation != generation:
+        if (spec.key, generation) not in held:
             raise ConflictError(
                 f"resource {spec.key!r} required by task {task_id} is no longer held at "
                 f"generation {generation}; the attempt cannot proceed until "
                 "reconciliation establishes who owns it"
             )
+
+
+def verify_ownership(
+    store: Store,
+    task_id: str,
+    generation: int,
+    *,
+    project: Project,
+) -> None:
+    """Run the shared checkout, generation and claim check in one transaction."""
+    with store.transaction() as conn:
+        verify_ownership_in(conn, task_id, generation, project=project)
 
 
 # ------------------------------------------------------------------ readiness
@@ -643,21 +699,31 @@ def finalize(
     and cannot satisfy acceptance, because nothing establishes which contract it
     was produced under.
     """
-    record = get_task(store, task_id)
-    if record.status == "closed":
-        raise TaskError(f"task {task_id} is closed; its result is final")
     if not context.usable:
+        record = get_task(store, task_id)
+        if record.status == "closed":
+            raise TaskError(f"task {task_id} is closed; its result is final")
         # Refused at the boundary the caller controls. A context with no policy
         # has no identity to require a pass to have been produced under, so
         # there is nothing here that could be compared and no verdict to reach.
         return _blocked_result(record, context.refusal or "the acceptance context is unusable")
 
-    contract = record.pinned()
-    # The pinned floor, plus whatever this call adds. Union, never subtraction.
-    required = tuple(sorted(set(contract.required_checks) | set(additional_checks)))
-    verdict = _decide(store, record, required, expected_identities(record, context))
-    record_readiness(store, task_id, verdict)
-    return verdict
+    with store.transaction() as conn:
+        record = _row_to_task(conn, task_id)
+        if record.status == "closed":
+            raise TaskError(f"task {task_id} is closed; its result is final")
+        contract = record.pinned()
+        required = tuple(sorted(set(contract.required_checks) | set(additional_checks)))
+        try:
+            verify_ownership_in(conn, task_id, record.generation, project=context.project)
+        except ConflictError as exc:
+            verdict = _blocked_result(record, str(exc))
+        else:
+            verdict = _decide(
+                store, record, required, expected_identities(record, context), conn=conn
+            )
+        record_readiness_in(conn, task_id, verdict)
+        return verdict
 
 
 def expected_identities(
@@ -713,15 +779,25 @@ def compute_readiness(
     A caller may add to `required_check_ids` and never subtract: the pinned floor
     is unioned in unconditionally.
     """
-    record = get_task(store, task_id)
-    required = tuple(sorted(set(record.pinned().required_checks) | set(required_check_ids)))
     if context is None:
+        record = get_task(store, task_id)
+        required = tuple(sorted(set(record.pinned().required_checks) | set(required_check_ids)))
         return _decide(store, record, required)
     if not context.usable:
+        record = get_task(store, task_id)
         return _blocked_result(
             record, context.refusal or "the acceptance context is unusable"
         )
-    return _decide(store, record, required, expected_identities(record, context))
+    with store.transaction() as conn:
+        record = _row_to_task(conn, task_id)
+        required = tuple(sorted(set(record.pinned().required_checks) | set(required_check_ids)))
+        try:
+            verify_ownership_in(conn, task_id, record.generation, project=context.project)
+        except ConflictError as exc:
+            return _blocked_result(record, str(exc))
+        return _decide(
+            store, record, required, expected_identities(record, context), conn=conn
+        )
 
 
 def _decide(
@@ -729,6 +805,8 @@ def _decide(
     record: TaskRecord,
     required: tuple[str, ...],
     expected: dict[str, Any] | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
 ) -> ReadinessResult:
     """The decision rule, over a required set already resolved.
 
@@ -737,7 +815,10 @@ def _decide(
     """
     eligible: dict[str, dict] = {}
     history: list[str] = []
-    for run in store.list_runs(task_id=record.task_id, limit=1000):
+    runs = store.list_runs(task_id=record.task_id, limit=1000) if conn is None else _runs_in(
+        conn, record.task_id, 1000
+    )
+    for run in runs:
         if run["lifecycle"] != "terminal" or not run["result"]:
             continue
         if run["attempt"] != record.generation:
@@ -802,11 +883,29 @@ def _decide(
     )
 
 
+def _runs_in(conn: sqlite3.Connection, task_id: str, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT run_id, check_id, task_id, attempt, lifecycle, result, reason, "
+        "configuration_digest, fixture_digest, source_json FROM runs "
+        "WHERE task_id = ? ORDER BY rowid DESC LIMIT ?",
+        (task_id, limit),
+    ).fetchall()
+    runs = []
+    for row in rows:
+        source = json.loads(row[9] or "{}")
+        runs.append({
+            "run_id": row[0], "check_id": row[1], "task_id": row[2],
+            "attempt": row[3], "lifecycle": row[4], "result": row[5],
+            "reason": row[6], "configuration_digest": row[7],
+            "fixture_digest": row[8],
+            "source_inventory_digest": source.get("inventory_digest"),
+        })
+    return runs
+
+
 #: The identities acceptance compares, and what it calls each one.
 #:
-#: `source` and `policy` are recorded on every run today; `fixtures` is measured
-#: from the policy but not yet recorded on the run (see `_identity_gaps`). The
-#: pair is (label, name-in-the-recorded-map), and `_RUN_COLUMN` is the only
+#: The pair is (label, name-in-the-recorded-map), and `_RUN_COLUMN` is the only
 #: place the run row's own column names are spelled: the recorded map calls the
 #: policy digest `policy_digest` because that is what a contract means by it,
 #: while the run row calls it `configuration_digest` because that is what the
@@ -819,19 +918,14 @@ COMPARED_IDENTITIES = (
     ("fixtures", "fixture_digest"),
 )
 
-#: Where each compared identity lives on a run row. Present for every identity
-#: above: the reason a label appears in `unverified_identities` is that its
-#: column is null on a passing run, never that this map lacks it.
+#: Where each compared identity lives on a run row.
 _RUN_COLUMN = {
     "source": "source_inventory_digest",
     "policy": "configuration_digest",
     "fixtures": "fixture_digest",
 }
 
-#: The identities a run cannot have recorded in this build. Only these are ever
-#: reported unverified; an identity that IS recorded is either compared or
-#: already named as a gap, and saying "unverified" about it would be a claim
-#: about the record that is false.
+#: Older runs may predate fixture recording; they remain unverified and blocked.
 _UNRECORDED_ON_RUN = ("fixtures",)
 
 def _identity_gaps(
@@ -839,22 +933,19 @@ def _identity_gaps(
 ) -> list[str]:
     """Why a passing run no longer describes what is here now.
 
-    A gap is a *disagreement*: the run recorded an identity and it is not the one
-    this attempt is bound to. That is evidence of change, and change is what
-    blocks.
-
-    An identity the run never recorded is not a disagreement — it is an absence,
-    and `execution` writes a null fixture digest on every run in this build.
-    Gating on that would block every task in the repository over a fact about the
-    recording path rather than about the fixtures. Such an identity is named in
-    the decision context as unverified, so what is not covered is stated instead
-    of assumed, and the moment `execution` records a real fixture digest the
-    comparison starts applying with no change here.
+    An absent identity is a gap too: the pass cannot establish which fixtures it
+    tested, so it cannot describe the fixtures in force now.
     """
     gaps: list[str] = []
     for label, key in COMPARED_IDENTITIES:
         actual, wanted = recorded.get(key), expected.get(key)
-        if actual is None or wanted is None or actual == wanted:
+        if wanted is None or actual == wanted:
+            continue
+        if actual is None:
+            gaps.append(
+                f"required check {check_id!r} has no recorded {label} identity; "
+                "re-run it to establish what it tested"
+            )
             continue
         gaps.append(
             f"required check {check_id!r} passed against a different {label} "
@@ -872,21 +963,28 @@ def record_readiness(store: Store, task_id: str, result: ReadinessResult) -> Tas
     able to record READY at generation 2.
     """
     with store.transaction() as conn:
-        row = conn.execute(
-            "SELECT generation, status FROM tasks WHERE task_id = ?", (task_id,)
-        ).fetchone()
-        if row is None:
-            raise TaskError(f"no such task: {task_id}")
-        generation, status = row
-        if status == "closed":
-            raise TaskError(f"task {task_id} is closed; its result is final")
-        decided_at = result.context.get("generation")
-        if decided_at != generation:
-            raise ConflictError(
-                f"task {task_id} was reassigned from generation {decided_at} to "
-                f"{generation}; refusing to record readiness for a superseded attempt"
-            )
-        conn.execute(
-            "UPDATE tasks SET readiness = ? WHERE task_id = ?", (result.readiness, task_id)
+        return record_readiness_in(conn, task_id, result)
+
+
+def record_readiness_in(
+    conn: sqlite3.Connection, task_id: str, result: ReadinessResult
+) -> TaskRecord:
+    """Publish a verdict on a caller's connection and transaction."""
+    row = conn.execute(
+        "SELECT generation, status FROM tasks WHERE task_id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        raise TaskError(f"no such task: {task_id}")
+    generation, status = row
+    if status == "closed":
+        raise TaskError(f"task {task_id} is closed; its result is final")
+    decided_at = result.context.get("generation")
+    if decided_at != generation:
+        raise ConflictError(
+            f"task {task_id} was reassigned from generation {decided_at} to "
+            f"{generation}; refusing to record readiness for a superseded attempt"
         )
-        return _row_to_task(conn, task_id)
+    conn.execute(
+        "UPDATE tasks SET readiness = ? WHERE task_id = ?", (result.readiness, task_id)
+    )
+    return _row_to_task(conn, task_id)

@@ -742,6 +742,40 @@ def cmd_mcp_serve(args: argparse.Namespace) -> int:
         return _fail(str(exc), False, EXIT_UNAVAILABLE)
 
 
+def cmd_console(args: argparse.Namespace) -> int:
+    """Serve this repository's console on 127.0.0.1 until the operator stops it.
+
+    The URL is printed once the socket is bound, not before, because a port
+    asked for as 0 belongs to the OS and the bound address is the only one the
+    operator can open. The session token is never printed and never placed in
+    that URL: it reaches the page as the server substitutes it into the HTML,
+    so a URL on a terminal or in a shell history carries no authority.
+    """
+    import threading
+
+    from .console import launcher, operations
+    from .console.operations import ConsoleError
+    from .console.plan import Refused as ConsoleRefused
+
+    try:
+        context = operations.open_context(args.project)
+        console = launcher.bind(context, args.port)
+    except ConsoleRefused as exc:
+        raise Refused(str(exc), EXIT_INVALID) from exc
+    except ConsoleError as exc:
+        raise Refused(str(exc), EXIT_INTERNAL) from exc
+
+    url = launcher.url_for(console)
+    _emit({"command": "console", "url": url}, args.json, url)
+    sys.stdout.flush()
+    if not args.no_browser:
+        launcher.open_in_browser(url)
+
+    if launcher.serve_until_stopped(console, threading.Event()):
+        print("console stopped", file=sys.stderr)
+    return EXIT_OK
+
+
 def cmd_integration_verify(args: argparse.Namespace) -> int:
     """Decide whether a candidate commit satisfies the approved policy.
 
@@ -1039,6 +1073,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-checkout", action="store_true",
         help="leave the candidate checkout in place instead of retiring it",
     )
+
+    console = common(sub.add_parser(
+        "console", help="serve this repository's console on 127.0.0.1",
+    ))
+    console.add_argument(
+        "--port", type=int, default=8765,
+        help="loopback port to serve on; 0 asks the operating system for a free one",
+    )
+    console.add_argument(
+        "--no-browser", action="store_true",
+        help="print the URL and do not try to open a browser",
+    )
     return parser
 
 
@@ -1057,6 +1103,7 @@ _DISPATCH = {
     ("task", "begin"): cmd_task_begin,
     ("task", "finalize"): cmd_task_finalize,
     ("recover", None): cmd_recover,
+    ("console", None): cmd_console,
     ("mcp", "serve"): cmd_mcp_serve,
     ("integration", "verify"): cmd_integration_verify,
 }

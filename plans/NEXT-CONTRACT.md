@@ -52,4 +52,10 @@ The dashboard remains a loopback server launched when requested. No permanent da
 
 Use small focused checks locally. Full suites, heavy formal runs, and browser acceptance run in GitHub CI. Use Python test drivers and avoid WSL.
 
-Follow the user's current delegation policy. A paragraph in a plan does not itself authorize spawning agents. These plans are worker handoffs, and do not start worker sessions or install integrations on the user's machine.
+The human has authorized the implementation worker to use up to six active
+subagents and dispatch unblocked, disjoint work whenever a permitted slot is
+available. Follow the slot policy in
+[MASTER-PLAN.md](../MASTER-PLAN.md#skills-and-parallel-work). This supersedes
+earlier ask-first and serial-default instructions for that worker. Read both
+project-specific memories and use relevant skills in the coordinator and
+subagents. Integration remains serial and shared core files have one owner.

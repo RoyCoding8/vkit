@@ -18,6 +18,11 @@ treat old worker narratives as evidence.
 
 ## Read this, then the current checkpoint
 
+Locate and read both project-specific memories available in the worker's
+environment before dividing the work. Record their source paths and verify
+their guidance against this checkout. If an expected memory is unavailable,
+report that gap rather than inventing its contents.
+
 1. Read [the existing contract](plans/CONTRACT.md).
 2. Read [the next contract requirements](plans/NEXT-CONTRACT.md).
 3. Read only the detailed plan for the checkpoint below.
@@ -39,8 +44,9 @@ history preserves them at the baseline commit.
 | 4 | [Plan 12, checkpoints 12.2-12.4](plans/12-operator-console-and-portability.md#checkpoint-122-show-the-actual-engineering-state) | Evidence views, validated configuration editing, and portable MCP setup |
 
 Start with step 1. Do not implement the rest of Plan 12 early. Complete and
-verify each detailed checkpoint before advancing. Continue sequentially while
-the requirements can be met. Do not wait for permission on routine reversible
+verify each detailed checkpoint before advancing. The checkpoint order defines
+dependencies and integration order. Independent subtasks can run concurrently
+under the slot policy below. Do not wait for permission on routine reversible
 engineering decisions.
 
 ## Keep this task list current
@@ -62,6 +68,10 @@ After each checkpoint, append a short evidence entry below with its commit,
 commands, CI tested SHA, artifacts, and limitations. Mark it complete only from
 actual execution. Avoid a second status document with different completion claims.
 
+Break each checkpoint into smaller disjoint subtasks. Record dependencies,
+owned paths, acceptance gates, assigned agents, and current status in this
+task list. Dispatch a ready subtask whenever a permitted slot becomes free.
+
 ## Engineering rules
 
 - Use the existing execution, supervisor, ownership, storage, and acceptance
@@ -77,8 +87,9 @@ actual execution. Avoid a second status document with different completion claim
 - Extend the existing Python console and plain browser assets. Keep its loopback
   and request guards. Do not add a permanent daemon, scheduler, or replacement UI stack.
 - Follow current repository guardrails and user instructions. Do not install
-  plugins, change global harness settings, invoke paid models, or run a live
-  multi-agent pilot just to produce a completion claim.
+  plugins, change global harness settings, call external paid model APIs for
+  acceptance, or run a live product pilot just to produce a completion claim.
+  Authorized engineering subagents use the worker harness's configured models.
 
 ## Verification and Git
 
@@ -104,12 +115,23 @@ engineering guidance. Use prove-it-works for acceptance and blast-radius for
 affected callers. Load further skills when their instructions fit the actual task.
 Skill directions do not override these limits.
 
-Work serially by default. Ask the human before spawning subagents, and follow
-the model restriction in the current guardrails if allowed. A master plan does
-not grant delegation permission.
+The human has explicitly authorized this implementation worker to use up to
+six active subagents. No further spawning confirmation is required for this
+build. This authorization supersedes the earlier ask-first and serial-default
+clauses for the worker. Use the worker harness's configured models and respect
+its actual concurrency limit. If it counts the coordinator as a slot, account
+for that rather than claiming six available child slots.
 
-If parallel work is authorized, use swarm to coordinate disjoint assignments
-and git-worktree-discipline to isolate writers. One integrator owns shared
+Whenever a slot is available and an eligible subtask is unblocked, dispatch it
+immediately. Do not invent busywork to fill all six slots. Blocked dependencies
+and overlapping write scopes are not eligible work. The coordinator can work
+alongside agents on its own disjoint scope. When only delegated work remains,
+wait for it instead of duplicating or editing those agents' unfinished changes.
+
+Use swarm for independent search, coverage, and stubborn debugging. Use
+git-worktree-discipline for parallel implementation writers. Every subagent
+must read the relevant skills and principles, receive a bounded task with
+owned paths and an acceptance gate, and return evidence. One integrator owns shared
 manifest, storage, execution, and acceptance files. Freeze the contract before
 splitting adapters. Give each writer an explicit file scope and acceptance gate.
 Use temporary worktrees, integrate serially, check the combined result, and

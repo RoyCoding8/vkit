@@ -1,6 +1,28 @@
 # Shared implementation contract
 
-Status: required design baseline for Plans 01-09. Names are provisional until Plan 01 freezes its public interface. Later plans must inspect the implemented interface and update all affected callers together when a justified change is needed.
+Status: the required design baseline for Plans 01-09, and still the authority
+the product cites. Names were provisional until Plan 01 froze its public
+interface. This file states meanings and invariants, not an implementation
+status, so it does not carry per-plan state. Three clauses have been amended as
+the code settled them; each amendment says what changed and why, because a
+reviewer needs to know the contract moved rather than was always this way.
+
+## Amendments
+
+1. **Run lifecycle gained two values.** This section originally said a run is
+   preparing, running, or terminal. R2 added `launching` and `cancelling`, so the
+   full set is preparing, launching, cancelling, running, terminal. The original
+   three were a description of what a foreground check did, and the record could
+   no longer say what was happening between register and identity publish. See
+   [R2-DESIGN.md](R2-DESIGN.md).
+2. **`integration verify` is a public command.** The command table below
+   assigns it to Plan 07 and it shipped as `vkit integration verify`, wired
+   through the same dispatch table as every other verb.
+3. **A lost connection does not mean the work stopped.** "Run lifetime and
+   recovery" originally said Plan 01 runs in the foreground and Plan 02 adds a
+   per-run supervisor, which left the foreground path as the only described one.
+   Both paths ship. A detached supervisor outlives its initiating request; the
+   foreground path is for callers that want the verdict when the call returns.
 
 ## Scope and ownership
 
@@ -58,7 +80,8 @@ Results include the executed argv, cwd, start/end, process exit, selected scenar
 
 ## Outcome and lifecycle semantics
 
-Keep lifecycle separate from outcome. A run is preparing, running, or terminal. A terminal check has one outcome:
+Keep lifecycle separate from outcome. A run is one of preparing, launching,
+cancelling, running, or terminal, and a terminal check has one outcome:
 
 | Outcome | Meaning |
 | --- | --- |
@@ -84,7 +107,10 @@ A worker may propose policy changes but cannot silently weaken its own acceptanc
 
 ## Run lifetime and recovery
 
-Plan 01 runs checks in the foreground. Plan 02 adds a per-run supervisor using the same execution function. MCP returns a run ID promptly and queries the durable record later. No permanent scheduler daemon is needed.
+Checks run in the foreground for the CLI and the console, which expect the
+verdict when the call returns. MCP starts a detached supervisor and returns a
+run id promptly, then queries the durable record later. No permanent scheduler
+daemon is needed.
 
 A lost MCP connection does not imply cancellation. A cancel request names a run and attempt, verifies process identity beyond a bare PID, and requests shutdown of the owned process tree. On uncertain liveness, preserve the resource claim and mark recovery needed. Time expiry alone does not justify assigning a live worker's writable resource to someone else.
 

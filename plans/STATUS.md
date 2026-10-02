@@ -1,22 +1,22 @@
 # Implementation status
 
-All plans are written. Plans 01, 02, and 09 are implemented and verified on
-the host named below. Plans 03 and 04 are implemented but carry unexecuted
-paths. Plans 05, 06, 07, and 08 are in progress; the console exists but four of
-its operations refuse. Counts below are at the revision named in each row, not
-a running total — an earlier number is not evidence about a later one.
+All plans are implemented. Every milestone has shipped code and tests, and the
+release still does not pass its own checklist, because the gaps that block a
+pilot are about finished operator flows and receipts rather than missing
+features. Counts below are at the revision named in each row, not a running
+total. An earlier number is not evidence about a later one.
 
 | Plan | Status | Evidence |
 | --- | --- | --- |
 | 01 | Implemented and verified on Windows | 22/22 acceptance rows, `README.md` |
 | 02 | Implemented; merged to master | Supervisor, claims, recovery. 14/14 acceptance rows in `scripts/acceptance02.py`, plus 17 tests over the harness itself |
-| 03 | Tool layer implemented; stdio transport verified on the wire | `src/vkit/mcp/`, six tools through `Server.call_tool` plus 24 protocol tests driving a real subprocess (20 module-level test functions in `tests/test_mcp_stdio.py`, one parameterised over five ids, so 24 collected); GAP-1 closed. `tests/test_mcp.py` collects 24 more and drives `Server.call_tool` directly |
+| 03 | Tool layer implemented; stdio transport verified on the wire | `src/vkit/mcp/`, six tools through `Server.call_tool` plus the protocol tests driving a real subprocess; GAP-1 closed. `tests/test_mcp.py` drives `Server.call_tool` directly |
 | 04 | Plugin installed and driven in a real Claude Code host | `docs/HOST-SESSION.md` transcript, 16 host tests against a scratch config; GAP-3 closed |
-| 05 | Console exists as a view over the core; all four setup operations implemented; page driven and layout repaired | `src/vkit/console/`. Driven with headless Chrome at 1440/1024/768/480/360px; eight defects found and fixed. **The layout fixes live only in `app.js` and `style.css` and no test pins them, so a regression is silent** — that is GAP-5's real shape, and it is stronger than "never been looked at" |
-| 06 | In progress | GAP-6 |
-| 07 | In progress | — |
-| 08 | In progress | — |
-| 09 | Release checklist and pilot gate merged; the release does not pass its own checklist | `docs/RELEASE-CHECKLIST.md`, `docs/PILOT.md`, `tests/test_release_docs.py` (36 collected) |
+| 05 | Console exists as a view over the core; all four setup operations implemented; page driven and layout repaired | `src/vkit/console/`. Driven with headless Chrome at 1440/1024/768/480/360px; eight defects found and fixed. The layout fixes live only in `app.js` and `style.css` and no test pins them, so a regression is silent. That is GAP-5's real shape, and it is stronger than "never been looked at" |
+| 06 | Code shipped; no finished operator flow | Enrollment, features and inspection work and are tested. GAP-6 is the missing console flow that walks an operator through them |
+| 07 | Code shipped; live campaign never run | `vkit integration verify` and the CI example work. No authorized live parallel trial has run, so no claim is made about quality at scale |
+| 08 | Deliverable A shipped; B shipped as the optional example | TLA+ model and Lean example with receipts in `formal/results/`. The four TLA+ mutants have no receipt; see R5-GAPS.md |
+| 09 | Release checklist and pilot gate merged; the release does not pass its own checklist | `docs/RELEASE-CHECKLIST.md`, `docs/PILOT.md`, `tests/test_release_docs.py` |
 
 
 ## Build order agreed with the owner, 2026-09-29
@@ -147,17 +147,17 @@ beside them and are not a claim about a later one.
 - `pip wheel . --no-deps`: built `vkit-0.1.0-py3-none-any.whl`, with the three
   schemas present as `vkit/_schemas`. Rebuilt at `59a4eca` for the size the
   release checklist quotes: 255418 bytes.
-- `pytest tests/test_release_docs.py`: 10 passed. At `59a4eca` the same file
-  collects 32; it collects 36 at `2490255`, which is this file's own gate
-  growing as the repairs land. The ten was true when this section was written
-  and the 32 was true at the revision the release checklist pins.
+- `pytest tests/test_release_docs.py`: 39 passed at the revision that pins
+  revision `5cc14e0`, which is what the release checklist quotes. The file grew
+  from 10 as the repairs landed.
 
-At `59a4eca`, which is the revision the release checklist pins,
-`pytest tests/ --collect-only -q` collects **647** across 46 files. That is a
-collection count and not a pass count. The last full execution at that revision
-has not been run, so no passed figure is quoted here. Both stale whole-suite
-numbers that used to sit in this file's neighbours were inherited from earlier
-revisions, which is what the sentence above the list is warning about.
+At the revision the release checklist pins, `pytest tests/ --collect-only -q`
+collects **647** across 46 files. That is a collection count and not a pass
+count, and the last full execution at that revision has not been run, so no
+passed figure is quoted here. The suite now collects 740, which is a later
+revision than the pin and not evidence about it. Whole-suite numbers quoted
+elsewhere in this file belong to the revision named beside them and are not a
+running total.
 
 ### The release does not pass its own checklist
 
@@ -195,20 +195,22 @@ must be in the form `cmd.exe` reads, since Git Bash exports `/d/...` and
 
 `mcp` is a pinned optional extra rather than an install requirement, because the
 six tools are useful without a transport and a missing optional package must not
-break the CLI, the console or the hook. The protocol suite collects 24, plus
-`tests/test_mcp.py`'s 24, which drives `Server.call_tool`, the one entry point
-an SDK adapter forwards to.
+break the CLI, the console or the hook. The protocol suite drives a real
+subprocess over stdio, and `tests/test_mcp.py` drives `Server.call_tool`, the one
+entry point an SDK adapter forwards to.
 
 A full-suite run without the extra installed reports the protocol suite as
-errors rather than skips. That is a defensible shape — a test that cannot reach
-the transport is not testing the transport — but it means a missing optional
-dependency reads as a red suite rather than an unmet extra.
+errors rather than skips. That is a defensible shape, because a test that cannot
+reach the transport is not testing the transport, but it means a missing
+optional dependency reads as a red suite rather than an unmet extra.
 
-`tmp/research/KIT_ACCEPTANCE.md` is tracked, and `plans/09-release-and-pilot.md`
-asks for every one of its 59 data rows to be mapped. None is. The mapping is
-GAP-8, and the gap is the mapping rather than the file: an earlier version of
-this line called the matrix absent, which was false, because the file is tracked
-under `tmp/research/` and `git ls-files` returns it.
+`docs/ACCEPTANCE-MATRIX.md` is tracked, and `plans/09-release-and-pilot.md`
+asks for every acceptance row to be mapped. The mapping is GAP-8. This paragraph
+previously claimed `tmp/research/KIT_ACCEPTANCE.md` was tracked and that an
+earlier version of it wrongly called the matrix absent. Both halves were false:
+`tmp/*` is gitignored and `git ls-files tmp/` returns nothing, so no clone ever
+carried that file. The matrix is tracked now, under `docs/`, and the gap is the
+mapping rather than the file.
 
 ## Defects found and fixed after the plans were marked done
 
@@ -321,8 +323,11 @@ more likely rather than less.
   Cancellation that must be atomic is a job object keyed to a handle, which is
   what `vkit.procs` creates; identity verification is what makes a reattach
   safe to *report*, and `procidentity` says so in its own docstring.
-- There is no surviving supervisor process. `supervisor.start_run` executes in
-  the calling process and `execution.run_check` attaches the pid only after the
-  command returns, so an in-flight run names no process a second process could
-  continue. Measured as row 6 of `scripts/acceptance02.py`, not assumed.
+- A detached supervisor outlives its initiating request. `start_run` with
+  `detach=True` returns a handoff immediately and `vkit.supervise` owns the
+  process tree, so an in-flight run names a process a second client can
+  continue or cancel. `detach=False` is the foreground path used by
+  `vkit check run` and the console, which expect the verdict when the call
+  returns. Measured by `tests/test_r2_ownership.py` and by rows 5 to 8 of
+  `scripts/acceptance02.py`, not assumed.
 

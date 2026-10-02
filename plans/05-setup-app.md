@@ -29,13 +29,16 @@ static page. Adding a framework here is the kind of dependency the rest of the
 project refuses.
 
 ```text
-src/vkit/setup/
+src/vkit/console/
     operations.py   install, repair, remove, enroll. Pure. The real logic.
     plan.py         the exact change set, computed and shown before applying
     server.py       loopback HTTP and routing. No business logic.
     api.py          request and response shapes. Validation at the boundary.
     static/         index.html, app.js, style.css
 ```
+
+It shipped as `console/`, not `setup/`. The name changed with no change to the
+layering, and this is the only file that still says otherwise.
 
 The dependency direction matters and is the whole design: `operations.py` knows
 nothing about HTTP, and `server.py` knows nothing about installing. A test drives

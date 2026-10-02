@@ -50,6 +50,14 @@ For any authorized live increase, declare host agent limits, registered writer l
 
 ## Release checks and report
 
-Map every row in [KIT_ACCEPTANCE.md](../tmp/research/KIT_ACCEPTANCE.md) to an executed test, a clearly optional capability, or an explicit unsupported boundary. Required failed or unrun rows prevent the associated support claim. The report must identify actual platforms, host versions, SDK versions, models exercised, plugin version, and candidate revision.
+Map every row in [the acceptance matrix](../docs/ACCEPTANCE-MATRIX.md) to an
+executed test, a clearly optional capability, or an explicit unsupported
+boundary. Required failed or unrun rows prevent the associated support claim.
+The report must identify actual platforms, host versions, SDK versions, models
+exercised, plugin version, and candidate revision.
+
+The matrix this originally named, `tmp/research/KIT_ACCEPTANCE.md`, was under a
+gitignored directory and is not in this repository. `docs/ACCEPTANCE-MATRIX.md`
+is its tracked successor and carries the rows this milestone reports against.
 
 Deliver the built packages, checksums, reproducible install commands, compatibility table, pilot evidence, known limits, and remaining release gates. Update STATUS.md. Keep publication pending if it was not authorized, with artifacts ready for review.

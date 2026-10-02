@@ -699,28 +699,31 @@ def finalize(
     and cannot satisfy acceptance, because nothing establishes which contract it
     was produced under.
     """
-    record = get_task(store, task_id)
-    if record.status == "closed":
-        raise TaskError(f"task {task_id} is closed; its result is final")
     if not context.usable:
+        record = get_task(store, task_id)
+        if record.status == "closed":
+            raise TaskError(f"task {task_id} is closed; its result is final")
         # Refused at the boundary the caller controls. A context with no policy
         # has no identity to require a pass to have been produced under, so
         # there is nothing here that could be compared and no verdict to reach.
         return _blocked_result(record, context.refusal or "the acceptance context is unusable")
 
-    try:
-        verify_ownership(store, task_id, record.generation, project=context.project)
-    except ConflictError as exc:
-        verdict = _blocked_result(record, str(exc))
-        record_readiness(store, task_id, verdict)
+    with store.transaction() as conn:
+        record = _row_to_task(conn, task_id)
+        if record.status == "closed":
+            raise TaskError(f"task {task_id} is closed; its result is final")
+        contract = record.pinned()
+        required = tuple(sorted(set(contract.required_checks) | set(additional_checks)))
+        try:
+            verify_ownership_in(conn, task_id, record.generation, project=context.project)
+        except ConflictError as exc:
+            verdict = _blocked_result(record, str(exc))
+        else:
+            verdict = _decide(
+                store, record, required, expected_identities(record, context), conn=conn
+            )
+        record_readiness_in(conn, task_id, verdict)
         return verdict
-
-    contract = record.pinned()
-    # The pinned floor, plus whatever this call adds. Union, never subtraction.
-    required = tuple(sorted(set(contract.required_checks) | set(additional_checks)))
-    verdict = _decide(store, record, required, expected_identities(record, context))
-    record_readiness(store, task_id, verdict)
-    return verdict
 
 
 def expected_identities(
@@ -776,19 +779,25 @@ def compute_readiness(
     A caller may add to `required_check_ids` and never subtract: the pinned floor
     is unioned in unconditionally.
     """
-    record = get_task(store, task_id)
-    required = tuple(sorted(set(record.pinned().required_checks) | set(required_check_ids)))
     if context is None:
+        record = get_task(store, task_id)
+        required = tuple(sorted(set(record.pinned().required_checks) | set(required_check_ids)))
         return _decide(store, record, required)
     if not context.usable:
+        record = get_task(store, task_id)
         return _blocked_result(
             record, context.refusal or "the acceptance context is unusable"
         )
-    try:
-        verify_ownership(store, task_id, record.generation, project=context.project)
-    except ConflictError as exc:
-        return _blocked_result(record, str(exc))
-    return _decide(store, record, required, expected_identities(record, context))
+    with store.transaction() as conn:
+        record = _row_to_task(conn, task_id)
+        required = tuple(sorted(set(record.pinned().required_checks) | set(required_check_ids)))
+        try:
+            verify_ownership_in(conn, task_id, record.generation, project=context.project)
+        except ConflictError as exc:
+            return _blocked_result(record, str(exc))
+        return _decide(
+            store, record, required, expected_identities(record, context), conn=conn
+        )
 
 
 def _decide(
@@ -796,6 +805,8 @@ def _decide(
     record: TaskRecord,
     required: tuple[str, ...],
     expected: dict[str, Any] | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
 ) -> ReadinessResult:
     """The decision rule, over a required set already resolved.
 
@@ -804,7 +815,10 @@ def _decide(
     """
     eligible: dict[str, dict] = {}
     history: list[str] = []
-    for run in store.list_runs(task_id=record.task_id, limit=1000):
+    runs = store.list_runs(task_id=record.task_id, limit=1000) if conn is None else _runs_in(
+        conn, record.task_id, 1000
+    )
+    for run in runs:
         if run["lifecycle"] != "terminal" or not run["result"]:
             continue
         if run["attempt"] != record.generation:
@@ -869,6 +883,26 @@ def _decide(
     )
 
 
+def _runs_in(conn: sqlite3.Connection, task_id: str, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT run_id, check_id, task_id, attempt, lifecycle, result, reason, "
+        "configuration_digest, fixture_digest, source_json FROM runs "
+        "WHERE task_id = ? ORDER BY rowid DESC LIMIT ?",
+        (task_id, limit),
+    ).fetchall()
+    runs = []
+    for row in rows:
+        source = json.loads(row[9] or "{}")
+        runs.append({
+            "run_id": row[0], "check_id": row[1], "task_id": row[2],
+            "attempt": row[3], "lifecycle": row[4], "result": row[5],
+            "reason": row[6], "configuration_digest": row[7],
+            "fixture_digest": row[8],
+            "source_inventory_digest": source.get("inventory_digest"),
+        })
+    return runs
+
+
 #: The identities acceptance compares, and what it calls each one.
 #:
 #: The pair is (label, name-in-the-recorded-map), and `_RUN_COLUMN` is the only
@@ -929,21 +963,28 @@ def record_readiness(store: Store, task_id: str, result: ReadinessResult) -> Tas
     able to record READY at generation 2.
     """
     with store.transaction() as conn:
-        row = conn.execute(
-            "SELECT generation, status FROM tasks WHERE task_id = ?", (task_id,)
-        ).fetchone()
-        if row is None:
-            raise TaskError(f"no such task: {task_id}")
-        generation, status = row
-        if status == "closed":
-            raise TaskError(f"task {task_id} is closed; its result is final")
-        decided_at = result.context.get("generation")
-        if decided_at != generation:
-            raise ConflictError(
-                f"task {task_id} was reassigned from generation {decided_at} to "
-                f"{generation}; refusing to record readiness for a superseded attempt"
-            )
-        conn.execute(
-            "UPDATE tasks SET readiness = ? WHERE task_id = ?", (result.readiness, task_id)
+        return record_readiness_in(conn, task_id, result)
+
+
+def record_readiness_in(
+    conn: sqlite3.Connection, task_id: str, result: ReadinessResult
+) -> TaskRecord:
+    """Publish a verdict on a caller's connection and transaction."""
+    row = conn.execute(
+        "SELECT generation, status FROM tasks WHERE task_id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        raise TaskError(f"no such task: {task_id}")
+    generation, status = row
+    if status == "closed":
+        raise TaskError(f"task {task_id} is closed; its result is final")
+    decided_at = result.context.get("generation")
+    if decided_at != generation:
+        raise ConflictError(
+            f"task {task_id} was reassigned from generation {decided_at} to "
+            f"{generation}; refusing to record readiness for a superseded attempt"
         )
-        return _row_to_task(conn, task_id)
+    conn.execute(
+        "UPDATE tasks SET readiness = ? WHERE task_id = ?", (result.readiness, task_id)
+    )
+    return _row_to_task(conn, task_id)

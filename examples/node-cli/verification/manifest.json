@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "A small real Node CLI that splits a bill owed in cents between people, verified by running it.",
   "checks": [
     {
@@ -30,11 +30,25 @@
         {
           "name": "node",
           "executable": "node",
-          "args": ["--version"]
+          "args": [
+            "--version"
+          ]
         }
       ],
-      "inputs": ["src/split-bill.js", "verify-split.js"],
-      "expectations": []
+      "inputs": [
+        "src/split-bill.js",
+        "verify-split.js"
+      ],
+      "expectations": [],
+      "kind": "scenario",
+      "subject": {
+        "paths": [
+          "src/split-bill.js",
+          "verify-split.js"
+        ],
+        "digest": null
+      },
+      "claim_id": "split-bill-behavior"
     }
   ]
 }

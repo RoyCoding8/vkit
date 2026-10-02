@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "A small real CLI that totals integer item amounts, verified by running it.",
   "checks": [
     {
@@ -28,11 +28,25 @@
         {
           "name": "python",
           "executable": "python",
-          "args": ["--version"]
+          "args": [
+            "--version"
+          ]
         }
       ],
-      "inputs": ["src/totals.py", "verify_totals.py"],
-      "expectations": []
+      "inputs": [
+        "src/totals.py",
+        "verify_totals.py"
+      ],
+      "expectations": [],
+      "kind": "scenario",
+      "subject": {
+        "paths": [
+          "src/totals.py",
+          "verify_totals.py"
+        ],
+        "digest": null
+      },
+      "claim_id": "totals-behavior"
     }
   ]
 }

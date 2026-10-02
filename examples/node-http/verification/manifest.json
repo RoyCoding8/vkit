@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "A small HTTP service where creating an item is only observable by reading the list back, verified over real sockets.",
   "checks": [
     {
@@ -28,11 +28,25 @@
         {
           "name": "node",
           "executable": "node",
-          "args": ["--version"]
+          "args": [
+            "--version"
+          ]
         }
       ],
-      "inputs": ["src/items-server.js", "verify-items.js"],
-      "expectations": []
+      "inputs": [
+        "src/items-server.js",
+        "verify-items.js"
+      ],
+      "expectations": [],
+      "kind": "scenario",
+      "subject": {
+        "paths": [
+          "src/items-server.js",
+          "verify-items.js"
+        ],
+        "digest": null
+      },
+      "claim_id": "items-api"
     }
   ]
 }

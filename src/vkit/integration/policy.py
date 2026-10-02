@@ -42,8 +42,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..claimkind import ClaimCategory
 from ..manifest import Manifest, ManifestError
 from ..paths import open_project
+from ..verifiers import (
+    Obligation,
+    TheoremObligation,
+    describe_obligation,
+    obligation_from_json,
+    obligation_to_json,
+)
 from .gitidentity import GitError, digest_bytes, git_blob, resolve_commit
 
 POLICY_SCHEMA_VERSION = 1
@@ -56,7 +64,14 @@ CONTEXTS = (LOCAL, PROTECTED)
 POLICY_KEYS = frozenset({
     "schema_version", "description", "context", "manifest_revision", "required_checks",
 })
-CHECK_KEYS = frozenset({"id", "required_scenarios"})
+#: A required check names its obligations as the union, not as scenario strings.
+#:
+#: The widening is deliberate. A policy that pins its obligations is the only
+#: place a candidate cannot quietly rename a theorem: the approved revision
+#: pins the command, but only this list says which theorems the run owes. A
+#: policy that named check ids alone would let a candidate keep the id and swap
+#: the declarations, and the finding below would have nothing to compare.
+CHECK_KEYS = frozenset({"id", "obligations", "evidence_kind"})
 
 SEVERITIES = ("REJECT", "REVIEW")
 
@@ -67,13 +82,24 @@ class PolicyError(Exception):
 
 @dataclass(frozen=True)
 class PolicyCheck:
-    """One check the policy requires, and the scenarios it must report."""
+    """One check the policy requires, and the obligations it must discharge.
+
+    `evidence_kind` is an assertion, not a grant. vkit derives the category from
+    the check's variant and refuses a policy whose assertion disagrees, so a
+    candidate cannot downgrade by writing `scenario` in its policy or promote by
+    writing `property`.
+    """
 
     id: str
-    required_scenarios: tuple[str, ...] = ()
+    obligations: tuple[Obligation, ...] = ()
+    evidence_kind: ClaimCategory | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {"id": self.id, "required_scenarios": list(self.required_scenarios)}
+        return {
+            "id": self.id,
+            "obligations": [obligation_to_json(o) for o in self.obligations],
+            "evidence_kind": self.evidence_kind.value if self.evidence_kind else None,
+        }
 
 
 @dataclass(frozen=True)
@@ -185,17 +211,41 @@ def _parse_document(raw: Any, origin: dict[str, Any]) -> Policy:
         if check_id in seen:
             raise PolicyError(f"required check {check_id!r} is listed twice")
         seen.add(check_id)
-        scenarios = entry.get("required_scenarios", [])
-        if not isinstance(scenarios, list) or any(
-            not isinstance(s, str) or not s for s in scenarios
+
+        declared = entry.get("evidence_kind")
+        category = None
+        if declared is not None:
+            try:
+                category = ClaimCategory(declared)
+            except ValueError:
+                known = ", ".join(c.value for c in ClaimCategory)
+                raise PolicyError(
+                    f"required check {check_id!r}: evidence_kind {declared!r} is not "
+                    f"one of {known}. The category is derived from the check's "
+                    f"variant, so a policy may only assert one that already holds."
+                ) from None
+
+        raw_obligations = entry.get("obligations", [])
+        if not isinstance(raw_obligations, list) or any(
+            not isinstance(o, dict) for o in raw_obligations
         ):
             raise PolicyError(
-                f"required check {check_id!r}: required_scenarios must be a list of "
-                "nonempty strings"
+                f"required check {check_id!r}: obligations must be a list of "
+                "obligation objects"
             )
-        required.append(
-            PolicyCheck(id=check_id, required_scenarios=tuple(dict.fromkeys(scenarios)))
-        )
+        try:
+            obligations = tuple(obligation_from_json(o) for o in raw_obligations)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PolicyError(
+                f"required check {check_id!r}: cannot read obligations: {exc}"
+            ) from exc
+        duplicates = {o for o in obligations if obligations.count(o) > 1}
+        if duplicates:
+            named = ", ".join(sorted(describe_obligation(o) for o in duplicates))
+            raise PolicyError(f"required check {check_id!r}: duplicate obligations {named}")
+
+        required.append(PolicyCheck(id=check_id, obligations=obligations,
+                                    evidence_kind=category))
 
     manifest_revision = raw.get("manifest_revision")
     if manifest_revision is not None and (not isinstance(manifest_revision, str)
@@ -345,12 +395,30 @@ def compare(candidate: Manifest, policy: Policy, approved: Manifest | None) -> t
             ))
             continue
 
-        lost = [s for s in required.required_scenarios if s not in spec.required_scenarios]
+        lost = [o for o in required.obligations if o not in spec.obligations()]
         if lost:
             findings.append(PolicyFinding(
                 "required_scenario_removed", required.id, "REJECT",
-                f"the policy requires scenario(s) {', '.join(lost)} and the candidate's "
-                "manifest no longer lists them, so the check would stop reporting them",
+                f"the policy requires {', '.join(describe_obligation(o) for o in lost)} "
+                "and the candidate's manifest no longer lists them, so the check would "
+                "stop reporting them",
+            ))
+
+        # The category is compared before anything else the policy says, because a
+        # downgraded variant cannot carry the obligations it used to and the
+        # finding below would otherwise be reported as a set of removed scenarios,
+        # which is a different problem with a different fix.
+        actual_kind = spec.evidence_kind()
+        if required.evidence_kind is not None and required.evidence_kind is not actual_kind:
+            findings.append(PolicyFinding(
+                "evidence_kind_downgraded", required.id, "REJECT",
+                f"the policy requires {required.id!r} as evidence_kind "
+                f"{required.evidence_kind.value!r} and the candidate's manifest "
+                f"declares it as kind {spec.kind.value!r}, which licenses "
+                f"{actual_kind.value!r}. A check cannot claim a category its "
+                f"interpreter cannot produce, so the theorem obligation(s) "
+                f"{', '.join(describe_obligation(o) for o in required.obligations if isinstance(o, TheoremObligation)) or 'it names'}"
+                f" are no longer carried by anything that can discharge them.",
             ))
 
         if approved is None:
@@ -372,13 +440,16 @@ def compare(candidate: Manifest, policy: Policy, approved: Manifest | None) -> t
                 f"{original.timeout_seconds:g}s and the candidate raised it to "
                 f"{spec.timeout_seconds:g}s",
             ))
-        if original.required_scenarios and spec.required_scenarios != original.required_scenarios:
-            extra = [s for s in spec.required_scenarios if s not in original.required_scenarios]
+        original_obligations = original.obligations()
+        if original_obligations and spec.obligations() != original_obligations:
+            extra = [o for o in spec.obligations() if o not in original_obligations]
             if extra:
                 findings.append(PolicyFinding(
                     "scenario_added", required.id, "REVIEW",
-                    f"the approved manifest required {', '.join(original.required_scenarios)} "
-                    f"and the candidate also demands {', '.join(extra)}",
+                    f"the approved manifest required "
+                    f"{', '.join(describe_obligation(o) for o in original_obligations)} "
+                    f"and the candidate also demands "
+                    f"{', '.join(describe_obligation(o) for o in extra)}",
                 ))
     return tuple(findings)
 

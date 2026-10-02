@@ -15,7 +15,7 @@ Two mutations are applied, one per guard the plan names, and each must make a
 named test go red:
 
   MUTANT_STALE_GENERATION   removes the generation comparison in
-                           tasks.record_readiness, so a superseded attempt can
+                           tasks.record_readiness_in, so a superseded attempt can
                            publish an accepted verdict.
   MUTANT_MISSING_CHECK      stops the readiness loop reporting a required check
                            that has no completed run, so acceptance stops
@@ -77,12 +77,12 @@ MUTANTS: tuple[PythonMutant, ...] = (
         name="MUTANT_STALE_GENERATION",
         relative="vkit/tasks.py",
         removes=(
-            '        decided_at = result.context.get("generation")\n'
-            '        if decided_at != generation:\n'
-            '            raise ConflictError(\n'
-            '                f"task {task_id} was reassigned from generation {decided_at} to "\n'
-            '                f"{generation}; refusing to record readiness for a superseded attempt"\n'
-            '            )\n'
+            '    decided_at = result.context.get("generation")\n'
+            '    if decided_at != generation:\n'
+            '        raise ConflictError(\n'
+            '            f"task {task_id} was reassigned from generation {decided_at} to "\n'
+            '            f"{generation}; refusing to record readiness for a superseded attempt"\n'
+            '        )\n'
         ),
         replacement="",
         test="tests/test_stale_attempt_traces.py::test_a_superseded_attempt_cannot_publish_ready",

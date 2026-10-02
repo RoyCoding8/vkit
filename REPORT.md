@@ -1,23 +1,14 @@
 # vkit status report
 
-Written 2026-09-30. Revised 2026-10-01 against `2f1749e`. Everything here is
-measured, not planned. Where something is unproven it says so.
-
-An earlier revision of this report pinned `59a4eca`, `14e21cb` and `5087624`.
-None of the three resolves in this repository, so each number they supported has
-either been re-measured here or dropped. The suite row is the honest shape: a
-collection count with no verdict attached.
+Written 2026-09-30. Repair review updated 2026-10-02. Historical measurements below retain their original scope.
 
 ## Where the work stands
 
-| | |
-|---|---|
-| Repo | `D:\AI\Poteto's Style`, branch `master`, commit `2f1749e` |
-| Suite collected | 740 collected, 0 run. Collected with `--collect-only`; no full execution at this revision. |
-| Windows suite passed | Unmeasured at this revision. No full run of this suite has been recorded at any revision this report can name, so no passed figure is quoted. |
-| Linux (WSL2) suite | No receipt in this repository, and CI has not closed it. `.github/workflows/ci.yml` runs this suite on `ubuntu-latest`, so the local POSIX harness it replaced is deleted; the job's receipt is the forge's run log rather than a file here, and it is red at this revision. See the POSIX section below. |
-| Acceptance rows | 22/22, observed on this host at `2f1749e` and re-derived on every run of `tests/test_release_docs.py` |
-| Release gate | Not a number. `docs/RELEASE-CHECKLIST.md` carries no enumerated gate and this report invented the 26. It carries a gap register and a nine-row may-not-say table, of which four rows read blocked or not verified. |
+Repairs are being integrated on `codex/vkit-recheck-repairs`. Release readiness remains open: fresh host completion gating, protected hosted integration, operator enrollment and a large-worker pilot still need direct verification.
+
+The baseline `76aef82dcb28649bcc076646c9bd0f45293b2d79` passed GitHub CI across three operating systems: Windows 696 passed / 44 skipped, Ubuntu 662 passed / 78 skipped, and macOS 641 passed / 99 skipped; each collected 740 tests. [Baseline CI receipt](https://github.com/RoyCoding8/vkit/actions/runs/36945403170). This corrects the earlier report's claim that POSIX CI was red and Windows had never run. Those results cover the baseline; repair validation is recorded separately.
+
+The acceptance matrix still has 57 rows without specific evidence mappings. A passing suite does not establish the missing live capabilities or those row mappings.
 
 ## The product
 

@@ -452,7 +452,7 @@ suite and fail only at a user's first malformed document.
 | Installs into Claude Code as a plugin | verified | A live host session installed it and recorded it enabled, `HOST-SESSION.md`. The receipt is a transcript; the driver skips rather than fails where the host cannot run. |
 | Supplies the plugin's MCP server | verified | The host connected `plugin:vkit:vkit` and the model called a vkit tool through it, `HOST-SESSION.md`. The health check a session disagrees with is recorded there too. |
 | Holds a run in a subagent's turn | not verified | A subagent inheriting the six tools, and a BLOCKED run stopping a real turn, are GAP-10. The session that closed GAP-3 drove neither. |
-| Works on macOS or Linux | blocked | CI runs this suite on `ubuntu-latest` and `macos-latest`, and that job is red at this revision, so no POSIX support claim rests on it. GAP-2. The process path itself has been exercised on a POSIX host, but the receipt lives outside the repository. |
+| Works on macOS or Linux | blocked | Baseline three-OS CI passed at `76aef82`; the repair branch needs its own receipt. Ordinary suite results do not establish every POSIX process capability. GAP-2. The process path itself has been exercised on a POSIX host, but the receipt lives outside the repository. |
 | Enrolls a repository through a user flow | blocked | The command exists and the console operation exists, but no finished flow walks an operator through it, GAP-5 and GAP-6. |
 | Is ready for a pilot | blocked | The enrollment flow does not exist and no host session has run a BLOCKED run through an agent's turn, GAP-5, GAP-6 and GAP-10. See [PILOT.md](PILOT.md). |
 

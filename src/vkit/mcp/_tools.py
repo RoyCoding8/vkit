@@ -516,19 +516,38 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
 
 # --- task_begin --------------------------------------------------------------
 
+#: The keys a caller's contract may carry, and the ones `task_begin` reads. It is
+#: the published schema's `properties` and the handler's admission check, and it
+#: is written once here so a key cannot be added to one and forgotten in the
+#: other: a key declared but unread is the defect this closed, and a key read but
+#: undeclared is the same defect facing the other way.
+_CONTRACT_KEYS: tuple[str, ...] = ("description", "required_checks", "scope")
+
+
 def _task_begin(server: Server, args: dict[str, Any]) -> ToolResult:
     """Open a task attempt through the core admission decision.
 
-    The contract's `required_checks`, `claim_resource` and `scope` are the
-    caller's request. Everything the attempt is *bound* to — the repository, the
-    approved policy digest, the mandatory floor — is derived inside
-    `tasks.admit`, and a required resource it cannot take refuses the admission
-    rather than being reported beside an admitted task.
+    The contract's `required_checks`, `description`, `scope` and `claim_resource`
+    are the caller's request. Everything the attempt is *bound* to — the
+    repository, the approved policy digest, the mandatory floor — is derived
+    inside `tasks.admit`, and a required resource it cannot take refuses the
+    admission rather than being reported beside an admitted task.
     """
     request_id = _text(args, "request_id")
     contract = args.get("contract")
     if not isinstance(contract, dict) or not contract:
         raise TypeError("contract must be a non-empty object")
+    # The same rule `call_tool` applies to the top level, applied one level down.
+    # A contract key this build does not read is a caller believing it constrained
+    # something it did not: `command`, `root` and `argv` were accepted and
+    # discarded, so a task was admitted against a policy the caller thought it
+    # had chosen. Refusing is the only answer that does not make that silence.
+    unknown_contract = sorted(set(contract) - set(_CONTRACT_KEYS))
+    if unknown_contract:
+        raise TypeError(
+            f"contract has unknown key(s): {', '.join(unknown_contract)}; a contract "
+            f"declares {', '.join(_CONTRACT_KEYS)}"
+        )
     scope = args.get("scope")
     if scope is not None and not isinstance(scope, str):
         raise TypeError("scope must be a string when given")
@@ -549,9 +568,13 @@ def _task_begin(server: Server, args: dict[str, Any]) -> ToolResult:
     selected = contract.get("required_checks", [])
     if not isinstance(selected, list) or any(not isinstance(c, str) or not c for c in selected):
         raise TypeError("contract.required_checks must be a list of check id strings")
-    # A contract's free-text description is the scope an agent means when it
-    # supplies no scope of its own; `scope` is the field that overrides it.
-    declared_scope = scope if isinstance(scope, str) else contract.get("description", "")
+    # A contract's free text is the scope an agent means when it supplies no scope
+    # of its own. The top-level `scope` wins, then the contract's `scope`, then its
+    # `description`, which is the spelling `vkit task begin --contract` reads.
+    contract_scope = contract.get("scope", contract.get("description", ""))
+    if not isinstance(contract_scope, str):
+        raise TypeError("contract.scope and contract.description must be strings")
+    declared_scope = scope if isinstance(scope, str) else contract_scope
 
     store = server._store()
     identity = {
@@ -1044,11 +1067,42 @@ TOOLS: tuple[ToolSpec, ...] = (
             "properties": {
                 "contract": {
                     "type": "object",
+                    "additionalProperties": False,
+                    "required": [],
                     "description": (
                         "The reviewed contract. An optional 'required_checks' list "
                         "adds checks on top of the approved policy; it cannot "
-                        "remove one."
+                        "remove one. Every other key is derived server-side and is "
+                        "refused here rather than ignored."
                     ),
+                    "properties": {
+                        "required_checks": {
+                            "type": "array", "items": {"type": "string", "minLength": 1},
+                            "description": (
+                                "Extra check ids to require on top of the approved "
+                                "policy's own. Additive only: an empty list still "
+                                "requires the whole policy floor, and a check the "
+                                "policy does not register is refused at admission."
+                            ),
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": (
+                                "What this attempt is for, in free text. The task's "
+                                "scope when neither a top-level 'scope' nor a "
+                                "'scope' key here is given. Recorded as intent; it "
+                                "sandboxes nothing."
+                            ),
+                        },
+                        "scope": {
+                            "type": "string",
+                            "description": (
+                                "What this attempt is for. Overrides 'description' "
+                                "here, and a top-level 'scope' overrides both. "
+                                "Recorded as intent; it sandboxes nothing."
+                            ),
+                        },
+                    },
                 },
                 "scope": {
                     "type": "string", "minLength": 1,

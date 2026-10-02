@@ -17,7 +17,15 @@ Repair branch: `codex/vkit-recheck-repairs`. Review baseline: `76aef82dcb28649bc
 
 The combined core/oracle regressions passed: 11 tests. An independent claim-release race probe returned READY with one claim still held and the concurrent release blocked. Both Python guard mutations produced the expected assertion failures after the mutation harness was updated for the moved guard. The installed-wheel console witness passed without invoking a live host.
 
-The detached public MCP fixture regression passed on the combined tree. Collection reported 757 tests. Full repair CI is pending. Full suites have not been run locally during this repair.
+The detached public MCP fixture regression passed on the combined tree. Collection reported 757 tests. [Full GitHub CI](https://github.com/RoyCoding8/vkit/actions/runs/37025668819) passed at `52fae31d892186563c8a44fd9181fc50b195dd45`:
+
+| Platform | Passed | Skipped |
+|---|---:|---:|
+| Windows | 713 | 44 |
+| Ubuntu | 679 | 78 |
+| macOS | 658 | 99 |
+
+These are the measured counts at that commit. Two Linux-only real-process tests returned early on Windows and macOS, so those rows include two tests without executed assertions. Both tests executed on Ubuntu. Final receipt review changed those unsupported-platform branches to explicit skips, confirmed by a small Windows run. A direct Python run from the parent workspace under WSL also completed both Linux regressions with exit 0. The implementation source is unchanged. The final follow-up contains documentation and this test-reporting correction; it has not had another full suite run. The machine-readable receipt is [repair-ci-receipt.json](repair-ci-receipt.json). Full suites have not been run locally during this repair.
 
 ## Remaining limits
 

@@ -1,0 +1,34 @@
+{
+  "run_id": 37025668819,
+  "url": "https://github.com/RoyCoding8/vkit/actions/runs/37025668819",
+  "tested_commit": "52fae31d892186563c8a44fd9181fc50b195dd45",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "windows-latest",
+      "conclusion": "success",
+      "collected": 757,
+      "passed": 713,
+      "skipped": 44,
+      "seconds": 976.87
+    },
+    {
+      "name": "macos-latest",
+      "conclusion": "success",
+      "collected": 757,
+      "passed": 658,
+      "skipped": 99,
+      "seconds": 235.91
+    },
+    {
+      "name": "ubuntu-latest",
+      "conclusion": "success",
+      "collected": 757,
+      "passed": 679,
+      "skipped": 78,
+      "seconds": 201.5
+    }
+  ],
+  "scope": "Full suites ran on GitHub CI. No live Claude installation/session or scale pilot is established by this receipt.",
+  "test_reporting_follow_up": "Two Linux-only regressions returned early on Windows and macOS at the tested commit. Both executed on Ubuntu. Afterwards the unsupported-platform branches were changed to explicit skips; a small Windows gate confirmed two skips. Implementation source is unchanged."
+}

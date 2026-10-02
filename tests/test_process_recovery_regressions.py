@@ -78,7 +78,8 @@ def _wait_for(predicate, message: str, seconds: float = 8) -> None:
 
 def test_release_waits_for_a_posix_descendant_after_its_leader_exits(tmp_path: Path) -> None:
     if sys.platform == "win32" or not Path("/proc").is_dir():
-        return
+        import pytest
+        pytest.skip("this real-process regression requires Linux /proc")
     marker = tmp_path / "pids"
     project, check_id = _project_with_probe(
         tmp_path,
@@ -145,7 +146,8 @@ def test_release_waits_for_a_posix_descendant_after_its_leader_exits(tmp_path: P
 
 def test_recovery_fences_a_supervisor_paused_before_its_claim(tmp_path: Path) -> None:
     if sys.platform == "win32" or not Path("/proc").is_dir():
-        return
+        import pytest
+        pytest.skip("this real-process regression requires Linux /proc")
     marker = tmp_path / "driver.pid"
     ready, proceed, claimed = (tmp_path / name for name in ("ready", "proceed", "claimed"))
     hook = tmp_path / "hook"

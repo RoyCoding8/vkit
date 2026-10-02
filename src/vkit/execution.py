@@ -263,6 +263,8 @@ def run_check(
     Never invokes the CLI.
     """
     check = manifest.require(check_id)
+    fixture = manifest.fixture_identity()
+    fixture_digest = None if fixture is None else fixture.digest
     run_id = run_id or uuid.uuid4().hex
     run_dir = store.run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -278,7 +280,7 @@ def run_check(
     store.register_run(
         run_id, check.id, task_id=task_id, attempt=attempt,
         source=source.to_json(), configuration_digest=manifest.digest(),
-        fixture_digest=None,
+        fixture_digest=fixture_digest,
     )
 
     blocked = check_prerequisites(check)
@@ -288,6 +290,7 @@ def run_check(
             outcome=blocked, started_at=_now(), ended_at=_now(),
             process=None, artifact=None, run_dir=run_dir,
             provenance=env.provenance(),
+            fixture_digest=fixture_digest,
         )
         _publish(store, run_id, report)
         return RunOutcome(report, blocked)
@@ -357,6 +360,7 @@ def run_check(
         process=process, artifact=artifact, run_dir=run_dir,
         executed_argv=list(argv),
         provenance=env.provenance(),
+        fixture_digest=fixture_digest,
     )
     _publish(store, run_id, report)
     return RunOutcome(report, outcome)
@@ -432,6 +436,7 @@ def _terminal_report(
     run_dir: Path,
     executed_argv: list[str] | None = None,
     provenance: dict[str, str] | None = None,
+    fixture_digest: str | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "schema_version": 1,
@@ -449,7 +454,7 @@ def _terminal_report(
             "cwd": str(check.cwd),
         },
         "configuration_digest": manifest.digest(),
-        "fixture_digest": None,
+        "fixture_digest": fixture_digest,
         # A refused launch produces a real result whose pid is None, not a
         # missing process. Guarding on the object records null here, and null is
         # what the schema accepts: `process.pid` is declared an integer, so a

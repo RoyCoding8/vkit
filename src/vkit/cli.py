@@ -499,7 +499,7 @@ def cmd_check_start(args: argparse.Namespace) -> int:
     # by recovery while the attempt is still open, and a check launched under a
     # task that has lost its checkout is two workers writing one tree.
     try:
-        tasks.verify_ownership(store, task.task_id, task.generation)
+        tasks.verify_ownership(store, task.task_id, task.generation, project=project)
     except ConflictError as exc:
         raise Refused(str(exc), EXIT_BLOCKED) from exc
     except tasks.TaskError as exc:

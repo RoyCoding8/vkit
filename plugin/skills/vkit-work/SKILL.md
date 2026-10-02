@@ -14,7 +14,10 @@ whether the task is complete, from recorded runs, and nothing here decides it.
    its registered check ids, and anything missing. If it reports that the
    project is not enrolled, stop and say so. Enrolling is an explicit user
    action this skill does not perform.
-2. `task_begin` with the contract the user supplied. It returns a task id,
+2. `task_begin` with the contract the user supplied. When the SessionStart hook
+   supplies a host binding, pass that object as `host` so Stop checks this task;
+   for a subagent, use the session_id and agent_id from SubagentStart. Omit it
+   for work outside a managed host session. It returns a task id,
    a generation, and the required check ids. Keep both. A later call that
    returns a different generation is a different attempt, and the earlier one
    can no longer finalize.

@@ -38,6 +38,8 @@ from ..tasks import (
     admit,
     finalize,
     get_task,
+    validate_host_binding,
+    verify_ownership,
 )
 
 # --- bounds -----------------------------------------------------------------
@@ -533,6 +535,11 @@ def _task_begin(server: Server, args: dict[str, Any]) -> ToolResult:
     owner = args.get("owner")
     if owner is not None and (not isinstance(owner, str) or not owner.strip()):
         raise TypeError("owner must be a non-empty string when given")
+    host = args.get("host")
+    try:
+        host = None if host is None else validate_host_binding(host)
+    except TaskError as exc:
+        raise TypeError(str(exc)) from exc
 
     resources = []
     resource = args.get("claim_resource")
@@ -547,10 +554,13 @@ def _task_begin(server: Server, args: dict[str, Any]) -> ToolResult:
     declared_scope = scope if isinstance(scope, str) else contract.get("description", "")
 
     store = server._store()
-    payload = _identity({
+    identity = {
         "contract": contract, "scope": scope, "owner": owner,
         "claim_resource": resource,
-    })
+    }
+    if host is not None:
+        identity["host"] = host
+    payload = _identity(identity)
     try:
         task_id = claim_request(
             store, request_id=request_id, operation=OPS["task_begin"], payload=payload
@@ -581,7 +591,10 @@ def _task_begin(server: Server, args: dict[str, Any]) -> ToolResult:
                 store, task_id, context=context, required_checks=selected,
                 scope=declared_scope,
                 resources=resources or None,
-                declared={"owner": owner} if owner else None,
+                declared={
+                    **({"owner": owner} if owner else {}),
+                    **({"host": host} if host else {}),
+                } or None,
             )
         except ConflictError as exc:
             # The resource is held elsewhere. Admission is refused, so there is no
@@ -703,6 +716,12 @@ def _check_start(server: Server, args: dict[str, Any]) -> ToolResult:
         return _refused(
             f"check_start: task {task_id} is closed and cannot start new runs", kind="refused"
         )
+    try:
+        verify_ownership(store, task_id, task.generation, project=server.project)
+    except ConflictError as exc:
+        return _refused(f"check_start: {exc}", kind="conflict")
+    except TaskError as exc:
+        return _refused(f"check_start: {exc}", kind="refused")
 
     payload = _identity({"task_id": task_id, "check_ids": check_ids})
     runs = {
@@ -1012,7 +1031,9 @@ TOOLS: tuple[ToolSpec, ...] = (
             "Open a task attempt against the bound project. The contract's "
             "required_checks may add to the approved policy's own checks but "
             "cannot remove one, and the policy digest and repository binding are "
-            "derived rather than supplied. Idempotent on request_id: a retry "
+            "derived rather than supplied. For a managed Claude Code session, "
+            "pass its host session_id and optional agent_id in host so completion "
+            "hooks gate the same task. Idempotent on request_id: a retry "
             "returns the same task, and reusing a key with a different contract "
             "is refused."
         ),
@@ -1036,6 +1057,22 @@ TOOLS: tuple[ToolSpec, ...] = (
                 "owner": {
                     "type": "string", "minLength": 1,
                     "description": "Correlation label for whoever owns the attempt.",
+                },
+                "host": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["session_id"],
+                    "properties": {
+                        "session_id": {
+                            "type": "string", "minLength": 1,
+                            "description": "Host session_id reported by SessionStart.",
+                        },
+                        "agent_id": {
+                            "type": "string", "minLength": 1,
+                            "description": "Host agent_id reported by SubagentStart, when binding a subagent.",
+                        },
+                    },
+                    "description": "Optional completion-hook binding for a managed host session.",
                 },
                 "claim_resource": {
                     "type": "string", "minLength": 1,

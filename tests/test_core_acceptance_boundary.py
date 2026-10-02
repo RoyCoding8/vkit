@@ -4,18 +4,19 @@ import importlib.util
 import json
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from vkit import tasks
-from vkit.claims import ResourceSpec, acquire, release
+from vkit.claims import ResourceSpec, acquire, holders, release
 from vkit.execution import run_check
 from vkit.identity import compute_source_identity
 from vkit.manifest import parse_manifest
 from vkit.mcp._tools import Server
 from vkit.paths import open_project
-from vkit.storage import Store
+from vkit.storage import Store, StoreError
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "python-cli"
@@ -70,6 +71,31 @@ def _hook():
     return module
 
 
+def _block_release_during_decision(monkeypatch, store, task_id: str) -> list[bool]:
+    connect = Store._connect
+
+    @contextmanager
+    def no_wait_connection(self):
+        with connect(self) as conn:
+            conn.execute("PRAGMA busy_timeout = 0")
+            yield conn
+
+    monkeypatch.setattr(Store, "_connect", no_wait_connection)
+    decide = tasks._decide
+    blocked = []
+
+    def release_during_decision(*args, **kwargs):
+        try:
+            release(store, task_id, 1)
+        except StoreError as exc:
+            assert "locked" in str(exc), exc
+            blocked.append(True)
+        return decide(*args, **kwargs)
+
+    monkeypatch.setattr(tasks, "_decide", release_during_decision)
+    return blocked
+
+
 def test_released_claim_blocks_finalize_and_reacquisition_repairs_it(project) -> None:
     task_id = _begin(project, "released", claim_resource="checkout")
     _run(project, task_id)
@@ -83,6 +109,36 @@ def test_released_claim_blocks_finalize_and_reacquisition_repairs_it(project) ->
     acquire(store, task_id, 1, [ResourceSpec("checkout", "exclusive")])
     repaired = Server(project.root).call_tool("task_finalize", {"task_id": task_id})
     assert repaired.content["readiness"] == "READY", repaired.content
+
+
+def test_finalize_holds_claim_through_decision_and_publication(project, monkeypatch) -> None:
+    task_id = _begin(project, "release-race", claim_resource="checkout")
+    _run(project, task_id)
+    store = Store(project.db_path)
+    blocked = _block_release_during_decision(monkeypatch, store, task_id)
+    result = Server(project.root).call_tool("task_finalize", {"task_id": task_id})
+
+    assert result.content["readiness"] == "READY", result.content
+    assert blocked, "claim release was not blocked during the acceptance transaction"
+    assert len(holders(store, task_id)) == 1
+    release(store, task_id, 1)
+
+
+def test_completion_hook_reads_readiness_under_the_same_claim_snapshot(project, monkeypatch) -> None:
+    task_id = _begin(
+        project, "hook-release-race", claim_resource="checkout",
+        host={"session_id": "hook-race-session"},
+    )
+    _run(project, task_id)
+    store = Store(project.db_path)
+    blocked = _block_release_during_decision(monkeypatch, store, task_id)
+    event = {"session_id": "hook-race-session", "hook_event_name": "Stop"}
+    response = _hook().respond("Stop", event, str(project.root))[0]
+
+    assert response.get("decision") != "block", response
+    assert blocked, "claim release was not blocked during the hook decision"
+    assert len(holders(store, task_id)) == 1
+    release(store, task_id, 1)
 
 
 def test_linked_checkout_cannot_finalize_another_checkouts_task(project, tmp_path: Path) -> None:

@@ -29,7 +29,7 @@ from ..identity import compute_source_identity
 # the only module that owns its format. It did not before, and wrote a second
 # one, so `enroll(accepted=True)` here and the same call from the CLI disagreed
 # about whether a repository was enrolled.
-from .. import enroll as core_enroll
+from .. import enroll as core_enroll, pluginres
 from ..manifest import Manifest, ManifestError, parse_manifest
 from ..paths import Project, ProjectError, open_project
 from ..recover import Report as RecoveryReport
@@ -182,7 +182,7 @@ def checks_view(context: Context) -> dict[str, Any]:
     """
     record = _installed_plugin_record(PLUGIN_ID)
     try:
-        source = str(_plugin_source_dir())
+        source = str(_marketplace_root() / pluginres.PLUGIN_DIR)
     except Refused:
         # A checkout with no package beside it is a fact to show, not a reason to
         # refuse a read view. install would refuse the same thing with the same
@@ -535,30 +535,12 @@ def _run_host(args: list[str]) -> tuple[int, str, str]:
     return done.returncode, done.stdout, done.stderr
 
 
-def _plugin_source_dir() -> Path:
-    """The plugin package this build ships, wherever the package was checked out.
-
-    Resolved relative to this module rather than the working directory, so a
-    console opened anywhere still finds the package it belongs to. The plugin
-    sits beside the Python package (`.../plugin`) in a source checkout and
-    beside the installed package (`.../vkit/../../plugin`) in a wheel, so both
-    are tried before anything is refused.
-    """
-    here = Path(__file__).resolve()
-    candidates = [
-        # Source checkout: <root>/src/vkit/console/operations.py -> <root>/plugin
-        here.parents[3] / "plugin",
-        # Installed wheel: <site-packages>/vkit/console/operations.py -> the bundled copy
-        here.parent / "_plugin",
-    ]
-    for candidate in candidates:
-        if (candidate / ".claude-plugin" / "plugin.json").is_file():
-            return candidate
-    raise Refused(
-        f"the vkit plugin package is not present; looked in "
-        f"{', '.join(str(c) for c in candidates)}. "
-        f"Install operates on a packaged plugin, and this build has none to install."
-    )
+def _marketplace_root() -> Path:
+    """Translate the shared packaged-resource refusal at the console boundary."""
+    try:
+        return pluginres.resolve_plugin_root()
+    except pluginres.PluginResourcesMissing as exc:
+        raise Refused(str(exc)) from exc
 
 
 def _installed_plugin_record(plugin_id: str) -> dict | None:
@@ -580,11 +562,6 @@ def _installed_plugin_record(plugin_id: str) -> dict | None:
         return None
     entries = (document.get("plugins") or {}).get(plugin_id) or []
     return entries[0] if entries else None
-
-
-def _repo_root() -> Path:
-    """The checkout this build was loaded from, which is also the marketplace root."""
-    return _plugin_source_dir().parent
 
 
 def _marketplace_registered() -> bool:
@@ -629,13 +606,14 @@ def install(context: Context, scope: str = "user", **_: Any) -> dict[str, Any]:
         raise Refused(
             f"scope {scope!r} is not supported; this build installs at 'user' scope only"
         )
-    source = _plugin_source_dir()
-    _validate(_repo_root())
+    root = _marketplace_root()
+    source = root / pluginres.PLUGIN_DIR
+    _validate(root)
 
     # The host installs plugins from a marketplace, so the repository declares
     # one. Adding it twice is refused by the host rather than duplicated here.
     if not _marketplace_registered():
-        code, out, err = _run_host(["plugin", "marketplace", "add", str(_repo_root())])
+        code, out, err = _run_host(["plugin", "marketplace", "add", str(root)])
         if code != 0:
             detail = (err or out).strip() or "the host CLI reported no detail"
             raise Refused(f"the host refused to register the vkit marketplace: {detail}")
@@ -671,7 +649,7 @@ def repair(context: Context, scope: str = "user", **_: Any) -> dict[str, Any]:
         raise Refused(
             f"scope {scope!r} is not supported; this build repairs at 'user' scope only"
         )
-    _validate(_repo_root())
+    _validate(_marketplace_root())
     if _installed_plugin_record(PLUGIN_ID) is None:
         raise Refused(
             f"{PLUGIN_ID} is not installed for this host, so there is no drifted "

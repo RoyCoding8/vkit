@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 
 from vkit.console import api, operations, plan, server
+from vkit import pluginres
 from vkit.enroll import read_enrollment
 from vkit.console.plan import (
     MAX_LOG_BYTES,
@@ -1025,12 +1026,11 @@ def test_install_refuses_a_package_the_host_would_not_load(
     so an operator is told what to fix rather than that something went wrong.
     """
     broken = tmp_path / "broken-marketplace"
-    shutil.copytree(operations._plugin_source_dir(), broken / "plugin")
+    shutil.copytree(pluginres.plugin_dir(), broken / "plugin")
     (broken / "plugin" / ".claude-plugin" / "plugin.json").write_text(
         json.dumps({"name": "Not A Kebab Name", "description": "x"}), encoding="utf-8"
     )
-    monkeypatch.setattr(operations, "_plugin_source_dir", lambda: broken / "plugin")
-    monkeypatch.setattr(operations, "_repo_root", lambda: broken)
+    monkeypatch.setattr(operations, "_marketplace_root", lambda: broken)
 
     reached: list[list[str]] = []
     original = operations._run_host
@@ -1062,7 +1062,7 @@ def test_the_real_package_installs_through_the_host(
     rather than inventing a directory of its own.
     """
     done = subprocess.run(
-        [_claude_cli(), "plugin", "validate", "--strict", str(operations._plugin_source_dir().parent)],
+        [_claude_cli(), "plugin", "validate", "--strict", str(pluginres.resolve_plugin_root())],
         capture_output=True, encoding="utf-8", timeout=120,
     )
     assert done.returncode == 0, done.stdout + done.stderr

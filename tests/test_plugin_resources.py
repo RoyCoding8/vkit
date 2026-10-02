@@ -240,3 +240,43 @@ def test_a_checkout_with_no_packaged_plugin_still_resolves() -> None:
     assert root == REPO_ROOT, (
         f"a source checkout must resolve to the repository root, got {root}"
     )
+
+
+def test_installed_console_uses_packaged_marketplace(wheel: Path, tmp_path: Path) -> None:
+    """Drive console installation from wheel bytes with a harmless host witness."""
+    target = tmp_path / "installed kit é"
+    installed = _run([
+        sys.executable, "-m", "pip", "install", "--no-deps", "--no-cache-dir",
+        "--disable-pip-version-check", "--target", str(target), str(wheel),
+    ], cwd=tmp_path)
+    assert installed.returncode == 0, installed.stderr
+    code = "\n".join([
+        "import json, sys",
+        f"sys.path.insert(0, {str(target)!r})",
+        "from pathlib import Path",
+        "from types import SimpleNamespace",
+        "import vkit",
+        "from vkit import pluginres",
+        "from vkit.console import operations",
+        "calls = []",
+        "def host(args):",
+        "    calls.append(args)",
+        "    return 0, 'installed', ''",
+        "operations._run_host = host",
+        "operations._marketplace_registered = lambda: False",
+        "operations._installed_plugin_record = lambda _: None",
+        "root = pluginres.resolve_plugin_root()",
+        "result = operations.install(None)",
+        "view = operations.checks_view(SimpleNamespace(manifest=None, manifest_error=None))",
+        "assert result['installed_from'] == str(root / 'plugin')",
+        "assert view['installed']['source'] == result['installed_from']",
+        "assert calls == [['plugin', 'validate', '--strict', str(root)],",
+        "                 ['plugin', 'marketplace', 'add', str(root)],",
+        "                 ['plugin', 'install', 'vkit@vkit', '--scope', 'user']]",
+        "print(json.dumps({'package': vkit.__file__, 'root': str(root)}))",
+    ])
+    done = _run([sys.executable, "-c", code], cwd=tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
+    answer = json.loads(done.stdout)
+    assert Path(answer["package"]).is_relative_to(target)
+    assert Path(answer["root"]).is_relative_to(target)

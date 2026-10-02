@@ -36,9 +36,10 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+import subproc
 
 RULES_NAME = "pricing/rules.py"
 QUOTE_NAME = "pricing/quote.py"
@@ -206,11 +207,31 @@ from pathlib import Path
 CASES = __CASES__
 
 
+def hidden_window():
+    """`subprocess` keywords that keep a launched child off the operator's screen.
+
+    Written out rather than imported, because this driver runs inside a
+    generated repository that has no `tests/` directory to import from. It is
+    the same shape as `tests/subproc.py`, and it exists here for the same
+    reason: the driver launches one process per scenario, so without it the
+    verification step this product exists to run is the thing that flashes
+    windows over the operator.
+    """
+    if sys.platform != "win32":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
+
+
 def run_case(python, app, case):
     scenario_id, tail, expected = case
     done = subprocess.run(
         [python, "-m", app, *tail],
-        capture_output=True, text=True, timeout=60, check=False,
+        capture_output=True, text=True, timeout=60, check=False, **hidden_window(),
     )
     printed = done.stdout.strip()
     passed = done.returncode == 0 and printed == expected
@@ -335,7 +356,7 @@ def git(repo: Path, *args: str) -> str:
     # repository". Removing the variables lets git do its own discovery from cwd,
     # which is the behaviour the fixture is written against.
     env = {k: v for k, v in os.environ.items() if k not in _GIT_STEERING}
-    done = subprocess.run(
+    done = subproc.run(
         ["git", *args], cwd=repo, capture_output=True, encoding="utf-8",
         errors="replace", timeout=180, check=False, env=env,
     )

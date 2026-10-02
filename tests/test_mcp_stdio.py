@@ -28,13 +28,13 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
 
+import subproc
 from mcp_client import CLIENT_PROTOCOL, StdioClient
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -61,9 +61,9 @@ LIFECYCLE_TIMEOUT = 600.0
 def make_repo(tmp_path: Path, name: str = "project") -> Path:
     target = tmp_path / name
     shutil.copytree(EXAMPLE, target)
-    subprocess.run(["git", "init", "-q"], cwd=target, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=target, check=True)
-    subprocess.run(
+    subproc.run(["git", "init", "-q"], cwd=target, check=True)
+    subproc.run(["git", "add", "-A"], cwd=target, check=True)
+    subproc.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "example"],
         cwd=target, check=True,
     )
@@ -107,7 +107,7 @@ def cli_json(argv: list[str]) -> dict:
     """
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([str(REPO_ROOT / "src"), env.get("PYTHONPATH", "")])
-    done = subprocess.run(
+    done = subproc.run(
         [sys.executable, "-m", "vkit.cli", *argv, "--json"],
         capture_output=True, encoding="utf-8", timeout=300, env=env, cwd=str(REPO_ROOT),
     )
@@ -906,7 +906,7 @@ def test_a_missing_sdk_exits_with_its_own_code_and_says_so(repo: Path, tmp_path:
     (shim / "mcp.py").write_text("raise ImportError('this build has no MCP SDK')\n", encoding="utf-8")
     env["PYTHONPATH"] = os.pathsep.join([str(shim), str(REPO_ROOT / "src")])
 
-    done = subprocess.run(
+    done = subproc.run(
         [sys.executable, "-m", "vkit.cli", "mcp", "serve", "--project", str(repo)],
         capture_output=True, encoding="utf-8", timeout=300, env=env, cwd=str(REPO_ROOT),
     )

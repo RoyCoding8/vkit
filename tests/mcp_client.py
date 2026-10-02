@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import subproc
+
 #: A version the server is required to accept. 2025-06-18 is in the handshake
 #: ladder of the pinned SDK, and picking a mid-range one means a server that
 #: only spoke the newest would have to negotiate down rather than pass by luck.
@@ -82,7 +84,7 @@ class StdioClient:
         # This checkout's own src first, so the subprocess runs the code under
         # test rather than whichever install happens to lead on the path.
         env["PYTHONPATH"] = os.pathsep.join([str(REPO_ROOT / "src"), env.get("PYTHONPATH", "")])
-        self.proc = subprocess.Popen(
+        self.proc = subproc.popen(
             [sys.executable, "-m", "vkit.cli", "mcp", "serve", "--project", str(self.repo)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             # Binary pipes, and only the reader side is wrapped. In text mode a

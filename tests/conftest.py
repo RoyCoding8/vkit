@@ -9,13 +9,14 @@ pass, the one failure mode this product exists to prevent.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from functools import lru_cache
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
 import pytest
+
+import subproc
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -113,13 +114,13 @@ def pid_namespace_available() -> bool:
     """
     from shutil import which
 
-    import subprocess
+    import subproc
 
     binary = which("unshare")
     if binary is None:
         return False
     try:
-        probe = subprocess.run(
+        probe = subproc.run(
             [binary, "--fork", "--pid", "--mount-proc", sys.executable, "-c", "pass"],
             capture_output=True,
             text=True,
@@ -234,9 +235,9 @@ def init_repo(path: Path, message: str = "fixture") -> None:
     HEAD, and a fixture with no commit has no HEAD to record.
     """
     path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True, capture_output=True)
-    subprocess.run(["git", "add", "-A"], cwd=path, check=True, capture_output=True)
-    subprocess.run(
+    subproc.run(["git", "init", "-q"], cwd=path, check=True, capture_output=True)
+    subproc.run(["git", "add", "-A"], cwd=path, check=True, capture_output=True)
+    subproc.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", message],
         cwd=path, check=True, capture_output=True,
     )

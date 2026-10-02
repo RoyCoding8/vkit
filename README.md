@@ -91,8 +91,8 @@ Inspect a stored run. The report is on disk under the shared Git directory, so
 it outlives the checkout.
 
 ```console
-$ vkit run show --project . --run fd15ebd15cca4b6096ab76ec5a59da69
-run fd15ebd15cca4b6096ab76ec5a59da69  PASS
+$ vkit run show --project . --run 27d967e7a1014f538d480309bba3b8e4
+run 27d967e7a1014f538d480309bba3b8e4  PASS
   ...
 $ ls .git/verification-kit/runs/*/report.json
 .git/verification-kit/runs/27d967e7a1014f538d480309bba3b8e4/report.json
@@ -110,6 +110,10 @@ to stderr, so `vkit ... --json | jq` always works.
 | 2 | Invalid invocation: unknown check, bad manifest, unsupported schema |
 | 3 | BLOCKED: evidence was insufficient to decide, and the report says why |
 | 4 | Internal application error |
+| 5 | A capability this build cannot provide, such as a transport whose optional dependency is absent |
+
+Code 5 is the only one that reports something missing from the machine rather
+than from the request or the check.
 
 ## How a run is decided
 
@@ -196,46 +200,74 @@ stdin and stdout, so it needs the extra installed to run at all.
 $ .venv/Scripts/python.exe -m pytest tests/test_mcp_stdio.py
 ```
 
+That file collects 25 tests.
+
 `tests/mcp_client.py` holds the client, and it imports neither this package
 nor the SDK. That is deliberate: a client built from the same SDK would agree
 with the server about a changed contract instead of disagreeing with it.
 
 ## Known limits
 
-The POSIX path is written from documented semantics. This milestone was
-verified on Windows 11 with Python 3.13.14. CI runs this suite on
-`ubuntu-latest`, `windows-latest` and `macos-latest`, so the local POSIX harness
-has been deleted. **No POSIX run of this suite is recorded in this
-repository**: a CI job's receipt is the forge's run log rather than a file here,
-and that job is red at this revision. POSIX-CLAIM: no-receipt.
+**POSIX.** This milestone was verified on Windows 11 with Python 3.13.14. CI
+runs this suite on `ubuntu-latest`, `windows-latest` and `macos-latest`, so the
+local POSIX harness has been deleted. **No POSIX run of this suite is recorded
+in this repository**: a CI job's receipt is the forge's run log rather than a
+file here, and that job is red at this revision. POSIX-CLAIM: no-receipt.
 `docs/RELEASE-CHECKLIST.md` carries this as GAP-2, and
 `tests/test_release_docs.py::_posix_position_derived_from_the_tree` is where
 the position is derived rather than restated.
-Its timeout and completion control flow is exercised on Windows with the two
-POSIX-only mechanisms stubbed, because an ordinary timeout there used to raise
-`UnboundLocalError` instead of reporting a timeout. Group signalling itself is
-unverified. The boundary is a descendant that calls `setsid` or `setpgid` leaves
-the process group, and no signal reaches it.
 
-A `.cmd` launcher cannot carry a non-ASCII path, because batch file contents are
-read in the active ANSI code page. That is `cmd.exe` behavior, not this
-package's. A check registered as a `.cmd` under a non-ASCII repository path will
-mangle its arguments.
+The POSIX process path is exercised, not merely written.
+`tests/test_procs_posix.py` covers the control flow around a timeout on Windows
+with `os.killpg` and `start_new_session` both stubbed. An ordinary timeout there
+used to raise `UnboundLocalError` instead of reporting a timeout, because the
+exit code was assigned only when the second wait also timed out, which is the
+rare case. `tests/test_procs_posix_real.py` runs the same path on a POSIX host
+with nothing stubbed. The boundary is a descendant that calls `setsid` or
+`setpgid`: it leaves the process group, and no signal reaches it.
+`scripts/measure_posix_escape.py` observes that, and `src/vkit/procs.py` states
+it.
 
-The source digest cannot detect an edit that is made and reverted while a check
-runs. It compares inventory before and after, which is a real limit rather than
-a known gap.
+**A secret printed by a check reaches the logs.** The report's `environment`
+block carries no credential, and
+`tests/test_storage.py::test_a_reported_environment_carries_no_credential` says
+so. Nothing filters what the check itself prints. `procs._launch_posix` hands
+the child the log file descriptors, and `mcp/_tools.py::_read_page` returns the
+bytes unfiltered, so a secret in the log is served back to the caller. No
+redaction routine exists in `src/vkit/`, and no redaction rules are declared
+anywhere in the repository, so there is also nothing to run one on.
+`formal/RESULTS.md` records this as two clauses with different answers, and only
+the first holds.
 
-Dirty trees are reported honestly and are not integration evidence. A report
+**A `.cmd` launcher cannot carry a non-ASCII path.** The trigger is the code
+page, not the non-ASCII character. Batch file contents are read in the active
+ANSI code page, so a non-ASCII path written inside the file reads back as
+different characters and the check never runs. `tests/test_procs.py` forces code
+page 437 to show this, and runs the identical launcher under the host's own code
+page to show it working. A repository path that is non-ASCII is fine as long as
+the launcher does not repeat it.
+
+**The source digest cannot detect an edit that is made and reverted while a check
+runs.** It compares inventory before and after, which is a real limit rather than
+a known gap. `tests/test_identity.py` demonstrates it through the product's own
+report: the digest is unchanged and the outcome still reads PASS. The contrast
+test beside it holds the same edit in place and reads BLOCKED.
+
+**A kill is not atomic against pid recycling.** Checking whether a pid still
+carries the same process is a read, not a hold, and a pid can be handed to
+another process between the check and the next action. Identity verification
+makes a reattach safe to report. It cannot make it atomic.
+
+**Dirty trees are reported honestly and are not integration evidence.** A report
 says whether the tree was dirty at run time so nobody mistakes development
 evidence for a clean integration result.
 
-The MCP transport is pinned to the `mcp` 2.x server API. That line is a
-rewrite rather than an increment, so handlers are constructor arguments
-rather than decorators and a tool call returns a `CallToolResult`. A release
-outside the pin in `pyproject.toml` has not been verified here. Without the
-extra installed, `vkit mcp serve` exits 5 and says which package to install;
-it does not hang, and it does not write to the protocol channel.
+**The MCP transport is pinned to the `mcp` 2.x server API.** That line is a
+rewrite rather than an increment, so handlers are constructor arguments rather
+than decorators and a tool call returns a `CallToolResult`. A release outside
+the pin in `pyproject.toml` has not been verified here. Without the extra
+installed, `vkit mcp serve` exits 5 and says which package to install; it does
+not hang, and it does not write to the protocol channel.
 
 The protocol suite proves a real client and this server agree on the wire. It
 proves nothing about whether Claude Code loads the plugin that starts it.

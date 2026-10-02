@@ -31,7 +31,8 @@
           "args": ["--version"]
         }
       ],
-      "inputs": ["src/totals.py", "verify_totals.py"]
+      "inputs": ["src/totals.py", "verify_totals.py"],
+      "expectations": []
     }
   ]
 }

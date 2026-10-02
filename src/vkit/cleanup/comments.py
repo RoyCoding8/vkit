@@ -213,11 +213,15 @@ _PRESERVED: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ),
     (
         "CODEQL_SUPPRESSION",
-        "CodeQL's Python suppression markers, `# lgtm` and `# codeql`, both with "
-        "optional bracketed rules such as `# lgtm[py/unused-import]`. CodeQL also "
-        "treats `# noqa` as a suppression marker, which NOQA above already covers. "
-        "Read from the query itself, not from documentation prose: "
-        "https://github.com/github/codeql/blob/main/python/ql/src/AlertSuppression.ql",
+        "CodeQL's suppression markers: `# lgtm` and `# lgtm[...]`, and "
+        "`# codeql[...]`. Verified in the shared suppression library at "
+        "`shared/util/codeql/util/suppression/AlertSuppression.qll`, whose "
+        "`LgtmSuppressionComment` and `CodeQlSuppressionComment` classes the "
+        "Python query instantiates through `import AS::Make<AstNode, "
+        "SingleLineComment>`. The Python query file itself defines only the "
+        "`noqa` class, which NOQA above already covers, so reading that file "
+        "alone understates the marker set. "
+        "https://github.com/github/codeql/blob/main/shared/util/codeql/util/suppression/AlertSuppression.qll",
         re.compile(r"^(?:lgtm|codeql)\b", re.IGNORECASE),
     ),
     (

@@ -79,6 +79,8 @@ def test_public_mcp_fixture_digest_blocks_changes_until_a_fresh_run(tmp_path: Pa
     first_report = Store(project.db_path).load(first["run_id"])
     assert first_report["configuration_digest"] == manifest.digest()
     assert first_report["fixture_digest"] == first_digest
+    first_ready = server.call_tool("task_finalize", {"task_id": task_id})
+    assert first_ready.content["readiness"] == "READY", first_ready.content
 
     (project.root / ".env").write_text("FIXTURE=changed\n", encoding="utf-8")
     changed = server.call_tool("task_finalize", {"task_id": task_id})

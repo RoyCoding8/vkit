@@ -112,7 +112,178 @@ function busy(button, label, work) {
   })();
 }
 
-/* ------------------------------------------------------------------ views */
+/* ------------------------------------------------------------------ views
+
+   Two of these are about different things and are built from different routes
+   on purpose. `showSetup` reads `/api/readiness`, which is what `vkit doctor`
+   reports: a manifest that parses, a state store that can be written, tools on
+   PATH. None of that is a verification result. `taskStanding` reads
+   `/api/runs`, which is the only place a run's published evidence exists. The
+   page never derives one from the other, because a green doctor on a project
+   that has never been verified reads exactly like a project that has, and that
+   is the confusion this split exists to remove. */
+
+async function showHome() {
+  /* Each question is answered on its own. One refused route must not blank the
+     other three, because an operator who cannot see which project is open has
+     lost the page, and a blank panel is indistinguishable from a slow one. */
+  const answers = await Promise.all([
+    api("project").then((value) => [value, null], (error) => [null, error]),
+    api("readiness").then((value) => [value, null], (error) => [null, error]),
+    api("checks").then((value) => [value, null], (error) => [null, error]),
+    api("runs", { limit: 5 }).then((value) => [value, null], (error) => [null, error]),
+  ]);
+  const [project, projectError] = answers[0];
+  const [readiness, readinessError] = answers[1];
+  const [checks, checksError] = answers[2];
+  const [runs, runsError] = answers[3];
+
+  /* `either` is here rather than a `cond ? ...spread(...) : ...` at each call
+     site: a spread inside a conditional needs parentheses on both arms, and
+     four of those is a syntax error waiting to be written slightly wrong. */
+  const either = (error, panels) => (error ? [refusal(error)] : panels());
+
+  fill("home-project", either(projectError, () => openProjectPanels(project)));
+  fill("home-available", either(checksError, () => availablePanels(checks)));
+
+  /* The setup block needs two routes, so it is the one that can be partly
+     built. What it needs both for is the next-action sentence, which is why a
+     refusal on either side is stated rather than silently producing a shorter
+     answer that would claim a next step nothing has established. */
+  fill("home-setup",
+    either(readinessError, () => setupGapsPanels(readiness)),
+    checksError ? null : installationPanelOnHome(checks),
+    either(runsError, () => taskStanding(runs)));
+
+  /* The next action is a claim about all three of project, setup and checks, so
+     it is the one answer that cannot be made from a subset of them. */
+  fill("home-next", checksError || readinessError || projectError
+    ? panel(el("p", { class: "note", text: "The next action needs the project, its host setup and its checks. The panel above reports which of those the console could not read." }))
+    : nextActionPanels(project, readiness, checks));
+}
+
+function openProjectPanels(project) {
+  const source = project.source;
+  const panels = [panel(el("dl", { class: "kv" },
+    el("dt", { text: "root" }), el("dd", { class: "mono", text: project.root }),
+    el("dt", { text: "HEAD" }), el("dd", { class: "mono", text: source ? source.head.slice(0, 12) : project.source_error || "unknown" }),
+    el("dt", { text: "working tree" }), el("dd", { text: source ? (source.dirty ? `dirty, ${source.tracked_files} tracked` : `clean, ${source.tracked_files} tracked`) : "—" }),
+    el("dt", { text: "manifest" }), el("dd", { class: "mono", text: project.manifest_path }),
+  ))];
+  if (project.manifest_error) {
+    panels.push(panel(el("div", { class: "refusal" },
+      el("div", { class: "why", text: "the manifest could not be read" }),
+      el("div", { class: "core", text: project.manifest_error }))));
+  }
+  return panels;
+}
+
+/* What the project can run. The check id is what every other surface calls the
+   check, so the operator reads one name rather than two. */
+function availablePanels(checks) {
+  if (!checks.checks.length) {
+    return [panel(el("p", { class: "note", text: "this project registers no checks" }))];
+  }
+  return [panel(table(["check", "what it verifies", "scenarios required"],
+    checks.checks.map((check) => el("tr", {},
+      el("td", { class: "mono" }, el("strong", { text: check.id })),
+      el("td", { text: check.description }),
+      el("td", { class: "mono", text: String(check.required_scenarios.length) }),
+    ))))];
+}
+
+/* What is not set up on this host. The heading scopes it: a list of missing
+   tools under a word like "readiness" reads as a verdict, and it is not one.
+   The answer to "has anything been verified" is a different panel, built from
+   the runs table. */
+function setupGapsPanels(readiness) {
+  const missing = readiness.findings.filter((finding) => !finding.ok);
+  const panels = [];
+  if (!readiness.state_writable) {
+    panels.push(panel(el("div", { class: "refusal" },
+      el("div", { class: "why", text: "the state store cannot be written" }),
+      el("div", { class: "core", text: readiness.state_detail }))));
+  }
+  panels.push(missing.length
+    ? panel(el("p", { class: "note", text: "these tools are not where the manifest expects them:" }),
+        el("ul", { class: "policy" }, ...missing.map((finding) => el("li", {},
+          el("span", { class: "mono strong", text: `${finding.check} / ${finding.prerequisite}` }),
+          el("div", { class: "mono note", text: finding.detail })))))
+    : panel(el("p", { class: "note", text: "every prerequisite the manifest names is on PATH" })));
+  return panels;
+}
+
+/* The host's integration state, kept beside the missing tools because both are
+   answers to "what needs setup" and neither is an answer to "is this verified".
+   The word installed describes the plugin, not the project. */
+function installationPanelOnHome(checks) {
+  const installation = checks.installed;
+  return [panel(el("div", { class: "row" },
+    el("strong", { text: "host integration" }),
+    el("span", { class: `pill ${installation.installed ? "yes" : "no"}`, text: installation.installed ? "installed" : "not installed" }),
+    el("span", { class: "note", text: installation.installed
+      ? `${installation.plugin} at ${installation.install_path || "an unrecorded path"}`
+      : "the host has no record of this plugin; Operations can install it" })))];
+}
+
+/* The only sentence on this page that is about verification, and it is built
+   from the runs table rather than from any installation fact. With no runs it
+   says so in the negative, which is the honest answer for a project nobody has
+   verified yet. */
+function taskStanding(runs) {
+  if (!runs.runs.length) {
+    return panel(
+      el("div", { class: "row" },
+        el("strong", { text: "Task verification" }),
+        el("span", { class: "verdict missing", text: "no evidence" })),
+      el("p", { class: "note", text: "No run has been recorded for this project, so no task has been verified. Start one on Checks." }));
+  }
+  const latest = runs.runs[0];
+  const result = latest.result || (latest.lifecycle === "terminal" ? "BLOCKED" : latest.lifecycle.toUpperCase());
+  return panel(
+    el("div", { class: "row" },
+      el("strong", { text: "Task verification" }),
+      verdict(result),
+      el("span", { class: "mono note", text: latest.check_id })),
+    el("p", { class: "note", text: "From the most recent recorded run. This is what a run published, not what the installation reports. Runs lists them all." }));
+}
+
+/* One action, chosen in the order a blocked step blocks the next. Each branch
+   names a real cause from the API, and the only button here starts a run, which
+   is the one action that produces the evidence this page is asking about. The
+   rest point at the view that carries the control, rather than putting a second
+   copy of a mutation on the landing page. */
+function nextActionPanels(project, readiness, checks) {
+  if (project.manifest_error) {
+    return [nextPanel("The manifest could not be parsed, so no check can be started. Project shows the file and the parser's own message.")];
+  }
+  if (!readiness.state_writable) {
+    return [nextPanel(`The state store cannot be written, so a run could not be recorded. ${readiness.state_detail}`)];
+  }
+  const missing = readiness.findings.filter((finding) => !finding.ok);
+  if (missing.length) {
+    const tools = [...new Set(missing.map((finding) => finding.prerequisite))];
+    return [nextPanel(`Put ${tools.join(", ")} on PATH. A check whose prerequisite is missing is refused before it starts, so running one now would not produce evidence.`)];
+  }
+  if (!checks.checks.length) {
+    return [nextPanel("This project registers no checks, so there is nothing to run. Add one to verification/manifest.json and reload.")];
+  }
+  return [panel(
+    el("div", { class: "row" }, el("strong", { text: "Next" })),
+    el("p", { class: "note", text: `Run ${checks.checks[0].id} to produce the first piece of evidence for this project.` }),
+    runControls(checks.checks[0].id),
+  )];
+}
+
+/* The heading and the sentence travel together, so a reader who lands on the
+   panel has the label that scopes what follows rather than meeting a bare
+   sentence. */
+function nextPanel(sentence) {
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: "Next" })),
+    el("p", { class: "note", text: sentence }),
+  );
+}
 
 async function showProject() {
   try {
@@ -137,24 +308,30 @@ async function showProject() {
   }
 }
 
-async function showReadiness() {
+/* Installation health, under a name that cannot be read as a verification
+   verdict. This route was called "readiness" and showed a green PASS beside
+   the word, on a project that had never been verified by anything: every
+   prerequisite on PATH is a statement about the machine, not about the code.
+   The findings are still the same doctor facts and the same API route; what
+   changed is the label, so the page has nowhere to read a verdict from. */
+async function showSetup() {
   try {
     const data = await api("readiness");
     const rows = data.findings.map((f) => el("tr", {},
       el("td", { class: "mono", text: f.prerequisite ? `${f.check} / ${f.prerequisite}` : f.check }),
-      el("td", {}, verdict(f.ok ? "PASS" : "FAIL")),
+      el("td", {}, el("span", { class: `verdict ${f.ok ? "PASS" : "FAIL"}`, text: f.ok ? "found" : "missing" })),
       el("td", { class: "mono", text: f.detail }),
     ));
-    fill("readiness-body",
+    fill("setup-body",
       panel(el("div", { class: "row" },
-        el("strong", { text: data.ok ? "ready" : "not ready" }),
-        el("span", { class: "note", text: `state: ${data.state_detail}` }))),
+        el("strong", { text: "Host setup" }),
+        el("span", { class: "note", text: `state store: ${data.state_detail}` }))),
       rows.length
-        ? panel(table(["finding", "result", "detail"], rows))
+        ? panel(table(["what the manifest expects", "on this host", "where"], rows))
         : panel(el("p", { class: "note", text: "no findings: every prerequisite is on PATH" })),
     );
   } catch (error) {
-    fill("readiness-body", refusal(error));
+    fill("setup-body", refusal(error));
   }
 }
 
@@ -448,8 +625,9 @@ async function runEnroll(outcome) {
 }
 
 const VIEWS = {
+  home: showHome,
   project: showProject,
-  readiness: showReadiness,
+  setup: showSetup,
   checks: showChecks,
   runs: showRuns,
   recovery: showRecovery,
@@ -484,4 +662,4 @@ window.addEventListener("unhandledrejection", (event) => {
   toast(String(reason && reason.message ? reason.message : reason), true);
 });
 
-open("project");
+open("home");

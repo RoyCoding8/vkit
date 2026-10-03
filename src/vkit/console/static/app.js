@@ -61,6 +61,25 @@ function verdict(result) {
   return el("span", { class: `verdict ${result}`, text: result });
 }
 
+/* What kind of check a verdict came from, next to the verdict itself.
+
+   A green tick means four different things in this product, and the same tick
+   covers a test that proved one input and a property check that sampled a
+   hundred. A reader who sees only the tick cannot tell which they have, so the
+   category travels with the verdict everywhere a verdict is shown: the runs
+   table, the run detail, the landing page's verification panel, and the toast a
+   run produces. One helper rather than four renderings, because four would be
+   four vocabularies and the fourth would be the one nobody keeps in step.
+
+   The category is read from what the run recorded, never from what the check is
+   declared to be. A run that recorded none predates the field, and is shown as
+   "no category recorded" rather than being given a default that would read as
+   measured. */
+function categoryPill(evidenceKind) {
+  if (!evidenceKind) return el("span", { class: "note mono", text: "no category recorded" });
+  return el("span", { class: "pill note", text: evidenceKind });
+}
+
 function panel(...children) {
   return el("div", { class: "panel" }, ...children);
 }
@@ -184,11 +203,12 @@ function availablePanels(checks) {
   if (!checks.checks.length) {
     return [panel(el("p", { class: "note", text: "this project registers no checks" }))];
   }
-  return [panel(table(["check", "what it verifies", "scenarios required"],
+  return [panel(table(["check", "what it verifies", "category", "cases required"],
     checks.checks.map((check) => el("tr", {},
       el("td", { class: "mono" }, el("strong", { text: check.id })),
       el("td", { text: check.description }),
-      el("td", { class: "mono", text: String(check.required_scenarios.length) }),
+      el("td", {}, categoryPill(check.evidence_kind)),
+      el("td", { class: "mono", text: String(check.obligations.length) }),
     ))))];
 }
 
@@ -244,6 +264,7 @@ function taskStanding(runs) {
     el("div", { class: "row" },
       el("strong", { text: "Task verification" }),
       verdict(result),
+      categoryPill(latest.evidence_kind),
       el("span", { class: "mono note", text: latest.check_id })),
     el("p", { class: "note", text: "From the most recent recorded run. This is what a run published, not what the installation reports. Runs lists them all." }));
 }
@@ -349,7 +370,8 @@ async function showChecks() {
               el("dt", { text: "command" }), el("dd", { class: "mono", text: check.command.join(" ") }),
               el("dt", { text: "cwd" }), el("dd", { class: "mono", text: check.cwd }),
               el("dt", { text: "timeout" }), el("dd", { text: `${check.timeout_seconds}s` }),
-              el("dt", { text: "required scenarios" }), el("dd", { class: "mono", text: check.required_scenarios.join(", ") }),
+              el("dt", { text: "evidence category" }), el("dd", {}, categoryPill(check.evidence_kind)),
+              el("dt", { text: "required cases" }), el("dd", { class: "mono", text: check.obligations.join(", ") }),
               el("dt", { text: "artifact" }), el("dd", { class: "mono", text: check.artifact }),
             ),
             runControls(check.id),
@@ -422,13 +444,14 @@ async function showRuns() {
       return el("tr", {},
         el("td", { class: "mono" }, el("a", { href: "#", onclick: (e) => { e.preventDefault(); showRun(run.run_id); }, text: run.check_id })),
         el("td", {}, verdict(run.result || (run.lifecycle === "terminal" ? "BLOCKED" : run.lifecycle.toUpperCase()))),
+        el("td", {}, categoryPill(run.evidence_kind)),
         el("td", { class: "mono wide-hide", text: run.reason || "" }),
         el("td", { class: "mono narrow-hide", text: (run.ended_at || run.registered_at || "").slice(0, 19).replace("T", " ") }),
         el("td", { class: "actions" }, open, " ", cancel),
       );
     });
     fill("runs-body", panel(table(
-      ["check", "result",
+      ["check", "result", "category",
         { label: "reason", hideAt: "wide-hide" },
         { label: "ended", hideAt: "narrow-hide" }, ""],
       rows)));
@@ -448,6 +471,7 @@ async function showRun(runId) {
         el("div", { class: "row" },
           el("strong", { class: "mono", text: runId }),
           verdict(outcome.result),
+          categoryPill(data.evidence_kind),
           outcome.reason ? el("span", { class: "note mono", text: outcome.reason }) : null,
         ),
         outcome.detail ? el("p", { class: "note", text: outcome.detail }) : null,

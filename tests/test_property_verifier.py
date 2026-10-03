@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -49,9 +48,6 @@ from vkit.verifiers import (  # noqa: E402
     pytest_adapter,
 )
 
-HYPOTHESIS = shutil.which("python") or sys.executable
-
-
 def _hypothesis_available() -> bool:
     """Whether the interpreter that runs this suite can import Hypothesis.
 
@@ -59,7 +55,7 @@ def _hypothesis_available() -> bool:
     because the thing a property check needs is an importable module in the child
     and a package that is installed but broken is not that.
     """
-    return subprocess.run(
+    return subproc.run(
         [sys.executable, "-c", "import hypothesis"],
         capture_output=True, check=False,
     ).returncode == 0

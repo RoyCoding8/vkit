@@ -186,19 +186,22 @@ named.
 | 37108770250 | 616efa4 | **green** | 1143 passed / 80 skipped on Ubuntu; 1120 / 103 on macOS; 1175 / 48 on Windows. The first run green on all three. |
 | 37127872586 | 5bed3a6 | fail: 31 / 31 / 31 | Checkpoint 10.3 deleted `manifest.DECLARED_BUT_UNAVAILABLE`; about 25 tests imported it and 5 more hit `KeyError: 'result'`. Identical on every platform, because the code was wrong rather than the host. |
 | 37131714102 | 5e7d003 | **green** | Capabilities derived from the adapter table instead of a stale refusal list. 1200 / 89 Ubuntu, 1177 / 112 macOS, 1232 / 57 Windows. |
-| 37134443260 | 7496674 | **green** | 1212 / 89 Ubuntu, 1189 / 112 macOS, 1244 / 57 Windows. The last fully verified suite run before the handback commit. |
+| 37134443260 | 7496674 | **green** | 1212 / 89 Ubuntu, 1189 / 112 macOS, 1244 / 57 Windows. |
+| 37142461769 | b1e7a15 | **green** | The final tip, documentation-only commits: 1227 / 89 Ubuntu, 1204 / 112 macOS, 1259 / 57 Windows. |
 
-Three cancelled suite runs (`1c3f817`, `eaab533`, `ed2a6ce`) and one cancelled
-at `6758aa6` by the handback push are omitted from the table: a cancelled run
-records no result, and listing it as a failure or a success would be a claim
-about a verdict that does not exist.
+Three cancelled suite runs (`1c3f817`, `eaab533`, `ed2a6ce`) plus two more
+cancelled by the handback's own pushes (`6758aa6`, `8310263`) are omitted: a
+cancelled run records no verdict, and listing it as a failure or a success would
+be a claim about a result that does not exist. Those last two were cancelled by
+me, not by a failure.
 
 | Formal run | SHA | Result | What it found |
 | --- | --- | --- | --- |
 | 37127195833 | 1c3f817 | fail | `lean: command not found`, exit 127. The Lean job verified its own install before `GITHUB_PATH` applied, and both jobs pinned a patch release the runner manifest had dropped. |
 | 37127367490 | eaab533 | Lean green, TLC fail | TLC's guard fired correctly, because it named Lean cases inside the TLC job. |
 | 37127872623 | 5bed3a6 | **green** | Lean and TLC both pass on Ubuntu with real toolchains, positive and negative cases. |
-| 37140929908 | 6758aa6 | **green** | The last fully verified formal run. Lean 30 passed / 1 skipped; TLC 34 passed, and a second guard step ran the 3 `real` TLC cases with no skip. |
+| 37140929908 | 6758aa6 | **green** | Lean 30 passed / 1 skipped; TLC 34 passed, and a second guard step ran the 3 `real` TLC cases with no skip. |
+| 37142461762 | b1e7a15 | **green** | The final tip, with the suite run above. Same receipts, which is expected: the intervening commits changed documentation only. |
 
 ### Corrections made to this table while writing the handback
 
@@ -246,9 +249,13 @@ corrected quietly is a status document nobody can audit:
 - **11.2** — `compile('x = 0.0')` and `compile('x = -0.0')` produce identical
   bytecode and `==` says equal; only the constant's exact form separates them.
   Of two logic rules, only trailing `else: pass` can apply automatically.
-- **12.2** — five evidence sections render real records. Viewing a page does
-  not mutate task state. The four cleanup panels that 12.2 originally named as
-  unavailable were given a real backend at 11.4, so they now list records.
+- **12.2** — `test_every_planned_section_is_reachable_and_renders_real_data`
+  (`tests/test_console_evidence_views.py:157`) walks the sections, and
+  `test_viewing_a_page_does_not_mutate_task_state` (:350) holds that reading is
+  not writing. `test_the_cleanup_section_reports_the_policy_and_names_no_absent_panel`
+  (:628) asserts `"unavailable" not in section`, and its docstring records why
+  that is the stronger assertion: a test asserting the key *equals* an empty
+  list would also pass for a section that had deleted the panels along with it.
 - **12.3** — `test_saving_configuration_does_not_release_a_pinned_obligation`
   (`tests/test_console_config_editing.py:962`) proves the pinned contract
   survives a save that drops obligations, and
@@ -315,11 +322,11 @@ corrected quietly is a status document nobody can audit:
 
 ## Final handback
 
-Recorded 2026-10-03. The candidate is the `main` tip carrying this document.
-The last commit before it is `6758aa6`, which is where the product work ended;
-everything since changed documentation only. Suite and formal receipts for
-`8310263` are recorded under Receipts, including the suite verdict, which was
-still running when this section was first written.
+Recorded 2026-10-03. The candidate is `b1e7a15`, which is `main`, pushed, with
+a clean tree. The last commit that changed product code is `6758aa6`; `8310263`
+and `b1e7a15` changed documentation only. **Both workflows are green at
+`b1e7a15` itself**, so no receipt in this document refers to a superseded
+revision.
 
 ### What was built
 
@@ -339,16 +346,21 @@ worktree.
 
 Suite CI, three platforms, plus the formal-verifier workflow, all at `6758aa6`:
 
-- **Suite run 37134443260 at `7496674`** — the last suite run to finish green
-  on all three platforms. The run at the handback SHA is 37141908935; see
-  below for its verdict.
-- **Formal verifiers 37141908894 at `8310263`** — green. Lean 30 passed /
-  1 skipped, TLC 34 passed, "reviewed profile gate: satisfied" printed, and
-  the 3-case `real` TLC guard step ran with no skip. Identical to 37140929908
-  at `6758aa6`, which is expected: the handback commit changed documentation
-  only. Both toolchains pinned: Lean `v4.34.1` exactly, and `tla2tools.jar`
-  1.7.4 verified against sha256
+- **Suite run 37142461769 at `b1e7a15`** — green on all three platforms:
+  1227 passed / 89 skipped on Ubuntu, 1204 / 112 on macOS, 1259 / 57 on
+  Windows.
+- **Formal verifiers 37142461762 at `b1e7a15`** — green. Lean 30 passed /
+  1 skipped, TLC 34 passed, "reviewed profile gate: satisfied" printed, and the
+  3-case `real` TLC guard step ran with no skip. Both toolchains pinned: Lean
+  `v4.34.1` exactly, and `tla2tools.jar` 1.7.4 verified against sha256
   `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88` before use.
+- The last fully green pair before these was `37134443260` / `37134443279` at
+  `7496674`, with 1212 / 1189 / 1244 passed. The prior formal pair at `6758aa6`
+  (37140929886 cancelled, 37140929908 success) records why the two earlier
+  pushes happened: each one superseded the suite run testing the previous SHA,
+  because both workflows set `cancel-in-progress`. Those supersessions cost two
+  suite runs and taught the obvious thing late — batch the corrections, then
+  push once and let the run finish.
 
 The TLC figure needs stating precisely, because two different numbers are both
 true. The adapter file collects 34 cases and all 34 pass. A second step then

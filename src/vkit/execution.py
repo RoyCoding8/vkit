@@ -12,7 +12,9 @@ success is the failure mode this whole product exists to catch.
 """
 from __future__ import annotations
 
+import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,14 +31,51 @@ from .outcome import (
     Passed,
     ScenarioResult,
 )
+from .verifiers import dispatch
 from .procs import await_exit, launch, run_command
 from .schemas import CHECK_ARTIFACT, RUN_REPORT, SchemaValidationError, parse_artifact, validate
-from .storage import Store, StoreError
+from .storage import RECEIPT_NAME, Store, StoreError
 
 
 class ExecutionError(Exception):
     """The run could not be set up at all. Distinct from a BLOCKED outcome, which
     is a real, recorded answer about the check rather than a failure to try."""
+
+
+@contextmanager
+def _this_package_importable():
+    """Put the running vkit's own source on a launched child's import path.
+
+    A `pytest` check loads vkit's report plugin into the runner, and the runner
+    is a separate process whose `sys.path` comes from this interpreter's
+    environment rather than from this checkout. An editable install puts ONE
+    absolute `src` on the path through a `.pth`, so a runner launched from a
+    worktree resolves the installed copy and cannot import the module under test.
+    Measured here: the child failed with
+    `No module named 'vkit.verifiers.pytest_adapter'` and wrote no report at all,
+    which surfaced as `artifact_missing` and named the wrong cause.
+
+    This is the same device `supervisor._spawn_supervisor` uses to pin a
+    detached supervisor's `PYTHONPATH`, for the same reason. It goes through
+    `os.environ` because `procs` accepts no environment and is not this unit's
+    file, and the previous value is restored on the way out so a caller running
+    two checks cannot inherit the first one's path into the second.
+
+    Only `PYTHONPATH` is touched. Every other environment fact the child sees is
+    the one this process had, which is the ordinary meaning of a local run.
+    """
+    root = str(Path(__file__).resolve().parents[1])
+    previous = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = (
+        root if not previous else os.pathsep.join([root, previous])
+    )
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = previous
 
 
 def _now() -> str:
@@ -133,41 +172,56 @@ def _derive(
     check: CheckSpec,
     process: ProcessResult,
     artifact: Path | None,
-) -> Outcome:
-    """Decide the outcome from what actually happened.
+) -> tuple[Outcome, Any]:
+    """Decide the outcome from what actually happened, and read what was written.
 
     Every branch returns a BLOCKED with a specific reason except the two that
     have positive evidence. Process success alone is never enough and artifact
     validity alone is never enough; both are required, per CONTRACT.md.
+
+    Returns the outcome together with the adapter's reading, because the receipt
+    is a projection of the reading and an outcome that could not be derived
+    without it would have had to re-derive it. The two travel together so no
+    caller can build a receipt from a verdict it did not read the evidence for.
+
+    The reading is dispatched on the check's kind. For a `scenario` check that is
+    the v1 artifact parser unchanged; for every other kind it is the interpreter
+    the check's variant names, which is what stops the core scraping success
+    prose out of a driver's output the way `plans/CONTRACT.md:58` forbids.
     """
     if process.launch_error is not None:
         reason, detail = process.launch_error
-        return Blocked(reason, detail)
+        return Blocked(reason, detail), None
     if process.timed_out:
         return Blocked(
             BlockedReason.TIMEOUT,
             f"exceeded {check.timeout_seconds:g}s; owned descendants were stopped",
-        )
+        ), None
     if artifact is None or not artifact.is_file():
         return Blocked(
             BlockedReason.ARTIFACT_MISSING,
             f"{check.artifact_name} was not written, so the check reported nothing",
-        )
+        ), None
 
-    scenarios, problem = _scenarios_from_artifact(artifact.read_bytes(), check.required_scenarios)
-    if problem is not None:
-        return problem
-    if process.exit_code != 0:
+    reading = dispatch.interpret(check, artifact.read_bytes())
+    reading_outcome = dispatch.outcome_from_reading(reading)
+    if isinstance(reading_outcome, Blocked):
+        return reading_outcome, None
+    if isinstance(reading_outcome, Failed):
+        # A nonzero exit is the ordinary shape of a FAIL, not evidence against
+        # the artifact. The runner reports "a test failed" in its exit code and
+        # names the failing test in its report, and refusing a run whose exit
+        # code is nonzero would make every real failure unreachable: the one
+        # exit code that means "the runner could not answer" is 4, which the
+        # adapter's own refusals have already covered above.
+        return reading_outcome, reading
+    if process.exit_code not in (0, 1):
         return Blocked(
             BlockedReason.ARTIFACT_MALFORMED,
             f"the check exited {process.exit_code} but still wrote an artifact; "
-            "the artifact cannot be trusted from a failed run",
-        )
-
-    failing = tuple(s for s in scenarios if not s.passed)
-    if failing:
-        return Failed(scenarios)
-    return Passed(scenarios)
+            "the artifact cannot be trusted from a run the runner could not finish",
+        ), None
+    return reading_outcome, reading
 
 
 def _environment_facts(check: CheckSpec) -> dict[str, Any]:
@@ -302,34 +356,40 @@ def run_check(
     stderr_path = run_dir / "stderr.log"
     # The interpreter a check should use, and the run directory it should write
     # into, are the only two substitutions. The manifest may not name a shell.
-    argv = check.resolved_argv_for(run_dir, env.python)
-    if env.plugin_root is None:
-        # Launched and waited separately, so the identity is durable while the
-        # check is still running. The earlier version called `run_command`, which
-        # blocks until the command exits, and only then wrote the pid: so for the
-        # whole run the durable record said `preparing` with no process, which is
-        # indistinguishable from a run that never launched. Recovery read that as
-        # "nothing is running" and released the task's claim while this process was
-        # still writing.
-        lease = launch(
-            argv, cwd=check.cwd, stdout_path=stdout_path, stderr_path=stderr_path,
-            timeout_seconds=check.timeout_seconds,
-        )
-        try:
-            if lease.pid is not None:
-                store.publish_identity(run_id, lease.identity())
-            result = await_exit(lease)
-        finally:
-            lease.close()
-    else:
-        result = _launch(argv, check, stdout_path, stderr_path, env)
-        if result.pid is not None:
-            store.publish_identity(run_id, {
-                "pid": result.pid,
-                "creation_time": result.creation_time,
-                **({"boot_id": result.boot_id} if result.boot_id else {}),
-                "ownership": result.ownership,
-            })
+    # For every kind but `scenario` the argv is the adapter's, which is what stops
+    # a manifest-declared command from being where the interpreter's argv comes
+    # from. `manifest._wrap` already leaves a non-scenario check's own argv empty,
+    # so there is no second spelling of a command to disagree with.
+    argv = dispatch.argv_for(check, run_dir, env.python)
+    with _this_package_importable():
+        if env.plugin_root is None:
+            # Launched and waited separately, so the identity is durable while the
+            # check is still running. The earlier version called `run_command`, which
+            # blocks until the command exits, and only then wrote the pid: so for the
+            # whole run the durable record said `preparing` with no process, which is
+            # indistinguishable from a run that never launched. Recovery read that as
+            # "nothing is running" and released the task's claim while this process was
+            # still writing.
+            lease = launch(
+                argv, cwd=check.cwd, stdout_path=stdout_path, stderr_path=stderr_path,
+                timeout_seconds=check.timeout_seconds,
+            )
+            try:
+                if lease.pid is not None:
+                    store.publish_identity(run_id, lease.identity())
+                result = await_exit(lease)
+            finally:
+                lease.close()
+        else:
+            result = _launch(argv, check, stdout_path, stderr_path, env)
+            if result.pid is not None:
+                store.publish_identity(run_id, {
+                    "pid": result.pid,
+                    "creation_time": result.creation_time,
+                    **({"boot_id": result.boot_id} if result.boot_id else {}),
+                    "ownership": result.ownership,
+                })
+    
     process = ProcessResult(
         pid=result.pid,
         ownership=result.ownership,
@@ -341,12 +401,12 @@ def run_check(
     )
 
     artifact = store.resolve_artifact(run_id, check.artifact_name)
-    outcome = _derive(check, process, artifact if artifact.is_file() else None)
+    outcome, reading = _derive(check, process, artifact if artifact.is_file() else None)
 
     if env.revalidate:
         problem = _revalidate(run_dir, check, manifest, env)
         if problem is not None:
-            outcome = problem
+            outcome, reading = problem, None
 
     after = compute_source_identity(manifest.project)
     if not source_unchanged(source, after):
@@ -355,6 +415,7 @@ def run_check(
             "the source changed while the check was running, so the evidence does "
             "not describe the code that is now on disk",
         )
+        reading = None
 
     report = _terminal_report(
         run_id, check, manifest, source,
@@ -363,9 +424,75 @@ def run_check(
         executed_argv=list(argv),
         provenance=env.provenance(),
         fixture_digest=fixture_digest,
+        receipt=_write_receipt(
+            run_dir, check, manifest, source, run_id, task_id, attempt,
+            outcome, reading, artifact, fixture_digest, env,
+        ),
     )
     _publish(store, run_id, report)
     return RunOutcome(report, outcome)
+
+
+def _write_receipt(
+    run_dir: Path,
+    check: CheckSpec,
+    manifest: Manifest,
+    source: SourceIdentity,
+    run_id: str,
+    task_id: str | None,
+    attempt: int | None,
+    outcome: Outcome,
+    reading: Any,
+    artifact: Path,
+    fixture_digest: str | None,
+    env: RunEnvironment,
+) -> str | None:
+    """Write the typed receipt for this run and return its run-relative name.
+
+    Written for every terminal run, not only a passing one. A FAIL and a BLOCKED
+    are recorded evidence too, and a receipt is the only place the category, the
+    checked cases and the identities they were checked against travel together;
+    a reader holding only a report would have to reconstruct them.
+
+    The name is returned rather than composed by the caller so there is one place
+    that decides what a receipt is called, which is the same reason `_terminal_report`
+    owns the report's own name in `storage.REPORT_NAME`.
+
+    Returns None only when the run never produced an artifact to be about, which
+    is the one case where there is nothing for a receipt to describe.
+    """
+    if not artifact.is_file():
+        return None
+    subject = check.subject or verifiers.SubjectRef()
+    receipt = dispatch.build_receipt(dispatch.ReceiptInputs(
+        check_id=check.id,
+        claim_id=check.claim_id or check.id,
+        run_id=run_id,
+        task_id=task_id,
+        generation=attempt,
+        category=check.evidence_kind(),
+        subject=subject,
+        # No check declares a specification file at checkpoint 1, so this is
+        # null rather than a digest of something nothing named.
+        specification_digest=None,
+        policy_digest=manifest.digest(),
+        source=source,
+        fixture_digest=fixture_digest,
+        tool_versions=_environment_facts(check)["tool_versions"],
+        runtime={
+            "python_version": sys.version.split()[0],
+            "platform": sys.platform,
+            "requires_os": "any",
+        },
+        timeout_seconds=check.timeout_seconds,
+        report_path=artifact,
+        project_root=manifest.project.root,
+        outcome=outcome,
+        reading=reading,
+    ))
+    name = RECEIPT_NAME
+    dispatch.persist(receipt, run_dir / name)
+    return name
 
 
 def _launch(
@@ -439,6 +566,7 @@ def _terminal_report(
     executed_argv: list[str] | None = None,
     provenance: dict[str, str] | None = None,
     fixture_digest: str | None = None,
+    receipt: str | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "schema_version": 1,
@@ -486,6 +614,13 @@ def _terminal_report(
         # Run-relative, so the reference survives the run directory being moved
         # and never points at a worker's temporary checkout.
         report["artifacts"] = {"result": artifact.name}
+    if receipt is not None:
+        # The receipt is referenced rather than inlined, which is what keeps the
+        # run report describing the process while the receipt describes the
+        # evidence. `artifacts` is an open map of run-relative names in
+        # `run-report.v1.json`, so a second entry needs no schema version: the
+        # report gains a pointer, not a field.
+        report["artifacts"] = {**report["artifacts"], "receipt": receipt}
     try:
         validate("run report", RUN_REPORT, report)
     except SchemaValidationError as exc:

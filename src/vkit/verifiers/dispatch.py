@@ -1,0 +1,568 @@
+"""One place a check kind is turned into an argv and read back as evidence.
+
+There is a single adapter per kind and `for_kind` is the only way to reach one.
+A second dispatch is a second authority about what a verdict means, and the two
+would disagree the first time one of them was extended.
+
+**What an adapter owes the core.** Two things: the argument array that runs the
+check, and a reading of the bytes the check's own report produced. It owes the
+core nothing else. It does not decide the outcome, it does not build the
+receipt, and it does not read the runner's console output, because a line of
+prose on a terminal is not evidence about a test.
+
+**Why the report travels through a file and not through a pipe.** The runner's
+structured output is written to `check.artifact_name` inside the run directory,
+and the runner's console output goes to `stdout.log` beside it. They are
+separate files, they are separately referenced in the report, and a reader that
+wants to know what a run said has to name which of the two it is reading. A
+design where both shared one stream would make "the report says the test passed"
+and "the report said something about the word passed" the same kind of evidence.
+
+**Why an unimplemented kind is BLOCKED rather than absent.** `node_test` and
+`property` are declared in the frozen schema and have no adapter at checkpoint 1.
+They resolve here to a named BLOCKED rather than raising, because a kind the
+manifest can declare and this build cannot run is a fact about the run, and a
+raise would be a crash rather than an answer.
+
+**The receipt is built here, once.** It is the projection of an `AdapterResult`
+onto `schemas/receipt.v2.json`, and every field in it is either measured here or
+read from something that already measured it. Nothing is filled with a plausible
+default: the check's category comes from `evidence_kind(spec)` rather than from
+the adapter, which is what makes a report claiming a stronger category inert.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+from .. import __version__
+from ..claimkind import ClaimCategory
+from ..identity import SourceIdentity
+from ..outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
+from . import pytest_adapter
+from .spec import (
+    CheckKind,
+    ScenarioCheck,
+    SubjectRef,
+)
+
+#: The name the receipt records as the verifier that interpreted the output. It
+#: is this module rather than the adapter's own name because the receipt has to
+#: name one implementation that owns the whole reading, and the argv construction
+#: is part of what it interpreted.
+VERIFIER_MODULE = "vkit.verifiers.dispatch"
+
+#: The digest rule the receipt's own `hash_limit` describes, quoted into every
+#: receipt so a reader is told what the digests do not cover at the point they
+#: look at one. `plans/CONTRACT.md:85` states the same limit in prose.
+HASH_LIMIT = (
+    "These digests bind the evidence to bytes. They do not establish that the "
+    "oracle reading those bytes is correct, and a before/after comparison cannot "
+    "see a transient edit that was restored between the two measurements."
+)
+
+NORMALIZATION = (
+    "File digests are sha256 over the file's bytes with CRLF folded to LF, which "
+    "is the form git stores and the form a POSIX checkout reads. A line-ending "
+    "change alone does not alter the digest."
+)
+
+ORACLE_REVIEW = (
+    "The tests this check ran are the ones the approved manifest's `subject` "
+    "and `inputs` name, and their source is covered by the recorded source "
+    "inventory. That the tests assert what the claim needs is a claim about a "
+    "human review, which vkit records rather than verifies."
+)
+
+
+# -------------------------------------------------------------- the adapter
+
+
+@dataclass(frozen=True)
+class Adapter:
+    """How one kind is run and read.
+
+    `argv_for(check, run_dir, python)` builds the command and
+    `read(check, raw)` interprets what it wrote. Both are required, because an
+    adapter that could run something but not read its output would have nothing
+    to contribute and a reader that could not be run would have nothing to run.
+
+    The check comes first in both, deliberately. `pytest_adapter.interpret` takes
+    its arguments the other way round, because it is the module that does the
+    reading and the thing being read is its subject; this wrapper's job is to be
+    uniform, and a uniform order is what stops the two being confused at a call
+    site. Measured: they were transposed, and the error surfaced deep inside the
+    adapter as `'PytestCheck' object has no attribute 'decode'`, which reads like
+    a report bug and is not one.
+    """
+
+    kind: CheckKind
+    argv_for: Callable[[Any, Path, "str | None"], tuple[str, ...]]
+    read: Callable[[Any, bytes], Any]
+
+    def identity(self) -> str:
+        return f"{VERIFIER_MODULE}:{self.kind.value}"
+
+
+def _scenario_argv(check: Any, run_dir: Path, python: str | None) -> tuple[str, ...]:
+    """A driver check's own command, with the two documented placeholders.
+
+    Read off the parsed check rather than the variant, because a v1 check has no
+    variant at all and this is the branch both readings share. A v2 scenario
+    check's argv is the same command, carried on the variant and copied onto the
+    parsed check by `manifest._wrap`.
+    """
+    return _substituted(check.argv, run_dir, python or _this_interpreter())
+
+
+@dataclass(frozen=True)
+class ScenarioReading:
+    """A driver artifact's scenarios and the refusal if it could not be read.
+
+    Two members rather than one because the v1 parser has always answered this
+    way, and it answers in this order: the artifact is decoded and validated
+    before anything is said about which scenarios it reported. Collapsing the two
+    would mean picking which question to answer first.
+    """
+
+    scenarios: tuple[ScenarioResult, ...]
+    problem: Blocked | None = None
+
+    @property
+    def failing(self) -> tuple[ScenarioResult, ...]:
+        return tuple(s for s in self.scenarios if not s.passed)
+
+
+def _scenario_read(check: Any, raw: bytes) -> ScenarioReading:
+    """The v1 check-artifact reading, unchanged since Plan 01.
+
+    Imported inside the function rather than at module scope because
+    `execution` imports this module. The alternative is a package-level cycle
+    resolved by import order, which is invisible until the order changes; this
+    one is a deferred lookup, the same device `execution._revalidate` uses.
+    """
+    from ..execution import _scenarios_from_artifact
+
+    scenarios, problem = _scenarios_from_artifact(raw, tuple(check.required_scenarios))
+    return ScenarioReading(scenarios, problem)
+
+
+def _pytest_argv(check: Any, run_dir: Path, python: str | None) -> tuple[str, ...]:
+    """The pinned runner, told where to write its report and which tests to run.
+
+    Built from the variant, because a pytest check declares no command: its argv
+    is the runner's, the runner's own base arguments, vkit's two report flags and
+    the required test ids. `manifest._wrap` leaves the parsed check's own `argv`
+    empty for every kind but `scenario`, which is the statement that vkit
+    constructs this rather than being handed a command.
+
+    The report path is vkit's decision rather than the manifest's, because it has
+    to resolve inside this run's directory and only vkit knows which directory
+    that is. Everything else about the command is the manifest's, which is why
+    the two documented placeholders are the only substitution applied.
+    """
+    variant = _variant(check)
+    interpreter = python or _this_interpreter()
+    report = run_dir / check.artifact_name
+    return (
+        *_substituted((variant.runner.executable,), run_dir, interpreter),
+        *_substituted(variant.runner.base_argv, run_dir, interpreter),
+        "-p", pytest_adapter.PLUGIN_NAME,
+        pytest_adapter.REPORT_FLAG, str(report),
+        *variant.required_tests,
+    )
+
+
+def _substituted(parts: tuple, run_dir: Path, interpreter: str) -> tuple[str, ...]:
+    """Apply the only two placeholders CONTRACT.md defines."""
+    return tuple(
+        str(part).replace("{{run_dir}}", str(run_dir)).replace("{{python}}", interpreter)
+        for part in parts
+    )
+
+
+def _this_interpreter() -> str:
+    import sys
+
+    return sys.executable
+
+
+def _absent(check_kind: CheckKind, checkpoint: str) -> Adapter:
+    """An adapter that runs nothing and says why.
+
+    A closure rather than a shared default so the reason names the kind, and so
+    a future adapter replacing one of these is a deletion rather than an edit to
+    a message. `argv_for` returns an empty list, which `_preflight` refuses as a
+    launch with nothing to launch, so the refusal is the adapter's own rather than
+    a command that would have run.
+    """
+    return Adapter(
+        kind=check_kind,
+        argv_for=lambda check, run_dir, python: (),
+        read=lambda check, raw: Blocked(
+            BlockedReason.TOOL_MISSING,
+            f"adapter_absent: a {check_kind.value!r} check has no adapter in this "
+            f"build. {checkpoint} supplies one; until then the check is BLOCKED "
+            f"and nothing is launched.",
+        ),
+    )
+
+
+#: The one table. Keyed by the frozen `CheckKind`, so a kind the enum gains is a
+#: `KeyError` at import rather than a silent fall-through to a default adapter.
+ADAPTERS: dict[CheckKind, Adapter] = {
+    # Handed the parsed `CheckSpec` rather than the variant. A v1 check has no
+    # variant at all, and `manifest._wrap` already copies a v2 scenario check's
+    # command and its scenario ids onto the parsed check, so the wrapper is the
+    # one shape both readings have. The variant would be wrong here: its `argv`
+    # is empty by construction, because a scenario variant's command is carried
+    # in a different field. Measured: passing the variant produced
+    # `sequence item 0: expected str instance, CaseObligation found` from
+    # `argv_for`, and then a run that never launched.
+    CheckKind.SCENARIO: Adapter(
+        kind=CheckKind.SCENARIO, argv_for=_scenario_argv, read=_scenario_read,
+    ),
+    # Handed the variant. A pytest check declares no command, so its argv is
+    # built here from the runner, the report flags and the required test ids,
+    # and the runner and test ids are the variant's fields.
+    CheckKind.PYTEST: Adapter(
+        kind=CheckKind.PYTEST, argv_for=_pytest_argv,
+        read=lambda check, raw: pytest_adapter.interpret(raw, _variant(check)),
+    ),
+    CheckKind.NODE_TEST: _absent(CheckKind.NODE_TEST, "Plan 10 checkpoint 2"),
+    CheckKind.PROPERTY: _absent(CheckKind.PROPERTY, "Plan 10 checkpoint 2"),
+    CheckKind.LEAN: _absent(CheckKind.LEAN, "Plan 10 checkpoint 3"),
+    CheckKind.TLC: _absent(CheckKind.TLC, "Plan 10 checkpoint 3"),
+}
+
+
+def for_kind(kind: CheckKind) -> Adapter:
+    """The one adapter for a kind. Raises for a kind the enum does not have."""
+    try:
+        return ADAPTERS[kind]
+    except KeyError:
+        raise KeyError(
+            f"{kind!r} has no adapter, and no default exists: an unrecognised kind "
+            f"is a manifest bug upstream, not a check to run"
+        ) from None
+
+
+def _variant(check: Any) -> Any:
+    """The adapter's own argument: the parsed check, or the variant behind it.
+
+    The scenario and pytest adapters are written against one shape each, and
+    which shape they are handed is a property of the caller rather than of the
+    kind. A `manifest.CheckSpec` carries its obligations in its own fields and
+    needs no variant; a caller holding a bare `PytestCheck` has no wrapper at
+    all. Passing the variant when there is one covers both without asking every
+    adapter to know which wrapper it was given.
+    """
+    return getattr(check, "variant", None) or check
+
+
+def _kind_of(check: Any) -> CheckKind:
+    """The kind of a parsed check, whichever shape a caller is holding.
+
+    `manifest.CheckSpec` and the six variants are both legal arguments here. A
+    v1 check has no variant beyond its scenario reading, so it is a `scenario`
+    check by the only reading it has.
+    """
+    variant = getattr(check, "variant", None)
+    if variant is None:
+        if isinstance(check, ScenarioCheck):
+            return CheckKind.SCENARIO
+        raise TypeError(
+            f"{type(check).__name__} is not a check this dispatch can select an "
+            "adapter for; a caller must hand it a parsed check or one of the six "
+            "variants"
+        )
+    return variant.kind
+
+
+def argv_for(check: Any, run_dir: Path, python: str | None) -> tuple[str, ...]:
+    """The exact argument list this check is executed with.
+
+    The parsed check is handed through unchanged. Unwrapping to the variant here
+    was wrong for `scenario`, whose variant carries no argv at all, and it was
+    applied to every kind because the shape was decided in one place rather than
+    by the adapter that needs it.
+    """
+    return for_kind(_kind_of(check)).argv_for(check, run_dir, python)
+
+
+def interpret(check: Any, raw: bytes) -> Any:
+    """The adapter's reading of what the check wrote.
+
+    Handed the parsed check, for the same reason `argv_for` does. The pytest
+    adapter unwraps the variant itself, because only it knows it needs the
+    runner and the required test ids rather than the wrapper's fields.
+    """
+    return for_kind(_kind_of(check)).read(check, raw)
+
+
+# ------------------------------------------------------- the outcome bridge
+
+
+def outcome_from_reading(reading: Any) -> Outcome:
+    """The one Outcome an adapter's reading means.
+
+    Every refusal is already a `Blocked` carrying its own reason, and the
+    detail's leading token names which of the seven it is, so it passes through
+    unchanged. Re-deriving one here would discard exactly the detail the refusal
+    exists to give.
+    """
+    if isinstance(reading, Blocked):
+        return reading
+    if isinstance(reading, ScenarioReading):
+        if reading.problem is not None:
+            return reading.problem
+        return Failed(reading.scenarios) if reading.failing else Passed(reading.scenarios)
+    from .pytest_adapter import AdapterResult
+
+    if isinstance(reading, AdapterResult):
+        scenarios = reading.scenarios()
+        return Failed(scenarios) if reading.counterexamples else Passed(scenarios)
+    raise TypeError(
+        f"an adapter returned {type(reading).__name__}, which is neither a reading "
+        "nor a Blocked; every adapter owes the core one of the two"
+    )
+
+
+# --------------------------------------------------------------- the receipt
+
+
+@dataclass(frozen=True)
+class ReceiptInputs:
+    """Everything a receipt records that is not the adapter's reading.
+
+    Named and frozen because a receipt built from a partly-filled set of these
+    is a receipt with plausible values in fields nothing measured, and that is
+    the failure the schema's required members exist to prevent.
+    """
+
+    check_id: str
+    claim_id: str
+    run_id: str
+    task_id: str | None
+    generation: int | None
+    category: ClaimCategory
+    subject: SubjectRef
+    specification_digest: str | None
+    policy_digest: str
+    source: SourceIdentity
+    fixture_digest: str | None
+    tool_versions: dict[str, str]
+    runtime: dict[str, str]
+    timeout_seconds: float
+    #: Where the check's report was written. This is a run directory, not the
+    #: repository, so nothing that resolves a repository-relative path may read
+    #: it as one.
+    report_path: Path
+    #: The repository the check ran against, which every declared path in
+    #: `subject` is relative to. Separate from `report_path` because the two are
+    #: different roots and conflating them silently measures nothing: the first
+    #: version resolved `subject.paths` against the run directory, found nothing
+    #: there, and reported the measurement as unresolved on every run.
+    project_root: Path
+    outcome: Outcome
+    reading: Any
+
+
+def build_receipt(inputs: ReceiptInputs) -> dict[str, Any]:
+    """The typed receipt for one run, as the document vkit persists.
+
+    Every value is derived here or read from something that measured it. The
+    two that are computed from the check's declaration rather than from the run
+    are named as such in `assumptions`, because a reader needs to know which
+    fields describe what happened and which describe what the policy asked for.
+
+    `status` comes from the outcome and the obligations from the reading, and
+    those are two things rather than one because a BLOCKED reading has no
+    obligations to record: it established nothing, and a receipt listing
+    satisfied cases for a run that was refused would be the lie this whole
+    contract exists to prevent.
+    """
+    status = _status_of(inputs.outcome)
+    satisfied, counterexamples = _obligation_results(inputs.reading)
+    return {
+        "schema_version": 2,
+        "check_id": inputs.check_id,
+        "claim_id": inputs.claim_id,
+        "task_id": inputs.task_id,
+        "generation": inputs.generation,
+        "run_id": inputs.run_id,
+        "status": status,
+        "evidence_kind": inputs.category.value,
+        "specification_digest": inputs.specification_digest,
+        "subject": {
+            "paths": list(inputs.subject.paths),
+            "digest": _measure(inputs.project_root, inputs.subject),
+        },
+        "policy_digest": inputs.policy_digest,
+        "source": {
+            "inventory_digest": inputs.source.inventory_digest,
+            # Only the paths that differ from HEAD, each labelled with what it is
+            # rather than with `tracked`. A receipt that called a modified or
+            # untracked file `tracked` would misdescribe the evidence it is
+            # attached to, and the inventory digest is what a reader compares;
+            # this list is what tells them which files to look at.
+            "files": [
+                {"path": p, "kind": "modified"} for p in inputs.source.dirty_paths
+            ],
+        },
+        "fixture_digest": inputs.fixture_digest,
+        "verifier": {
+            "module": VERIFIER_MODULE,
+            "version": __version__,
+            "source_digest": _verifier_digest(),
+        },
+        "tool_versions": dict(inputs.tool_versions),
+        # No dependency lock is resolved at this boundary, so the field is empty
+        # rather than absent. Empty is a fact; absent would be a document whose
+        # dependencies nothing looked for.
+        "dependencies": [],
+        "runtime": inputs.runtime,
+        "satisfied": satisfied,
+        "assumptions": _assumptions(inputs),
+        "limits": {
+            "timeout_seconds": inputs.timeout_seconds,
+            "workers": None,
+            "seed": None,
+        },
+        "counterexamples": counterexamples,
+        "artifacts": {"report": inputs.report_path.name},
+        "trust_boundary": {
+            "establishes": inputs.category.establishes,
+            "does_not_establish": inputs.category.does_not_establish,
+            "oracle_review": ORACLE_REVIEW,
+            "hash_limit": HASH_LIMIT,
+            "normalization": NORMALIZATION,
+        },
+    }
+
+
+def _status_of(outcome: Outcome) -> str:
+    if isinstance(outcome, Passed):
+        return "PASS"
+    if isinstance(outcome, Failed):
+        return "FAIL"
+    return "BLOCKED"
+
+
+def _obligation_results(reading: Any) -> tuple[tuple[dict, ...], tuple[dict, ...]]:
+    """The satisfied obligations and the counterexamples, in the schema's shapes.
+
+    Delegated to the adapter rather than translated here, so a receipt cannot
+    disagree with the reading it was built from. A scenario reading has no
+    obligation results, because a v1 driver reports scenario ids rather than
+    obligations and inventing the second from the first would be a claim the
+    artifact never made.
+    """
+    from .pytest_adapter import AdapterResult
+
+    if isinstance(reading, AdapterResult):
+        return reading.obligation_results()
+    return [], []
+
+
+def _assumptions(inputs: ReceiptInputs) -> list[str]:
+    """What a reader has to believe for this receipt to mean what it says."""
+    assumptions = [
+        f"evidence_kind {inputs.category.value!r} is derived from the check's "
+        f"declared variant by evidence_kind(spec); no field in the manifest, the "
+        f"report or this receipt sets it",
+    ]
+    if inputs.subject.digest is not None:
+        assumptions.append(
+            f"the owner declared subject digest {inputs.subject.digest}; this "
+            f"receipt records vkit's own measurement of the same paths, and a "
+            f"reader comparing the two is comparing a declaration to an observation"
+        )
+    if inputs.fixture_digest is None:
+        assumptions.append(
+            "no fixture digest was recorded for this run, so what inputs the "
+            "evidence was produced against is unresolved"
+        )
+    return assumptions
+
+
+def _measure(project_root: Path, subject: SubjectRef) -> str | None:
+    """vkit's measurement of the declared subject, or None when it measured nothing.
+
+    Measured rather than copied from the declaration, and only over paths that
+    exist. A path that does not exist is not reported as a digest of nothing: the
+    measurement is unresolved, which is a different fact from a digest.
+    """
+    root = project_root
+    digests = []
+    for relative in subject.paths:
+        candidate = (root / relative).resolve()
+        if not candidate.is_file():
+            return None
+        digests.append(
+            hashlib.sha256(candidate.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+        )
+    if not digests:
+        return None
+    running = hashlib.sha256()
+    for digest in digests:
+        running.update(digest.encode("ascii"))
+    return running.hexdigest()
+
+
+def _verifier_digest() -> str:
+    """This implementation's own digest, so a receipt names bytes and not a name.
+
+    Read from the source of the module that built the receipt rather than from a
+    version string, because two builds of one version number can interpret a
+    report differently and the receipt is where a reader would look to tell.
+    """
+    source = Path(__file__).resolve().read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(source).hexdigest()
+
+
+def persist(receipt: dict[str, Any], report_path: Path) -> None:
+    """Write the receipt beside the run's other artifacts, atomically.
+
+    Written to a temporary name and moved, because a reader in another process
+    must never see half a document. A half-written receipt would be refused as
+    malformed, and the refusal would name a corruption rather than the verdict.
+    """
+    validate_receipt(receipt)
+    staged = report_path.with_suffix(report_path.suffix + ".partial")
+    staged.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    staged.replace(report_path)
+
+
+def validate_receipt(receipt: dict[str, Any]) -> None:
+    """Hold the receipt to the boundary schema before anything is persisted."""
+    from ..schemas import RECEIPT, SchemaValidationError, validate
+
+    try:
+        validate("receipt", RECEIPT, receipt)
+    except SchemaValidationError as exc:
+        raise SchemaValidationError(
+            exc.subject, f"{exc.reason}. A receipt that violates its own schema is "
+            "worse than no receipt, so it is not written"
+        ) from None
+
+
+__all__ = [
+    "ADAPTERS",
+    "HASH_LIMIT",
+    "NORMALIZATION",
+    "ORACLE_REVIEW",
+    "VERIFIER_MODULE",
+    "Adapter",
+    "ReceiptInputs",
+    "argv_for",
+    "build_receipt",
+    "for_kind",
+    "interpret",
+    "outcome_from_reading",
+    "persist",
+    "validate_receipt",
+]

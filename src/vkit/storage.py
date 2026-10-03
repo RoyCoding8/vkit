@@ -25,6 +25,10 @@ from typing import Any, Iterator
 
 RUNS_DIR_NAME = "runs"
 REPORT_NAME = "report.json"
+#: The evidence receipt inside a run directory. One name, owned by the store,
+#: because `execution` writes the file and `publish` reads it back to record the
+#: run's category: two spellings of one filename is one place for them to differ.
+RECEIPT_NAME = "receipt.v2.json"
 BUSY_TIMEOUT_S = 5.0
 DRIVE_REMOTE = 4
 
@@ -300,6 +304,28 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         resolved     INTEGER NOT NULL DEFAULT 0
     );
     """),
+    (6, """
+    -- What category of evidence a run produced, and which obligations it
+    -- discharged. Both are nullable, and both stay NULL for every run recorded
+    -- before this migration.
+    --
+    -- NULL is the honest value for an old run rather than a backfilled default.
+    -- Design §5.3 is explicit that migration must not silently upgrade a v1 row
+    -- to `evidence_kind = 'scenario'`: the run never recorded a category, "it
+    -- must have been a scenario driver" is a guess, and `plans/CONTRACT.md:48`
+    -- forbids inventing task acceptance for an old record. A NULL never equals a
+    -- category, so an old run cannot discharge a native obligation -- the same
+    -- device `tasks._UNRECORDED_ON_RUN` already uses for fixtures.
+    --
+    -- `satisfied_json` holds the receipt's `satisfied` array verbatim, so
+    -- acceptance reads the cases the checker actually ran without re-opening
+    -- the receipt file. The receipt stays the authority; this column is its
+    -- index, and it is written from the same value in the same call.
+    ALTER TABLE runs ADD COLUMN evidence_kind TEXT
+        CHECK (evidence_kind IS NULL OR evidence_kind IN
+            ('scenario', 'property', 'finite_model_checking', 'theorem_checking'));
+    ALTER TABLE runs ADD COLUMN satisfied_json TEXT;
+    """),
 )
 
 
@@ -371,6 +397,11 @@ def _now() -> str:
 _RUN_COLUMNS = (
     "run_id", "check_id", "task_id", "attempt", "lifecycle", "result", "reason",
     "registered_at", "ended_at", "source_json", "configuration_digest", "fixture_digest",
+    # The category and the obligations the receipt recorded, beside the identities
+    # a pass is compared against. They are on every row because acceptance cannot
+    # decide without them: a pass in the wrong category discharges nothing, and a
+    # reader that had to ask separately would be free to forget.
+    "evidence_kind", "satisfied_json",
 )
 
 # The `launches` columns `load_launch` returns, named beside the query that fills
@@ -416,6 +447,26 @@ def open_task(conn: sqlite3.Connection, task_id: str, contract: dict, policy_dig
         " VALUES (?, ?, ?, 'active', 1, ?)",
         (task_id, _dumps(contract), policy_digest, _now()),
     )
+
+
+def read_receipt(run_dir: Path) -> dict | None:
+    """The receipt in a run directory, or None when it has none.
+
+    Read by the store rather than by each caller, so the category recorded on a
+    run row and the category in its receipt cannot come from two different
+    readings of the same file. A malformed receipt is None rather than an
+    exception: the receipt is written before the report, so a caller reaching
+    here has a run either way, and a run whose evidence could not be read is a
+    run with no category rather than a run whose row crashes the store.
+    """
+    path = Path(run_dir) / RECEIPT_NAME
+    if not path.is_file():
+        return None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return document if isinstance(document, dict) else None
 
 
 def _dumps(value: object) -> str:
@@ -964,6 +1015,9 @@ class Store:
             raise StoreError(f"refusing to publish {run_id} with no outcome: a terminal run has exactly one")
         if outcome["result"] == "BLOCKED" and not outcome.get("reason"):
             raise StoreError(f"refusing to publish {run_id} as BLOCKED with no reason")
+        receipt = read_receipt(self.run_dir(run_id))
+        evidence_kind = None if receipt is None else receipt.get("evidence_kind")
+        satisfied = None if receipt is None else receipt.get("satisfied", [])
 
         run_dir = self.run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -977,10 +1031,19 @@ class Store:
                 os.fsync(fh.fileno())
 
             with self._connect() as conn:
+                # The category and the satisfied obligations are read from the
+                # receipt in the same directory, and written in the same
+                # transaction as the verdict. A run row carrying a category its
+                # receipt does not name would be a second, divergent record of
+                # the same fact, which is what this table exists to avoid.
                 cursor = conn.execute(
-                    "UPDATE runs SET lifecycle = 'terminal', result = ?, reason = ?, ended_at = ?"
+                    "UPDATE runs SET lifecycle = 'terminal', result = ?, reason = ?,"
+                    " ended_at = ?, evidence_kind = ?, satisfied_json = ?"
                     " WHERE run_id = ? AND lifecycle != 'terminal'",
-                    (outcome["result"], outcome.get("reason"), report.get("ended_at"), run_id),
+                    (
+                        outcome["result"], outcome.get("reason"), report.get("ended_at"),
+                        evidence_kind, _dumps(satisfied), run_id,
+                    ),
                 )
                 if cursor.rowcount == 0:
                     raise StoreError(f"cannot publish: {run_id} is unknown or already terminal")
@@ -1029,7 +1092,7 @@ class Store:
         """
         sql = ("SELECT run_id, check_id, task_id, attempt, lifecycle, result, reason,"
                " registered_at, ended_at, source_json, configuration_digest,"
-               " fixture_digest FROM runs")
+               " fixture_digest, evidence_kind, satisfied_json FROM runs")
         params: list[object] = []
         if task_id is not None:
             sql += " WHERE task_id = ?"
@@ -1047,6 +1110,7 @@ class Store:
             # different fields out of the same document.
             source = json.loads(record.pop("source_json") or "{}")
             record["source_inventory_digest"] = source.get("inventory_digest")
+            record["satisfied"] = json.loads(record.pop("satisfied_json") or "[]")
             out.append(record)
         return out
 

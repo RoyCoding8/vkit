@@ -187,7 +187,17 @@ def start_run(
     run_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
-    argv = tuple(str(part) for part in check.resolved_argv_for(run_dir, environment.python))
+    # Through the one dispatch, so a detached run and a foreground run execute
+    # the same argument list. `check.resolved_argv_for` is the parsed check's own
+    # command, and a `pytest` check declares no command: `manifest._wrap` leaves
+    # its argv empty on purpose, so reading it here launched nothing and the
+    # supervisor died with `argv must name at least one executable`, leaving the
+    # run `preparing` forever. Measured on this branch.
+    from .verifiers import dispatch
+
+    argv = tuple(str(part) for part in dispatch.argv_for(
+        check, run_dir, environment.python
+    ))
     # Recorded absolutely so the detached supervisor re-parses the same manifest
     # this run was decided against, rather than resolving one from whatever
     # working directory it happens to inherit.

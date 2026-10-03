@@ -397,7 +397,12 @@ def test_the_cli_and_the_wire_report_the_same_run(tmp_path: Path) -> None:
     assert isinstance(report["process"]["pid"], int)
     assert report["process"]["ownership"] == EXPECTED_OWNERSHIP
     assert report["process"]["timed_out"] is False
-    assert report["artifacts"] == {"result": "result.json"}
+    # The run's result artifact, not an exhaustive map of every artifact the
+    # report carries. Checkpoint 10.1b adds a typed receipt alongside it, and this
+    # test's purpose is that the CLI and the wire report the SAME run, not that
+    # no further artifact may ever be recorded. Exhaustive equality would fail on
+    # every future artifact rather than on a real disagreement.
+    assert report["artifacts"]["result"] == "result.json"
 
 
 # --- the start payload claims only what is already true ----------------------

@@ -175,16 +175,32 @@ jobs:
 
       # The reader is exercised on this runner too, so a refusal that only fails on
       # Ubuntu is caught here rather than being reported by a maintainer. Nothing
-      # in these files is Linux-specific except the reviewed-profile gate, so this
-      # asserts they ran rather than skipped.
+      # in these files is Linux-specific, so this asserts they ran rather than
+      # skipped.
+      #
+      # ONLY this job's own cases. `tests/test_lean_verifier.py` was listed here
+      # too, and that was the configuration error this step kept reporting: the
+      # Lean real cases skip with "no Lean toolchain on PATH" on a runner that
+      # installs a JRE and a jar, and this job installs no Lean toolchain, so
+      # nothing here could have made them run. The guard asks whether the
+      # capability probe found what THIS job installed, and a Lean case on this
+      # runner is an answer about a job that is not this one. The `lean:` job
+      # installs elan and runs the same cases there, so the Lean evidence is
+      # collected on the runner that provisions for it. Adding a second file here
+      # would make the guard fail for a reason outside the job, which trains
+      # readers to ignore it.
       - name: The real checker cases actually ran
         run: |
           set -eu
-          python -m pytest tests/test_tlc_verifier.py tests/test_lean_verifier.py \
+          python -m pytest tests/test_tlc_verifier.py \
             -o addopts= -p no:cacheprovider -ra -k "real" -v 2>&1 | tee run.log
-          # A skip here means the capability probe did not find what this job
-          # installed, which would leave the real cases unexercised and the job
-          # green. That is the failure this step exists to prevent.
+          # A skip here means the capability probe did not find the JRE or the jar
+          # this step's earlier steps installed, which would leave the real cases
+          # unexercised and the job green. That is the failure this step exists to
+          # prevent. The pytest run above is a FRESH process over the one file, so
+          # the only skips this grep can see are this job's own real cases. Reusing
+          # a run.log from an earlier step would let a skip from anywhere in that
+          # step's selection fail a guard that cannot reach the toolchain.
           if grep -q "SKIPPED" run.log; then
             echo "a real-checker case was skipped on a runner that installed the toolchain" >&2
             grep "SKIPPED" run.log >&2

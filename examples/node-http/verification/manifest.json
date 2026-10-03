@@ -47,6 +47,48 @@
         "digest": null
       },
       "claim_id": "items-api"
+    },
+    {
+      "id": "items-api-sockets",
+      "description": "Runs the built-in Node test runner over real sockets and requires each named case to run and pass.",
+      "kind": "node_test",
+      "cwd": ".",
+      "timeout_seconds": 180,
+      "artifact": "node-report.tap",
+      "prerequisites": [
+        {
+          "name": "node",
+          "executable": "node",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "src/items-server.js",
+        "test/items-server.test.js"
+      ],
+      "expectations": [],
+      "required_tests": [
+        "test/items-server.test.js::a created item is observable by reading the list back",
+        "test/items-server.test.js::an unknown route is refused rather than served"
+      ],
+      "runner": {
+        "executable": "node",
+        "base_argv": [
+          "--test"
+        ]
+      },
+      "report_format": "node_tap",
+      "expect_report_version": 1,
+      "subject": {
+        "paths": [
+          "src/items-server.js",
+          "test/items-server.test.js"
+        ],
+        "digest": null
+      },
+      "claim_id": "items-state-is-observable-over-http"
     }
   ]
 }

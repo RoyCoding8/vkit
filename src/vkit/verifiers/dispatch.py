@@ -42,7 +42,7 @@ from .. import __version__
 from ..claimkind import ClaimCategory
 from ..identity import SourceIdentity
 from ..outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
-from . import pytest_adapter
+from . import node_adapter, property_adapter, pytest_adapter
 from .spec import (
     CheckKind,
     ScenarioCheck,
@@ -176,6 +176,73 @@ def _pytest_argv(check: Any, run_dir: Path, python: str | None) -> tuple[str, ..
     )
 
 
+def _node_argv(check: Any, run_dir: Path, python: str | None) -> tuple[str, ...]:
+    """The pinned Node runner, told where to write its report and which files to run.
+
+    Built exactly as `_pytest_argv` is, and for the same reasons: the check
+    declares no command, the runner's own base arguments and the required ids
+    come from the variant, and the report path is vkit's decision because it has
+    to resolve inside this run's directory.
+
+    The two flags that are not the pytest ones are all measured requirements of
+    this runner rather than preferences. `--test-reporter` names vkit's own
+    reporter, because stock Node TAP carries a file only on a failing entry and
+    required-case accounting needs the file on every one. `--test-isolation=none`
+    runs every file in one process, because with the default per-file isolation
+    the runner reports each file as a test of its own and a required case would
+    be satisfied by a file that ran no case at all. And the required ids are
+    split into the files to run and the names to select, because `node --test`
+    reads its file arguments as filenames. All three are explained at length in
+    `node_adapter`, which owns the format.
+    """
+    variant = _variant(check)
+    report = run_dir / check.artifact_name
+    files, pattern = node_adapter.argv_selectors(variant.required_tests)
+    return (
+        *_substituted((variant.runner.executable,), run_dir, python or _this_interpreter()),
+        *_substituted(variant.runner.base_argv, run_dir, python or _this_interpreter()),
+        "--test-isolation=none",
+        "--test-reporter", node_adapter.reporter_argv_token(),
+        "--test-reporter-destination", str(report),
+        *(("--test-name-pattern", pattern) if pattern else ()),
+        *files,
+    )
+
+
+def _property_argv(check: Any, run_dir: Path, python: str | None) -> tuple[str, ...]:
+    """The pinned Hypothesis run: the pytest argv, plus the pinned profile.
+
+    Every part of `_pytest_argv` is here, with one flag added, because a
+    property check is a pytest run whose required tests happen to be Hypothesis
+    tests. The added flag carries the pinned generator settings into the child.
+
+    They travel as an argument rather than being read back out of the run's own
+    manifest, and the reason is measured rather than preferred: the check runs
+    inside `vkit.integration.launcher`, which refuses `import vkit` in the
+    process hosting the check, so a plugin in that process cannot read the
+    manifest either. A version that tried read the library's default instead of
+    the approved settings and reported 100 examples for a check that pinned 25.
+    """
+    variant = _variant(check)
+    interpreter = python or _this_interpreter()
+    report = run_dir / check.artifact_name
+    return (
+        *_substituted((variant.runner.executable,), run_dir, interpreter),
+        *_substituted(variant.runner.base_argv, run_dir, interpreter),
+        "-p", pytest_adapter.PLUGIN_NAME,
+        "-p", PROPERTY_PLUGIN,
+        pytest_adapter.REPORT_FLAG, str(report),
+        property_adapter.SETTINGS_FLAG, property_adapter.settings_token(variant),
+        *variant.required_tests,
+    )
+
+
+#: The plugin that activates the generator settings a property check pinned.
+#: Named by module rather than by path so the child resolves it through the same
+#: `sys.path` every other import in that process resolves through.
+PROPERTY_PLUGIN = "vkit.verifiers.property_adapter"
+
+
 def _substituted(parts: tuple, run_dir: Path, interpreter: str) -> tuple[str, ...]:
     """Apply the only two placeholders CONTRACT.md defines."""
     return tuple(
@@ -232,8 +299,14 @@ ADAPTERS: dict[CheckKind, Adapter] = {
         kind=CheckKind.PYTEST, argv_for=_pytest_argv,
         read=lambda check, raw: pytest_adapter.interpret(raw, _variant(check)),
     ),
-    CheckKind.NODE_TEST: _absent(CheckKind.NODE_TEST, "Plan 10 checkpoint 2"),
-    CheckKind.PROPERTY: _absent(CheckKind.PROPERTY, "Plan 10 checkpoint 2"),
+    CheckKind.NODE_TEST: Adapter(
+        kind=CheckKind.NODE_TEST, argv_for=_node_argv,
+        read=lambda check, raw: node_adapter.interpret(raw, _variant(check)),
+    ),
+    CheckKind.PROPERTY: Adapter(
+        kind=CheckKind.PROPERTY, argv_for=_property_argv,
+        read=lambda check, raw: property_adapter.interpret(raw, _variant(check)),
+    ),
     CheckKind.LEAN: _absent(CheckKind.LEAN, "Plan 10 checkpoint 3"),
     CheckKind.TLC: _absent(CheckKind.TLC, "Plan 10 checkpoint 3"),
 }
@@ -320,9 +393,14 @@ def outcome_from_reading(reading: Any) -> Outcome:
         if reading.problem is not None:
             return reading.problem
         return Failed(reading.scenarios) if reading.failing else Passed(reading.scenarios)
-    from .pytest_adapter import AdapterResult
-
-    if isinstance(reading, AdapterResult):
+    # Asked by capability rather than by class list. `node_adapter.AdapterResult`
+    # and `pytest_adapter.AdapterResult` are different classes, but each owes the
+    # core the same two things: the scenarios its cases project to, and whether
+    # any of them failed. Enumerating the classes here would be a table that has
+    # to be extended every time an adapter lands, and forgetting one would leave
+    # it falling through to the `TypeError` below with a message about a return
+    # value that was in fact fine.
+    if hasattr(reading, "scenarios") and hasattr(reading, "counterexamples"):
         scenarios = reading.scenarios()
         return Failed(scenarios) if reading.counterexamples else Passed(scenarios)
     raise TypeError(
@@ -461,20 +539,27 @@ def _obligation_results(reading: Any) -> tuple[tuple[dict, ...], tuple[dict, ...
     obligations and inventing the second from the first would be a claim the
     artifact never made.
     """
-    from .pytest_adapter import AdapterResult
-
-    if isinstance(reading, AdapterResult):
+    if hasattr(reading, "obligation_results"):
         return reading.obligation_results()
     return [], []
 
 
 def _assumptions(inputs: ReceiptInputs) -> list[str]:
-    """What a reader has to believe for this receipt to mean what it says."""
-    assumptions = [
+    """What a reader has to believe for this receipt to mean what it says.
+
+    The adapter's own assumptions come first and lead, because they are the ones
+    only it can state: a property result's generator settings and tested scope
+    are facts about what was sampled, and a receipt that recorded the verdict
+    without them would be the overstatement `claimkind.py` exists to prevent.
+    """
+    assumptions: list[str] = []
+    if hasattr(inputs.reading, "assumptions"):
+        assumptions.extend(inputs.reading.assumptions())
+    assumptions.append(
         f"evidence_kind {inputs.category.value!r} is derived from the check's "
         f"declared variant by evidence_kind(spec); no field in the manifest, the "
-        f"report or this receipt sets it",
-    ]
+        f"report or this receipt sets it"
+    )
     if inputs.subject.digest is not None:
         assumptions.append(
             f"the owner declared subject digest {inputs.subject.digest}; this "

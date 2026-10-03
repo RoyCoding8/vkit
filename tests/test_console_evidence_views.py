@@ -625,14 +625,17 @@ def test_an_unavailable_setup_action_names_its_missing_prerequisite(live) -> Non
 # ----------------------------------------------------------------- cleanup
 
 
-def test_the_cleanup_section_reports_the_policy_and_names_what_it_cannot_show(live) -> None:
-    """Cleanup shows what the core holds, and names the panels it cannot fill.
+def test_the_cleanup_section_reports_the_policy_and_names_no_absent_panel(live) -> None:
+    """Cleanup shows what the core holds, and claims no panel is missing.
 
-    The policy is the core's own, read through `cleanup.load_policy`. The
-    unavailable list is asserted to be non-empty *and* to name a backend for each
-    entry: a silent gap and an empty list are indistinguishable on a screen, and
-    an empty list would read as "nothing has ever been cleaned", which is a
-    different and false claim.
+    The policy is the core's own, read through `cleanup.load_policy`. This test
+    previously asserted the opposite: that the unavailable list was NON-empty,
+    because the applied-patch, receipt, proposal and refusal panels had nothing
+    behind them and an empty list would have read as "nothing has ever been
+    cleaned", which is a different and false claim. Now that every outcome is
+    recorded durably, the key is gone from the section, and this asserts it stays
+    gone: an assertion that the key EQUALS an empty list would pass for a
+    section that had deleted the panels along with it.
     """
     url, _ = live
     section = _get(f"{url}/api/checks")["sections"]["cleanup"]
@@ -649,17 +652,20 @@ def test_the_cleanup_section_reports_the_policy_and_names_what_it_cannot_show(li
     assert section["protected_paths"], "no protected paths are reported"
     assert isinstance(section["outstanding"], list), "there is no pending-cleanup list"
 
-    assert section["unavailable"], (
-        "the cleanup section reports every panel as available. Applied patches, "
-        "preservation receipts and proposals are written and never read back in "
-        "this build, and claiming otherwise would be inventing capability."
+    assert "unavailable" not in section, (
+        "the cleanup section still carries an `unavailable` key. Every panel now "
+        "has a backend, so the key can only ever be empty, and a page that "
+        "advertises absent panels it no longer has is telling an operator to "
+        "distrust data it is showing them"
     )
-    for entry in section["unavailable"]:
-        assert entry["panel"], "an unavailable cleanup panel names nothing"
-        assert entry["missing"], (
-            f"the {entry['panel']!r} panel is withheld without naming the backend "
-            f"that is absent, so an operator cannot tell a build gap from a bug"
+    for panel in ("applied", "refusals"):
+        assert isinstance(section[panel], list), (
+            f"the cleanup section reports no {panel!r} list, so the panel has no "
+            "data behind it and an empty one would read as 'none exist'"
         )
+    assert section["applied_total"] == 0, (
+        "a repository nothing has cleaned reports a nonzero record total"
+    )
 
 
 def test_the_cleanup_section_never_offers_a_write(live) -> None:

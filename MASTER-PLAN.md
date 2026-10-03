@@ -169,35 +169,57 @@ Recorded 2026-10-03 from actual execution. Full run-by-run detail is in
 
 ### What CI proved, and what it cost to get there
 
-Eleven suite runs and four formal-verifier runs were needed. Nothing in this
-program was verified by more than one platform until run six.
+Thirteen suite runs and eight formal-verifier runs were needed. Nine of the
+thirteen suite runs failed or were cancelled; nothing in this program was green
+on more than one platform until `616efa4`.
 
-Counts below are the real per-platform pytest summary lines, not estimates.
-`fail, N` is the ubuntu failure count, and is noted when another platform
-differed.
+Counts below are the real per-platform pytest summary lines, re-read from the
+run logs. `fail, N` is the ubuntu count, and the platforms that differed are
+named.
 
 | Suite run | SHA | Result | What it found |
 | --- | --- | --- | --- |
-| 37095912191 | ffa2346 | fail, 48 | `TESTED_CPYTHON_VERSIONS` held only 3.13.14 while the runner resolved 3.13.15. The guard refusing an unmeasured compiler was correct; the workflow pin was wrong. |
-| 37097709938 | b3cc7fd | fail, 11 | Node 22 spells the isolation flag differently, so a real Node report was never written and every Node case read BLOCKED; a plugin fixture passed a `SimpleNamespace` with no `project`. Found on macOS first: 4 here, 11 on ubuntu. |
-| 37101072951 | d4308a3 | fail, 1 | A Windows-authored payload path split with POSIX rules; a symlink guard ordered after containment so its token was unreachable; and a POSIX **false pass** where a Windows absolute path was treated as relative and passed containment. |
-| 37102550231 | 15c77e8 | fail, 2 | A test fixture seeded a run with no receipt, and acceptance correctly refused a run that established nothing about what kind of evidence it was. |
-| 37108770250 | 616efa4 | **green** | 1143 passed / 80 skipped on Ubuntu; 1120 / 103 on macOS; 1175 / 48 on Windows. |
-| 37127872586 | 5bed3a6 | fail, 31 | Checkpoint 10.3 deleted `manifest.DECLARED_BUT_UNAVAILABLE`; 31 tests imported it. All three platforms failed identically, because the code was wrong rather than the platform. |
-| 37131714102 | 5e7d003 | **green** | Capabilities derived from the adapter table instead of a stale refusal list. 1232 / 57 on Ubuntu. |
-| 37134443260 | 7496674 | **green** | 1212 / 89 Ubuntu, 1189 / 112 macOS, 1244 / 57 Windows. The last fully verified suite run before the final unit. |
+| 37095912191 | ffa2346 | fail: 48 / 48 / 47 | `TESTED_CPYTHON_VERSIONS` held only 3.13.14 while the runner resolved 3.13.15. The guard refusing an unmeasured compiler was correct; the workflow pin was wrong. |
+| 37097709938 | b3cc7fd | fail: 11 / 4 / 10 | The run that found most of the cross-platform defects. Node 22 spells the isolation flag differently, so `node-report.tap` was never written and all 7 Node cases read BLOCKED; a symlink guard named `path_escape` instead of `symlink_or_escape`; a Windows-style payload path did not resolve to its repository-relative form; the MCP handshake asserted `{'experimental','tools'}` where the server now makes `{'tools'}`; and a plugin fixture passed a `SimpleNamespace` with no `project`. macOS failed fewest (4), ubuntu most (11). |
+| 37101072951 | d4308a3 | fail: 1 / 1 / 1 | One failure, and it is not the one previously recorded here: `test_no_module_decodes_subprocess_output_with_the_locale_code_page`. The payload-path, symlink and Node defects above were **fixed** by this SHA, not found by it. |
+| 37102550231 | 15c77e8 | fail: 2 / 2 / 2 | A test fixture seeded a run with no receipt, and acceptance correctly refused a run that established nothing about what kind of evidence it was. |
+| 37108770250 | 616efa4 | **green** | 1143 passed / 80 skipped on Ubuntu; 1120 / 103 on macOS; 1175 / 48 on Windows. The first run green on all three. |
+| 37127872586 | 5bed3a6 | fail: 31 / 31 / 31 | Checkpoint 10.3 deleted `manifest.DECLARED_BUT_UNAVAILABLE`; about 25 tests imported it and 5 more hit `KeyError: 'result'`. Identical on every platform, because the code was wrong rather than the host. |
+| 37131714102 | 5e7d003 | **green** | Capabilities derived from the adapter table instead of a stale refusal list. 1200 / 89 Ubuntu, 1177 / 112 macOS, 1232 / 57 Windows. |
+| 37134443260 | 7496674 | **green** | 1212 / 89 Ubuntu, 1189 / 112 macOS, 1244 / 57 Windows. The last fully verified suite run before the handback commit. |
+
+Three cancelled suite runs (`1c3f817`, `eaab533`, `ed2a6ce`) and one cancelled
+at `6758aa6` by the handback push are omitted from the table: a cancelled run
+records no result, and listing it as a failure or a success would be a claim
+about a verdict that does not exist.
 
 | Formal run | SHA | Result | What it found |
 | --- | --- | --- | --- |
-| 37127195856 | 1c3f817 | fail | The Lean job verified its own install before `GITHUB_PATH` applied, and both jobs pinned a patch release the runner manifest had dropped. |
+| 37127195833 | 1c3f817 | fail | `lean: command not found`, exit 127. The Lean job verified its own install before `GITHUB_PATH` applied, and both jobs pinned a patch release the runner manifest had dropped. |
 | 37127367490 | eaab533 | Lean green, TLC fail | TLC's guard fired correctly, because it named Lean cases inside the TLC job. |
 | 37127872623 | 5bed3a6 | **green** | Lean and TLC both pass on Ubuntu with real toolchains, positive and negative cases. |
-| 37140929908 | 6758aa6 | **green** | The final candidate. Lean 30 passed / 1 skipped; TLC 34 passed, and a second guard step ran the 3 `real` TLC cases with no skip. |
+| 37140929908 | 6758aa6 | **green** | The last fully verified formal run. Lean 30 passed / 1 skipped; TLC 34 passed, and a second guard step ran the 3 `real` TLC cases with no skip. |
 
-Two runs are absent from the earlier draft of this table and two rows were
-wrong: `5bed3a6` was recorded as green when its **suite** run failed 31, and
-the failure counts for the first three runs were understated. The numbers above
-were re-read from the run logs rather than carried forward.
+### Corrections made to this table while writing the handback
+
+Every number above was re-read from the run logs. The first draft of this
+section was wrong in ways worth recording, because a status document that is
+corrected quietly is a status document nobody can audit:
+
+- `5bed3a6` was recorded as green. Its **suite** run failed 31 tests on every
+  platform; only the formal workflow was green at that SHA.
+- Two suite runs were absent entirely, including `b3cc7fd`, which found most of
+  the cross-platform defects.
+- Failure counts were wrong on three rows: `ffa2346` was "23" against a real 48,
+  and `d4308a3` was "11" against a real 1.
+- **Two of those errors were introduced while fixing the first batch.** The
+  Node-isolation, symlink and payload-path findings were attributed to
+  `d4308a3` and the false-pass claim was carried forward from an older draft,
+  when all four belong to `b3cc7fd`. An independent audit of the committed file
+  caught both; I re-read the failing-test lists to confirm before changing them.
+- "Nothing was verified by more than one platform until run four" was false as
+  written: every run executed all three platforms concurrently from the first.
+  What was true is that none was *green* on more than one until `616efa4`.
 
 ### Verified per checkpoint
 
@@ -227,9 +249,11 @@ were re-read from the run logs rather than carried forward.
 - **12.2** — five evidence sections render real records. Viewing a page does
   not mutate task state. The four cleanup panels that 12.2 originally named as
   unavailable were given a real backend at 11.4, so they now list records.
-- **12.3** — one operation that can name no path. Saving a proposal that drops
-  four of six obligations leaves the pinned contract byte-identical and
-  readiness never improves.
+- **12.3** — `test_saving_configuration_does_not_release_a_pinned_obligation`
+  (`tests/test_console_config_editing.py:962`) proves the pinned contract
+  survives a save that drops obligations, and
+  `test_a_proposal_that_removes_an_obligation_cannot_read_as_a_routine_edit`
+  (:874) refuses to let that save pass as routine.
 - **12.4** — `shutil.which('vkit')` resolves to a *different* install than the
   venv serving the console, so the panel reads the installed script from
   `importlib.metadata`. Configured and connected are separate facts.
@@ -291,8 +315,11 @@ were re-read from the run logs rather than carried forward.
 
 ## Final handback
 
-Recorded 2026-10-03. The candidate is `6758aa6`, which is `main`, pushed, with a
-clean tree.
+Recorded 2026-10-03. The candidate is the `main` tip carrying this document.
+The last commit before it is `6758aa6`, which is where the product work ended;
+everything since changed documentation only. Suite and formal receipts for
+`8310263` are recorded under Receipts, including the suite verdict, which was
+still running when this section was first written.
 
 ### What was built
 
@@ -312,12 +339,15 @@ worktree.
 
 Suite CI, three platforms, plus the formal-verifier workflow, all at `6758aa6`:
 
-- **Suite run 37140929886** — see the verdict below.
-- **Formal verifiers 37140929908** — green. Lean: 30 passed, 1 skipped, with the
-  skipped case being the isolation refusal that is correct on a host that
-  isolates. TLC: 34 passed, and a separate guard step then re-ran the 3 `real`
-  TLC cases with no skip. Both toolchains pinned: Lean `v4.34.1` exactly, and
-  `tla2tools.jar` 1.7.4 verified against sha256
+- **Suite run 37134443260 at `7496674`** — the last suite run to finish green
+  on all three platforms. The run at the handback SHA is 37141908935; see
+  below for its verdict.
+- **Formal verifiers 37141908894 at `8310263`** — green. Lean 30 passed /
+  1 skipped, TLC 34 passed, "reviewed profile gate: satisfied" printed, and
+  the 3-case `real` TLC guard step ran with no skip. Identical to 37140929908
+  at `6758aa6`, which is expected: the handback commit changed documentation
+  only. Both toolchains pinned: Lean `v4.34.1` exactly, and `tla2tools.jar`
+  1.7.4 verified against sha256
   `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88` before use.
 
 The TLC figure needs stating precisely, because two different numbers are both
@@ -356,6 +386,25 @@ and passing in run 37140929908, not asserted from the test names.
 - A TLC candidate Java override is refused before the run
   (`test_a_candidate_java_override_is_refused_before_the_run`), so a project
   cannot point the checker at a jar of its own choosing.
+
+Every one of these asserts a **specific** outcome, not merely "not passed". The
+Lean refusals pin a typed detail string — `incomplete_proof`, `theorem_absent`,
+`report_malformed` — and the elaboration case additionally pins
+`BlockedReason.INTERNAL_ERROR`. The axiom cases go through the non-Blocked FAIL
+path and pin the counterexample contents: `"cheat"` and `"sorryAx"` appear in
+`counterexamples[0]["trace"]`. The TLC violation pins the serialized result
+`FAIL`, `satisfied == []`, `left_on_queue > 0`, the text
+`Invariant NoDoubleCheckout is violated`, and the exact violating state
+`held = [a |-> "w1", b |-> "w1"]`. A test asserting only `not is_pass` would
+pass for a product that refused everything for the wrong reason; none of these
+do.
+
+`test_the_reviewed_profile_is_refused_without_isolation_and_is_not_downgraded`
+is the single skip in the Lean job, and it skips for the right reason: on a host
+that isolates a proof build the reviewed profile is legitimately accepted, so
+asserting the refusal would assert the wrong thing. Its skip message points at
+a CI job for the reviewed profile's real run, and as limit 3 records, that job
+does not run one.
 - A tampered pytest report claiming `theorem_checking` is refused at the kind,
   and a Node report claiming a stronger category is refused the same way
   (`tests/test_pytest_verifier.py:742`, `tests/test_node_verifier.py:920`).

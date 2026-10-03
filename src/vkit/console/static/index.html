@@ -15,8 +15,9 @@
 </header>
 
 <nav aria-label="Views">
-  <button data-view="project" class="on" aria-current="page">Project</button>
-  <button data-view="readiness">Readiness</button>
+  <button data-view="home" class="on" aria-current="page">Home</button>
+  <button data-view="project">Project</button>
+  <button data-view="setup">Setup</button>
   <button data-view="checks">Checks</button>
   <button data-view="runs">Runs</button>
   <button data-view="recovery">Recovery</button>
@@ -24,20 +25,40 @@
 </nav>
 
 <main>
-  <section id="project" class="view on">
+  <section id="home" class="view on">
+    <h2>Home</h2>
+    <p class="note">Which project is open, what it can run, what is not set up, and what to do next.</p>
+
+    <h3>Which project is open</h3>
+    <div id="home-project" class="body" role="status" aria-live="polite">loading</div>
+
+    <h3>What is available</h3>
+    <div id="home-available" class="body" role="status" aria-live="polite">loading</div>
+
+    <h3>What needs setup</h3>
+    <div id="home-setup" class="body" role="status" aria-live="polite">loading</div>
+
+    <h3>What to do next</h3>
+    <div id="home-next" class="body" role="status" aria-live="polite">loading</div>
+  </section>
+
+  <section id="project" class="view" hidden>
     <h2>Project</h2>
+    <p class="note">The full identity of this repository: where it lives, what HEAD it is on, and what the manifest says.</p>
     <div id="project-body" class="body" role="status" aria-live="polite">loading</div>
   </section>
 
-  <section id="readiness" class="view" hidden>
-    <h2>Readiness</h2>
-    <p class="note">What <code>vkit doctor</code> reports, running nothing.</p>
-    <div id="readiness-body" class="body" role="status" aria-live="polite">loading</div>
+  <section id="setup" class="view" hidden>
+    <h2>Setup</h2>
+    <p class="note">The tools this project's checks need, and whether the state store can be written.
+    This is not a verification result. A task is ready when a run has published evidence, and a run is
+    something you start on <em>Checks</em>; nothing on this page can make a task pass.</p>
+    <div id="setup-body" class="body" role="status" aria-live="polite">loading</div>
   </section>
 
   <section id="checks" class="view" hidden>
     <h2>Checks</h2>
-    <p class="note">Installation as the host reports it, then every registered check.</p>
+    <p class="note">What the host has installed, then every registered check and the button that starts it.</p>
     <div id="checks-body" class="body" role="status" aria-live="polite">loading</div>
   </section>
 

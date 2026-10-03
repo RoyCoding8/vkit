@@ -18,6 +18,7 @@ so and performs nothing.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -38,18 +39,25 @@ from .. import enroll as core_enroll, pluginres
 from .. import tasks as core_tasks
 from ..claimkind import ClaimCategory
 from ..claims import holders as held_claims
-from ..manifest import Manifest, ManifestError, parse_manifest
+from ..manifest import MAX_TIMEOUT_SECONDS, Manifest, ManifestError, parse_manifest
 from ..paths import Project, ProjectError, open_project
 from ..recover import Report as RecoveryReport
 from ..recover import inspect as inspect_recovery
 from ..storage import Store, StoreError, probe_state, read_receipt
 from ..supervisor import SupervisorError, cancel_run, start_run
-from ..verifiers import describe_obligation
+from ..verifiers import (
+    Obligation,
+    describe_obligation,
+    obligation_from_json,
+    obligation_to_json,
+)
 from .plan import (
+    CONFIG_STAGES,
     DEFAULT_RUN_LIMIT,
     LOOPBACK_HOST,
     MAX_LOG_BYTES,
     MAX_RUN_LIMIT,
+    PROJECT_CONFIG_PATHS,
     WRITABLE,
     Change,
     ChangeSet,
@@ -138,6 +146,11 @@ def project_view(context: Context) -> dict[str, Any]:
         "overview": overview_section(context),
         "tasks": tasks_section(context),
     }
+    # The configuration the editor works against, and the digest every write is
+    # guarded by. It rides here rather than on its own route because `api.py` owns
+    # the route table; the settings section carries the same document and the
+    # comparison against the approved policy.
+    document["configuration"] = configuration_state(context)
     return document
 
 
@@ -824,8 +837,11 @@ def cleanup_section(context: Context) -> dict[str, Any]:
     to preview mode on a copy, so calling it here cannot apply a change.
 
     The policy file itself lives under `verification/`, which is a protected
-    path. Editing it is checkpoint 12.3 and is not on the writable surface here,
-    so no action is offered on this section.
+    path. Checkpoint 12.3 replaced the blanket prohibition with a validated
+    operation that writes exactly this file and one other, so the policy is now
+    editable from the Settings view. What this section does is name it as the
+    document the configuration editor will write, so an operator reading the
+    cleanup policy and then changing it is looking at the same thing twice.
 
     **The cleanup package is imported here rather than at module scope.**
     `cleanup.comments` imports `console.plan` for `under_protected_path`, so a
@@ -874,8 +890,10 @@ def cleanup_section(context: Context) -> dict[str, Any]:
         "error": freshness_error,
         "unavailable": _CLEANUP_WITHOUT_BACKEND,
         "note": (
-            "Editing the cleanup policy is checkpoint 12.3 and is not on the "
-            "writable surface in this build. Nothing here writes."
+            "This policy is the document the Settings view writes when you change "
+            "the cleanup controls there. A change is previewed before it is saved, "
+            "and turning off the mode that authorizes writes is reported as a "
+            "weakening rather than as a tidy-up."
         ),
     }
 
@@ -1017,6 +1035,20 @@ def plan_change_set(context: Context, name: str) -> ChangeSet:
     if op.name == "remove":
         return ChangeSet(op.name, (
             Change("host plugin directory", "uninstall the plugin via the host CLI", True),
+        ))
+    if op.name == "save_project_config":
+        return ChangeSet(op.name, (
+            Change("the project's declared requirements and obligations",
+                   "rewrite the project's own configuration, after the whole document "
+                   "and every cross reference validate against the parsed manifest", True),
+            Change("the project's cleanup authorization",
+                   "rewrite the cleanup policy the cleanup package reads, as the same "
+                   "decision rather than a second one", True),
+        ), note=(
+            "Both documents are published together or not at all, and the previous "
+            "bytes are preserved for recovery. A save produces a candidate revision: "
+            "approval and activation are separate, and no task already admitted is "
+            "affected"
         ))
     raise NotImplementedInBuild(op.name)
 
@@ -1586,7 +1618,11 @@ PLUGIN_ID = f"{_PLUGIN_NAME}@{_MARKETPLACE}"
 #: The writable surface as callables, by name. A router that resolves an
 #: operation through this mapping cannot reach a function that is not on the
 #: list, which is the property that makes the list the whole surface.
-OPERATIONS = {
+#:
+#: `save_project_config` is added at the end of the module, where it is defined,
+#: because a name in this table is a promise that the function exists and Python
+#: evaluates the whole table at import time.
+OPERATIONS: dict[str, Any] = {
     "enroll": enroll,
     "install": install,
     "repair": repair,
@@ -1613,11 +1649,18 @@ def writable_surface() -> list[dict[str, Any]]:
 def integrations_section(context: Context) -> dict[str, Any]:
     """Settings and integrations. Versions, connection status, setup actions.
 
-    **Read-only by checkpoint, and this is the honest reason.** Configuration
-    editing is checkpoint 12.3, which replaces the blanket prohibition on writes
-    under `verification/` with a validated project-policy operation. Until that
-    exists, no action here changes a setting, so the section shows what is
-    present and offers only the actions already on the writable surface.
+    **Configuration editing landed at checkpoint 12.3, and it is one validated
+    operation.** `proposals` carries what a person is about to edit, what was
+    saved, what was approved and what was activated, as four separate facts
+    because a page showing only the last thing written would let a candidate
+    revision read as an accepted policy. `controls` names every control the
+    editor draws together with the values it will accept, so the page cannot
+    offer an option the validation refuses.
+
+    The approved integration policy is reported beside the local configuration,
+    with any mismatch, and is not writable from here at all. Protected authority
+    comes from an independently approved reference, and this section's whole job
+    is to make that visible rather than to imply a browser edit could grant it.
 
     A component's connection status is reported from whether the thing this build
     would use to reach it exists. The host CLI is a real dependency of install,
@@ -1674,9 +1717,11 @@ def integrations_section(context: Context) -> dict[str, Any]:
     ]
     actions = []
     for op in WRITABLE:
-        if op.name not in ("install", "repair", "remove", "enroll"):
+        if op.name not in ("install", "repair", "remove", "enroll", "save_project_config"):
             continue
-        blocked = _host_cli_block(op.name) if host_cli is None else None
+        blocked = _host_cli_block(op.name) if host_cli is None and op.name in (
+            "install", "repair", "remove",
+        ) else None
         actions.append({
             "operation": op.name,
             "effect": op.effect,
@@ -1689,7 +1734,8 @@ def integrations_section(context: Context) -> dict[str, Any]:
     return {
         "components": components,
         "actions": actions,
-        "editable": False,
+        "editable": True,
+        "proposals": configuration_section(context),
         "package": package,
         "marketplace_registered": _marketplace_registered(),
         # Checkpoint 12.4's panel, riding this section because `api.py` owns the
@@ -1698,8 +1744,10 @@ def integrations_section(context: Context) -> dict[str, Any]:
         # needs setup", and this answers exactly that for the agent connection.
         "connection": mcp_connection(context),
         "note": (
-            "Configuration editing is checkpoint 12.3 and is not on the writable "
-            "surface in this build. Everything here is read-only."
+            "Project configuration is editable through one validated operation. "
+            "Saving a document produces a candidate revision; approving and "
+            "activating it are separate steps, and neither grants protected "
+            "integration authority"
         ),
     }
 
@@ -2387,3 +2435,1409 @@ def _bounded_bytes(max_bytes: int) -> int:
 def host() -> str:
     """The one address this console will bind."""
     return LOOPBACK_HOST
+
+
+# ------------------------------------------------------- checkpoint 12.3
+#
+# A validated, allowlisted write to two fixed project configuration files. What
+# makes it safe is narrowness, and there are four separate things that have to
+# hold before a byte is written. Each is stated where it is enforced rather than
+# in a docstring the code could contradict.
+#
+#   1. The two paths are a closed pair and no caller can name one.
+#   2. The whole proposed document is parsed before anything is compared, and
+#      every obligation in it must be one the registered manifest declares.
+#   3. The expected current digest must match, or two browser tabs cannot both
+#      write.
+#   4. Both documents are published together, and a failure on either leaves the
+#      previous bytes in place.
+#
+# `cleanup.policy` is imported INSIDE the functions that use it, for the same
+# reason `cleanup_section` defers `cleanup.hooks`: `cleanup.comments` imports
+# `console.plan` for `under_protected_path`, so a module-level import here closes
+# a cycle that a package-level import order happens to hide and a different one
+# exposes. The dependency direction stays cleanup -> console.
+
+#: The key set a project policy document may declare. A closed set rather than a
+#: per-key type check, because that is what makes "no model credentials" and "no
+#: unrestricted command textbox" structural: there is no field that could hold
+#: either, so there is no validation of them to forget.
+PROJECT_POLICY_KEYS: frozenset[str] = frozenset({
+    "schema_version", "description", "required_checks", "connection", "cleanup", "checks",
+})
+
+#: The only schema version this build writes. Named rather than taken from the
+#: cleanup policy's own version because these are two documents with two readers,
+#: and a reader that inferred one version from the other would couple them.
+PROJECT_POLICY_VERSION = 1
+
+#: The harness connection scopes. A closed vocabulary of three, and the only one
+#: that widens anything is `loopback`, which names the address the console already
+#: binds. There is no scope that names a host, a token or a credential, because the
+#: chosen harness owns its model and provider settings.
+CONNECTION_SCOPES: tuple[str, ...] = ("none", "loopback", "loopback_and_named")
+
+#: The two fixed paths, in the order the recovery list and the publish walk them.
+#: Read from `plan` rather than repeated, so the allowlist has one declaration and
+#: this module cannot drift onto a second pair.
+_RELATIVE: tuple[str, str] = PROJECT_CONFIG_PATHS
+
+
+class ConfigurationRefused(Exception):
+    """The proposed configuration is not usable, or the operator's view is stale.
+
+    Raised as its own type rather than as `Refused` because a caller has to tell
+    "the document you sent is wrong" from "the configuration changed under you".
+    The first is the operator's mistake and the second is a conflict with another
+    writer, and both reach a browser as a 409 while meaning opposite things.
+    """
+
+
+@dataclass(frozen=True)
+class _Proposal:
+    """A validated proposal: the document to store, and what was compared.
+
+    Two values rather than one because the document and the comparison answer
+    different questions and a reader must be able to ask either. The document is
+    what gets written and what a second preview re-parses to the same value. The
+    parsed form is the typed obligation set the removal comparison is done over,
+    so nothing anywhere has to re-read the stored shape to learn what a name
+    means.
+    """
+
+    document: dict[str, Any]
+    #: check id -> tuple of (typed obligation, rendered name, raw document)
+    obligations: dict[str, tuple[tuple[Any, str, dict[str, Any]], ...]]
+    cleanup: dict[str, Any]
+    connection: dict[str, Any]
+    checks: dict[str, Any]
+
+    @property
+    def required_ids(self) -> tuple[str, ...]:
+        return tuple(entry["id"] for entry in self.document["required_checks"])
+
+
+# ---------------------------------------------------------------- the document
+
+
+def _canonical_bytes(value: Any) -> bytes:
+    """The bytes published for a document, with a trailing newline.
+
+    One encoder for both documents and for the recovery copies, so what is
+    preserved is byte-identical to what was replaced. A writer that re-encoded on
+    recovery would make the preserved copy a near-copy rather than a recovery.
+    """
+    return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _digest_of(value: Any) -> str:
+    """The identity of a document's content.
+
+    `CleanupPolicy.digest` hashes its own canonical form, so this module does not
+    invent a second identity for the same document: the cleanup digest a receipt
+    names and the one shown here are computed by the same arithmetic over the same
+    keys.
+    """
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _obligations_of(check_id: str, raw: Any) -> tuple[tuple[Any, str, dict[str, Any]], ...]:
+    """Each obligation of one proposed requirement, three ways at once.
+
+    The typed value is what the cross-reference compares, the rendered name is
+    what a preview shows and a receipt uses, and the raw document is what gets
+    stored. Carrying all three is what stops the stored policy and the removed-
+    obligation list from being two readings of one fact: the name is always
+    derived from the value, never stored in place of it.
+
+    `obligation_from_json` parses rather than casts, so a document naming an
+    obligation kind the union does not have is refused here rather than becoming a
+    `CaseObligation` with a mangled field.
+    """
+    if not isinstance(raw, list) or not raw:
+        raise ConfigurationRefused(
+            f"required check {check_id!r}: obligations must be a nonempty list"
+        )
+    parsed: list[tuple[Any, str, dict[str, Any]]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ConfigurationRefused(
+                f"required check {check_id!r}: each obligation must be an object"
+            )
+        try:
+            value = obligation_from_json(entry)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigurationRefused(
+                f"required check {check_id!r}: cannot read an obligation: {exc}"
+            ) from exc
+        parsed.append((value, describe_obligation(value), entry))
+    names = [name for _value, name, _document in parsed]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ConfigurationRefused(
+            f"required check {check_id!r}: duplicate obligation(s) "
+            f"{', '.join(duplicates)}"
+        )
+    return tuple(parsed)
+
+
+def _declared_obligations(manifest: Manifest) -> dict[str, tuple[str, ...]]:
+    """What each registered check actually declares, read from the parsed manifest.
+
+    Cross-referencing against this rather than against the raw manifest file means
+    the comparison is between two parsed values, so reformatting the manifest is
+    not a change and cannot smuggle one.
+    """
+    return {
+        check.id: tuple(describe_obligation(o) for o in check.obligations())
+        for check in manifest.checks.values()
+    }
+
+
+def _check_overrides(raw: Any, declared: dict[str, tuple[str, ...]]) -> dict[str, Any]:
+    """The per-check timeout and argument-list overrides a document may declare.
+
+    Two fields, both optional, both checked against what the manifest already
+    declares. An `argv` here is an ARGUMENT LIST and is validated as one: a
+    nonempty list of nonempty strings. A joined string is refused by name,
+    because a string is what a shell would take and this operation has no shell.
+    """
+    if not isinstance(raw, list) or not raw:
+        raise ConfigurationRefused("checks must be a nonempty list of override objects")
+    resolved: dict[str, Any] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ConfigurationRefused("each checks entry must be an object")
+        unknown = sorted(set(entry) - {"id", "timeout_seconds", "argv"})
+        if unknown:
+            raise ConfigurationRefused(
+                f"checks entry {entry.get('id', '<unnamed>')!r} declares unsupported "
+                f"key(s) {unknown}. A check override declares id, and optionally "
+                f"timeout_seconds and argv as an argument list"
+            )
+        check_id = entry.get("id")
+        if check_id not in declared:
+            raise ConfigurationRefused(
+                f"checks names {check_id!r}, which the registered manifest does not "
+                f"define. The manifest defines: {', '.join(sorted(declared))}"
+            )
+        override: dict[str, Any] = {}
+        if "timeout_seconds" in entry:
+            timeout = entry["timeout_seconds"]
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                raise ConfigurationRefused(
+                    f"check {check_id!r}: timeout_seconds must be a number, got {timeout!r}"
+                )
+            if not 0 < float(timeout) <= MAX_TIMEOUT_SECONDS:
+                raise ConfigurationRefused(
+                    f"check {check_id!r}: timeout_seconds must be positive and at most "
+                    f"{MAX_TIMEOUT_SECONDS:g}, got {timeout!r}"
+                )
+            override["timeout_seconds"] = float(timeout)
+        if "argv" in entry:
+            argv = entry["argv"]
+            if not isinstance(argv, list) or not argv:
+                raise ConfigurationRefused(
+                    f"check {check_id!r}: argv must be an argument list, a nonempty "
+                    f"list of separate strings, not a command string"
+                )
+            if any(not isinstance(part, str) or not part for part in argv):
+                raise ConfigurationRefused(
+                    f"check {check_id!r}: every argv entry must be a nonempty string"
+                )
+            override["argv"] = list(argv)
+        resolved[check_id] = override
+    return resolved
+
+
+def _parse_document(context: Context, raw: Any) -> _Proposal:
+    """The proposed document, validated whole, or a refusal naming what is wrong.
+
+    Every field is checked here before anything is compared against the current
+    configuration, so a refusal about a malformed document is never reported as a
+    conflict with what is on disk. Cross references come last and need the parsed
+    manifest, because an obligation the manifest does not declare is the failure
+    this whole checkpoint is about.
+    """
+    if not isinstance(raw, dict):
+        raise ConfigurationRefused("a project policy must be a JSON object")
+    unknown = sorted(set(raw) - PROJECT_POLICY_KEYS)
+    if unknown:
+        raise ConfigurationRefused(
+            f"unsupported policy key(s) {unknown}. A project policy declares "
+            f"schema_version, description, required_checks, connection and cleanup, "
+            f"and nothing else: there is no field for a command string or for model "
+            f"credentials, because the harness owns its model and this document owns "
+            f"only what the project must prove"
+        )
+    if raw.get("schema_version") != PROJECT_POLICY_VERSION:
+        raise ConfigurationRefused(
+            f"unsupported project policy schema_version {raw.get('schema_version')!r}; "
+            f"this build writes {PROJECT_POLICY_VERSION}"
+        )
+    description = raw.get("description", "")
+    if not isinstance(description, str):
+        raise ConfigurationRefused(f"description must be a string, got {description!r}")
+
+    entries = raw.get("required_checks")
+    if not isinstance(entries, list) or not entries:
+        raise ConfigurationRefused(
+            "required_checks must be a nonempty list of the obligations this "
+            "project owes"
+        )
+    required: list[dict[str, Any]] = []
+    parsed_by_id: dict[str, tuple[tuple[Any, str, dict[str, Any]], ...]] = {}
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ConfigurationRefused("each required check must be an object")
+        unknown_entry = sorted(set(entry) - {"id", "obligations"})
+        if unknown_entry:
+            raise ConfigurationRefused(
+                f"required check {entry.get('id', '<unnamed>')!r} declares unsupported "
+                f"key(s) {unknown_entry}. A required check declares id and obligations"
+            )
+        check_id = entry.get("id")
+        if not isinstance(check_id, str) or not check_id:
+            raise ConfigurationRefused("each required check needs a nonempty id string")
+        if check_id in seen:
+            raise ConfigurationRefused(f"required check {check_id!r} is listed twice")
+        seen.add(check_id)
+        obligations = _obligations_of(check_id, entry.get("obligations"))
+        parsed_by_id[check_id] = obligations
+        required.append({
+            "id": check_id,
+            # The raw documents go in unchanged, so a stored policy round-trips
+            # through `_parse_document` to the value it was validated as.
+            "obligations": [document for _value, _name, document in obligations],
+        })
+
+    if context.manifest is None:
+        raise ConfigurationRefused(
+            context.manifest_error
+            or "the manifest could not be parsed, so no obligation in a proposed "
+               "configuration can be cross-checked against what the project actually runs"
+        )
+    declared = _declared_obligations(context.manifest)
+    for check_id, obligations in parsed_by_id.items():
+        if check_id not in declared:
+            raise ConfigurationRefused(
+                f"the policy requires {check_id!r} and the registered manifest does "
+                f"not define it. The manifest defines: {', '.join(sorted(declared))}"
+            )
+        names = [name for _value, name, _document in obligations]
+        unknown_obligations = [name for name in names if name not in declared[check_id]]
+        if unknown_obligations:
+            raise ConfigurationRefused(
+                f"the policy requires {check_id!r} to discharge "
+                f"{', '.join(unknown_obligations)}, which that check does not declare. "
+                f"It declares {', '.join(declared[check_id]) or '<none>'}. A "
+                "configuration cannot require an obligation no registered check carries"
+            )
+
+    connection = raw.get("connection", {"scope": "none"})
+    if not isinstance(connection, dict) or set(connection) - {"scope"}:
+        raise ConfigurationRefused(
+            f"connection must be an object declaring scope, one of "
+            f"{list(CONNECTION_SCOPES)}"
+        )
+    scope = connection.get("scope", "none")
+    if scope not in CONNECTION_SCOPES:
+        raise ConfigurationRefused(
+            f"unknown harness connection scope {scope!r}; the scopes are "
+            f"{list(CONNECTION_SCOPES)}"
+        )
+
+    cleanup = raw.get("cleanup")
+    if cleanup is None:
+        cleanup = current_cleanup_document(context)
+    else:
+        # `parse_policy` is the core's own parser for this document, so the JSON
+        # editor and the typed cleanup controls are validated by the same code
+        # that decides whether cleanup may write. Its refusal is carried verbatim.
+        from ..cleanup.policy import parse_policy as parse_cleanup_policy
+
+        try:
+            cleanup_policy = parse_cleanup_policy(cleanup)
+        except Exception as exc:  # noqa: BLE001 - every parse_policy refusal means this
+            raise ConfigurationRefused(str(exc)) from exc
+        cleanup = cleanup_policy.to_json()
+
+    checks = raw.get("checks")
+    overrides = _check_overrides(checks, declared) if checks is not None else {}
+
+    document = {
+        "schema_version": PROJECT_POLICY_VERSION,
+        "description": description,
+        "required_checks": required,
+        "connection": {"scope": scope},
+        "cleanup": cleanup,
+    }
+    if overrides:
+        document["checks"] = overrides
+    return _Proposal(document, parsed_by_id, cleanup, {"scope": scope}, overrides)
+
+
+# ------------------------------------------------------------ the two documents
+
+
+def _policy_path(context: Context) -> Path:
+    return context.project.root / _RELATIVE[0]
+
+
+def _cleanup_path(context: Context) -> Path:
+    return context.project.root / _RELATIVE[1]
+
+
+#: Which of the two fixed documents each field lands in. A mapping rather than a
+#: list of pairs because the diff and the publish both walk it, and two lists
+#: walked in the same order is two orders to keep in step.
+_FIELDS_IN: dict[tuple[str, str], str] = {
+    ("description", "description"): _RELATIVE[0],
+    ("connection", "scope"): _RELATIVE[0],
+    ("cleanup", "mode"): _RELATIVE[1],
+    ("cleanup", "enabled_rules"): _RELATIVE[1],
+    ("cleanup", "excluded_paths"): _RELATIVE[1],
+    ("cleanup", "python_version"): _RELATIVE[1],
+    ("cleanup", "optimize_levels"): _RELATIVE[1],
+}
+
+
+def _read_document(path: Path) -> dict[str, Any] | None:
+    """A stored document, or None when there is none or it is unreadable.
+
+    A document that exists and will not parse is reported by
+    `_configuration_problem` rather than here, so "no configuration" and "a
+    configuration nobody can read" stay two answers rather than one blank.
+    """
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def current_cleanup_document(context: Context) -> dict[str, Any]:
+    """The cleanup document as the core reads it, in the keys it accepts.
+
+    `CleanupPolicy.to_json` emits exactly the keys `parse_policy` takes, which is
+    what makes this a document the editor can round-trip rather than a rendering
+    of one. A project with no policy gets the core's own `OFF_POLICY` document, so
+    the editor opens on what is actually in force rather than on a blank.
+    """
+    from ..cleanup import hooks as cleanup_hooks
+
+    return cleanup_hooks.load_policy(context.project).to_json()
+
+
+def current_policy_document(context: Context) -> dict[str, Any]:
+    """The stored requirements and connection scope, or the defaults when absent.
+
+    The defaults are what the core does with no document: every obligation the
+    manifest itself declares, no harness connection, and cleanup off. They are
+    spelled here rather than inferred from an absent key so that a first preview
+    shows a real "current" column instead of blanks, and so the first preview's
+    removals list is empty rather than reporting every manifest obligation as
+    removed by a document nobody wrote.
+    """
+    stored = _read_document(_policy_path(context))
+    if stored is not None:
+        return stored
+    return {
+        "schema_version": PROJECT_POLICY_VERSION,
+        "description": "",
+        "required_checks": [
+            {"id": check.id, "obligations": [obligation_to_json(o) for o in check.obligations()]}
+            for check in sorted(
+                (context.manifest.checks.values() if context.manifest else []),
+                key=lambda c: c.id,
+            )
+        ],
+        "connection": {"scope": "none"},
+    }
+
+
+def _configuration_problem(context: Context) -> str | None:
+    """Why the stored configuration is not usable, or None when it is.
+
+    The same split `cleanup.policy_problem` makes: absence is not a problem, and
+    an operator's typo is not a project that never configured anything. The page
+    shows this rather than silently offering an editor over a document the core
+    would refuse.
+    """
+    path = _policy_path(context)
+    if not path.exists():
+        return None
+    try:
+        _parse_document(context, json.loads(path.read_text(encoding="utf-8")))
+    except ConfigurationRefused as exc:
+        return f"{_RELATIVE[0]} is not a usable project policy: {exc}"
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return f"{_RELATIVE[0]} could not be read: {exc}"
+    return None
+
+
+#: Where the candidate, approval and activation record lives. Under the shared Git
+#: directory beside the store, for the reason `enroll.record_path` puts the
+#: acceptance record there: it is evidence about the configuration rather than
+#: part of it, and two clones must agree about what was approved. The documents
+#: themselves stay in the working tree, where `git status` shows them.
+_STATE_NAME = "project-config.json"
+
+
+def _state_path(context: Context) -> Path:
+    return context.project.state_root / _STATE_NAME
+
+
+def _revision_of(document: dict[str, Any], cleanup: dict[str, Any]) -> str:
+    """The identity of a candidate revision, over both documents.
+
+    One revision over both files rather than one per file, because the two are one
+    decision: a revision naming only the requirements would not distinguish two
+    proposals that require the same things under different cleanup authority.
+    Deriving it from the content is also what makes a repeated save converge to
+    one revision rather than stacking two.
+    """
+    return _digest_of({"project": document, "cleanup": cleanup})[:32]
+
+
+def _read_state_record(context: Context) -> dict[str, Any]:
+    """The candidate, approval, activation and action log, as stored.
+
+    An absent or unreadable record is an empty one. It is evidence beside the runs
+    rather than policy, and a missing record must not stop the editor from reading
+    the documents that are on disk.
+    """
+    empty: dict[str, Any] = {"candidate": None, "approved": None, "active": None, "actions": []}
+    document = _read_document(_state_path(context))
+    if not isinstance(document, dict):
+        return empty
+    actions = document.get("actions")
+    return {
+        "candidate": document.get("candidate"),
+        "approved": document.get("approved"),
+        "active": document.get("active"),
+        "actions": actions if isinstance(actions, list) else [],
+    }
+
+
+def _now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def configuration_state(context: Context) -> dict[str, Any]:
+    """What is in force, what was saved, what was approved, what was activated.
+
+    The three states are reported separately because they mean different things to
+    an operator, and a page showing only the last thing written would let a saved
+    proposal read as an accepted policy. The actions that got here are read from
+    the record beside the runs rather than kept in the page, so a later reader
+    finds them without asking this session.
+    """
+    current = current_policy_document(context)
+    current["cleanup"] = current_cleanup_document(context)
+    current.pop("checks", None)
+    record = _read_state_record(context)
+    return {
+        "digest": _digest_of(current),
+        "current": current,
+        "candidate": record["candidate"],
+        "approved": record["approved"],
+        "active": record["active"],
+        "actions": record["actions"],
+        "recoverable": _recoverable(context),
+    }
+
+
+# ---------------------------------------------------------- atomic publication
+
+
+def _publish_atomically(
+    documents: list[tuple[Path, bytes]], preserved: list[Path], context: Context,
+) -> None:
+    """Publish several documents as one decision, or publish none of them.
+
+    Each document is written beside its destination and renamed over it, so a
+    reader never sees a half-written file. That is necessary and not sufficient:
+    two renames are two operations, and the state between them is a project
+    holding a new cleanup authority beside old requirements. So every replacement
+    is journalled first, then applied, and any failure restores the previous
+    bytes before the error leaves this function. The recovery copies are written
+    before the replacements rather than after, because a copy taken after a
+    failure is a copy of whatever the failure left.
+    """
+    backups: list[tuple[Path, Path]] = []
+    try:
+        for destination in preserved:
+            if not destination.is_file():
+                continue
+            backup = _recovery_path(destination, context)
+            _write_file(backup, destination.read_bytes())
+            backups.append((destination, backup))
+        for destination, payload in documents:
+            temporary = destination.with_name(destination.name + ".vkit-tmp")
+            _write_file(temporary, payload)
+            temporary.replace(destination)
+    except OSError as exc:
+        for destination, backup in reversed(backups):
+            if backup.is_file():
+                # Copied rather than moved: the recovery copy is what an operator
+                # reaches for after a failure, and restoring the document by
+                # consuming it would leave them with nothing to inspect.
+                _write_file(destination, backup.read_bytes())
+        raise ConsoleError(
+            f"no configuration was published: {exc}. Both documents are one "
+            "decision, so a failure on either leaves the previous configuration "
+            "in place and usable; the previous bytes are preserved under "
+            f"{context.project.state_root / 'project-config-recovery'}"
+        ) from exc
+
+
+def _write_file(path: Path, payload: bytes) -> None:
+    """One file, written whole, with its parent created first."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+
+
+def _recovery_path(destination: Path, context: Context) -> Path:
+    """Where the bytes being replaced are preserved.
+
+    Under the shared state directory beside the store, not beside the document. A
+    backup written into the working tree would appear in `git status` as an
+    untracked policy file, and a reviewer would have to work out what it was.
+
+    The name carries the repository-relative destination with its separators
+    replaced, so a reader of the recovery list can tell which document each copy
+    belongs to and two files with the same basename stay distinguishable. Flat,
+    because the recovery list is read as one directory of copies rather than as a
+    tree that has to be walked to answer "what can I restore".
+    """
+    relative = destination.relative_to(context.project.root).as_posix()
+    return context.project.state_root / "project-config-recovery" / (
+        f"{relative.replace('/', '__')}.previous"
+    )
+
+
+def _recoverable(context: Context) -> list[dict[str, Any]]:
+    """The previous bytes of each configuration document that were preserved.
+
+    Read from the directory the publish writes them to, so the list is what is
+    actually on disk rather than a record of what was once offered.
+    """
+    directory = context.project.state_root / "project-config-recovery"
+    if not directory.is_dir():
+        return []
+    found: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("*.previous")):
+        payload = path.read_bytes()
+        found.append({
+            "path": path.name,
+            "location": str(path),
+            "previous_digest": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+        })
+    return found
+
+
+# ------------------------------------------------------------ the preview
+
+
+def _leaf(document: dict[str, Any], section: str, field: str) -> Any:
+    """One field's value, whether it is nested under a section or is the section.
+
+    `description` is a bare string at the top of the document while `connection`
+    and `cleanup` are objects, so a diff that assumed every field had a parent
+    would raise on the first one it reached. Reading through here rather than
+    inline is what lets `_FIELDS_IN` be a flat list of `(section, field)` pairs
+    with no special case in the loop that walks it.
+    """
+    value = document.get(section)
+    if field == section and not isinstance(value, dict):
+        return value
+    return value.get(field) if isinstance(value, dict) else None
+
+
+def _changed_fields(
+    current: dict[str, Any], proposed: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Every field whose value differs, named by document, field and before/after.
+
+    A flat list of leaves rather than a nested diff, because an operator asking
+    "what will change" reads a table. Each leaf names the document it lands in,
+    which is what makes "one decision, two files" legible on the page.
+    """
+    rows: list[dict[str, Any]] = []
+    for (section, field), document in _FIELDS_IN.items():
+        before = _leaf(current, section, field)
+        after = _leaf(proposed, section, field)
+        if before != after:
+            rows.append({
+                "document": document,
+                "field": field if field == section else f"{section}.{field}",
+                "current": before,
+                "changed": after,
+            })
+    for check_id in sorted(proposed.get("checks") or {}):
+        before_entry = (current.get("checks") or {}).get(check_id, {})
+        after_entry = proposed["checks"][check_id]
+        for field in ("timeout_seconds", "argv"):
+            before = before_entry.get(field)
+            after = after_entry.get(field)
+            if before != after:
+                rows.append({
+                    "document": _RELATIVE[0],
+                    "field": f"checks.{check_id}.{field}",
+                    "current": before,
+                    "changed": after,
+                })
+    return rows
+
+
+def _removed_obligations(
+    current: dict[str, Any], proposal: _Proposal,
+) -> list[dict[str, Any]]:
+    """Every obligation the proposal drops, named with the check that carried it.
+
+    The comparison is between parsed obligations from the current document and
+    parsed obligations from the proposal, not between strings, so a rename of one
+    obligation is visible as a removal and an addition rather than passing as
+    "unchanged". This is the list the whole checkpoint exists to compute, and it
+    is what makes a weakening legible before it is applied.
+    """
+    wanted: dict[str, set[str]] = {
+        check_id: {name for _value, name, _document in obligations}
+        for check_id, obligations in proposal.obligations.items()
+    }
+    held = current.get("required_checks")
+    if not isinstance(held, list):
+        return []
+    removed: list[dict[str, Any]] = []
+    for entry in held:
+        if not isinstance(entry, dict):
+            continue
+        check_id = entry.get("id")
+        if not isinstance(check_id, str):
+            continue
+        for obligation in entry.get("obligations") or []:
+            name = describe_obligation(_obligation_of(obligation))
+            if name not in wanted.get(check_id, set()):
+                removed.append({
+                    "check_id": check_id,
+                    "obligation": name,
+                    "detail": (
+                        f"the configuration will no longer require {name} of "
+                        f"{check_id!r}. Tasks already admitted keep it, and a run "
+                        f"the policy requires has to discharge it"
+                    ),
+                })
+    return removed
+
+
+def _obligation_of(document: Any) -> Obligation:
+    """One stored obligation as the core's own value.
+
+    Parsed through `obligation_from_json` so a name rendered for a reader and a
+    value compared for equality come from the same union, and a stored document
+    naming a kind this build does not have fails here rather than comparing as an
+    unmatched string forever.
+    """
+    try:
+        return obligation_from_json(document)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigurationRefused(
+            f"the stored configuration holds an obligation this build cannot read: {exc}"
+        ) from exc
+
+
+def _weakens_cleanup(current: dict[str, Any], proposed: dict[str, Any]) -> bool:
+    """Whether the proposal removes cleanup write authority.
+
+    One boolean because it is one question, and it is asked over the core's own
+    decision rather than over the mode name: `may_write` is what the cleanup
+    package checks before it touches a file, so a policy that stops satisfying it
+    is a weakening however its mode reads.
+    """
+    def authority(document: dict[str, Any]) -> bool:
+        from ..cleanup.policy import parse_policy as parse_cleanup_policy
+
+        try:
+            return parse_cleanup_policy(document.get("cleanup") or {}).may_write()
+        except Exception:  # noqa: BLE001 - an unparseable policy cannot be weaker
+            return False
+
+    return authority(current) and not authority(proposed)
+
+
+def _stale_evidence(context: Context, affected: tuple[str, ...]) -> list[dict[str, Any]]:
+    """The recorded evidence a change to these checks invalidates.
+
+    A check's configuration digest is stamped into every run report, so a changed
+    requirement or timeout means the recorded evidence was produced under a
+    different configuration and describes something that no longer holds. This
+    names those runs. It cannot release them, and it does not delete them:
+    `compute_readiness` decides what a task may still claim, and the pinned floor
+    is what it reads.
+    """
+    stale: list[dict[str, Any]] = []
+    for check_id in affected:
+        run = _latest_runs_by_check(context).get(check_id)
+        if run is None:
+            continue
+        stale.append({
+            "check_id": check_id,
+            "run_id": run.get("run_id"),
+            "verdict": run.get("result"),
+            "recorded_at": run.get("created_at"),
+            "detail": (
+                "this run was produced under the configuration in force then. It "
+                "stays readable and stays in the record, and it is not evidence for "
+                "the configuration proposed here; run the check again for that"
+            ),
+        })
+    return stale
+
+
+# --------------------------------------------------------------- the stages
+
+
+def _affects(current: dict[str, Any], proposal: _Proposal) -> tuple[str, ...]:
+    """The checks whose configuration or obligation set moves, in a stable order.
+
+    A check whose requirement is unchanged is not affected, so a preview does not
+    tell an operator that evidence for a check it did not touch has gone stale.
+    That matters when a document changes one check out of several: naming all of
+    them would make the warning mean nothing.
+    """
+    wanted = {check_id: {n for _v, n, _d in entries}
+              for check_id, entries in proposal.obligations.items()}
+    held: dict[str, set[str]] = {}
+    for entry in current.get("required_checks") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+            held[entry["id"]] = {
+                describe_obligation(_obligation_of(o)) for o in entry.get("obligations") or []
+            }
+    changed = {
+        check_id for check_id in set(wanted) | set(held)
+        if wanted.get(check_id, set()) != held.get(check_id, set())
+    }
+    changed |= set(proposal.checks) | set(current.get("checks") or {})
+    return tuple(sorted(changed))
+
+
+def _preview_document(
+    context: Context, current: dict[str, Any], proposal: _Proposal,
+) -> dict[str, Any]:
+    """Everything an operator sees before anything is written.
+
+    The five facts the plan names are separate fields rather than one summary
+    line, because they answer different questions and an operator who sees only a
+    summary cannot tell a routine timeout change from a dropped obligation.
+    `routine` is the field a page has to check, and it is False for anything that
+    removes an obligation or cleanup write authority.
+    """
+    removed = _removed_obligations(current, proposal)
+    weakens = _weakens_cleanup(current, proposal.document)
+    affected = _affects(current, proposal)
+    return {
+        "current": current,
+        "changed": _changed_fields(current, proposal.document),
+        "affected_checks": list(affected),
+        "stale_evidence": _stale_evidence(context, affected),
+        "removes_obligations": removed,
+        "weakens_cleanup": weakens,
+        "routine": not removed and not weakens,
+        "candidate": {
+            "revision": _revision_of(proposal.document, proposal.cleanup),
+            "document": proposal.document,
+            "cleanup_digest": _digest_of(proposal.cleanup),
+        },
+        "note": (
+            "Nothing has been written. This is what saving this document would do, "
+            "computed against the configuration in force now"
+        ),
+    }
+
+
+def _require_expected(state: dict[str, Any], expected_digest: str | None, stage: str) -> None:
+    """The operator must be looking at the configuration they are editing.
+
+    Two browser tabs on one console is the ordinary case, not an attack, and
+    without this the second save silently overwrites the first. The digest is over
+    the content, so it moves for a real change and not for a reformat, and the
+    refusal names both so an operator can tell which configuration it is.
+    """
+    if expected_digest is None:
+        raise ConfigurationRefused(
+            f"{stage} needs expected_digest, the digest of the configuration you "
+            "are editing. Without it this console cannot tell whether the file "
+            "changed while you had this page open"
+        )
+    if expected_digest != state["digest"]:
+        raise ConfigurationRefused(
+            f"the configuration changed since you read it: you were editing "
+            f"{expected_digest[:12]} and it is now {state['digest'][:12]}. Read it "
+            "again and reapply your change; nothing was written"
+        )
+
+
+def save_project_config(
+    context: Context,
+    stage: str = "preview",
+    *,
+    document: dict[str, Any] | None = None,
+    expected_digest: str | None = None,
+    revision: str | None = None,
+) -> dict[str, Any]:
+    """Preview, save, approve or activate this project's own configuration.
+
+    Four stages, four questions, and the stage is what keeps them apart. `preview`
+    computes the whole effect and writes nothing at all, so an operator sees
+    current values, changed values, affected checks, the evidence that becomes
+    stale, and any obligation the proposal removes BEFORE a decision exists.
+    `save` publishes the candidate documents. `approve` records that a person
+    accepted the candidate. `activate` adopts an approved candidate as the local
+    policy a NEW task attempt is admitted under.
+
+    **Nothing here releases an existing task.** A task pinned its contract and its
+    policy digest at admission; this reads those rows and never writes them.
+    Changing configuration cannot make old evidence current, so the only thing an
+    operator can do afterwards is run a fresh attempt, which `run_check` already
+    offers.
+
+    **Nothing here approves a protected integration policy.** A save produces a
+    candidate revision in this repository's local context. Protected authority
+    comes from an independently approved reference and is granted by a reviewer,
+    never by a browser edit.
+    """
+    if stage not in CONFIG_STAGES:
+        raise Refused(
+            f"unknown stage {stage!r}; this operation performs "
+            f"{', '.join(CONFIG_STAGES)}"
+        )
+
+    state = configuration_state(context)
+    problem = _configuration_problem(context)
+    if problem is not None and stage in ("save", "approve", "activate"):
+        raise ConfigurationRefused(
+            f"{problem}. Fix or remove that file before changing it from here, "
+            "because this operation validates the whole document before it writes"
+        )
+
+    if stage == "preview":
+        if document is None:
+            raise ConfigurationRefused(
+                "preview needs the proposed document, which is what it describes. "
+                "With no document there is nothing to preview"
+            )
+        proposal = _parse_document(context, document)
+        _require_expected(state, expected_digest, "preview")
+        return {
+            "stage": stage,
+            "wrote": False,
+            "expected_digest": expected_digest,
+            **_preview_document(context, state["current"], proposal),
+        }
+
+    if stage == "save":
+        if document is None:
+            raise ConfigurationRefused("save needs the proposed document to publish")
+        proposal = _parse_document(context, document)
+        _require_expected(state, expected_digest, "save")
+        preview = _preview_document(context, state["current"], proposal)
+        return _publish_candidate(context, state, proposal, preview)
+
+    if stage == "approve":
+        return _approve_candidate(context, state, revision)
+
+    return _activate_candidate(context, state, revision)
+
+
+def _publish_candidate(
+    context: Context, state: dict[str, Any], proposal: _Proposal, preview: dict[str, Any],
+) -> dict[str, Any]:
+    """Write both documents as one decision, and record what was done.
+
+    The revision is derived from the content, so saving the same document twice
+    produces the same revision and the recorded action is the same entry rather
+    than a second one. That is what makes a retry after a dropped connection
+    converge instead of stacking.
+    """
+    revision = preview["candidate"]["revision"]
+    policy = _policy_path(context)
+    cleanup = _cleanup_path(context)
+
+    _publish_atomically(
+        [(policy, _canonical_bytes(proposal.document)),
+         (cleanup, _canonical_bytes(proposal.cleanup))],
+        [policy, cleanup],
+        context,
+    )
+
+    entry = {
+        "stage": "save",
+        "revision": revision,
+        "at": _now(),
+        "changed": len(preview["changed"]),
+        "removes_obligations": len(preview["removes_obligations"]),
+        "weakens_cleanup": preview["weakens_cleanup"],
+    }
+    record = _read_state_record(context)
+    # A repeated save of an identical document is the same decision, so the log
+    # keeps one entry for it. The gate is the revision, because that is what
+    # identifies the decision.
+    actions = [
+        item for item in record["actions"]
+        if not (item.get("stage") == "save" and item.get("revision") == revision)
+    ]
+    record["actions"] = [entry, *actions]
+    record["candidate"] = {
+        "revision": revision,
+        "state": "candidate",
+        "saved_at": entry["at"],
+        "document": proposal.document,
+        "cleanup_digest": preview["candidate"]["cleanup_digest"],
+    }
+    _write_file(
+        _state_path(context),
+        _canonical_bytes({**record, "schema_version": PROJECT_POLICY_VERSION}),
+    )
+
+    after = configuration_state(context)
+    return {
+        "stage": "save",
+        "wrote": True,
+        "candidate": record["candidate"],
+        "digest": after["digest"],
+        "recovery": _recovery_receipt(context),
+        "changed": preview["changed"],
+        "removes_obligations": preview["removes_obligations"],
+        "weakens_cleanup": preview["weakens_cleanup"],
+        "routine": preview["routine"],
+        "note": (
+            "This is a candidate revision. It is not the accepted local policy "
+            "until approve, and it does not affect any task already admitted: a "
+            "task pinned its contract at admission and keeps it"
+        ),
+    }
+
+
+def _recovery_receipt(context: Context) -> list[dict[str, Any]]:
+    """The preserved previous documents, named for the record."""
+    return [
+        {"path": entry["path"], "location": entry["location"],
+         "previous_digest": entry["previous_digest"]}
+        for entry in _recoverable(context)
+    ]
+
+
+def _approve_candidate(
+    context: Context, state: dict[str, Any], revision: str | None,
+) -> dict[str, Any]:
+    """Record that a person accepted a named candidate. Publishes nothing.
+
+    The revision must be named, because "approve whatever is current" is a phrase
+    that means a different thing a second later. Approval is about the candidate
+    revision, not about the files: the documents on disk are the candidate's, and
+    approval says a person has read what they contain.
+    """
+    if revision is None:
+        raise ConfigurationRefused(
+            "approve needs the revision it is approving, from the candidate the "
+            "preview named. Approving whatever happens to be current is not a "
+            "decision, because it means a different thing a second later"
+        )
+    candidate = state["candidate"]
+    if candidate is None:
+        raise ConfigurationRefused(
+            "there is no saved candidate to approve. Save one first"
+        )
+    if candidate["revision"] != revision:
+        raise ConfigurationRefused(
+            f"the saved candidate is {candidate['revision']} and you approved "
+            f"{revision}. Read it again; nothing was recorded"
+        )
+    approved = {
+        "revision": revision,
+        "state": "approved",
+        "approved_at": _now(),
+        "document_digest": state["digest"],
+        "context": "local",
+    }
+    record = _read_state_record(context)
+    record["approved"] = approved
+    record["actions"] = [
+        {"stage": "approve", "revision": revision, "at": approved["approved_at"]},
+        *record["actions"],
+    ]
+    _write_file(
+        _state_path(context),
+        _canonical_bytes({**record, "schema_version": PROJECT_POLICY_VERSION}),
+    )
+    return {
+        "stage": "approve",
+        "wrote": False,
+        "approved": approved,
+        "note": (
+            "Approved as this project's LOCAL policy. This confers no protected "
+            "integration authority: protected CI uses its own independently "
+            "approved policy reference, and nothing written here changes it"
+        ),
+    }
+
+
+def _activate_candidate(
+    context: Context, state: dict[str, Any], revision: str | None,
+) -> dict[str, Any]:
+    """Adopt an approved candidate as the local policy new attempts are admitted under.
+
+    Activation records a policy digest rather than writing a document, so it
+    cannot leave the two files disagreeing with each other. A new attempt started
+    after this is admitted against the accepted local policy; a task admitted
+    before it keeps the contract it pinned.
+    """
+    if revision is None:
+        raise ConfigurationRefused("activate needs the revision it is activating")
+    approved = state["approved"]
+    if approved is None:
+        raise ConfigurationRefused(
+            f"revision {revision} has not been approved. Approve it first: saving "
+            "a proposal and activating it are different decisions"
+        )
+    if approved["revision"] != revision:
+        raise ConfigurationRefused(
+            f"the approved revision is {approved['revision']} and you activated "
+            f"{revision}. Nothing was recorded"
+        )
+    if state["digest"] != approved["document_digest"]:
+        raise ConfigurationRefused(
+            f"the configuration changed since it was approved: it was approved at "
+            f"{approved['document_digest'][:12]} and is now {state['digest'][:12]}. "
+            "Approve it again against what is on disk; nothing was activated"
+        )
+    active = {
+        "revision": revision,
+        "state": "active",
+        "activated_at": _now(),
+        # The manifest's own digest, because that is the policy a run is admitted
+        # against. The configuration says what the run must satisfy; the manifest
+        # says what executes. Naming both keeps the pair legible.
+        "policy_digest": context.manifest.digest() if context.manifest else None,
+        "configuration_digest": state["digest"],
+        "context": "local",
+    }
+    record = _read_state_record(context)
+    record["active"] = active
+    record["actions"] = [
+        {"stage": "activate", "revision": revision, "at": active["activated_at"]},
+        *record["actions"],
+    ]
+    _write_file(
+        _state_path(context),
+        _canonical_bytes({**record, "schema_version": PROJECT_POLICY_VERSION}),
+    )
+    pinned = _pinned_tasks(context)
+    return {
+        "stage": "activate",
+        "wrote": False,
+        "active": active,
+        "tasks_pinned": len(pinned),
+        "next_attempt": (
+            "A new attempt started now is admitted against the accepted local "
+            "policy. Every task already admitted keeps the contract and policy "
+            "digest it pinned, and its evidence is unchanged"
+        ),
+        "note": (
+            "Activating a local candidate does not approve it for protected "
+            "integration. Protected CI continues to use its own approved policy "
+            "reference, and the two are compared on the settings page"
+        ),
+    }
+
+
+def _pinned_tasks(context: Context) -> list[str]:
+    """Every task this project holds, named, so activation can say what it did not touch."""
+    return _task_ids(context)
+
+
+#: The configuration operation joins the surface here rather than above, because
+#: `OPERATIONS` is a table evaluated at import time and a name in it is a promise
+#: that the function exists. `plan.WRITABLE` is the declaration of record and a
+#: test asserts the two agree.
+OPERATIONS["save_project_config"] = save_project_config
+
+
+# ------------------------------------------------------------- the settings
+
+
+def _cleanup_vocabulary() -> dict[str, Any]:
+    """The cleanup package's own vocabulary, read from it.
+
+    `RULE_ORDER` rather than the parser's id set because the rule order is what a
+    page draws: `RULE_ORDER` is the sequence cleanup actually applies in, and a
+    page listing rules in a different order than they run in is a page describing
+    something else.
+    """
+    from ..cleanup import hooks as cleanup_hooks
+    from ..cleanup.policy import CLEANUP_MODES, CLEANUP_RULE_IDS
+
+    return {
+        "modes": list(CLEANUP_MODES),
+        "rule_ids": list(CLEANUP_RULE_IDS),
+        "rule_order": list(cleanup_hooks.RULE_ORDER),
+    }
+
+
+def configuration_section(context: Context) -> dict[str, Any]:
+    """The configuration an operator is about to edit, and the state around it.
+
+    Both the local configuration and the approved integration policy are reported
+    here, including any mismatch, because the checkpoint's rule is that a browser
+    edit can never become protected authority and an operator has to be able to
+    see that rather than be told it.
+    """
+    state = configuration_state(context)
+    approved = _approved_integration_policy(context)
+    return {
+        **state,
+        "editable": True,
+        "problem": _configuration_problem(context),
+        "paths": list(_RELATIVE),
+        "vocabularies": {
+            "connection_scopes": list(CONNECTION_SCOPES),
+            "stages": list(CONFIG_STAGES),
+            "cleanup": _cleanup_vocabulary(),
+        },
+        "local": _local_policy_document(context, state),
+        "approved_integration": approved,
+        "mismatch": _mismatch(approved, state),
+        "controls": _typed_controls(context),
+    }
+
+
+def _local_policy_document(context: Context, state: dict[str, Any]) -> dict[str, Any]:
+    """The local configuration as a candidate policy document, in context `local`.
+
+    It is named `local` and never `protected`. `integration.from_file` refuses a
+    local document that claims protected context, and this says the same thing
+    rather than writing the word and letting a later reader believe it.
+    """
+    return {
+        "context": "local",
+        "policy_id": f"local-{state['digest'][:16]}",
+        "digest": state["digest"],
+        "required_checks": [
+            {
+                "id": entry["id"],
+                "obligations": [
+                    obligation_to_json(_obligation_of(o)) for o in entry.get("obligations") or []
+                ],
+            }
+            for entry in state["current"].get("required_checks") or []
+        ],
+        "approved_for_protected": False,
+        "authority": (
+            "an operator edit in this console. It is local evidence, not the "
+            "protected integration policy, and no action here can make it one"
+        ),
+    }
+
+
+def _approved_integration_policy(context: Context) -> dict[str, Any]:
+    """The protected integration policy this project actually has, or None.
+
+    Read through `integration.from_commit` on the repository's own approved
+    reference when there is one, and reported as absent otherwise. Inventing a
+    protected policy for a project that has none would show a green bar over an
+    authority that was never granted, which is the exact confusion the checkpoint
+    exists to prevent.
+    """
+    from ..integration import policy as policies
+
+    reference = context.project.root / ".vkit-approved-policy-ref"
+    if not reference.is_file():
+        return {
+            "context": None,
+            "policy_id": None,
+            "detail": (
+                "this repository declares no approved policy reference, so no "
+                "protected integration policy exists here. A console edit cannot "
+                "create one; protected CI reads its own approved reference"
+            ),
+            "required_checks": [],
+        }
+    try:
+        policy = policies.from_commit(
+            context.project, reference.read_text(encoding="utf-8").strip()
+        )
+    except Exception as exc:  # noqa: BLE001 - an unreadable reference is a fact to show
+        return {
+            "context": None,
+            "policy_id": None,
+            "detail": f"the approved policy reference could not be resolved: {exc}",
+            "required_checks": [],
+        }
+    document = policy.to_json()
+    return {
+        "context": document["context"],
+        "policy_id": document["policy_id"],
+        "digest": document["digest"],
+        "manifest_revision": document["manifest_revision"],
+        "required_checks": [entry["id"] for entry in document["required_checks"]],
+        "detail": (
+            "read from this repository's own approved reference. It is the "
+            "authority for a protected run and this console cannot change it"
+        ),
+    }
+
+
+def _mismatch(approved: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """Where the local configuration and the approved policy disagree.
+
+    Reported rather than resolved. A local configuration that requires less than
+    the approved policy requires is the ordinary state for a project that has not
+    finished configuring itself, and a page that rendered it as a failure would
+    train operators to ignore the comparison.
+    """
+    local = {
+        entry["id"] for entry in state["current"].get("required_checks") or []
+    }
+    required = set(approved.get("required_checks") or [])
+    missing = sorted(required - local)
+    extra = sorted(local - required)
+    return {
+        "approved_requires": sorted(required),
+        "local_requires": sorted(local),
+        "missing_locally": missing,
+        "extra_locally": extra,
+        "agrees": not missing and not extra,
+        "detail": (
+            f"the local configuration requires {sorted(local) or '<nothing>'} and "
+            f"the approved policy requires {sorted(required) or '<nothing>'}. A "
+            "protected run decides against the approved policy, not against this"
+        ),
+    }
+
+
+def _typed_controls(context: Context) -> list[dict[str, Any]]:
+    """The controls the editor draws, each naming the values it will accept.
+
+    Declared here rather than in the page so the two cannot disagree about the
+    vocabulary: an option the page offers that this list does not name is a
+    control the validation would refuse, and a value this list names that the page
+    cannot produce is a feature nobody can reach.
+    """
+    from ..cleanup import hooks as cleanup_hooks
+    from ..cleanup.policy import APPLY_MODES as _apply_modes, CLEANUP_MODES as _modes
+
+    controls: list[dict[str, Any]] = [
+        {
+            "id": "check_timeout",
+            "label": "Check timeout (seconds)",
+            "type": "number",
+            "min_exclusive": 0,
+            "max": MAX_TIMEOUT_SECONDS,
+            "values": [
+                {"check_id": check.id, "current": check.timeout_seconds}
+                for check in sorted(
+                    (context.manifest.checks.values() if context.manifest else []),
+                    key=lambda c: c.id,
+                )
+            ],
+            "note": (
+                "The same bound the manifest parser enforces: positive and at most "
+                f"{MAX_TIMEOUT_SECONDS:g} seconds"
+            ),
+        },
+        {
+            "id": "obligations",
+            "label": "Required obligations",
+            "type": "checklist",
+            "values": [
+                {
+                    "check_id": check.id,
+                    "category": check.evidence_kind().value,
+                    "obligations": [
+                        describe_obligation(o) for o in check.obligations()
+                    ],
+                }
+                for check in sorted(
+                    (context.manifest.checks.values() if context.manifest else []),
+                    key=lambda c: c.id,
+                )
+            ],
+            "note": (
+                "Every obligation a registered check declares. Unchecking one is "
+                "reported as removing an obligation and is never a routine edit"
+            ),
+        },
+        {
+            "id": "argv",
+            "label": "Check command",
+            "type": "argument_list",
+            "values": [
+                {"check_id": check.id, "current": list(check.argv)}
+                for check in sorted(
+                    (context.manifest.checks.values() if context.manifest else []),
+                    key=lambda c: c.id,
+                )
+            ],
+            "note": (
+                "One field per argument, validated as a nonempty list of nonempty "
+                "strings. A joined command string is refused: there is no shell here"
+            ),
+        },
+        {
+            "id": "cleanup_mode",
+            "label": "Cleanup mode",
+            "type": "choice",
+            "values": [
+                {"value": mode, "may_write": mode in _apply_modes}
+                for mode in _modes
+            ],
+            "note": (
+                "Only apply_verified authorizes a write, and only for the rules and "
+                "paths the policy names. Turning one off is reported as a weakening"
+            ),
+        },
+        {
+            "id": "cleanup_rules",
+            "label": "Cleanup rules",
+            "type": "checklist",
+            "values": [
+                {"value": rule} for rule in cleanup_hooks.RULE_ORDER
+            ],
+            "note": (
+                "Only rule ids this build can apply are offered. An unknown id is "
+                "refused at parse rather than reading as coverage nobody has"
+            ),
+        },
+        {
+            "id": "cleanup_exclusions",
+            "label": "Cleanup exclusions",
+            "type": "path_list",
+            "values": [
+                {"value": pattern} for pattern in current_cleanup_document(context).get(
+                    "excluded_paths", []
+                )
+            ],
+            "note": (
+                "Repository-relative glob prefixes. A pattern with no slash matches "
+                "at any segment, so 'vendor' does not also match 'vendor_helper.py'"
+            ),
+        },
+        {
+            "id": "connection",
+            "label": "Harness connection scope",
+            "type": "choice",
+            "values": [{"value": scope} for scope in CONNECTION_SCOPES],
+            "note": (
+                "The scope the console answers on. There is no setting here for a "
+                "model, a provider or a credential: the chosen harness owns those"
+            ),
+        },
+    ]
+    return controls

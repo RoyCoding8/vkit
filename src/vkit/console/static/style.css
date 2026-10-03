@@ -136,6 +136,23 @@ td.actions button + button { margin-left: 4px; }
 }
 .pill.yes { color: var(--pass); }
 .pill.no { color: var(--dim); }
+/* A proposal that removes an obligation or cleanup write authority is neither a
+   pass nor a failure: it is a decision a person has to make deliberately. It gets
+   the blocked colour, which is the scale this page already uses for "not a green
+   mark, and here is why". */
+.pill.warn { color: var(--blocked); }
+
+/* The configuration document editor. A fixed height with its own scroll, because
+   a policy document is longer than a panel and letting it stretch pushed the
+   buttons that save it below the fold on a narrow window. It is monospace for
+   the same reason every other value on this page is: a document is read by its
+   exact shape, and a proportional face changes it. */
+.config-editor {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  padding: 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: inherit;
+  font-size: 12.5px; line-height: 1.45;
+}
 .refusal {
   border-left: 3px solid var(--fail); background: color-mix(in srgb, var(--fail) 8%, var(--panel));
   padding: 10px 12px; border-radius: 0 6px 6px 0; margin: 10px 0;

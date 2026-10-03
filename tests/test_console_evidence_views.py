@@ -589,25 +589,35 @@ def test_an_unavailable_setup_action_names_its_missing_prerequisite(live) -> Non
     `install`, `repair` and `remove` all shell out to the `claude` CLI. When it
     is not on PATH those three cannot run, and the section says so with the
     prerequisite in the sentence rather than offering a button.
+
+    The section is editable from checkpoint 12.3, but the configuration save is
+    not one of the three operations that needs the host CLI, so it is offered
+    whatever the host's state. Asserting that here is what stops a later edit
+    from lumping the configuration save in with the three that shell out and
+    withholding an operation that needs nothing installed.
     """
     url, _ = live
     section = _get(f"{url}/api/checks")["sections"]["integrations"]
 
-    assert section["editable"] is False, (
-        "the integrations section claims settings are editable. Configuration "
-        "editing is checkpoint 12.3 and is not on this build's writable surface"
+    assert section["editable"] is True, (
+        "the integrations section does not say settings are editable, so the "
+        "configuration editor it serves is hidden behind a flag that denies it"
     )
     components = {c["id"]: c for c in section["components"]}
     assert "vkit" in components, "the core's own version is not reported"
     assert components["vkit"]["version"], "the core reports no version"
 
-    for action in section["actions"]:
+    offered = {a["operation"]: a for a in section["actions"]}
+    assert offered["save_project_config"]["available"] is True, (
+        "the configuration save is withheld; it needs nothing from the host CLI"
+    )
+    for operation, action in offered.items():
         if action["available"] is False:
             assert action["reason"], (
-                f"{action['operation']} is unavailable but names no reason"
+                f"{operation} is unavailable but names no reason"
             )
             assert "claude" in action["reason"], (
-                f"{action['operation']} is withheld for a reason that does not "
+                f"{operation} is withheld for a reason that does not "
                 f"mention the CLI it needs: {action['reason']!r}"
             )
 

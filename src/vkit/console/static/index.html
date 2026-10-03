@@ -11,7 +11,7 @@
 <body>
 <header>
   <h1>vkit console</h1>
-  <p class="sub">Local only. Reads the store; the six operations below are the whole writable surface.</p>
+  <p class="sub">Local only. Reads the store; the operations below are the whole writable surface.</p>
 </header>
 
 <nav aria-label="Views">
@@ -77,8 +77,9 @@
 
   <section id="integrations" class="view" hidden>
     <h2>Settings and integrations</h2>
-    <p class="note">Component versions, connection status, and the setup actions this build offers.
-    Editing configuration is a later checkpoint; everything here is read-only.</p>
+    <p class="note">Component versions, connection status, the setup actions this build offers,
+    and this project's own configuration. A configuration change is previewed before it is saved,
+    and saving a proposal is separate from approving and activating it.</p>
     <div id="integrations-body" class="body" role="status" aria-live="polite">loading</div>
   </section>
 

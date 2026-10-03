@@ -1047,7 +1047,13 @@ def publish_run(
 def test_a_windows_style_payload_path_resolves_to_the_repository_relative_one(
     repo: Path,
 ) -> None:
-    """Backslashes normalize, because the host delivers them that way."""
+    """Backslashes normalize, because the host delivers them that way.
+
+    Asserted on every host, not only on the one whose separators happen to match
+    the payload's. `posixpath.normpath` leaves a backslash inside a single
+    filename component, so on Linux this exact payload resolved to a sibling of
+    the root and the containment check refused a file the host really had edited.
+    """
     project = open_project(repo)
 
     assert resolve_repository_path(project, str(repo / "sample.py")) == "sample.py"
@@ -1056,12 +1062,24 @@ def test_a_windows_style_payload_path_resolves_to_the_repository_relative_one(
 
 
 def test_a_path_outside_the_root_does_not_resolve(repo: Path, tmp_path: Path) -> None:
-    """No resolution is a refusal, never the nearest file inside the root."""
+    """No resolution is a refusal, never the nearest file inside the root.
+
+    The Windows absolute row is the security half of the same fix. `C:\\...` on a
+    POSIX host looks relative -- `PurePosixPath` has no idea what a drive letter
+    is -- so joining it under the root puts it back INSIDE the project, the
+    containment check passes, and the caller is handed a path that reads as
+    local and names another machine's filesystem. It returned
+    `'C:\\Users\\x\\elsewhere\\evil.py'` rather than None. This failed on Windows
+    too, which is what makes it a bug test rather than a CI-shape test.
+    """
     project = open_project(repo)
 
     assert resolve_repository_path(project, str(tmp_path / "other.py")) is None
     assert resolve_repository_path(project, "") is None
     assert resolve_repository_path(project, f"{repo} .. .. else") is None
+    assert resolve_repository_path(project, "C:\\anywhere\\elsewhere\\evil.py") is None
+    assert resolve_repository_path(project, "\\\\server\\share\\evil.py") is None
+    assert resolve_repository_path(project, f"{repo}\\..\\..\\outside\\evil.py") is None
 
 
 def test_the_accelerator_reads_no_diff_and_no_status(repo: Path, monkeypatch) -> None:

@@ -80,6 +80,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -270,6 +271,13 @@ def policy_problem(project: Project) -> str | None:
     return None
 
 
+#: What makes a payload a Windows ABSOLUTE path: a drive letter, or the `\\` of a
+#: UNC share. This is not a heuristic for "looks odd" -- it is the two forms
+#: Windows has for an absolute path, and a payload matching either one is naming
+#: a filesystem this host is not attached to.
+_WINDOWS_ABSOLUTE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
 def resolve_repository_path(project: Project, raw: str) -> str | None:
     """The repository-relative POSIX path a host payload names, or None.
 
@@ -279,12 +287,48 @@ def resolve_repository_path(project: Project, raw: str) -> str | None:
     only one of them would look at a file the host just edited and still
     conclude it was not there.
 
+    **Why a backslash is a separator on every host.** The payload is a replay
+    of what a host said, not necessarily what a file on this host is named. A
+    session recorded on Windows and replayed on a Linux runner delivers
+    `.../shop\\sample.py`, and `os.path.normpath` under POSIX leaves the
+    backslash inside a single filename component. The candidate then resolves to
+    a SIBLING of the root rather than a child of it, `root not in resolved.parents`
+    is true, and a file the host really did edit is reported as outside the
+    project. What the string is shaped like decides how it is split, not what
+    this host's `os.name` is: the two disagree exactly when a payload crosses
+    machines, which is the case that has to work.
+
+    The cost is stated rather than asserted away: a POSIX file whose own NAME
+    contains a backslash (`shop/na\\me.py`, creatable and checked) now folds that
+    character to a separator and will not resolve. Such a name is vanishingly
+    rare against a documented Windows-authored input, and the alternative
+    silently misreads the common case.
+
+    **Why a Windows absolute path is refused on a POSIX host.** `C:\\x\\y` names a
+    filesystem a POSIX process cannot reach, and `PurePosixPath` has no idea
+    what a drive letter is, so it reads as a RELATIVE name. Joining it under the
+    root -- which is what any ordinary relative string does -- puts it back
+    INSIDE the project, the containment check below passes, and the caller is
+    handed a path that reads as local and is not. That is a false pass on the one
+    input that must never pass, so on a POSIX host the refusal happens before any
+    join. Measured on the code before this fix: `C:\\Users\\x\\elsewhere\\evil.py`
+    returned `'C:\\Users\\x\\elsewhere\\evil.py'` rather than None.
+
+    On a WINDOWS host the same string is what `str(repo)` produced a moment ago,
+    so the drive letter is the host's own and comparing it against the root is
+    the whole point. Refusing there would break every live Windows payload, which
+    is why the branch is about the HOST's ability to reach the drive, not about
+    the shape of the string.
+
     None means the path lies outside the project or names no file. It is never
     a guess at the nearest file inside the root.
     """
     if not isinstance(raw, str) or not raw.strip():
         return None
-    candidate = Path(os.path.normpath(raw.strip()))
+    text = raw.strip()
+    if os.name != "nt" and _WINDOWS_ABSOLUTE.match(text):
+        return None
+    candidate = Path(os.path.normpath(text.replace("\\", "/")))
     if not candidate.is_absolute():
         candidate = project.root / candidate
     try:

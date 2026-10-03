@@ -37,8 +37,16 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          # 3.13 is what every receipt in this repository was measured on.
-          python-version: "3.13"
+          # The exact patch release, not the 3.13 series. The cleanup
+          # compiled-equality check compares bytecode, constants and exception
+          # tables, and its receipt is scoped to one compiler: src/vkit/cleanup/
+          # logic.py TESTED_CPYTHON_VERSIONS holds only 3.13.14, so a runner
+          # resolving 3.13.15 refuses the cleanup checks with runtime_not_approved
+          # and 23 tests fail behind one correct refusal. Bumping this pin is how
+          # a new patch release gets MEASURED, not how a failing suite gets
+          # silenced: run the comparison on the new version, record the result,
+          # then move the pin and the constant together.
+          python-version: "3.13.14"
 
       # The build backend and the test extra. `hatchling` is named in
       # pyproject.toml as build-backend, so pip builds the editable install

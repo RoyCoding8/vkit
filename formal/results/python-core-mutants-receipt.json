@@ -2,7 +2,7 @@
   "status": "PASS",
   "tool": "pytest",
   "target": "src/vkit/tasks.py",
-  "target_sha256": "b5dbee1be6ee80c41cce8489d55716bbb5a5eb6a723b1a0b5f8795b7300db32b",
+  "target_sha256": "26c8cb3727f037c4c4de70635f05a1b82f6ebe8e8de36cd25e0e44f70ef9aca7",
   "mutants": [
     {
       "name": "MUTANT_STALE_GENERATION",
@@ -23,7 +23,7 @@
       "note": "the test failed against the mutated core, as it must"
     }
   ],
-  "finished_at": "2026-10-02T14:56:35.521602+00:00",
+  "finished_at": "2026-10-03T04:43:10.433487+00:00",
   "digest_normalization": "Digests are sha256 over the file's bytes with CRLF folded to LF, which is the form git stores and the form a POSIX checkout reads. A line-ending-only change does not alter the digest.",
   "scope": "A CAUGHT result means one named guard in tasks.py was removed and one named test failed against the mutated copy, on this host, at the digest above. It does not establish that the guard is the only way to break the rule, and it establishes nothing about any other module."
 }

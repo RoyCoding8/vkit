@@ -1,7 +1,8 @@
 """Plan 11: cleanup of Python comments and two narrow logic rules.
 
-Checkpoint 1 proposes and checks. Checkpoint 2, here, adds the guarded write and
-the compiled-equality logic rules. Nothing else in the package writes: a preview
+Checkpoint 1 proposes and checks. Checkpoint 2 adds the guarded write and the
+compiled-equality logic rules. Checkpoint 3 connects both to the host hook and to
+the shared pre-verification path. Nothing else in the package writes: a preview
 proposes, a checker decides, `apply_cleanup` is the single place a byte moves,
 and it moves one only after every guard has passed.
 """
@@ -28,6 +29,30 @@ from .comments import (
     RemovedComment,
     preview_comment_cleanup,
     verify_preservation,
+)
+from .hooks import (
+    ALL_LINES,
+    APPLIED,
+    POLICY_RELATIVE,
+    REQUIRED_UNMET,
+    RULE_ORDER,
+    SUGGESTED,
+    Blocked,
+    CleanupUnavailable,
+    Cleaned,
+    Cleared,
+    Pending,
+    PreVerification,
+    accelerate,
+    candidate_gaps,
+    changed_files,
+    changed_lines_from_git,
+    cleanup_paths,
+    freshness,
+    load_policy,
+    policy_problem,
+    resolve_repository_path,
+    to_json,
 )
 from .logic import (
     CHECKER_ID,
@@ -121,4 +146,27 @@ __all__ = [
     "apply_comment_cleanup",
     "apply_logic_cleanup",
     "ownership_from_tasks",
+    # the gate
+    "ALL_LINES",
+    "APPLIED",
+    "Blocked",
+    "Cleaned",
+    "Cleared",
+    "CleanupUnavailable",
+    "POLICY_RELATIVE",
+    "Pending",
+    "PreVerification",
+    "REQUIRED_UNMET",
+    "RULE_ORDER",
+    "SUGGESTED",
+    "accelerate",
+    "candidate_gaps",
+    "changed_files",
+    "changed_lines_from_git",
+    "cleanup_paths",
+    "freshness",
+    "load_policy",
+    "policy_problem",
+    "resolve_repository_path",
+    "to_json",
 ]

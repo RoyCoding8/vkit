@@ -23,6 +23,16 @@ because that is the one translation the product exists to prevent.
 **A hook error is not acceptance.** Every failure path returns a response saying
 the gate did not run, rather than a traceback and rather than a clean stop that
 would read as a pass.
+
+`PostToolUse` is the one handler that writes, and it writes through
+`vkit.cleanup.accelerate`, which is the same function the shared
+pre-verification path uses. It is an accelerator rather than the authority:
+Claude Code does not run an `Edit|Write` hook when a `Bash` command or an
+external process rewrites the file, so the changed set a check sees is derived
+from the checkout at check time and not from this hook. The import is inside the
+handler for the same reason `_import_core` exists -- a module-level import would
+pull `vkit.cleanup` into every session start, and this module's contract is that
+it imports no execution path.
 """
 from __future__ import annotations
 
@@ -51,7 +61,7 @@ VKIT_TOOLS = frozenset({
 # The events this adapter answers. Anything else is a payload the host sent that
 # this plugin does not declare a handler for.
 EVENTS = (
-    "SessionStart", "SubagentStart", "PreToolUse",
+    "SessionStart", "SubagentStart", "PreToolUse", "PostToolUse",
     "Stop", "SubagentStop", "TaskCompleted",
 )
 
@@ -59,8 +69,20 @@ EVENTS = (
 # decides by exit code or `continue: false` and is documented without the field,
 # so the degraded response there carries only `systemMessage`.
 CONTEXT_EVENTS = frozenset({
-    "SessionStart", "SubagentStart", "PreToolUse", "Stop", "SubagentStop",
+    "SessionStart", "SubagentStart", "PreToolUse", "PostToolUse", "Stop", "SubagentStop",
 })
+
+#: The file-editing tools whose `tool_input` names one absolute path. The hook
+#: reference documents `Write`, `Edit` and `Read` as carrying `file_path` always
+#: absolute with native separators, and `NotebookEdit` as carrying
+#: `notebook_path`. `Read` is absent deliberately: it changes nothing, and a
+#: hook that cleaned on a read would edit a file nobody edited.
+EDIT_TOOLS: dict[str, str] = {
+    "Edit": "file_path",
+    "Write": "file_path",
+    "MultiEdit": "file_path",
+    "NotebookEdit": "notebook_path",
+}
 
 # Prefixed to every degraded message so a reader, and the plugin's own tests, can
 # tell "the gate ran and found nothing" from "the gate never ran".
@@ -313,7 +335,7 @@ def _note_response(event: str, text: str) -> dict[str, Any]:
 # Each returns a response dict. A handler that has nothing to say returns {},
 # which Claude Code parses as JSON with no field set and treats as a no-op.
 
-def _on_session_start(store, payload: dict[str, Any]) -> dict[str, Any]:
+def _on_session_start(store, payload: dict[str, Any], project: Any) -> dict[str, Any]:
     """Pointers only. SessionStart runs on every session, so it says very little."""
     pointers = (
         f"{PLUGIN_ROOT} holds this plugin. The vkit MCP server exposes "
@@ -334,7 +356,7 @@ def _on_session_start(store, payload: dict[str, Any]) -> dict[str, Any]:
     return _with_context("SessionStart", {}, pointers)
 
 
-def _on_subagent_start(store, payload: dict[str, Any]) -> dict[str, Any]:
+def _on_subagent_start(store, payload: dict[str, Any], project: Any) -> dict[str, Any]:
     """Registered task references, or nothing at all.
 
     An unbound payload gets an empty response rather than a guessed task, so a
@@ -359,7 +381,7 @@ def _on_subagent_start(store, payload: dict[str, Any]) -> dict[str, Any]:
     return _with_context("SubagentStart", {}, text)
 
 
-def _on_pre_tool_use(store, payload: dict[str, Any]) -> dict[str, Any]:
+def _on_pre_tool_use(store, payload: dict[str, Any], project: Any) -> dict[str, Any]:
     """State the registration for the specific operation about to run.
 
     It grants no permission. The MCP server already refuses an unregistered or
@@ -381,6 +403,118 @@ def _on_pre_tool_use(store, payload: dict[str, Any]) -> dict[str, Any]:
         f"Registered managed task: {task_id}. Evidence for it is whatever the store "
         f"records; use run_get rather than assuming this call's result is sufficient.",
     )
+
+
+def _edited_path(payload: dict[str, Any]) -> str | None:
+    """The absolute path this editing call touched, or None.
+
+    A payload that names no editing tool, or an editing tool whose documented
+    path field is absent, yields None. Neither is an error: the host matched
+    this event more broadly than this function acts on, and acting on a tool
+    whose path field this build cannot read would mean guessing which field
+    holds the path.
+    """
+    field = EDIT_TOOLS.get(str(payload.get("tool_name") or ""))
+    if field is None:
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    value = tool_input.get(field)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _on_post_tool_use(store, payload: dict[str, Any], project: Any) -> dict[str, Any]:
+    """Fast verified cleanup of the one file this editing call touched.
+
+    An accelerator, never the authority. Claude Code's hook reference states
+    that a `PostToolUse` hook matching `Edit|Write` does not run when a `Bash`
+    command or a process outside Claude Code rewrites the same file, so a
+    cleanup that only ever ran here would miss exactly the edits nobody
+    attributes. The shared pre-verification path reads the checkout's own
+    changed set when a check starts and covers those, and this function exists
+    to make the common case cheap rather than to be the gate.
+
+    Three refusals are load-bearing and all leave the file byte-identical:
+
+    * no tool, or a tool this build does not read a path from -- nothing ran;
+    * no registered host binding -- the edit cannot be attributed to a task, and
+      CONTRACT.md forbids resolving a task from recency, so the answer is a
+      bounded explanation rather than a guess at an owner;
+    * a policy that is absent, off, or refuses to write -- the file is left
+      exactly as the editing tool left it.
+
+    A refusal that says why is not a failure of the session. It is reported as
+    context, because a hook that blocked every unregistered edit would wedge
+    every project that never opted in.
+    """
+    raw_path = _edited_path(payload)
+    if raw_path is None:
+        return {}
+
+    task_id = _bound_task_id(store, payload)
+    if task_id is None:
+        return _note_response(
+            "PostToolUse",
+            _cleanup_note(
+                "This edit is not from a session registered against a managed task, so "
+                "cleanup did not run and the file is unchanged. It would need the "
+                f"path {raw_path!r} to belong to a task, and CONTRACT.md forbids "
+                "resolving a task from recency, recent files, or the last active task. "
+                "task_begin with a 'host' binding naming this session is what registers one."
+            ),
+        )
+
+    try:
+        from vkit.cleanup import Blocked, Cleaned, accelerate, resolve_repository_path
+    except Exception as exc:  # noqa: BLE001 - a hook reports, it does not traceback
+        return degraded("PostToolUse", f"the cleanup package is not importable here: {exc}")
+
+    relative_path = resolve_repository_path(project, raw_path)
+    if relative_path is None:
+        return _note_response(
+            "PostToolUse",
+            _cleanup_note(
+                f"{raw_path!r} does not name a file inside {project.root}, so cleanup "
+                "left it unchanged."
+            ),
+        )
+
+    try:
+        verdict = accelerate(project, store, task_id, relative_path)
+    except Exception as exc:  # noqa: BLE001 - a hook reports, it does not traceback
+        return degraded("PostToolUse", f"cleanup could not run on {relative_path}: {exc}")
+
+    if isinstance(verdict, Blocked):
+        # A required cleanup this build could not write. Reported as context
+        # rather than as a block: the pre-verification path is what gates the
+        # check, and this hook failing to write is not a reason to stop a turn.
+        return _note_response("PostToolUse", _cleanup_note(verdict.detail))
+    if isinstance(verdict, Cleaned):
+        removed = ", ".join(item.rule_id for item in verdict.applied)
+        return _note_response(
+            "PostToolUse",
+            _cleanup_note(
+                f"verified cleanup rewrote {relative_path} ({removed}). The source "
+                "identity moved, so any evidence captured before this point no longer "
+                "describes the file. Re-read the file; the check_start path re-measures."
+            ),
+        )
+    if verdict.suggestions:
+        named = ", ".join(item.rule_id for item in verdict.suggestions)
+        return _note_response(
+            "PostToolUse",
+            _cleanup_note(
+                f"{relative_path} still offers {named}, which the approved policy does "
+                "not enable. It is a suggestion and not a failure; the file is unchanged."
+            ),
+        )
+    return {}
+
+
+def _cleanup_note(text: str) -> str:
+    """Prefixed so a reader can tell this note from the acceptance gate's."""
+    return f"vkit cleanup: {text}"
 
 
 def _completion_response(
@@ -487,11 +621,20 @@ def _registration_note(payload: dict[str, Any]) -> str:
 
 # --- dispatch --------------------------------------------------------------
 
+#: Every handler takes the same three arguments: the store, the payload, and the
+#: resolved `Project`. The three events that need `vkit.tasks` import it inside
+#: the handler instead, because a handler dispatched as a table entry would
+#: otherwise receive two different things in that position. The earlier table
+#: passed the tasks module and the completion path passed the project, and one of
+#: the two was always wrong for a handler written against the other.
 _HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
-    "SessionStart": lambda store, payload, _tasks: _on_session_start(store, payload),
-    "SubagentStart": lambda store, payload, _tasks: _on_subagent_start(store, payload),
-    "PreToolUse": lambda store, payload, _tasks: _on_pre_tool_use(store, payload),
+    "SessionStart": _on_session_start,
+    "SubagentStart": _on_subagent_start,
+    "PreToolUse": _on_pre_tool_use,
+    "PostToolUse": _on_post_tool_use,
 }
+
+_COMPLETION_EVENTS = ("Stop", "SubagentStop", "TaskCompleted")
 
 
 def handle(event: str, payload: dict[str, Any], project: str | None = None) -> dict[str, Any]:
@@ -505,11 +648,11 @@ def handle(event: str, payload: dict[str, Any], project: str | None = None) -> d
         raise HookError("the hook payload was not a JSON object")
 
     store, resolved = _open_store(project, payload)
-    _, _storage, tasks_mod = _import_core()
 
-    if event in ("Stop", "SubagentStop", "TaskCompleted"):
+    if event in _COMPLETION_EVENTS:
+        _, _storage, tasks_mod = _import_core()
         return _on_completion(event, store, payload, tasks_mod, resolved)
-    return _HANDLERS[event](store, payload, tasks_mod)
+    return _HANDLERS[event](store, payload, resolved)
 
 
 def degraded(event: str, detail: str) -> dict[str, Any]:

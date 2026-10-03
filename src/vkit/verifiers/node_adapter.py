@@ -278,8 +278,9 @@ def _major_version(executable: str) -> int:
 
     try:
         done = subprocess.run(
-            [executable, "--version"], capture_output=True, text=True,
-            timeout=VERSION_PROBE_SECONDS, errors="replace", **hidden_window(),
+            [executable, "--version"], capture_output=True,
+            encoding="utf-8", errors="replace",
+            timeout=VERSION_PROBE_SECONDS, **hidden_window(),
         )
     except (OSError, subprocess.SubprocessError):
         return 0

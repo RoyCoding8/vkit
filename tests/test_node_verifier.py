@@ -462,6 +462,98 @@ def _blocked(raw: bytes, required=REQUIRED_TESTS):
     return node_adapter.interpret(raw, _parsed_check(required))
 
 
+# ------------------------------------- the isolation flag this runner understands
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        # Node 24.16.0 and 25.x accept the unprefixed spelling. Measured.
+        ("v24.16.0", node_adapter.ISOLATION_FLAG_STABLE),
+        ("v24.0.0", node_adapter.ISOLATION_FLAG_STABLE),
+        ("v25.1.2", node_adapter.ISOLATION_FLAG_STABLE),
+        # Node 22.23.3 rejects the unprefixed spelling with `bad option`, exits 9
+        # and writes no report. Measured.
+        ("v22.23.3", node_adapter.ISOLATION_FLAG_EXPERIMENTAL),
+        ("v23.0.1", node_adapter.ISOLATION_FLAG_EXPERIMENTAL),
+        # A binary that will not say which release it is gets the spelling the
+        # wider range of runners accepts, rather than a guess at the newest.
+        ("", node_adapter.ISOLATION_FLAG_EXPERIMENTAL),
+        ("not a version", node_adapter.ISOLATION_FLAG_EXPERIMENTAL),
+    ],
+)
+def test_the_isolation_flag_is_the_spelling_this_node_understands(
+    reported: str, expected: str, tmp_path: Path, monkeypatch
+) -> None:
+    """The flag is asked of the binary, because only the binary can answer.
+
+    `--test-isolation=none` is not decoration. Without it the runner isolates
+    each file into its own process and reports the FILE as a test, so a required
+    case is satisfied by a file that ran no case at all, and the check stops
+    meaning what it declares. Only the SPELLING of the flag moved between
+    releases, and both spellings must reach a runner that understands it: node
+    22 answers the unprefixed form with `bad option`, exits 9, and writes no
+    report, which `execution._derive` correctly reads as `artifact_missing` --
+    a refusal that names the missing file rather than the runner's refusal to
+    start. That is what failed seven tests on the ubuntu and windows images,
+    which ship node 22, while the macos image, which ships node 24, passed.
+    """
+    binary = tmp_path / "node"
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.setattr(node_adapter, "_major_version", lambda _executable: _parse(reported))
+    node_adapter.isolation_flag.cache_clear()
+    try:
+        assert node_adapter.isolation_flag(str(binary)) == expected
+    finally:
+        node_adapter.isolation_flag.cache_clear()
+
+
+def _parse(reported: str) -> int:
+    import re
+
+    match = re.search(r"v(\d+)", reported)
+    return int(match.group(1)) if match else 0
+
+
+def test_a_node_that_will_not_report_its_version_still_gets_a_flag_it_understands(
+    monkeypatch,
+) -> None:
+    """An unreadable version is a refusal, and the refusal has a default.
+
+    The probe must never become the reason a check cannot run, so a binary that
+    cannot be asked falls back to the spelling the older and therefore wider
+    range of runners accepts.
+    """
+    monkeypatch.setattr(node_adapter, "_major_version", lambda _executable: 0)
+    node_adapter.isolation_flag.cache_clear()
+    try:
+        assert node_adapter.isolation_flag("node") == node_adapter.ISOLATION_FLAG_EXPERIMENTAL
+    finally:
+        node_adapter.isolation_flag.cache_clear()
+
+
+@requires_node
+def test_the_runner_this_host_has_really_writes_a_report(tmp_path: Path) -> None:
+    """The end of the chain: the flag and the binary together produce evidence.
+
+    The unit test above proves the spelling is chosen; this proves the chosen
+    spelling is one this runner accepts, by driving the real binary and reading
+    the report it wrote rather than the console it printed. A runner that
+    rejected the flag would leave no file here, which is the exact shape of the
+    CI failure.
+    """
+    repo = _repository(tmp_path)
+    status, row, run_dir = run_check(repo)
+
+    assert status == 0, last_outcome(repo)
+    report = (run_dir / "node-report.tap").read_text(encoding="utf-8")
+    assert report.startswith("TAP version 13"), report[:200]
+    assert node_adapter.PLAN_MARKER.search(report), (
+        "a report with no plan marker stopped early and the reader cannot trust it"
+    )
+    assert row["result"] == "PASS"
+
+
 # 1. Missing output artifact -----------------------------------------------------
 
 

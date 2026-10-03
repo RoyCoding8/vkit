@@ -166,13 +166,37 @@ def test_the_server_completes_a_handshake_and_negotiates_a_version(connected) ->
     Capabilities are asserted for what is absent as much as present: a server
     that advertised prompts, resources or completions would be claiming a feature
     `serve_stdio` never registers, and a client would then call into a hole.
+
+    `experimental` is asserted to be absent or empty, and never as something the
+    client can use. It is an OPTIONAL server capability in the MCP specification
+    -- `schema/2025-06-18` types it as `experimental?: { [key: string]: object }`
+    -- and `serve_stdio` declares no experimental capability, so there is nothing
+    for a client to find under it either way.
+
+    Both shapes are accepted deliberately, because both are correct and the
+    choice between them is the SDK's, not this server's: mcp 2.2.0 defaults
+    `experimental_capabilities` to `{}` and serializes an empty object; mcp 2.3.0
+    passes the value through bare, `None` drops out of `exclude_none`, and the key
+    is absent. The previous assertion required the key to be PRESENT, so the test
+    failed on every host running 2.3.0 -- ubuntu, windows and this machine alike
+    once the float resolved past 2.2 -- and read the dependency's mood rather
+    than the server's claims. `pyproject.toml` carries no upper bound below 3 and
+    there is no lockfile, so that float is exactly when CI last ran.
     """
     handshake = connected.handshake()
     assert handshake["protocolVersion"] == CLIENT_PROTOCOL
     assert handshake["serverInfo"]["name"] == "project"
     assert handshake["serverInfo"]["version"]
-    assert set(handshake["capabilities"]) == {"experimental", "tools"}
-    assert handshake["capabilities"]["tools"] == {"listChanged": False}
+    capabilities = handshake["capabilities"]
+    assert set(capabilities) <= {"tools", "experimental"}, (
+        f"the server advertises {sorted(capabilities)}; serve_stdio registers "
+        "tools/list and tools/call only, and a client would call into a hole"
+    )
+    assert capabilities.get("experimental", {}) == {}, (
+        "experimental is declared for features this server does not have, which "
+        "invites a client to infer that it does"
+    )
+    assert capabilities["tools"] == {"listChanged": False}
 
 
 @pytest.mark.parametrize(

@@ -190,18 +190,22 @@ def _node_argv(check: Any, run_dir: Path, python: str | None) -> tuple[str, ...]
     required-case accounting needs the file on every one. `--test-isolation=none`
     runs every file in one process, because with the default per-file isolation
     the runner reports each file as a test of its own and a required case would
-    be satisfied by a file that ran no case at all. And the required ids are
-    split into the files to run and the names to select, because `node --test`
-    reads its file arguments as filenames. All three are explained at length in
-    `node_adapter`, which owns the format.
+    be satisfied by a file that ran no case at all; which SPELLING of that flag
+    this runner understands is the executable's own answer, because Node 22
+    spells it `--experimental-test-isolation` and rejects the unprefixed form
+    with `bad option` and exit 9, having written no report at all. And the
+    required ids are split into the files to run and the names to select, because
+    `node --test` reads its file arguments as filenames. All three are explained
+    at length in `node_adapter`, which owns the format.
     """
     variant = _variant(check)
     report = run_dir / check.artifact_name
     files, pattern = node_adapter.argv_selectors(variant.required_tests)
+    executable = _substituted((variant.runner.executable,), run_dir, python or _this_interpreter())[0]
     return (
-        *_substituted((variant.runner.executable,), run_dir, python or _this_interpreter()),
+        executable,
         *_substituted(variant.runner.base_argv, run_dir, python or _this_interpreter()),
-        "--test-isolation=none",
+        node_adapter.isolation_flag(executable),
         "--test-reporter", node_adapter.reporter_argv_token(),
         "--test-reporter-destination", str(report),
         *(("--test-name-pattern", pattern) if pattern else ()),

@@ -305,6 +305,50 @@ def test_the_symlink_guard_fires_without_creating_one(tmp_path: Path) -> None:
     assert (project.root / "sample.py").read_bytes() == COMMENTED
 
 
+def test_a_symlink_that_escapes_is_named_as_one_rather_than_as_an_escape(
+    tmp_path: Path,
+) -> None:
+    """The specific token wins the ordering, for the input that names both.
+
+    `_check_path` resolves and compares, so an escaping symlink trips it and
+    returns `path_escape` -- the consequence, without the cause. An engineer
+    reading that refusal learns a path was odd; they do not learn a symlink is
+    involved, and the two have different fixes. The guard is the one that names
+    the cause, so it runs first.
+
+    This drives the escaping case on EVERY host, which the end-to-end test above
+    cannot: it needs a real symlink, and `os.symlink` needs a privilege Windows
+    grants per-user. The two POSIX facts that matter are forced together here --
+    `is_symlink()` true AND `resolve()` landing outside the root -- which is what
+    an escaping link is natively, so the ordering under test is the real one.
+    """
+    project = project_with(tmp_path, "sample.py", COMMENTED)
+    proposal = preview_comment_cleanup(project, "sample.py", changed_lines=[2])
+    outside = tmp_path / "outside.py"
+    outside.write_bytes(COMMENTED)
+
+    original_is_symlink = Path.is_symlink
+    original_resolve = Path.resolve
+    target = project.root / "sample.py"
+    Path.is_symlink = lambda self: self == target
+    Path.resolve = lambda self, *a, **k: (
+        outside.resolve() if self == target else original_resolve(self, *a, **k)
+    )
+    try:
+        result = apply_comment_cleanup(
+            project, proposal, request_id="req-1", generation=1, policy=APPLY_POLICY
+        )
+    finally:
+        Path.is_symlink = original_is_symlink
+        Path.resolve = original_resolve
+
+    assert refuse_reason(result) == "symlink_or_escape", (
+        "a symlink is refused for being a symlink; naming it only as an escape "
+        "reports the consequence and hides the cause"
+    )
+    assert outside.read_bytes() == COMMENTED
+
+
 def test_a_missing_request_id_is_refused(tmp_path: Path) -> None:
     """Without a request id a repeat cannot be told from a first attempt."""
     project = project_with(tmp_path, "sample.py", COMMENTED)

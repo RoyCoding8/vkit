@@ -55,22 +55,32 @@ engineering decisions.
 - [x] 10.1: shared evidence types and a public pytest vertical path work.
 - [x] 10.2: Node and property evidence retain their precise scope.
 - [x] 10.3: actual Lean and TLC positive and negative cases run in CI.
-- [ ] 10.4: approved integration, finalization, and installed packaging are verified.
+- [x] 10.4: approved integration, finalization, and installed packaging are verified.
 - [x] 11.1: Python cleanup preview protects directives and executable content.
 - [x] 11.2: guarded apply, restricted logic rules, conflicts, and retries are verified.
-- [ ] 11.3: hooks and shared verification enforce freshness without mutating protected candidates.
+- [x] 11.3: hooks and shared verification enforce freshness without mutating protected candidates.
 - [ ] 11.4 and 12.2: dashboard displays cleanup and actual task/evidence state.
 - [x] 12.3: configuration preview/save preserves pinned obligations and protected policy authority.
 - [x] 12.4: standalone MCP works without a Claude plugin or installed skills.
 - [ ] Final handback includes exact candidate, CI receipts, negative cases, and unresolved limits.
 
-Three are left unchecked on purpose, not overlooked. 10.4 and 11.3 are built and
-merged, but each left a gap in the same file: `integration/verify.py` builds its
-acceptance from `policy.compare` rather than `tasks.finalize`, and never calls
-`cleanup.hooks.candidate_gaps`. A protected candidate therefore does not yet
-weigh evidence kind or obligations, and required cleanup does not yet reject it.
-That work is in flight. 11.4 is not a separate checkpoint; it is the console
-exposure of 11.3's receipts, which lands with that gap.
+11.4 is the only implementation item left. The dashboard already shows cleanup
+MODE, rules, protected paths and outstanding work, from the real backend. What
+it does not yet show is the four panels that need a listing the product does not
+have: applied patches, preservation receipts, proposals, and past refusal
+reasons. The cleanup package returns a receipt to its caller and persists only
+the original bytes, so there is nothing to list. Building that listing is
+backend work, not console work, and it is named below as limit 8.
+
+10.4 and 11.3 are closed, but not the way they were briefed. Both briefs named a
+seam in `integration/verify.py` and both were wrong. `candidate_gaps` reads
+`git status --porcelain`, and `assert_clean` raises unless that status is empty,
+so the gate could only ever return nothing inside a protected run; it now reads
+`git diff --name-only --diff-filter=ACMR <target>..<candidate>` instead, which
+is the only comparison a clean checkout can answer that means something. And
+`evidence_kind_downgraded` already refused a category a variant cannot license,
+so the evidence-kind half needed no new code. The remaining half, routing the
+protected decision through `tasks.finalize`, is BLOCKED and recorded as limit 9.
 
 After each checkpoint, append a short evidence entry below with its commit,
 commands, CI tested SHA, artifacts, and limitations. Mark it complete only from
@@ -213,9 +223,9 @@ program was verified by more than one platform until run four.
 
 ### Unresolved limits, recorded rather than smoothed over
 
-1. `integration/verify.py` builds acceptance from `policy.compare`, not
-   `tasks.finalize`, and never calls `cleanup.hooks.candidate_gaps`. A protected
-   candidate does not yet weigh evidence kind or required cleanup.
+1. `integration/verify.py` builds its acceptance from `policy.compare`, not
+   `tasks.finalize`, and the protected decision does not weigh the obligations a
+   receipt recorded. The cleanup half IS closed; see 10.4 below.
 2. The Lean unreviewed profile's **comparator is not discharged**. The schema
    constrains `toolchain.comparator` to a bare string and no evidence settled
    whether it names a binary or a lake workspace.
@@ -231,3 +241,23 @@ program was verified by more than one platform until run four.
    an `experimental` capability in 2.3.0 and a test was corrected for it.
 7. Roughly 80 tests are platform-gated and skip on Windows. The POSIX real-process
    and process-identity tests have only ever executed on the Ubuntu runner.
+8. The cleanup console shows mode, rules, protected paths and outstanding work.
+   Applied patches, preservation receipts, proposals and past refusal reasons
+   have no listing backend: the package returns a receipt to its caller and
+   persists only the original bytes. The view NAMES each absent panel with the
+   missing backend rather than rendering an empty list that would read as
+   "nothing has ever been cleaned".
+9. Routing the protected integration decision through `tasks.finalize` is
+   BLOCKED, measured not assumed. `oracle.repoint_approved` writes the approved
+   script's absolute path under `<run_dir>/approved/` and `manifest.digest()`
+   covers `argv`, so two executions of one candidate under one policy recorded
+   `a8f305c6…` and `fbaf2e57…`. `tasks._identity_gaps` compares that digest
+   against the one pinned at admission, so a routed call raises a policy-identity
+   gap on EVERY run and refuses every candidate, including clean ones. Shipping
+   it would replace "accepts a candidate whose evidence kind it never weighed"
+   with "refuses every candidate", which is a broken gate rather than a stricter
+   one. A fix belongs at the digest's construction, not at the call site.
+10. `verify.py` reaches into `cleanup/hooks.py` privates (`_read_only`,
+    `_propose`, `_sites`, `all_lines`, `RULE_ORDER`, `TRAILING_RULE`). A rename
+    there now breaks `verify.py`. Precedent exists for this shape, so it was
+    accepted rather than redesigned under a deadline.

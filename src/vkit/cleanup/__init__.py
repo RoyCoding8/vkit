@@ -1,10 +1,24 @@
-"""Plan 11 checkpoint 1: cleanup of Python comments, preview only.
+"""Plan 11: cleanup of Python comments and two narrow logic rules.
 
-Re-exports the cleanup surface. Nothing in this package writes to disk: a preview
-proposes, a checker decides, and the caller decides whether to act.
+Checkpoint 1 proposes and checks. Checkpoint 2, here, adds the guarded write and
+the compiled-equality logic rules. Nothing else in the package writes: a preview
+proposes, a checker decides, `apply_cleanup` is the single place a byte moves,
+and it moves one only after every guard has passed.
 """
+from .apply import (
+    AlreadyApplied,
+    ApplyRefused,
+    ApplyRequest,
+    ApplyResult,
+    Applied,
+    apply_cleanup,
+    apply_comment_cleanup,
+    apply_logic_cleanup,
+    ownership_from_tasks,
+)
 from .comments import (
     CleanupPreview,
+    CommentSite,
     PreservationCheck,
     PreservationFailed,
     PreservationPassed,
@@ -15,9 +29,46 @@ from .comments import (
     preview_comment_cleanup,
     verify_preservation,
 )
+from .logic import (
+    CHECKER_ID,
+    COMPARED_FIELDS,
+    CompiledCheck,
+    CompiledDiffers,
+    CompiledEqual,
+    CompiledUnsupported,
+    EXCLUDED_LOCATION_FIELDS,
+    LogicPreview,
+    LogicProposal,
+    LogicRefusal,
+    LogicSite,
+    REDUNDANT_PASS,
+    REGISTERED_RULES,
+    EMPTY_ELSE_PASS,
+    REQUIRED_OPTIMIZE_LEVELS,
+    TESTED_CPYTHON_VERSIONS,
+    preview_logic_cleanup,
+    verify_compiled_equality,
+    verify_docstrings,
+)
+from .policy import (
+    CLEANUP_MODES,
+    CLEANUP_RULE_IDS,
+    OFF_POLICY,
+    PREVIEW_POLICY,
+    CleanupMode,
+    CleanupPolicy,
+    PolicyRefused,
+    PolicyRefusal,
+    TRAILING_COMMENT_RULE,
+    check_policy,
+    is_excluded,
+    parse_policy,
+)
 
 __all__ = [
+    # checkpoint 1
     "CleanupPreview",
+    "CommentSite",
     "PreservationCheck",
     "PreservationFailed",
     "PreservationPassed",
@@ -27,4 +78,47 @@ __all__ = [
     "RemovedComment",
     "preview_comment_cleanup",
     "verify_preservation",
+    # policy
+    "CLEANUP_MODES",
+    "CLEANUP_RULE_IDS",
+    "OFF_POLICY",
+    "PREVIEW_POLICY",
+    "CleanupMode",
+    "CleanupPolicy",
+    "PolicyRefused",
+    "PolicyRefusal",
+    "TRAILING_COMMENT_RULE",
+    "check_policy",
+    "is_excluded",
+    "parse_policy",
+    # logic rules and the checker
+    "CHECKER_ID",
+    "COMPARED_FIELDS",
+    "CompiledCheck",
+    "CompiledDiffers",
+    "CompiledEqual",
+    "CompiledUnsupported",
+    "EMPTY_ELSE_PASS",
+    "EXCLUDED_LOCATION_FIELDS",
+    "LogicPreview",
+    "LogicProposal",
+    "LogicRefusal",
+    "LogicSite",
+    "REDUNDANT_PASS",
+    "REGISTERED_RULES",
+    "REQUIRED_OPTIMIZE_LEVELS",
+    "TESTED_CPYTHON_VERSIONS",
+    "preview_logic_cleanup",
+    "verify_compiled_equality",
+    "verify_docstrings",
+    # guarded apply
+    "AlreadyApplied",
+    "ApplyRefused",
+    "ApplyRequest",
+    "ApplyResult",
+    "Applied",
+    "apply_cleanup",
+    "apply_comment_cleanup",
+    "apply_logic_cleanup",
+    "ownership_from_tasks",
 ]

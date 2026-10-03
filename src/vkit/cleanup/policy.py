@@ -124,12 +124,24 @@ class CleanupPolicy:
             )
 
     def to_json(self) -> dict[str, Any]:
+        """The policy as an owner reads and writes it.
+
+        These are the same key names `parse_policy` accepts, so a policy
+        survives a round trip through JSON. They were camelCase before, which
+        meant `parse_policy(self.to_json())` refused the policy's own output and
+        an owner had to spell all five keys by hand to configure cleanup at all.
+
+        `digest` hashes this document, so renaming the keys changes every
+        recorded policy digest. Nothing has been applied under a real policy
+        yet, and a digest that cannot be reproduced from the document is worse
+        than one that changes once.
+        """
         return {
             "mode": self.mode.value,
-            "enabledRules": list(self.enabled_rules),
-            "excludedPaths": list(self.excluded_paths),
-            "pythonVersion": self.python_version,
-            "optimizeLevels": list(self.optimize_levels),
+            "enabled_rules": list(self.enabled_rules),
+            "excluded_paths": list(self.excluded_paths),
+            "python_version": self.python_version,
+            "optimize_levels": list(self.optimize_levels),
         }
 
     @property

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from ..identity import compute_source_identity
+from ..nowindow import hidden_window
 # The console reads and writes the enrollment record through the core, which is
 # the only module that owns its format. It did not before, and wrote a second
 # one, so `enroll(accepted=True)` here and the same call from the CLI disagreed
@@ -527,6 +528,7 @@ def _run_host(args: list[str]) -> tuple[int, str, str]:
         done = subprocess.run(
             [_host_cli(), *args], capture_output=True, encoding="utf-8",
             errors="replace", timeout=180, check=False,
+            **hidden_window(),
         )
     except subprocess.TimeoutExpired as exc:
         raise ConsoleError(f"'claude {' '.join(args)}' timed out after 180s") from exc

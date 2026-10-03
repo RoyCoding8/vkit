@@ -36,6 +36,7 @@ from pathlib import Path
 # process. This import is what raises if the flag is set, so it is also the
 # launcher's own proof that the two names cannot be confused; the launcher sets
 # the flag itself, so the import below is of the submodules only.
+from ..nowindow import hidden_window
 from . import sandbox
 
 ENV_FLAG = "VKIT_TRUSTED_LAUNCHER"
@@ -75,7 +76,9 @@ def main(argv: list[str]) -> int:
 
     command = argv[1:]
     try:
-        completed = subprocess.run(command, stdin=subprocess.DEVNULL, check=False)
+        completed = subprocess.run(
+            command, stdin=subprocess.DEVNULL, check=False, **hidden_window()
+        )
     except FileNotFoundError as exc:
         print(f"launcher: {command[0]!r} is not executable: {exc}", file=sys.stderr)
         return 127

@@ -14,6 +14,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .nowindow import hidden_window
+
 STATE_DIR_NAME = "verification-kit"
 MANIFEST_RELATIVE = Path("verification") / "manifest.json"
 DB_NAME = "state.sqlite3"
@@ -40,6 +42,7 @@ def _git(args: list[str], cwd: Path) -> str:
         done = subprocess.run(
             ["git", *args], cwd=cwd, capture_output=True,
             encoding="utf-8", errors="replace", timeout=30, check=False,
+            **hidden_window(),
         )
     except FileNotFoundError as exc:
         raise ProjectError("git is not installed or not on PATH") from exc

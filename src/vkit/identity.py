@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .nowindow import hidden_window
 from .paths import Project, ProjectError
 
 _SECRET_NAMES = frozenset(
@@ -86,7 +87,8 @@ def _is_excluded(relative: str) -> bool:
 def _run(project: Project, *args: str) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
-            ["git", *args], cwd=project.root, capture_output=True, timeout=30, check=False
+            ["git", *args], cwd=project.root, capture_output=True, timeout=30,
+            check=False, **hidden_window(),
         )
     except FileNotFoundError as exc:
         raise ProjectError("git is not installed or not on PATH") from exc

@@ -82,6 +82,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .nowindow import NO_WINDOW, hide_startup
 from .outcome import BlockedReason
 from .procidentity import CannotConfirm, process_group_is_alive
 
@@ -777,6 +778,14 @@ def _launch_windows(
     A failure before the resume terminates the child rather than releasing it,
     because a resumed process that was never assigned to a job is exactly the
     uncontrolled work this module refuses to start.
+
+    The two creation concerns are separate bits in one word. `CREATE_SUSPENDED`
+    is the containment half and the ordering below is what makes it mean
+    something: suspended, assigned to a job, identity read, resumed. `NO_WINDOW`
+    is the visibility half and changes nothing about that ordering, because a
+    console allocation and a job assignment are independent consequences of the
+    same `CreateProcess`. OR-ing keeps both, and `NO_WINDOW` is 0 off Windows,
+    where this function is not reached anyway.
     """
     started = time.monotonic()
     prepared = job is not None
@@ -803,6 +812,7 @@ def _launch_windows(
         startup.hStdInput = h_stdin
         startup.hStdOutput = h_stdout
         startup.hStdError = h_stderr
+        hide_startup(startup)
 
         try:
             h_process, h_thread, pid, _thread_id = win32process.CreateProcess(
@@ -811,7 +821,7 @@ def _launch_windows(
                 None,  # process security attributes
                 None,  # thread security attributes
                 True,  # bInheritHandles: the three std handles above
-                win32con.CREATE_SUSPENDED,
+                win32con.CREATE_SUSPENDED | NO_WINDOW,
                 None,  # environment: this process's
                 str(cwd),
                 startup,

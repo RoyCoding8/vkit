@@ -223,21 +223,28 @@ def test_an_unenrolled_project_has_no_usable_ids(tmp_path: Path) -> None:
 def test_capabilities_name_the_kinds_this_build_can_actually_run(tools: Server) -> None:
     """A backend capability is what runs, not what the schema accepts.
 
-    The manifest schema accepts a `lean` or `tlc` check and `parse_manifest`
-    refuses it with a BLOCKED reason, so "this build supports six kinds" would
-    be a false receipt about two of them. The unavailable pair is named
-    separately, with the reason, because an operator reading a capability list
-    needs to know which rows are real.
+    Checkpoint 10.3 gave `lean` and `tlc` real adapters, so this build now
+    supports all six declared kinds and the old "two are declared but refused"
+    split is gone. The question a capability list answers moved with it: it is
+    no longer "does a runner exist for this kind" but "is the toolchain that
+    runner needs present on THIS host". `toolchain_present` is therefore the
+    row that can differ between two machines, and `supported` must agree with
+    the adapter table rather than with a stale list of refusals.
     """
     capabilities = inspect(tools)["capabilities"]
 
-    assert {c["kind"] for c in capabilities["kinds"] if c["supported"]} == {
-        "scenario", "pytest", "node_test", "property",
-    }
-    unsupported = {c["kind"]: c for c in capabilities["kinds"] if not c["supported"]}
-    assert set(unsupported) == {"lean", "tlc"}
-    for kind, entry in unsupported.items():
-        assert entry["reason"], f"the {kind} row names no reason for being unsupported"
+    supported = {c["kind"] for c in capabilities["kinds"] if c["supported"]}
+    assert supported == {
+        "scenario", "pytest", "node_test", "property", "lean", "tlc",
+    }, "a kind with a registered adapter is supported; the refusals it replaced are gone"
+    for entry in capabilities["kinds"]:
+        assert entry["adapter"], f"the {entry['kind']} row names no adapter identity"
+        assert isinstance(entry["toolchain_present"], bool), (
+            f"the {entry['kind']} row does not say whether its toolchain is here"
+        )
+
+    absent = {c["kind"] for c in capabilities["kinds"] if not c["toolchain_present"]}
+    assert absent <= supported, "a kind with no adapter cannot also claim a toolchain"
 
 
 def test_capabilities_carry_the_category_each_kind_licenses(tools: Server) -> None:

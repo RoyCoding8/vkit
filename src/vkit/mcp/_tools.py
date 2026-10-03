@@ -335,12 +335,17 @@ class _Handled(Exception):
 def _backend_capabilities() -> dict[str, Any]:
     """What this build's backend can produce, and what this machine is missing.
 
-    `supported` comes from `manifest.DECLARED_BUT_UNAVAILABLE` rather than from
-    probing the adapters. That constant is the table the parser itself refuses
-    against: `parse_manifest` raises `ManifestError` for a `lean` or `tlc`
-    check with the reason recorded there. Reading the parser's own table means
-    the capability report cannot claim support for a kind the manifest would
-    refuse a moment later.
+    `supported` comes from the live adapter table rather than from a separate
+    list of kinds the parser refuses. Every declared kind now HAS an adapter, so
+    the question is no longer "does a runner exist" but "is the toolchain this
+    adapter needs present on this host". Deriving both from `ADAPTERS` means the
+    capability report cannot claim support for a kind with no adapter, and
+    cannot hide one that has an adapter but no toolchain behind it.
+
+    An earlier version read `manifest.DECLARED_BUT_UNAVAILABLE`, the table
+    `parse_manifest` refused `lean` and `tlc` against. Checkpoint 10.3 gave
+    both kinds real adapters and deleted that table, which is the right
+    deletion: a kind is supported when a runner exists for it.
 
     The two views are reported side by side rather than merged. `kinds` is the
     per-check-kind question, and `categories` is the per-claim question: the
@@ -350,23 +355,24 @@ def _backend_capabilities() -> dict[str, Any]:
     vocabulary.
     """
     from ..claimkind import ClaimCategory
-    from ..manifest import DECLARED_BUT_UNAVAILABLE
     from ..verifiers import ADAPTERS
     from ..verifiers.spec import VARIANTS
 
-    unavailable = set(DECLARED_BUT_UNAVAILABLE)
     kinds = []
     for kind in VARIANTS:
-        entry: dict[str, Any] = {"kind": kind.value, "supported": kind not in unavailable}
-        if kind in unavailable:
+        entry: dict[str, Any] = {"kind": kind.value}
+        adapter = ADAPTERS.get(kind)
+        if adapter is None:
+            entry["supported"] = False
             entry["reason"] = (
-                f"a {kind.value!r} check is accepted by the manifest schema and "
-                f"refused by the parser, so this build cannot run one"
+                f"no adapter is registered for {kind.value!r}, so this build "
+                f"cannot interpret one"
             )
             entry["toolchain_present"] = False
         else:
-            entry["adapter"] = ADAPTERS[kind].identity()
+            entry["adapter"] = adapter.identity()
             entry["toolchain_present"] = _toolchain_present(kind)
+            entry["supported"] = True
         kinds.append(entry)
 
     return {

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -65,24 +66,6 @@ SCENARIOS = (
     "discount-above-ceiling",
     "subtotal-is-additive",
 )
-
-#: How every child process in this file is launched on Windows.
-#:
-#: A fixture that spawns git and Python dozens of times otherwise throws a console
-#: window per child over whatever the developer is using, and a test run becomes
-#: unusable on a machine someone is looking at. Both flags are no-ops off
-#: Windows, so this is one call site rather than a platform branch at each spawn.
-#: `CREATE_NO_WINDOW` does the work; `STARTF_USESHOWWINDOW` with an explicit
-#: hidden window is set as well because a spawn that goes through a batch wrapper
-#: can still ask for a visible window, and one leaked window is the complaint
-#: this removes.
-def _hidden() -> dict:
-    if not sys.platform.startswith("win"):
-        return {}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    return {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": startupinfo}
 
 RULES_SOURCE = '''\
 """The pricing rules, in one place, so a policy change is one reviewable diff."""
@@ -386,7 +369,7 @@ def git(repo: Path, *args: str) -> str:
     env = {k: v for k, v in os.environ.items() if k not in _GIT_STEERING}
     done = subproc.run(
         ["git", *args], cwd=repo, capture_output=True, encoding="utf-8",
-        errors="replace", timeout=180, check=False, env=env, **_hidden(),
+        errors="replace", timeout=180, check=False, env=env,
     )
     if done.returncode != 0:
         detail = done.stderr.strip().splitlines()

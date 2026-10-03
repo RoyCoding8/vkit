@@ -73,7 +73,7 @@ def _project_with(checks: list[dict], root: Path):
     """
     root.mkdir(parents=True, exist_ok=True)
     shutil.copytree(EXAMPLE, root, dirs_exist_ok=True)
-    fixtures.write_json(root / MANIFEST_RELATIVE, {"schema_version": 1, "checks": checks})
+    fixtures.write_json(root / MANIFEST_RELATIVE, {"schema_version": 2, "checks": checks})
     fixtures.git(root, "init", "-q", "-b", "main")
     fixtures.git(root, "config", "user.email", "t@example.invalid")
     fixtures.git(root, "config", "user.name", "Identity Test")
@@ -146,9 +146,12 @@ def test_a_policy_change_refuses_evidence_answered_under_another_policy(tmp_path
             "timeout_seconds": 120,
             "required_scenarios": list(_example_checks()[0]["required_scenarios"]),
             "artifact": "result.json",
+            "kind": "scenario",
+            "subject": {"paths": [], "digest": None},
+            "claim_id": "second-behavior",
         },
     ]
-    fixtures.write_json(project.root / MANIFEST_RELATIVE, {"schema_version": 1, "checks": changed})
+    fixtures.write_json(project.root / MANIFEST_RELATIVE, {"schema_version": 2, "checks": changed})
 
     in_force = _context(project)
     assert in_force.policy_digest != admitted_under.policy_digest, (
@@ -200,9 +203,12 @@ def test_a_new_attempt_under_the_new_policy_is_accepted(tmp_path: Path) -> None:
             "timeout_seconds": 120,
             "required_scenarios": list(_example_checks()[0]["required_scenarios"]),
             "artifact": "result.json",
+            "kind": "scenario",
+            "subject": {"paths": [], "digest": None},
+            "claim_id": "second-behavior",
         },
     ]
-    fixtures.write_json(project.root / MANIFEST_RELATIVE, {"schema_version": 1, "checks": changed})
+    fixtures.write_json(project.root / MANIFEST_RELATIVE, {"schema_version": 2, "checks": changed})
     in_force = _context(project)
 
     # The old attempt has had its decision and gives the repository up. A new

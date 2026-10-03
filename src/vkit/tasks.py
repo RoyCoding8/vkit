@@ -886,7 +886,8 @@ def _decide(
 def _runs_in(conn: sqlite3.Connection, task_id: str, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT run_id, check_id, task_id, attempt, lifecycle, result, reason, "
-        "configuration_digest, fixture_digest, source_json FROM runs "
+        "configuration_digest, fixture_digest, source_json, evidence_kind, "
+        "satisfied_json FROM runs "
         "WHERE task_id = ? ORDER BY rowid DESC LIMIT ?",
         (task_id, limit),
     ).fetchall()
@@ -899,6 +900,8 @@ def _runs_in(conn: sqlite3.Connection, task_id: str, limit: int) -> list[dict[st
             "reason": row[6], "configuration_digest": row[7],
             "fixture_digest": row[8],
             "source_inventory_digest": source.get("inventory_digest"),
+            "evidence_kind": row[10],
+            "satisfied": json.loads(row[11] or "[]"),
         })
     return runs
 

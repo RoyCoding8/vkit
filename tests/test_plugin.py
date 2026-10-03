@@ -28,7 +28,7 @@ HOOK_SCRIPT = PLUGIN_ROOT / "scripts" / "vkit_hook.py"
 # The events hooks.json declares. Claude Code ignores a handler for an event the
 # plugin does not register, so this list and hooks.json must not drift.
 DECLARED_EVENTS = (
-    "SessionStart", "SubagentStart", "PreToolUse",
+    "SessionStart", "SubagentStart", "PreToolUse", "PostToolUse",
     "Stop", "SubagentStop", "TaskCompleted",
 )
 

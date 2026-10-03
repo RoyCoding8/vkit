@@ -283,7 +283,13 @@ def _publish_outcome(
     import json as _json
     from datetime import datetime, timezone
 
-    from .execution import ProcessResult, _derive, _publish, _terminal_report
+    from .execution import (
+        ProcessResult,
+        _derive,
+        _publish,
+        _terminal_report,
+        _write_receipt,
+    )
 
     process = ProcessResult(
         pid=result.pid,
@@ -295,9 +301,20 @@ def _publish_outcome(
         boot_id=result.boot_id,
     )
     artifact = store.resolve_artifact(run_id, check.artifact_name)
-    outcome = _derive(check, process, artifact if artifact.is_file() else None)
+    outcome, reading = _derive(check, process, artifact if artifact.is_file() else None)
+    recorded = store.run_status(run_id) or {}
+    source = _source_of(store, run_id)
+    # The same receipt the foreground path writes, built by the same function,
+    # because the detached and foreground paths have to produce one verdict from
+    # one derivation. A receipt only the foreground path wrote would make
+    # `run_get` and `vkit check run` disagree about the same run.
+    receipt = _write_receipt(
+        store.run_dir(run_id), check, manifest, source,
+        run_id, recorded.get("task_id"), recorded.get("attempt"),
+        outcome, reading, artifact, fixture_digest, environment,
+    )
     report = _terminal_report(
-        run_id, check, manifest, _source_of(store, run_id),
+        run_id, check, manifest, source,
         outcome=outcome,
         started_at=launch_row["requested_at"],
         ended_at=datetime.now(timezone.utc).isoformat(),
@@ -307,6 +324,7 @@ def _publish_outcome(
         executed_argv=list(_json.loads(launch_row["argv_json"])),
         provenance=environment.provenance(),
         fixture_digest=fixture_digest,
+        receipt=receipt,
     )
     _publish(store, run_id, report)
 

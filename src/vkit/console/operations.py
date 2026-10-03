@@ -820,21 +820,27 @@ def recovery_view(context: Context) -> dict[str, Any]:
 
 
 def cleanup_section(context: Context) -> dict[str, Any]:
-    """Cleanup. Mode, rules, protected paths, and what is still owed.
+    """Cleanup. Mode, rules, protected paths, what is still owed, what was done.
 
-    **The panels this build cannot fill are named, rather than left blank.** The
-    cleanup package writes a preservation receipt into the `Applied` it returns to
-    its caller and persists only the original bytes, so there is nothing on disk to
-    list; the same is true of applied patches and of proposals, which are frozen
-    values a preview returns and nothing stores. Inventing a plausible empty list
-    would be indistinguishable from a project that has never cleaned anything,
-    which is a different and false claim.
+    **The four panels checkpoint 12.2 named as absent are filled from the durable
+    record.** That build reported "applied patches", "preservation receipts",
+    "proposals" and "past refusal reasons" as unavailable because the cleanup
+    package returned a receipt to its caller and persisted only the original
+    bytes, so there was nothing on disk to list. Naming them was the right call
+    with that backend: an empty list reads as "nothing has ever been cleaned",
+    which is a different and false claim. `cleanup.records` is that backend, so
+    the panels carry real data and `unavailable` is empty.
+
+    A refusal is listed with the checker's own reason and detail, because the
+    question an operator brings to this page is "why was that file left alone"
+    and a row reading "refused" with nothing after it answers nothing.
 
     What is real, and comes from the core: the policy as `cleanup.load_policy`
     reads it, whether that policy is usable, the rules it enables, the paths it
-    excludes, and the outstanding work `cleanup.freshness` derives from the
-    working tree. `freshness` is read-only by construction: it forces the policy
-    to preview mode on a copy, so calling it here cannot apply a change.
+    excludes, the outstanding work `cleanup.freshness` derives from the working
+    tree, and the recorded outcomes `cleanup.records` reads back from the state
+    database. `freshness` is read-only by construction: it forces the policy to
+    preview mode on a copy, so calling it here cannot apply a change.
 
     The policy file itself lives under `verification/`, which is a protected
     path. Checkpoint 12.3 replaced the blanket prohibition with a validated
@@ -853,6 +859,7 @@ def cleanup_section(context: Context) -> dict[str, Any]:
     the only place it is used, and leaves the direction cleanup -> console one-way.
     """
     from ..cleanup import hooks as cleanup_hooks
+    from ..cleanup import records as cleanup_records
     from .plan import PROTECTED_PATH_PARTS
 
     problem = cleanup_hooks.policy_problem(context.project)
@@ -865,7 +872,14 @@ def cleanup_section(context: Context) -> dict[str, Any]:
             "problem": problem,
             "protected_paths": list(PROTECTED_PATH_PARTS),
             "outstanding": [],
-            "unavailable": _CLEANUP_WITHOUT_BACKEND,
+            "applied": [],
+            "refusals": [],
+            "applied_total": 0,
+            "refusal_total": 0,
+            "already_applied_total": 0,
+            "total": 0,
+            "truncated": False,
+            "unavailable": [],
         }
 
     outstanding: list[dict[str, Any]] = []
@@ -877,6 +891,22 @@ def cleanup_section(context: Context) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - report rather than fail the read
         freshness_error = str(exc)
 
+    # A store that cannot be read is reported beside the panels rather than
+    # replacing them: the policy and the outstanding work are still true facts,
+    # and a page that refused to render anything would hide them behind a
+    # failure nobody caused. The keys match `cleanup_summary`'s exactly, so the
+    # page renders the same shape whether or not the record could be read.
+    history: dict[str, Any] = {
+        "applied": [], "refusals": [], "applied_total": 0, "refusal_total": 0,
+        "already_applied_total": 0, "total": 0, "truncated": False,
+        "limit": cleanup_records.DEFAULT_LIMIT,
+    }
+    history_error: str | None = None
+    try:
+        history = cleanup_records.cleanup_summary(context.project)
+    except Exception as exc:  # noqa: BLE001 - report rather than fail the read
+        history_error = str(exc)
+
     return {
         "available": freshness_error is None,
         "problem": problem,
@@ -887,8 +917,10 @@ def cleanup_section(context: Context) -> dict[str, Any]:
         "registered_rules": list(cleanup_hooks.RULE_ORDER),
         "protected_paths": list(PROTECTED_PATH_PARTS),
         "outstanding": outstanding,
+        **history,
+        "history_error": history_error,
         "error": freshness_error,
-        "unavailable": _CLEANUP_WITHOUT_BACKEND,
+        "unavailable": [],
         "note": (
             "This policy is the document the Settings view writes when you change "
             "the cleanup controls there. A change is previewed before it is saved, "
@@ -896,41 +928,6 @@ def cleanup_section(context: Context) -> dict[str, Any]:
             "weakening rather than as a tidy-up."
         ),
     }
-
-
-#: The cleanup panels this build cannot fill, named so the page says which they
-#: are rather than rendering a silent gap. Each names the backend that is absent,
-#: because "not shown" without a reason is indistinguishable from "none exist".
-_CLEANUP_WITHOUT_BACKEND: tuple[dict[str, str], ...] = (
-    {
-        "panel": "applied patches",
-        "missing": (
-            "cleanup.apply returns an Applied record to its caller and persists "
-            "only the original bytes; nothing stores the patch list"
-        ),
-    },
-    {
-        "panel": "preservation receipts",
-        "missing": (
-            "the receipt travels on the Applied value and is never written to "
-            "storage, so there is no receipt to read back"
-        ),
-    },
-    {
-        "panel": "proposals",
-        "missing": (
-            "a proposal is a frozen value a preview returns; no collection of "
-            "them is stored"
-        ),
-    },
-    {
-        "panel": "past refusal reasons",
-        "missing": (
-            "refusals are returned to the caller that asked; recovery is by "
-            "digest comparison against the file, not by a log"
-        ),
-    },
-)
 
 
 def log_tail(context: Context, run_id: str, stream: str, *, max_bytes: int = MAX_LOG_BYTES) -> dict[str, Any]:

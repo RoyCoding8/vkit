@@ -905,12 +905,11 @@ function taskRuns(task) {
 
 /* ----------------------------------------------------------------- cleanup
 
-   **The panels this build cannot fill are named, not left blank.** Applied
-   patches, preservation receipts, proposals, and past refusal reasons have no
-   listing backend in this build: the cleanup package hands a receipt to the
-   caller that asked for it and persists only the original bytes. An empty list
-   would read as "nothing has ever been cleaned", which is a different and false
-   claim. So each absent panel is rendered with the backend that is missing. */
+   **What cleanup did is real data.** The applied panel and the refusals panel
+   read the durable record written by every apply outcome, so an empty list means
+   this project has never cleaned anything, which is a true statement rather
+   than a gap. A refusal is rendered with the checker's own reason, because the
+   question an operator brings to this page is why a file was left alone. */
 async function showCleanup() {
   const section = await sectionOf("checks", "sections.cleanup");
   if (!section) return fill("cleanup-body", panel(el("p", { class: "note", text: "the cleanup policy could not be read" })));
@@ -919,8 +918,7 @@ async function showCleanup() {
     return fill("cleanup-body", panel(
       el("div", { class: "refusal" },
         el("div", { class: "why", text: "the cleanup policy could not be read" }),
-        el("div", { class: "core", text: section.error || section.problem || "no detail" })),
-      unavailablePanel(section)));
+        el("div", { class: "core", text: section.error || section.problem || "no detail" }))));
   }
 
   const policy = section.policy || {};
@@ -953,21 +951,77 @@ async function showCleanup() {
       outstanding.length
         ? el("ul", { class: "policy" }, ...outstanding.map((item) => el("li", { class: "mono", text: `${item.path} — ${item.rule}` })))
         : el("p", { class: "note", text: "nothing is owed: every changed line satisfies the enabled rules" })),
-    unavailablePanel(section),
+    appliedPanel(section),
+    refusalsPanel(section),
     panel(el("p", { class: "note", text: section.note })),
   ];
   return fill("cleanup-body", ...panels);
 }
 
-function unavailablePanel(section) {
-  const absent = section.unavailable || [];
-  if (!absent.length) return null;
-  const items = absent.map((item) => el("li", {},
-    el("span", { class: "mono strong", text: item.panel }),
-    el("div", { class: "note", text: `not shown: ${item.missing}` })));
+/* One applied cleanup: which file, which rule, what it changed, and the
+   receipt that authorized it. The digests are abbreviated because the full
+   value is in the detail line, and a 64-character hex string in a column is
+   unreadable at any width. */
+function appliedPanel(section) {
+  const applied = section.applied || [];
+  const retries = section.already_applied_total || 0;
+  const body = applied.length
+    ? table(
+        ["file", "rule", "before", "after", "receipt"],
+        applied.map((record) => [
+          el("td", { class: "mono", text: record.path }),
+          el("td", { class: "mono", text: record.rule }),
+          el("td", { class: "mono", text: shortDigest(record.beforeDigest) }),
+          el("td", { class: "mono", text: shortDigest(record.afterDigest) }),
+          el("td", { class: "mono", text: receiptSummary(record.receipt) }),
+        ]))
+    : el("p", { class: "note", text: "no cleanup has been applied in this project" });
   return panel(
-    el("div", { class: "row" }, el("strong", { text: "not available in this build" })),
-    el("ul", { class: "policy" }, ...items));
+    el("div", { class: "row" },
+      el("strong", { text: "applied cleanup" }),
+      el("span", { class: "pill yes", text: `${applied.length}` })),
+    body,
+    el("p", { class: "note", text: historyNote(section, retries) }));
+}
+
+/* A refusal is the panel an operator reads when a file was left alone, so it
+   carries the checker's reason verbatim. A row that said "refused" and stopped
+   there would be the named-gap problem in a different costume. */
+function refusalsPanel(section) {
+  const refusals = section.refusals || [];
+  const body = refusals.length
+    ? el("ul", { class: "policy" }, ...refusals.map((record) => el("li", {},
+        el("span", { class: "mono strong", text: `${record.path} — ${record.reason}` }),
+        el("div", { class: "note", text: record.detail || "no detail was recorded" }))))
+    : el("p", { class: "note", text: "nothing has been refused" });
+  return panel(
+    el("div", { class: "row" },
+      el("strong", { text: "refused" }),
+      el("span", { class: "pill no", text: `${refusals.length}` })),
+    body);
+}
+
+function shortDigest(value) {
+  return value ? String(value).slice(0, 12) : "—";
+}
+
+function receiptSummary(receipt) {
+  if (!receipt || !receipt.result) return "no receipt";
+  if (receipt.checker) return `${receipt.result} (${receipt.checker})`;
+  return receipt.result;
+}
+
+/* The count line under both panels. `total` is every recorded outcome and
+   `truncated` says whether this page holds all of them, so a reader can always
+   tell which of the two they are looking at. */
+function historyNote(section, retries) {
+  if (section.history_error) {
+    return `the cleanup record could not be read: ${section.history_error}`;
+  }
+  const total = section.total || 0;
+  const retry = retries ? ` ${retries} repeated request(s) converged without a second edit.` : "";
+  if (!section.truncated) return `Every recorded outcome is shown. ${total} recorded in all.${retry}`;
+  return `Showing the newest ${section.limit || 0}. ${total} are recorded in all; the oldest have been dropped.${retry}`;
 }
 
 /* --------------------------------------------------------- settings & versions

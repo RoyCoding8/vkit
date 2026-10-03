@@ -326,6 +326,50 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ('scenario', 'property', 'finite_model_checking', 'theorem_checking'));
     ALTER TABLE runs ADD COLUMN satisfied_json TEXT;
     """),
+    (7, """
+    -- What each cleanup outcome was, so a dashboard can list it.
+    --
+    -- A cleanup apply used to hand its receipt to the caller and persist only the
+    -- original bytes, so an operator asking "what did this clean up, and why was
+    -- that file left alone" had nothing to read. This table is the answer, and
+    -- `plans/CONTRACT.md` puts a small authoritative record like this one in
+    -- SQLite rather than in a new file format.
+    --
+    -- NO SOURCE TEXT IS STORED HERE. The columns are digests, rule ids, line
+    -- locators, the checker's own preservation receipt and, for a refusal, the
+    -- checker's own reason. Checkpoint 11.2 already preserves the original bytes
+    -- as an artifact beside this database, so a copy inside the row would be a
+    -- second copy of a thing that has one.
+    --
+    -- `receipt_json` and `sites_json` are JSON because both are the checker's
+    -- structured document verbatim and neither has a fixed shape: the compiled
+    -- equality receipt and the comment receipt disagree on nearly every field.
+    -- Splitting them into columns would invent a schema neither checker wrote.
+    --
+    -- `outcome` is a closed set of three, CHECK-enforced, because the caller
+    -- branches on it. A fourth value arriving here is a typo and is rejected by
+    -- the database rather than by a branch somebody has to review.
+    CREATE TABLE IF NOT EXISTS cleanup_records (
+        relative_path  TEXT NOT NULL,
+        outcome        TEXT NOT NULL
+            CHECK (outcome IN ('applied', 'already_applied', 'refused')),
+        rule_id        TEXT NOT NULL,
+        request_id     TEXT NOT NULL,
+        proposal_id    TEXT NOT NULL,
+        generation     INTEGER NOT NULL,
+        policy_digest  TEXT NOT NULL,
+        before_digest  TEXT,
+        after_digest   TEXT,
+        reason         TEXT,
+        detail         TEXT,
+        receipt_json   TEXT NOT NULL,
+        sites_json     TEXT NOT NULL,
+        artifact_path  TEXT,
+        recorded_at    TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS cleanup_records_by_path ON cleanup_records(relative_path);
+    """),
 )
 
 
@@ -411,6 +455,16 @@ _LAUNCH_COLUMNS = (
     "cwd", "stdout_path", "stderr_path", "env_json", "timeout_seconds", "job_name",
     "supervisor_pid", "supervisor_start", "requested_at", "kind", "abandoned",
     "abandoned_at", "abandon_evidence",
+)
+
+# The `cleanup_records` columns `list_cleanup` returns, in the order its query
+# selects them. Same reason as `_RUN_COLUMNS`: a positional zip against a
+# separately written key tuple is a mapping that can silently reorder, and a
+# reordered `before_digest` under `after_digest` is a record that lies.
+_CLEANUP_KEYS = (
+    "relative_path", "outcome", "rule_id", "request_id", "proposal_id", "generation",
+    "policy_digest", "before_digest", "after_digest", "reason", "detail",
+    "receipt_json", "sites_json", "artifact_path", "recorded_at",
 )
 
 
@@ -1191,6 +1245,78 @@ class Store:
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [_acceptance_from_row(row) for row in rows]
+
+    # One cleanup outcome per row, appended and never updated. The writer is
+    # `records.py`, which owns the domain shape; this side owns the table and
+    # the bound, because a bound enforced by the caller is a bound the next
+    # caller does not have.
+
+    _CLEANUP_COLUMNS = (
+        "relative_path, outcome, rule_id, request_id, proposal_id, generation, "
+        "policy_digest, before_digest, after_digest, reason, detail, receipt_json, "
+        "sites_json, artifact_path, recorded_at"
+    )
+
+    def record_cleanup(self, record: dict, *, keep: int) -> None:
+        """Append one cleanup outcome, then drop the oldest beyond `keep`.
+
+        Append-only and bounded together, in ONE transaction. Trimming in a
+        second statement outside it would leave a window where the table holds
+        more than the bound, and a process interrupted in that window is a
+        state directory that grew by a row nobody chose.
+
+        The trim deletes the oldest rows by rowid rather than rewriting the
+        table, so it is `keep` rows that leave and not a vacuum. A caller
+        passing a non-positive `keep` gets an empty table rather than an
+        unbounded one, because the failure mode of a wrong bound here is a
+        disk that fills.
+        """
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT INTO cleanup_records (" + self._CLEANUP_COLUMNS + ")"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record["relative_path"], record["outcome"], record["rule_id"],
+                    record["request_id"], record["proposal_id"], record["generation"],
+                    record["policy_digest"], record["before_digest"],
+                    record["after_digest"], record["reason"], record["detail"],
+                    _dumps(record["receipt"]), _dumps(record["sites"]),
+                    record["artifact_path"], _now(),
+                ),
+            )
+            conn.execute(
+                "DELETE FROM cleanup_records WHERE rowid NOT IN"
+                " (SELECT rowid FROM cleanup_records ORDER BY rowid DESC LIMIT ?)",
+                (max(int(keep), 0),),
+            )
+
+    def list_cleanup(self, *, limit: int = 50) -> tuple[list[dict], int]:
+        """Recent cleanup outcomes, newest first, and how many exist in all.
+
+        Ordered by rowid rather than `recorded_at`, for the reason `list_runs`
+        gives: two applies inside one microsecond would tie on the timestamp and
+        the order between them would be whatever the query returned first, so
+        "the most recent cleanup" would not be a reproducible answer.
+
+        The count comes back with the rows because a bounded read that silently
+        returned fewer leaves the reader unable to tell "that is everything"
+        from "there is more", and that is the same honest-gap failure a silent
+        empty panel causes.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT " + self._CLEANUP_COLUMNS
+                + " FROM cleanup_records ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            total = conn.execute("SELECT COUNT(*) FROM cleanup_records").fetchone()[0]
+        out: list[dict] = []
+        for row in rows:
+            record = dict(zip(_CLEANUP_KEYS, row))
+            record["receipt"] = json.loads(record.pop("receipt_json") or "{}")
+            record["sites"] = json.loads(record.pop("sites_json") or "[]")
+            out.append(record)
+        return out, total
 
 
 def _acceptance_from_row(row) -> dict:

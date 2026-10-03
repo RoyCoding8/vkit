@@ -82,6 +82,7 @@ from .logic import (
     verify_docstrings,
 )
 from .policy import CleanupMode, CleanupPolicy, check_policy
+from .records import record_outcome
 
 #: Where the original bytes are kept. Under the shared Git directory rather than
 #: the working tree, so two clones share the record of what ran and deleting a
@@ -484,6 +485,11 @@ def apply_cleanup(
     decision supplies the same one every other writer uses -- `verify_ownership`
     from `vkit.tasks`, inside the transaction that holds the claims.
 
+    Every outcome is appended to the durable record, refusals included. Recording
+    here rather than at each call site is the whole reason an operator can ask
+    why a file was left alone: a refusal returned to one caller and forgotten is
+    indistinguishable from a file nobody ever looked at.
+
     The sequence, and why it is this sequence:
 
     1. Every guard, before any byte moves.
@@ -494,6 +500,18 @@ def apply_cleanup(
     4. Replace atomically.
     5. Report.
     """
+    outcome = _decide(project, request, ownership_check=ownership_check)
+    record_outcome(project, request, outcome)
+    return outcome
+
+
+def _decide(
+    project: Project,
+    request: ApplyRequest,
+    *,
+    ownership_check,
+) -> ApplyResult:
+    """The apply itself, without the record. Every branch returns a sum member."""
     failure = _guard(project, request, ownership_check=ownership_check)
     if failure is not None:
         return failure

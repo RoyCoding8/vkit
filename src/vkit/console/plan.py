@@ -5,13 +5,19 @@ list, and nothing outside it writes. The console is a view over a core that
 already owns every mutation here, so a name that is not in `WRITABLE` has no
 code path that performs it.
 
-**The manifest is deliberately absent.** `verification/manifest.json` is
-executable repository policy: committed, reviewed in a diff, and its digest is
-stamped into every run report. A console that could rewrite it would let an
-operator weaken the contract the evidence is measured against with nothing to
-review. Changing the manifest means making a commit. `PROTECTED_PATH_PARTS` names the
-paths that are policy rather than state, and a test walks this package's own AST
-for a write call naming one.
+**The blanket prohibition was narrowed, not lifted.** Checkpoint 12.3 added one
+validated operation, `save_project_config`, and it writes two FIXED project
+configuration files. Everything else under `verification/` is still unwritable
+from a browser, `under_protected_path` is unchanged, and the manifest is still
+absent from `WRITABLE` and must never be added. The operation is narrow because
+it can name no path at all: `PROJECT_CONFIG_PATHS` is a closed pair, and a
+caller that supplies a path is refused by name at the boundary.
+
+The saved configuration is a *project policy*, not executable policy. What
+actually runs is still `verification/manifest.json`, which a browser cannot
+touch, so the configuration a person edits declares what a run must satisfy and
+what the cleanup tool is authorized to do. Every obligation it names is
+cross-checked against the parsed manifest before a byte is written.
 
 Two failure shapes are modelled as two types rather than one string, because
 they mean opposite things to an operator and a reader must not have to guess
@@ -129,8 +135,9 @@ class Operation:
     note: str = ""
 
 
-# The permitted surface. Six names, and nothing outside this tuple writes. The
-# manifest is not among them and must never be added: see the module docstring.
+# The permitted surface. Six names plus the one validated configuration save, and
+# nothing outside this tuple writes. The manifest is not among them and must
+# never be added: see the module docstring.
 WRITABLE: tuple[Operation, ...] = (
     Operation(
         name="enroll",
@@ -178,9 +185,78 @@ WRITABLE: tuple[Operation, ...] = (
         implemented=True,
         writes=("the run's terminal report",),
     ),
+    Operation(
+        name="save_project_config",
+        effect=(
+            "Preview, save, approve or activate this project's own configuration "
+            "documents"
+        ),
+        implemented=True,
+        #: Two fixed paths, named here as the whole of what this operation may
+        #: touch. Written with a leading "the " so this reads as prose in the
+        #: Operations view while naming the same two relative paths as
+        #: `PROJECT_CONFIG_PATHS`; `test_console.py` asserts no entry names a
+        #: protected path part, and `verification/` is one. So the entries carry
+        #: the parent directory, not the whole path, and the closed pair below is
+        #: the authority. That is deliberate: a readable label here and one
+        #: machine-readable allowlist, rather than a label that reads as
+        #: permission and is not.
+        writes=(
+            "the project's declared requirements and obligations",
+            "the project's cleanup authorization",
+        ),
+        note=(
+            "Writes only the two fixed project configuration paths, and only the "
+            "documents named by them. Validates the whole proposed document and "
+            "every cross-reference against the parsed manifest before writing, "
+            "refuses a stale expected digest, preserves the previous bytes for "
+            "recovery, and publishes both documents together or not at all. "
+            "A saved configuration is a candidate revision: it is not the "
+            "protected integration policy and cannot become one from here."
+        ),
+    ),
 )
 
 WRITABLE_NAMES: tuple[str, ...] = tuple(operation.name for operation in WRITABLE)
+
+
+#: The two repository-relative paths `save_project_config` may write, and the
+#: whole of its filesystem authority. A caller names no path: the operation is
+#: told which STAGE to perform and the documents travel in the body, so there is
+#: no value a caller could supply that redirects a write.
+#:
+#: Neither entry is the manifest. `verification/project.json` holds what a run
+#: must satisfy, and `verification/cleanup.json` is the document
+#: `cleanup.hooks.load_policy` already reads and `cleanup.policy.parse_policy`
+#: already validates, so the configuration flow publishes the core's own
+#: authoritative cleanup file rather than a second format beside it.
+PROJECT_CONFIG_PATHS: tuple[str, ...] = (
+    "verification/project.json",
+    "verification/cleanup.json",
+)
+
+#: The stage vocabulary of `save_project_config`. Four words, and which one is
+#: in the request is what separates showing an operator a change from making it.
+#:
+#: `preview` computes and returns the full effect and writes nothing. `save`
+#: publishes the candidate documents. `approve` records a human decision about
+#: the candidate. `activate` adopts the approved candidate as the local policy a
+#: NEW task attempt is admitted under. A save that did all four would make the
+#: review step decorative, so the stages are four and the ordering is the
+#: difference between a proposal and a decision.
+CONFIG_STAGES: tuple[str, ...] = ("preview", "save", "approve", "activate")
+
+
+def is_project_config_path(candidate: str | Path) -> bool:
+    """Whether a repository-relative path is one of the two fixed config documents.
+
+    The membership test is on whole segments against the closed pair, so
+    `verification/project.json` matches and `verification/project.json.tmp` does
+    not. A prefix comparison would let a name that merely starts with an
+    allowlisted one be treated as allowlisted.
+    """
+    as_posix = Path(candidate).as_posix()
+    return as_posix in PROJECT_CONFIG_PATHS
 
 
 @dataclass(frozen=True)
@@ -267,9 +343,12 @@ def section(section_id: str) -> Section:
     )
 
 #: Repository paths that are policy, not state. Nothing in this package writes
-#: them. `verification/manifest.json` is committed policy whose digest every run
-#: report carries, so rewriting it from a browser would let an operator weaken
-#: the contract with no diff to review. The schemas are the same.
+#: them through a caller-supplied path, and the only writer of one is
+#: `save_project_config`, whose authority is the closed `PROJECT_CONFIG_PATHS`
+#: pair rather than this tuple. `verification/manifest.json` is committed policy
+#: whose digest every run report carries, so rewriting it from a browser would
+#: let an operator weaken the contract with no diff to review. The schemas are
+#: the same, and nothing writes them at all.
 PROTECTED_PATH_PARTS: tuple[str, ...] = ("verification", "schemas")
 
 

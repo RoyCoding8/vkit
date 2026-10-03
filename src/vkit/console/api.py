@@ -30,6 +30,7 @@ from typing import Any, Callable, Mapping
 
 from . import operations
 from .plan import (
+    CONFIG_STAGES,
     DEFAULT_RUN_LIMIT,
     MAX_LOG_BYTES,
     NotImplementedInBuild,
@@ -37,7 +38,7 @@ from .plan import (
     WRITABLE_NAMES,
     under_protected_path,
 )
-from .operations import Context
+from .operations import Context, ConfigurationRefused
 
 #: The only host names that name this machine. The socket is bound to
 #: `LOOPBACK_HOST`, so these resolve here, and a request naming anything else is
@@ -84,8 +85,17 @@ MUTATIONS: dict[str, Callable[[Context, Mapping[str, Any]], Any]] = {
 
 #: The only request parameters any route reads. None of them is a path, so no
 #: request can name a file the console would then act on.
+#:
+#: `stage` is the one addition checkpoint 12.3 made. It is a closed vocabulary of
+#: four words checked in `_stage_param`, it is read by no read route, and it
+#: cannot carry a path: a value outside `CONFIG_STAGES` is refused by name, so
+#: the new parameter cannot become a way to name a file. Every other name is
+#: declared here rather than at each call site so that a name added to a route
+#: without being added to this set fails a test instead of quietly widening what a
+#: request can name.
 PARAM_NAMES: frozenset[str] = frozenset({
     "limit", "run_id", "check_id", "stream", "max_bytes", "operation", "scope", "accepted",
+    "stage",
 })
 
 
@@ -219,8 +229,97 @@ def _apply(context: Context, query: Mapping[str, Any]) -> dict[str, Any]:
         arguments["scope"] = _text_param(query, "scope")
     if "accepted" in query:
         arguments["accepted"] = _bool_param(query, "accepted")
+    if "stage" in query:
+        # Only the configuration operation reads it, and the operation refuses
+        # the name it was not asked for. Passing it to every operation would make
+        # `stage` a parameter each handler has to remember to ignore.
+        if name != "save_project_config":
+            raise BadRequest(
+                f"stage applies only to save_project_config, not to {name!r}"
+            )
+        arguments["stage"] = _stage_param(query, "stage")
+    # The proposed document and the digest it was edited against are body
+    # values, not query parameters: both are too large for a URL, and the digest
+    # is compared rather than read. Neither is a path, so neither reaches
+    # `under_protected_path`, and the operation validates the document's own
+    # structure before it writes anything.
+    for body_name in ("document", "expected_digest", "revision"):
+        if body_name in query:
+            arguments[body_name] = query[body_name]
+    if "document" in arguments:
+        arguments["document"] = _document_param(arguments["document"])
+    if "expected_digest" in arguments:
+        arguments["expected_digest"] = _digest_param(
+            arguments["expected_digest"], "expected_digest"
+        )
+    if "revision" in arguments:
+        arguments["revision"] = _digest_param(arguments["revision"], "revision")
+    if "path" in query:
+        raise BadRequest(
+            "no operation takes a path. The configuration save writes the two "
+            "fixed project configuration files named in the writable surface and "
+            "takes no path, so there is nothing here to redirect"
+        )
     result = handler(context, **arguments)
     return {"operation": name, "result": result}
+
+
+def _stage_param(query: Mapping[str, Any], name: str) -> str:
+    """A stage from the closed four-word vocabulary, or a refusal quoting it.
+
+    Checked here rather than at the operation because this is where untrusted
+    text becomes a typed value: the operation receives a `str` it may trust.
+    `under_protected_path` runs first, so a caller cannot smuggle a path through
+    this parameter even as far as the refusal message.
+    """
+    raw = query.get(name)
+    if not isinstance(raw, str) or raw not in CONFIG_STAGES:
+        raise BadRequest(
+            f"{name} must be one of {', '.join(CONFIG_STAGES)}, got {raw!r}"
+        )
+    return raw
+
+
+def _document_param(raw: Any) -> dict[str, Any]:
+    """The proposed configuration document, as a JSON object.
+
+    It must be an object because every field in it is a typed value the
+    operation parses, and a list or a string would be a request shape with no
+    validation path. It is deliberately NOT read by `_text_param`: that helper
+    refuses a string naming a protected path, which is the right rule for an
+    identifier and the wrong rule for a validated document whose contents are
+    checked by the operation's own whole-document validation. Applying the
+    identifier rule to the document would have required weakening it for every
+    other route, which is the blanket relaxation this checkpoint refuses.
+    """
+    if not isinstance(raw, dict):
+        raise BadRequest(
+            f"document must be a JSON object, got {type(raw).__name__}"
+        )
+    return raw
+
+
+def _digest_param(raw: Any, name: str) -> str:
+    """A hex digest, of the length this console's own digests have.
+
+    `expected_digest` is a full 64-character sha256 over the configuration and a
+    `revision` is the first 32 characters of the sha256 over the same content, so
+    one length cannot check both. Both are checked as hex of a length this module
+    produces, and the operation compares against a real value either way: a caller
+    that sent something else cannot make it match, so this is about a readable
+    refusal rather than about safety.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        raise BadRequest(f"{name} must be a nonempty string, got {raw!r}")
+    text = raw.strip()
+    if len(text) not in (32, 64) or any(
+        character not in "0123456789abcdef" for character in text
+    ):
+        raise BadRequest(
+            f"{name} must be a 64-character configuration digest or a 32-character "
+            f"revision, got {raw!r}"
+        )
+    return text
 
 
 def _bool_param(query: Mapping[str, Any], name: str) -> bool:
@@ -301,6 +400,12 @@ def error_of(exc: BaseException) -> tuple[int, dict[str, Any]]:
     if isinstance(exc, NotImplementedInBuild):
         return 501, {"error": str(exc), "operation": exc.operation,
                      "implemented": False, "writable_surface": list(WRITABLE_NAMES)}
+    # A configuration refusal is a 409 with the same shape as a core refusal, so
+    # a caller sees one conflict status rather than a 500 that reads as a crash.
+    # Its reason is carried verbatim for the same reason every other refusal is.
+    if isinstance(exc, ConfigurationRefused):
+        return 409, {"error": str(exc), "refused": True,
+                     "configuration": True}
     if isinstance(exc, Refused):
         return 409, {"error": exc.reason, "refused": True}
     return 500, {"error": str(exc)}

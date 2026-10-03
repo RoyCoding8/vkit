@@ -319,7 +319,12 @@ def parse_policy(document: Any) -> CleanupPolicy:
         ) from exc
 
     def string_tuple(key: str) -> tuple[str, ...]:
-        value = document.get(key, ())
+        # Absent is an empty tuple, and only an ABSENT key defaults. A key that is
+        # present must hold a real list, so `{"excluded_paths": ""}` is a
+        # malformed policy rather than an empty one.
+        if key not in document:
+            return ()
+        value = document[key]
         if not isinstance(value, list) or any(
             not isinstance(item, str) or not item for item in value
         ):

@@ -165,12 +165,21 @@ def test_a_loopback_bind_succeeds_on_port_zero(context: operations.Context) -> N
 # ------------------------------------------------------------ writable list
 
 
-def test_the_writable_list_is_exactly_the_six_permitted_operations() -> None:
+def test_the_writable_list_is_the_permitted_operations_and_nothing_else() -> None:
+    """Every name on the list resolves to a handler, and none is the manifest.
+
+    Checkpoint 12.3 added `save_project_config`, so the count moved from six to
+    seven. The list is written out here rather than read from the module, because
+    a test that restates the code under test cannot notice the code changing: a
+    name added to `WRITABLE` without being added here fails, and so does a name
+    added here that the module does not have.
+    """
     assert WRITABLE_NAMES == (
         "enroll", "install", "repair", "remove", "run_check", "cancel_run",
+        "save_project_config",
     )
     assert set(operations.OPERATIONS) == set(WRITABLE_NAMES)
-    assert len(WRITABLE_NAMES) == 6
+    assert len(WRITABLE_NAMES) == 7
 
 
 def test_the_manifest_is_not_writable() -> None:
@@ -393,7 +402,7 @@ def test_no_route_takes_a_path_parameter(context: operations.Context) -> None:
     """
     assert api.PARAM_NAMES == frozenset({
         "limit", "run_id", "check_id", "stream", "max_bytes", "operation",
-        "scope", "accepted",
+        "scope", "accepted", "stage",
     })
     for name in api.PARAM_NAMES:
         assert "/" not in name and "\\" not in name
@@ -413,6 +422,16 @@ def test_no_route_takes_a_path_parameter(context: operations.Context) -> None:
         with pytest.raises(api.BadRequest) as caught:
             api.dispatch(context, route, query)
         assert "policy path" in str(caught.value), route
+
+    # And the one name that is not an identifier: `stage` selects which of four
+    # things the configuration operation performs. It is still not a path, and a
+    # value outside its closed vocabulary is refused before any route runs. The
+    # document itself arrives as a body value read by its own validator, so this
+    # set did not have to be relaxed for the configuration save to carry JSON.
+    for outside in ("verification/manifest.json", "schemas/run-report.v1.json"):
+        with pytest.raises(api.BadRequest) as caught:
+            api.dispatch(context, "apply", {"operation": "save_project_config", "stage": outside})
+        assert "stage must be one of" in str(caught.value), outside
 
     # A route that does not read the parameter rejects the request outright,
     # rather than ignoring a path it was handed.

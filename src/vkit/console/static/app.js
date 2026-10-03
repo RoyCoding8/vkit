@@ -24,18 +24,29 @@ function el(tag, attrs = {}, ...children) {
 
 /* GET reads and POST writes. The split is the server's, not this page's: a
    mutation carries the token the server put in this page, and a request without
-   it is refused there whether this page sent it or not. */
+   it is refused there whether this page sent it or not.
+
+   `body` is sent as JSON on a mutation only. It exists because the configuration
+   save carries a whole policy document and a digest, which is neither an
+   identifier nor something that belongs in a URL, and because the server refuses
+   a body it has not bounded. */
 const SESSION_TOKEN =
   document.querySelector('meta[name="vkit-token"]').content;
 
-async function api(route, params = {}, mutate = false) {
+async function api(route, params = {}, mutate = false, body = null) {
   const query = new URLSearchParams(
     Object.entries(params).filter(([, v]) => v !== "" && v !== null && v !== undefined),
   ).toString();
-  const response = await fetch(`/api/${route}${query ? `?${query}` : ""}`, {
-    method: mutate ? "POST" : "GET",
-    headers: mutate ? { "X-Vkit-Token": SESSION_TOKEN } : {},
-  });
+  const init = mutate
+    ? {
+        method: "POST",
+        headers: body
+          ? { "X-Vkit-Token": SESSION_TOKEN, "Content-Type": "application/json" }
+          : { "X-Vkit-Token": SESSION_TOKEN },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      }
+    : {};
+  const response = await fetch(`/api/${route}${query ? `?${query}` : ""}`, init);
   const document_ = await response.json();
   if (!response.ok) {
     const error = new Error(document_.error || `request failed (${response.status})`);
@@ -961,9 +972,14 @@ function unavailablePanel(section) {
 
 /* --------------------------------------------------------- settings & versions
 
-   Read-only, and says so. Configuration editing is checkpoint 12.3. An operator
-   arriving here must not be left hunting for an edit control that is not in this
-   build; the note is at the top so it is read before the components are. */
+   The settings section carries two things that must not be confused for each
+   other: the components this host has installed, and the project configuration
+   this console may edit. The configuration half is below.
+
+   The editor is deliberately one path. A typed control and the JSON editor both
+   produce the same document and both go through `preview` first, so the JSON
+   editor is not a second, weaker door: it is the same validation with a different
+   way of writing the input. */
 async function showIntegrations() {
   const section = await sectionOf("checks", "sections.integrations");
   if (!section) return fill("integrations-body", panel(el("p", { class: "note", text: "the integration record could not be read" })));
@@ -975,7 +991,7 @@ async function showIntegrations() {
     el("td", {}, el("span", { class: `pill ${component.present ? "yes" : "no"}`, text: component.status })),
     el("td", { class: "mono wide-hide", text: component.detail || "" }),
   ));
-  const actions = (section.actions || []).map((action) => el("tr", {},
+  const actions = (section.actions || []).filter((action) => action.operation !== "save_project_config").map((action) => el("tr", {},
     el("td", { class: "mono" }, el("strong", { text: action.operation })),
     el("td", { text: action.effect }),
     el("td", { class: "actions" }, action.available
@@ -985,7 +1001,196 @@ async function showIntegrations() {
   return fill("integrations-body",
     panel(el("p", { class: "note", text: section.note })),
     panel(table(["component", "kind", "version", "status", { label: "detail", hideAt: "wide-hide" }], components)),
-    panel(table(["operation", "effect", "apply from here"], actions)));
+    panel(table(["operation", "effect", "apply from here"], actions)),
+    configurationEditor(section.proposals),
+  );
+}
+
+/* --------------------------------------------------------- configuration
+
+   One document, three states, and a preview before any of it is written.
+
+   `routine` is the field this view branches on before anything else, because a
+   proposal that removes an obligation and a proposal that raises a timeout are
+   both "a settings change" to a page that only renders a summary, and only one
+   of them is safe to present without a warning. */
+function configurationEditor(block) {
+  if (!block) return null;
+  const outcome = el("div", { class: "outcome" });
+
+  /* The local configuration and the approved integration policy, shown together.
+
+     They are different authorities and a page that showed only the local one
+     would let an operator read "saved" as "approved for a protected run". The
+     approved policy is read-only here and this console cannot change it, so the
+     panel says which one decides. */
+  const approved = block.approved_integration || {};
+  const mismatch = block.mismatch || {};
+  const authorityPanel = panel(
+    el("div", { class: "row" },
+      el("strong", { text: "authority" }),
+      el("span", { class: `pill ${approved.context ? "yes" : "no"}`, text: approved.context || "no approved policy" })),
+    kv(
+      ["local configuration", `local · ${(block.local && block.local.policy_id) || "—"}`],
+      ["approved for protected", block.local && block.local.approved_for_protected ? "yes" : "no"],
+      ["approved policy", approved.policy_id || "none"],
+      ["pinned manifest revision", approved.manifest_revision || "none"],
+    ),
+    el("p", { class: "note", text: approved.detail || "" }),
+    el("p", { class: "note", text: mismatch.detail || "" }),
+  );
+
+  const draft = { ...JSON.parse(JSON.stringify(block.current)) };
+  draft.cleanup = { ...draft.cleanup };
+  const editor = el("textarea", {
+    class: "mono config-editor",
+    rows: "18",
+    "aria-label": "proposed configuration document",
+  });
+  /* The initial text goes in as a text child rather than through `value`, which
+     a document-scanned element may not expose as a writable property. A textarea
+     reads its content from its children, so this is both portable and the same
+     textContent rule the rest of the page follows. */
+  const rendered = JSON.stringify(draft, null, 2);
+  editor.append(document.createTextNode(rendered));
+  editor.addEventListener("input", () => {
+    try {
+      const parsed = JSON.parse(editor.value);
+      draft.schema_version = parsed.schema_version;
+      draft.description = parsed.description;
+      draft.required_checks = parsed.required_checks;
+      draft.connection = parsed.connection;
+      draft.cleanup = parsed.cleanup;
+      if (parsed.checks) draft.checks = parsed.checks;
+    } catch (_error) {
+      /* A half-typed document is not a proposal yet. Preview reports the parse. */
+    }
+  });
+
+  /* The digest every write is guarded by, read when this view loaded. A second
+     tab holding an older one is refused by the server rather than merged, so
+     this is the value that makes the refusal happen instead of a silent
+     overwrite. */
+  const expectedDigest = block.digest;
+
+  const previewButton = el("button", { class: "act", type: "button" }, "Preview this change");
+  previewButton.addEventListener("click", () => busy(previewButton, "previewing…", async () => {
+    outcome.replaceChildren();
+    try {
+      const envelope = await api("apply", { operation: "save_project_config", stage: "preview" }, true,
+        { document: draft, expected_digest: expectedDigest });
+      outcome.replaceChildren(previewReport(envelope.result, draft, expectedDigest, outcome));
+      await showIntegrations();
+    } catch (error) {
+      outcome.replaceChildren(refusal(error));
+    }
+  }));
+
+  const stages = el("div", { class: "row" }, previewButton);
+  return panel(
+    el("div", { class: "row" },
+      el("strong", { text: "project configuration" }),
+      el("span", { class: `pill ${block.editable ? "yes" : "no"}`, text: block.editable ? "editable" : "read-only" })),
+    block.problem
+      ? el("div", { class: "refusal" },
+          el("div", { class: "why", text: "the stored configuration cannot be read" }),
+          el("div", { class: "core", text: block.problem }))
+      : null,
+    kv(
+      ["configuration digest", (block.digest || "").slice(0, 12)],
+      ["writable documents", (block.paths || []).join(", ")],
+      ["candidate revision", block.candidate ? block.candidate.revision : "none saved"],
+      ["approved", block.approved ? `${block.approved.revision} (local)` : "not approved"],
+      ["active", block.active ? block.active.revision : "not activated"],
+    ),
+    el("div", { class: "row" }, el("strong", { text: "document" })),
+    editor,
+    el("p", { class: "note", text: "Every field above is validated as a whole before anything is written, and the JSON editor is validated by the same code as the typed controls. argv is an argument list: one entry per argument, never a shell command." }),
+    stages,
+    outcome,
+  );
+}
+
+/* What a change would do, shown before it is done.
+
+   The removal list and the weakening flag are rendered as warnings rather than as
+   fields, because they are the two answers that mean "this is not a routine
+   settings change". A page that rendered them in the same table as a timeout
+   edit would be making the safe answer as quiet as the unsafe one. */
+function previewReport(result, draft, expectedDigest, outcome) {
+  const children = [
+    el("div", { class: "row" },
+      el("strong", { text: result.routine ? "routine change" : "this change weakens the contract" }),
+      el("span", { class: `pill ${result.routine ? "yes" : "warn"}`, text: result.routine ? "routine" : "not routine" })),
+    el("p", { class: "note", text: result.note }),
+  ];
+
+  if ((result.removes_obligations || []).length) {
+    children.push(el("div", { class: "refusal gap" },
+      el("div", { class: "why", text: "removes required obligations" }),
+      el("ul", { class: "policy" }, ...result.removes_obligations.map((entry) => el("li", {},
+        el("span", { class: "mono strong", text: `${entry.check_id}: ${entry.obligation}` }),
+        el("div", { class: "note", text: entry.detail }))))));
+  }
+  if (result.weakens_cleanup) {
+    children.push(el("div", { class: "refusal gap" },
+      el("div", { class: "why", text: "removes cleanup write authority" }),
+      el("div", { class: "note", text: "the configuration in force authorizes verified cleanup writes and this proposal does not" })));
+  }
+
+  children.push(el("div", { class: "row" }, el("strong", { text: "changed" })));
+  children.push(result.changed.length
+    ? table(["document", "field", "now", "changed to"], result.changed.map((entry) => el("tr", {},
+        el("td", { class: "mono wide-hide", text: entry.document }),
+        el("td", { class: "mono", text: entry.field }),
+        el("td", { class: "mono", text: JSON.stringify(entry.current) }),
+        el("td", { class: "mono strong", text: JSON.stringify(entry.changed) }))))
+    : el("p", { class: "note", text: "nothing in the document differs from what is in force" }));
+
+  children.push(el("div", { class: "row" }, el("strong", { text: "affected checks" })));
+  children.push((result.affected_checks || []).length
+    ? el("ul", { class: "policy" }, ...result.affected_checks.map((id) => el("li", { class: "mono", text: id })))
+    : el("p", { class: "note", text: "no check's obligations change" }));
+
+  children.push(el("div", { class: "row" }, el("strong", { text: "evidence that becomes stale" })));
+  children.push((result.stale_evidence || []).length
+    ? table(["check", "run", "verdict"], result.stale_evidence.map((entry) => el("tr", {},
+        el("td", { class: "mono", text: entry.check_id }),
+        el("td", { class: "mono wide-hide", text: entry.run_id || "—" }),
+        el("td", {}, verdict(entry.verdict)))))
+    : el("p", { class: "note", text: "no recorded evidence was produced under the configuration in force" }));
+
+  const revision = result.candidate.revision;
+  const saveButton = el("button", { class: "act", type: "button" }, "Save this proposal");
+  const approveButton = el("button", { class: "act", type: "button" }, "Approve this revision");
+  const activateButton = el("button", { class: "act", type: "button" }, "Activate this revision");
+
+  saveButton.addEventListener("click", () => busy(saveButton, "saving…", async () => {
+    try {
+      const envelope = await api("apply", { operation: "save_project_config", stage: "save" }, true,
+        { document: draft, expected_digest: expectedDigest });
+      toast(`saved candidate ${envelope.result.candidate.revision.slice(0, 12)}`);
+      await showIntegrations();
+    } catch (error) { toast(error.message, true); }
+  }));
+
+  const step = async (stage, button, done) => busy(button, `${stage}…`, async () => {
+    try {
+      const envelope = await api("apply", { operation: "save_project_config", stage }, true,
+        { expected_digest: expectedDigest, revision });
+      toast(`${stage}: ${(envelope.result.note || "").split("\n")[0]}`);
+      if (done) done(envelope.result);
+      await showIntegrations();
+    } catch (error) { toast(error.message, true); }
+  });
+
+  approveButton.addEventListener("click", () => step("approve", approveButton));
+  activateButton.addEventListener("click", () => step("activate", activateButton));
+
+  children.push(el("div", { class: "row" }, saveButton));
+  children.push(el("p", { class: "note", text: "Saving writes the proposal. Approving records that you accept it. Activating adopts it as the local policy a NEW task attempt is admitted under. None of the three releases a task that is already admitted, and none grants protected integration authority." }));
+  children.push(el("div", { class: "row" }, approveButton, activateButton));
+  return el("div", {}, ...children);
 }
 
 /* ------------------------------------------------------------------ overview

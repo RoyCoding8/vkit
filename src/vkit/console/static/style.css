@@ -113,7 +113,21 @@ td.mono, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, mo
 .PASS { color: var(--pass); }
 .FAIL { color: var(--fail); }
 .BLOCKED { color: var(--blocked); }
+/* A readiness verdict is a different axis from a check result: READY means the
+   task's floor is satisfied, REJECTED means a check failed, BLOCKED means
+   evidence is missing. These are not the three run outcomes and are coloured to
+   read as their own scale rather than borrowing the run colours. */
+.READY { color: var(--pass); }
+.REJECTED { color: var(--fail); }
 .missing { color: var(--dim); font-style: italic; }
+/* Why an action is not offered. This is the sentence that replaces a button the
+   console cannot honour; it reads as an explanation, not as a disabled control,
+   and is indented so it sits where the button would have been. */
+.why-not {
+  color: var(--dim); font-size: 12.5px; margin: 6px 0;
+  padding-left: 10px; border-left: 2px solid var(--line);
+}
+li.fail { color: var(--fail); }
 td.actions { white-space: nowrap; }
 td.actions button + button { margin-left: 4px; }
 .pill {

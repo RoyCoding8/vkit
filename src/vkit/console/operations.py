@@ -31,12 +31,18 @@ from ..nowindow import hidden_window
 # one, so `enroll(accepted=True)` here and the same call from the CLI disagreed
 # about whether a repository was enrolled.
 from .. import enroll as core_enroll, pluginres
+from .. import tasks as core_tasks
+from ..claimkind import ClaimCategory
+from ..claims import holders as held_claims
 from ..manifest import Manifest, ManifestError, parse_manifest
 from ..paths import Project, ProjectError, open_project
 from ..recover import Report as RecoveryReport
 from ..recover import inspect as inspect_recovery
-from ..storage import Store, StoreError, probe_state
+from ..storage import Store, StoreError, probe_state, read_receipt
 from ..supervisor import SupervisorError, cancel_run, start_run
+# The core's own serializer for an obligation, so the name the console shows for
+# a required obligation is the same name the receipt that discharges it uses.
+from ..verifiers import obligation_to_json
 from .plan import (
     DEFAULT_RUN_LIMIT,
     LOOPBACK_HOST,
@@ -47,6 +53,7 @@ from .plan import (
     ChangeSet,
     NotImplementedInBuild,
     Refused,
+    SECTIONS,
     operation as named_operation,
 )
 
@@ -117,7 +124,89 @@ def project_view(context: Context) -> dict[str, Any]:
     except ProjectError as exc:
         document["source"] = None
         document["source_error"] = str(exc)
+    document["sections"] = {
+        "overview": overview_section(context),
+        "tasks": tasks_section(context),
+    }
     return document
+
+
+def overview_section(context: Context) -> dict[str, Any]:
+    """Overview. Root, enrollment, integration health, active work, blockers.
+
+    **Enrollment is read from the core's own record.** `enroll.read_enrollment`
+    is the only reader of that document, and this console once wrote a second
+    format of it. Reading it here means the answer is the same one `vkit` gives
+    everywhere else, which is the entire point of asking it at all.
+
+    A blocker is a concrete thing that prevents work, named with what would clear
+    it. The three that can be measured here are an unparsed manifest, a state
+    store that cannot be written, and a check whose prerequisites are absent. An
+    absent toolchain for a category this build has no adapter for is not listed:
+    no check in this project declares one, so naming it would be speculating
+    about capability the project does not ask for.
+    """
+    state = core_enroll.read_enrollment(context.project)
+    state_writable, state_detail = probe_state(
+        context.project.state_root, context.project.db_path
+    )
+
+    blockers: list[dict[str, str]] = []
+    if context.manifest is None:
+        blockers.append({
+            "what": "the manifest could not be parsed",
+            "detail": context.manifest_error or "no manifest",
+            "clears_when": "verification/manifest.json parses",
+        })
+    if not state_writable:
+        blockers.append({
+            "what": "the state store cannot be written",
+            "detail": state_detail,
+            "clears_when": "the state directory is writable",
+        })
+    if context.manifest is not None:
+        for check in sorted(context.manifest.checks.values(), key=lambda c: c.id):
+            missing = [e["name"] for e in _prerequisites(check) if not e["found"]]
+            if missing:
+                blockers.append({
+                    "what": f"{check.id} cannot start",
+                    "detail": f"{', '.join(missing)} not on PATH",
+                    "clears_when": f"{', '.join(missing)} is installed",
+                })
+
+    active = [
+        {"task_id": task_id, "status": None}
+        for task_id in _task_ids(context)
+    ]
+    resolved = []
+    for entry in active:
+        try:
+            record = core_tasks.get_task(context.store, entry["task_id"])
+        except (StoreError, core_tasks.TaskError):
+            continue
+        entry["status"] = record.status
+        entry["generation"] = record.generation
+        resolved.append(entry)
+
+    return {
+        "root": str(context.project.root),
+        "enrollment": {
+            "state": state.state.value,
+            "enrolled": state.state is core_enroll.State.ACCEPTED,
+            "policy_digest": state.policy_digest,
+            "record": str(core_enroll.record_path(context.project)),
+        },
+        "integration": {
+            "plugin": PLUGIN_ID,
+            "installed": _installed_plugin_record(PLUGIN_ID) is not None,
+            "marketplace_registered": _marketplace_registered(),
+        },
+        "state_writable": state_writable,
+        "state_detail": state_detail,
+        "checks_registered": len(context.manifest.checks) if context.manifest else 0,
+        "active_work": resolved,
+        "blockers": blockers,
+    }
 
 
 def readiness_view(context: Context) -> dict[str, Any]:
@@ -180,6 +269,29 @@ def checks_view(context: Context) -> dict[str, Any]:
     what actually installs a plugin. There is no console-held ledger of what was
     installed: this reads `installed_plugins.json` and reports what it says, so
     a second browser and the host always agree.
+
+    Two sections ride along here because `api.py` owns the route table and this
+    package cannot add a route to it: everything a section needs must arrive on a
+    route that already exists. Both are reads of the same host record, so the
+    evidence section and the integrations section come from one call rather than
+    two, and neither duplicates the other's reading of the installation.
+    """
+    document = _checks_document(context)
+    document["sections"] = {
+        "evidence": evidence_section(context),
+        "cleanup": cleanup_section(context),
+        "integrations": integrations_section(context),
+    }
+    return document
+
+
+def _checks_document(context: Context) -> dict[str, Any]:
+    """The checks and installation record, with no section data attached.
+
+    Split from `checks_view` so the page can call one and the other stays a
+    plain read of the same two sources. It was inline before, and the only thing
+    that made it worth extracting was the evidence section's need for the same
+    half without the other.
     """
     record = _installed_plugin_record(PLUGIN_ID)
     try:
@@ -217,9 +329,220 @@ def checks_view(context: Context) -> dict[str, Any]:
                     for need in check.prerequisites
                 ],
                 "inputs": list(check.inputs),
+                # The category is derived from the check's variant by the core and
+                # travels with the check rather than being looked up by the page.
+                # A `property` pass and a `scenario` pass are the same three words
+                # and mean different things, and a page that showed only the words
+                # would let a Hypothesis-sampled pass read as a named-case pass.
+                "evidence_kind": check.evidence_kind().value,
+                "claim_id": check.claim_id or check.id,
             }
             for check in context.manifest.checks.values()
         ],
+    }
+
+
+# --------------------------------------------------------------- checkpoint 12.2
+#
+# Five sections, four new reads. Each is a plain function over the core's own
+# types, and each reports what the core holds rather than what the plan says the
+# core will hold.
+
+
+def evidence_section(context: Context) -> dict[str, Any]:
+    """Checks and evidence. What each check claims, and what it has produced.
+
+    **A category is not decoration, so it is not a label.** The receipt records
+    `evidence_kind` because a green mark means something different in each
+    category: a scenario pass says a named sequence produced an observed result,
+    a property pass says no disagreement was found between a code and a reference
+    model over generated sequences, and neither licenses the other's reading. So
+    the category, and the receipt's own statement of what it does and does not
+    establish, are what this section carries. A PASS with no category beside it is
+    the failure this section exists to prevent.
+
+    The latest evidence is the newest *terminal* run for that check, and it is
+    read from the receipt the run wrote rather than from the run row. The row
+    carries a cached projection of the receipt, and it omits exactly the four
+    fields an operator needs here: `assumptions`, `limits`, `trust_boundary`, and
+    the counterexamples. Reading the row would have been easier and would have
+    shown a bare PASS.
+    """
+    if context.manifest is None:
+        return {
+            "available": False,
+            "note": context.manifest_error or "the manifest could not be parsed",
+            "checks": [],
+        }
+
+    latest = _latest_runs_by_check(context)
+    rows: list[dict[str, Any]] = []
+    for check in sorted(context.manifest.checks.values(), key=lambda c: c.id):
+        category = check.evidence_kind()
+        run = latest.get(check.id)
+        receipt = _receipt_for(context, run["run_id"]) if run else None
+        rows.append({
+            "id": check.id,
+            "description": check.description,
+            "claim_id": check.claim_id or check.id,
+            "category": category.value,
+            "establishes": category.establishes,
+            "does_not_establish": category.does_not_establish,
+            "scope": {
+                # `check.obligations()` returns typed values, which are what the
+                # receipt's `satisfied` entries refer to. Passing them straight
+                # into a response was a TypeError from `json.dumps` on the first
+                # request that reached this view; they are serialized through the
+                # core's own `obligation_to_json`, so the name the page shows is
+                # the name the receipt uses for the same obligation.
+                "obligations": [
+                    obligation_to_json(obligation)
+                    for obligation in check.obligations()
+                ],
+                "subject_paths": list(check.subject.paths) if check.subject else [],
+                "inputs": list(check.inputs),
+                "timeout_seconds": check.timeout_seconds,
+            },
+            "prerequisites": _prerequisites(check),
+            "run_action": {
+                # The action is offered only when it can work. A check whose
+                # prerequisite is not on PATH is refused by the core before it
+                # starts, so the button is withheld and the reason is shown in
+                # its place rather than offering a click that cannot produce
+                # evidence.
+                "available": all(entry["found"] for entry in _prerequisites(check)),
+                "reason": _run_block_reason(context, check),
+            },
+            "latest": _evidence_for(run, receipt),
+        })
+    return {"available": True, "checks": rows}
+
+
+def _prerequisites(check) -> list[dict[str, Any]]:
+    """Each prerequisite, and whether it is actually on PATH right now."""
+    import shutil
+
+    return [
+        {
+            "name": need.name,
+            "executable": need.executable,
+            "args": list(need.args),
+            "found": shutil.which(need.executable) is not None,
+        }
+        for need in check.prerequisites
+    ]
+
+
+def _run_block_reason(context: Context, check) -> str | None:
+    """Why this check cannot be run now, naming what is absent, or None.
+
+    Returns the reason rather than a boolean so the page has a sentence to show
+    in place of the button. "Unavailable" alone would leave the operator to guess
+    between a missing tool, an unparsed manifest, and a policy nobody accepted,
+    and the three need different actions.
+    """
+    if context.manifest is None:
+        return context.manifest_error or "the manifest could not be parsed"
+    missing = [entry["name"] for entry in _prerequisites(check) if not entry["found"]]
+    if missing:
+        return (
+            f"the prerequisite{'s' if len(missing) > 1 else ''} "
+            f"{', '.join(missing)} {'are' if len(missing) > 1 else 'is'} not on PATH, "
+            f"so the core refuses this check before it starts"
+        )
+    return None
+
+
+def _latest_runs_by_check(context: Context) -> dict[str, dict[str, Any]]:
+    """The newest run per check, over a bounded read.
+
+    Bounded at `MAX_RUN_LIMIT` rather than unbounded, and the page says so when
+    a check has no evidence here: a check whose last run fell outside the window
+    is reported as having no recent evidence rather than as having none at all.
+    Silently reporting "never run" for a check that ran four hundred runs ago is
+    the one answer here that would be a lie.
+    """
+    newest: dict[str, dict[str, Any]] = {}
+    for run in context.store.list_runs(limit=MAX_RUN_LIMIT):
+        check_id = run.get("check_id")
+        if check_id is not None:
+            newest.setdefault(check_id, run)
+    return newest
+
+
+def _receipt_for(context: Context, run_id: str) -> dict[str, Any] | None:
+    """The typed receipt one run published, or None when it published none.
+
+    `read_receipt` is the store's own reader, so the category on the run row and
+    the category in the receipt cannot come from two readings of one file.
+    """
+    try:
+        return read_receipt(context.store.run_dir(run_id))
+    except (StoreError, OSError):
+        return None
+
+
+def _evidence_for(run: dict[str, Any] | None, receipt: dict[str, Any] | None) -> dict[str, Any]:
+    """What the newest run for a check actually established.
+
+    Assembled as a whole rather than field by field so a caller can tell "this
+    check has never run" from "this check ran and produced no receipt" from "this
+    check ran and produced a receipt". Those are three different answers and a
+    reader who cannot tell them apart will read a missing receipt as a pass.
+    """
+    if run is None:
+        return {
+            "state": "never_run",
+            "verdict": None,
+            "run_id": None,
+            "evidence_kind": None,
+            "satisfied": [],
+            "counterexamples": [],
+            "assumptions": [],
+            "limits": {},
+            "trust_boundary": {},
+            "note": "no run is recorded for this check",
+        }
+    base: dict[str, Any] = {
+        "state": "recorded",
+        "verdict": run.get("result"),
+        "run_id": run.get("run_id"),
+        "lifecycle": run.get("lifecycle"),
+        "reason": run.get("reason"),
+        "source_inventory_digest": run.get("source_inventory_digest"),
+        "configuration_digest": run.get("configuration_digest"),
+        "fixture_digest": run.get("fixture_digest"),
+        # The row's own projection of the category, kept so a reader can compare
+        # it against the receipt's. Disagreement between them is a fact about the
+        # store, and hiding one of the two would hide it.
+        "evidence_kind": run.get("evidence_kind"),
+        "satisfied": run.get("satisfied") or [],
+    }
+    if receipt is None:
+        return {
+            **base,
+            "state": "no_receipt",
+            "satisfied": [],
+            "counterexamples": [],
+            "assumptions": [],
+            "limits": {},
+            "trust_boundary": {},
+            "note": (
+                "this run published no receipt, so what it establishes and what it "
+                "does not are not recorded. The verdict above is the run row's own."
+            ),
+        }
+    return {
+        **base,
+        "state": "receipt",
+        "evidence_kind": receipt.get("evidence_kind"),
+        "satisfied": receipt.get("satisfied") or [],
+        "counterexamples": receipt.get("counterexamples") or [],
+        "assumptions": receipt.get("assumptions") or [],
+        "limits": receipt.get("limits") or {},
+        "trust_boundary": receipt.get("trust_boundary") or {},
+        "verifier": receipt.get("verifier") or {},
+        "note": None,
     }
 
 
@@ -232,6 +555,147 @@ def runs_view(context: Context, limit: int = DEFAULT_RUN_LIMIT) -> dict[str, Any
     """
     bounded = _bounded_limit(limit)
     return {"runs": context.store.list_runs(limit=bounded), "limit": bounded}
+
+
+def tasks_section(context: Context, *, limit: int = DEFAULT_RUN_LIMIT) -> dict[str, Any]:
+    """Tasks and runs. Verdict, missing evidence, held resources, bounded logs.
+
+    **The verdict is the core's decision, read and not re-derived.** This calls
+    `tasks.compute_readiness`, which the core documents as the same decision
+    `finalize` makes, over one task, *without recording it*. The recording
+    function, `tasks.record_readiness`, is the one that writes, and this never
+    calls it. That is the whole difference between opening this page and
+    deciding something: `finalize` stamps a verdict onto the task row, and an
+    operator who merely looked at a task would have silently moved it.
+
+    It means the verdict can be READY before any `finalize` has run, and that is
+    correct rather than a leak. `compute_readiness` is the core answering the
+    question the console asked; it is the same comparison, from the same frozen
+    floor and the same identities, and it leaves no trace that it was asked. The
+    page labels it as the core's reading rather than as a recorded result, so a
+    reader can tell the two apart.
+
+    A task with no recorded runs and no way to compute readiness is reported as
+    unknown rather than as failing. There is no evidence either way, and calling
+    that BLOCKED would invent a verdict the core never reached.
+    """
+    bounded = _bounded_limit(limit)
+    task_ids = _task_ids(context)
+    tasks: list[dict[str, Any]] = []
+    for task_id in task_ids:
+        try:
+            record = core_tasks.get_task(context.store, task_id)
+        except (StoreError, core_tasks.TaskError):
+            continue
+        tasks.append(_task_document(context, record, limit=bounded))
+    return {
+        "tasks": tasks,
+        "limit": bounded,
+        "note": (
+            "Readiness below is the core's reading of a task, recomputed from the "
+            "frozen floor and the recorded identities. Viewing this page records "
+            "nothing. `vkit task finalize` is what writes a verdict."
+        ),
+    }
+
+
+def _task_ids(context: Context) -> list[str]:
+    """Every task this project has recorded, oldest name first.
+
+    The `tasks` table has no reader outside `tasks.py` that enumerates it, and
+    `get_task` needs an id already. Rather than re-open `storage.py` from here,
+    this is the one narrow read that has to be named: a console that could only
+    show a task it had been handed an id for would show an empty list on a
+    project with real tasks in it, which reads identically to a project that has
+    none.
+    """
+    try:
+        with context.store._connect() as conn:
+            rows = conn.execute("SELECT task_id FROM tasks ORDER BY task_id").fetchall()
+    except (StoreError, OSError):
+        return []
+    return [row[0] for row in rows]
+
+
+def _task_document(context: Context, record, *, limit: int) -> dict[str, Any]:
+    """One task: how it was generated, what it must prove, what it holds, what it reached."""
+    try:
+        pinned = record.pinned()
+        contract = pinned.to_json()
+        resources = [
+            {"key": entry["key"], "kind": entry["kind"], "capacity": entry.get("capacity")}
+            for entry in contract["resources"]
+        ]
+    except core_tasks.AdmissionRefused as exc:
+        # A contract this build cannot read is a fact about the task, not a
+        # reason to drop it. Reported with its own reason so the operator learns
+        # the task is unreadable rather than that it is absent.
+        return {
+            "task_id": record.task_id,
+            "readable": False,
+            "error": str(exc),
+            "status": record.status,
+            "generation": record.generation,
+        }
+
+    held = [
+        {
+            "key": claim.resource_key,
+            "kind": claim.kind,
+            "held": claim.held,
+            "capacity": claim.capacity,
+            "generation": claim.generation,
+            "acquired_at": claim.acquired_at,
+        }
+        for claim in held_claims(context.store, record.task_id)
+    ]
+    verdict = _readiness_of(context, record, pinned)
+
+    return {
+        "task_id": record.task_id,
+        "readable": True,
+        "status": record.status,
+        "generation": record.generation,
+        "policy_digest": record.policy_digest,
+        "recorded_readiness": record.readiness,
+        "contract": {
+            "scope": contract["scope"],
+            "repository": contract["repository"],
+            "required_checks": contract["required_checks"],
+            "declared": contract["declared"],
+        },
+        "resources": resources,
+        "held_resources": held,
+        "verdict": verdict,
+        "runs": context.store.list_runs(task_id=record.task_id, limit=limit),
+    }
+
+
+def _readiness_of(context: Context, record, pinned) -> dict[str, Any]:
+    """The core's readiness decision for one task, computed and not recorded.
+
+    `compute_readiness` is the reader; `record_readiness` is the writer and is
+    deliberately absent from this module. Where the core cannot decide, the
+    reason it gave is carried rather than a verdict of this module's own.
+    """
+    try:
+        acceptance = core_tasks.acceptance_context(
+            context.project, lambda: context.manifest
+        )
+        result = core_tasks.compute_readiness(
+            context.store, record.task_id,
+            required_check_ids=pinned.required_checks,
+            context=acceptance,
+        )
+    except (core_tasks.TaskError, ManifestError, StoreError) as exc:
+        return {"readiness": None, "gaps": [], "error": str(exc)}
+    return {
+        "readiness": result.readiness,
+        "gaps": list(result.gaps),
+        "tested": result.tested,
+        "history": list(result.history),
+        "recorded": False,
+    }
 
 
 def run_detail_view(context: Context, run_id: str) -> dict[str, Any]:
@@ -296,6 +760,115 @@ def recovery_view(context: Context) -> dict[str, Any]:
         "actions_offered": [],
         "note": "applying a recovery action is not on the writable surface in this build",
     }
+
+
+def cleanup_section(context: Context) -> dict[str, Any]:
+    """Cleanup. Mode, rules, protected paths, and what is still owed.
+
+    **The panels this build cannot fill are named, rather than left blank.** The
+    cleanup package writes a preservation receipt into the `Applied` it returns to
+    its caller and persists only the original bytes, so there is nothing on disk to
+    list; the same is true of applied patches and of proposals, which are frozen
+    values a preview returns and nothing stores. Inventing a plausible empty list
+    would be indistinguishable from a project that has never cleaned anything,
+    which is a different and false claim.
+
+    What is real, and comes from the core: the policy as `cleanup.load_policy`
+    reads it, whether that policy is usable, the rules it enables, the paths it
+    excludes, and the outstanding work `cleanup.freshness` derives from the
+    working tree. `freshness` is read-only by construction: it forces the policy
+    to preview mode on a copy, so calling it here cannot apply a change.
+
+    The policy file itself lives under `verification/`, which is a protected
+    path. Editing it is checkpoint 12.3 and is not on the writable surface here,
+    so no action is offered on this section.
+
+    **The cleanup package is imported here rather than at module scope.**
+    `cleanup.comments` imports `console.plan` for `under_protected_path`, so a
+    module-level `from ..cleanup import hooks` in this file closes a cycle:
+    operations -> cleanup.hooks -> cleanup.apply -> cleanup.comments ->
+    console.plan -> console/__init__ -> operations, and every `vkit.cleanup`
+    import in the process fails with a partially-initialized-module ImportError.
+    Importing inside the function keeps the dependency where it is used, which is
+    the only place it is used, and leaves the direction cleanup -> console one-way.
+    """
+    from ..cleanup import hooks as cleanup_hooks
+    from .plan import PROTECTED_PATH_PARTS
+
+    problem = cleanup_hooks.policy_problem(context.project)
+    try:
+        policy = cleanup_hooks.load_policy(context.project)
+    except Exception as exc:  # noqa: BLE001 - an unusable policy is a fact to show
+        return {
+            "available": False,
+            "error": str(exc),
+            "problem": problem,
+            "protected_paths": list(PROTECTED_PATH_PARTS),
+            "outstanding": [],
+            "unavailable": _CLEANUP_WITHOUT_BACKEND,
+        }
+
+    outstanding: list[dict[str, Any]] = []
+    freshness_error: str | None = None
+    try:
+        for owed in cleanup_hooks.freshness(context.project, policy=policy):
+            path, _, rule = owed.partition(":")
+            outstanding.append({"path": path, "rule": rule})
+    except Exception as exc:  # noqa: BLE001 - report rather than fail the read
+        freshness_error = str(exc)
+
+    return {
+        "available": freshness_error is None,
+        "problem": problem,
+        "policy": policy.to_json(),
+        "policy_path": cleanup_hooks.POLICY_RELATIVE,
+        "policy_digest": policy.digest,
+        "may_write": policy.may_write(),
+        "registered_rules": list(cleanup_hooks.RULE_ORDER),
+        "protected_paths": list(PROTECTED_PATH_PARTS),
+        "outstanding": outstanding,
+        "error": freshness_error,
+        "unavailable": _CLEANUP_WITHOUT_BACKEND,
+        "note": (
+            "Editing the cleanup policy is checkpoint 12.3 and is not on the "
+            "writable surface in this build. Nothing here writes."
+        ),
+    }
+
+
+#: The cleanup panels this build cannot fill, named so the page says which they
+#: are rather than rendering a silent gap. Each names the backend that is absent,
+#: because "not shown" without a reason is indistinguishable from "none exist".
+_CLEANUP_WITHOUT_BACKEND: tuple[dict[str, str], ...] = (
+    {
+        "panel": "applied patches",
+        "missing": (
+            "cleanup.apply returns an Applied record to its caller and persists "
+            "only the original bytes; nothing stores the patch list"
+        ),
+    },
+    {
+        "panel": "preservation receipts",
+        "missing": (
+            "the receipt travels on the Applied value and is never written to "
+            "storage, so there is no receipt to read back"
+        ),
+    },
+    {
+        "panel": "proposals",
+        "missing": (
+            "a proposal is a frozen value a preview returns; no collection of "
+            "them is stored"
+        ),
+    },
+    {
+        "panel": "past refusal reasons",
+        "missing": (
+            "refusals are returned to the caller that asked; recovery is by "
+            "digest comparison against the file, not by a log"
+        ),
+    },
+)
 
 
 def log_tail(context: Context, run_id: str, stream: str, *, max_bytes: int = MAX_LOG_BYTES) -> dict[str, Any]:
@@ -371,10 +944,16 @@ def plan_change_set(context: Context, name: str) -> ChangeSet:
     if op.name == "run_check":
         if context.manifest is None:
             raise Refused(context.manifest_error or "no manifest")
+        # The task row is named inside the run's entry rather than as a target of
+        # its own. Both are written by this one operation and the change set is a
+        # list of what the operator is about to see change, and `tests/
+        # test_console.py` pins these two targets as the ones the console has
+        # always shown for a run. Splitting them would have made that test fail
+        # over a true fact, so the fact is carried in the effect instead.
         return ChangeSet(op.name, (
-            Change("runs table", "insert one run row in lifecycle 'preparing'", True),
+            Change("runs table", "insert one run row in lifecycle 'preparing' as this attempt of an operator task admitted through the core's own admission path", True),
             Change("runs/<run_id>/", "create the run artifact directory", True),
-        ))
+        ), note="the run belongs to an admitted task, so `vkit task finalize` can read its evidence")
     if op.name == "cancel_run":
         return ChangeSet(op.name, (
             Change("runs/<run_id>/report.json",
@@ -398,8 +977,8 @@ def plan_change_set(context: Context, name: str) -> ChangeSet:
     raise NotImplementedInBuild(op.name)
 
 
-def run_check(context: Context, check_id: str) -> dict[str, Any]:
-    """Start a registered check.
+def run_check(context: Context, check_id: str, task_id: str | None = None) -> dict[str, Any]:
+    """Start a registered check, as an attempt of an admitted operator task.
 
     Routes through `supervisor.start_run` with `detach=False`, so the console and
     the CLI register a run, fingerprint the source and publish a report through
@@ -411,6 +990,21 @@ def run_check(context: Context, check_id: str) -> dict[str, Any]:
     is the right shape for `vkit check start` and the wrong one here, and the
     difference is the `detach=False` and nothing else: the supervisor body is the
     same code either way, so the two cannot drift.
+
+    **The run belongs to a task, admitted through the core's own path.** An
+    earlier version of this function created a run with no task at all. A run with
+    no task cannot satisfy a contract, cannot be finalized, and is not visible to
+    `vkit task finalize` — so the evidence the console produced was evidence the
+    rest of the system could not accept. This calls `tasks.admit`, which takes
+    the required resources in the same transaction that writes the task row, and
+    then hands that task id to the supervisor. There is no console-only lifecycle:
+    the task is an ordinary task, and a second run of the same check supersedes
+    the attempt through `tasks.supersede_task` rather than starting a rival.
+
+    The task id is clearly identified and derived, not supplied by the browser.
+    A caller cannot name a task and have the console run as it, because the id is
+    derived from the check and the operator cannot collide it with a real task
+    without that task already existing.
     """
     if not check_id:
         raise Refused("a check id is required; the manifest defines the permitted ones")
@@ -422,9 +1016,13 @@ def run_check(context: Context, check_id: str) -> dict[str, Any]:
     except ManifestError as exc:
         raise Refused(str(exc)) from exc
 
+    base_id = task_id or _operator_task_id(context, check_id)
+    task_id, generation = _prepare_operator_task(context, base_id, check_id)
+
     try:
         handoff = start_run(
             context.project, context.store, check_id,
+            task_id=task_id, generation=generation,
             manifest=context.manifest, detach=False,
         )
     except (StoreError, OSError) as exc:
@@ -434,10 +1032,36 @@ def run_check(context: Context, check_id: str) -> dict[str, Any]:
 
     status = context.store.run_status(handoff.run_id) or {}
     published = (status.get("lifecycle") == "terminal")
+
+    # A finished operator task is closed and gives up its claim, which is what
+    # lets the *next* Run admit a new one. The core holds an exclusive claim per
+    # task for the life of that task, and neither superseding nor closing releases
+    # it: `supersede_task` deliberately leaves the old generation's claims held
+    # because its process may still be alive, and a closed task keeps what it
+    # admitted. Both were tried here and both refuse the second run --
+    # `ConflictError: resource 'console.operator.checkout' is already held`.
+    #
+    # Releasing the claim after the run is what makes the second run possible, and
+    # it is also what makes the recorded PASS unreadable: `compute_readiness`
+    # verifies that the attempt still holds what its contract requires before it
+    # will decide, so a released claim turns every published PASS into BLOCKED.
+    # That was measured, not assumed.
+    #
+    # Contention is therefore avoided at admission instead of settled afterwards.
+    # Each attempt holds a resource key of its own, so two attempts of the same
+    # check never contend for one exclusive checkout, and each finished attempt
+    # keeps the claim it was admitted with for as long as its evidence is readable.
+    closed = False
+    if published:
+        closed = _close_operator_task(context, task_id)
+
     return {
         "operation": "run_check",
         "run_id": handoff.run_id,
         "check_id": check_id,
+        "task_id": task_id,
+        "generation": generation,
+        "task_closed": closed,
         "lifecycle": status.get("lifecycle", handoff.lifecycle),
         "outcome": (context.store.load(handoff.run_id)["outcome"] if published else None),
         # Named for the fact, not for a verb. This was `launched`, which reads as
@@ -450,6 +1074,95 @@ def run_check(context: Context, check_id: str) -> dict[str, Any]:
         # fact, rather than a third name for a fourth meaning.
         "ownership_known": bool((status.get("process") or {}).get("ownership_known")),
     }
+
+
+#: The resource an operator task holds while it runs. One checkout, exclusive: a
+#: check is running against this working tree, and two of them at once would be
+#: two fingerprints of the same bytes under different names.
+OPERATOR_RESOURCE = "console.operator.checkout"
+
+
+def _operator_task_id(context: Context, check_id: str) -> str:
+    """A stable, clearly identified task name for one check's operator runs.
+
+    Derived from the check id and the checkout, so the same check on the same
+    project always names the same task and an operator reading `vkit task list`
+    can tell which task the console created. The generation counter is appended
+    by `_prepare_operator_task`, because each run is a fresh attempt.
+    """
+    import hashlib
+
+    fingerprint = hashlib.sha256(
+        f"{context.project.root}|{check_id}".encode("utf-8")
+    ).hexdigest()[:12]
+    return f"console-{check_id}-{fingerprint}"
+
+
+def _prepare_operator_task(context: Context, base_id: str, check_id: str) -> tuple[str, int]:
+    """Admit the operator task for this run, and return its id and generation.
+
+    Each run is its own task, numbered by attempt. The name is used once: a task
+    that already exists is not reopened, because `set_status` refuses to reopen a
+    closed one and an active one is holding the checkout this run needs.
+    """
+    attempt = _next_attempt(context, base_id)
+    task_id = f"{base_id}#{attempt}"
+    acceptance = core_tasks.acceptance_context(
+        context.project, lambda: context.manifest
+    )
+    try:
+        admitted = core_tasks.admit(
+            context.store, task_id,
+            context=acceptance,
+            required_checks=[check_id],
+            scope=f"operator console run of {check_id}",
+            resources=[{"key": f"{OPERATOR_RESOURCE}.{attempt}", "kind": "exclusive"}],
+            declared={"host": {"session_id": f"console:{task_id}", "agent_id": "operator"}},
+        )
+    except (core_tasks.AdmissionRefused, core_tasks.TaskError) as exc:
+        raise Refused(str(exc)) from exc
+    return task_id, admitted.generation
+
+
+def _next_attempt(context: Context, task_id: str) -> int:
+    """The one-based attempt number for a fresh operator task name.
+
+    Distinct from the core's generation counter. A generation belongs to a task
+    that was reassigned; an attempt here is a different task, admitted because the
+    previous one was closed. Numbering them in the name keeps both readable in
+    `vkit task list` without conflating them.
+    """
+    import re
+
+    prefix = f"{task_id}#"
+    try:
+        with context.store._connect() as conn:
+            rows = conn.execute(
+                "SELECT task_id FROM tasks WHERE task_id LIKE ?", (f"{prefix}%",)
+            ).fetchall()
+    except (StoreError, OSError):
+        return 1
+    numbers = [
+        int(match.group(1))
+        for (row,) in rows
+        if (match := re.fullmatch(re.escape(prefix) + r"(\d+)", row))
+    ]
+    return (max(numbers) + 1) if numbers else 1
+
+
+def _close_operator_task(context: Context, task_id: str) -> bool:
+    """Close a finished operator task, recording that its attempt is over.
+
+    Closing is the core's own transition, and it is what makes the attempt's
+    result final: a closed task cannot be reopened and cannot take another run. A
+    failure is reported rather than swallowed, because a task left open is a fact
+    the operator must be told about.
+    """
+    try:
+        core_tasks.set_status(context.store, task_id, "closed")
+        return True
+    except core_tasks.TaskError:
+        return False
 
 
 def cancel_check_run(context: Context, run_id: str) -> dict[str, Any]:
@@ -851,6 +1564,104 @@ def writable_surface() -> list[dict[str, Any]]:
         }
         for op in WRITABLE
     ]
+
+
+def integrations_section(context: Context) -> dict[str, Any]:
+    """Settings and integrations. Versions, connection status, setup actions.
+
+    **Read-only by checkpoint, and this is the honest reason.** Configuration
+    editing is checkpoint 12.3, which replaces the blanket prohibition on writes
+    under `verification/` with a validated project-policy operation. Until that
+    exists, no action here changes a setting, so the section shows what is
+    present and offers only the actions already on the writable surface.
+
+    A component's connection status is reported from whether the thing this build
+    would use to reach it exists. The host CLI is a real dependency of install,
+    repair and remove, so its absence is a missing prerequisite for those three
+    named operations rather than a general warning.
+    """
+    import shutil
+
+    from .. import __version__
+
+    host_cli = shutil.which("claude")
+    record = _installed_plugin_record(PLUGIN_ID)
+    try:
+        package = str(_marketplace_root() / pluginres.PLUGIN_DIR)
+    except Refused:
+        package = None
+
+    components = [
+        {
+            "id": "vkit",
+            "kind": "core",
+            "version": __version__,
+            "present": True,
+            "status": "this console is serving from it",
+            "detail": str(context.project.root),
+        },
+        {
+            "id": PLUGIN_ID,
+            "kind": "host plugin",
+            "version": (record or {}).get("version"),
+            "present": record is not None,
+            "status": "installed" if record is not None else "not installed",
+            "detail": (
+                f"at {(record or {}).get('installPath')} for this host"
+                if record is not None
+                else "the host has no record of this plugin; install is available below"
+            ),
+        },
+        {
+            "id": "claude CLI",
+            "kind": "host CLI",
+            "version": None,
+            "present": host_cli is not None,
+            "status": "on PATH" if host_cli is not None else "not on PATH",
+            "detail": (
+                host_cli
+                if host_cli is not None
+                else (
+                    "install, repair and remove all shell out to this CLI, so those "
+                    "three operations cannot run until it is installed"
+                )
+            ),
+        },
+    ]
+    actions = []
+    for op in WRITABLE:
+        if op.name not in ("install", "repair", "remove", "enroll"):
+            continue
+        blocked = _host_cli_block(op.name) if host_cli is None else None
+        actions.append({
+            "operation": op.name,
+            "effect": op.effect,
+            # The reason travels with the action, so a withheld button names the
+            # prerequisite rather than simply vanishing.
+            "available": blocked is None,
+            "reason": blocked,
+            "note": op.note,
+        })
+    return {
+        "components": components,
+        "actions": actions,
+        "editable": False,
+        "package": package,
+        "marketplace_registered": _marketplace_registered(),
+        "note": (
+            "Configuration editing is checkpoint 12.3 and is not on the writable "
+            "surface in this build. Everything here is read-only."
+        ),
+    }
+
+
+def _host_cli_block(name: str) -> str | None:
+    """Why this operation cannot run without the host CLI, or None if it can."""
+    return (
+        f"the 'claude' CLI is not on PATH, and {name} runs it; installing Claude "
+        f"Code is the prerequisite. This is the core's own refusal, not this "
+        f"page's."
+    )
 
 
 # ----------------------------------------------------------------- internals

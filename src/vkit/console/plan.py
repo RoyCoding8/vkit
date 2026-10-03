@@ -165,6 +165,12 @@ WRITABLE: tuple[Operation, ...] = (
         effect="Start a registered check",
         implemented=True,
         writes=("the run's own record in the state database", "the run's artifact directory"),
+        note=(
+            "Admits a clearly identified operator task through the core's own "
+            "admission path, then runs the check as one attempt of that task. "
+            "There is no console-only verification lifecycle: the task it "
+            "creates is a normal task that `vkit task finalize` can read."
+        ),
     ),
     Operation(
         name="cancel_run",
@@ -175,6 +181,90 @@ WRITABLE: tuple[Operation, ...] = (
 )
 
 WRITABLE_NAMES: tuple[str, ...] = tuple(operation.name for operation in WRITABLE)
+
+
+@dataclass(frozen=True)
+class Section:
+    """One section of the dashboard, and the view that answers it.
+
+    **This is the map the page renders from.** The five sections an operator is
+    asked about are named here once, in the order a person asks for them, with the
+    API route that supplies each one's data. A page that grew its own copy of that
+    list would be a second authority on which sections exist, and the two would
+    disagree the first time a section was renamed.
+
+    `route` is a route that already exists in `api.READ_ROUTES`. No section names
+    a new one: `api.py` is not this package's to change, and a section whose data
+    required a new route would render a button the console cannot honour. Where
+    a section's facts ride along an existing route's document, `key` says which
+    field carries them.
+    """
+
+    id: str
+    title: str
+    route: str
+    key: str
+    question: str
+
+
+#: The five sections, in the order an operator asks for them. Deliberately not
+#: the order the API routes are declared in: `recovery` answers an operator's
+#: fourth question and `operations` their fifth, while both are declared early
+#: because they are older and read-only.
+#:
+#: `route` is a route that already exists in `api.READ_ROUTES`, because `api.py`
+#: owns the route table and this package cannot add to it. A section that needed a
+#: new route would render a control the console cannot serve, so three sections
+#: ride the `checks` document and two ride documents of their own.
+SECTIONS: tuple[Section, ...] = (
+    Section(
+        id="overview",
+        title="Overview",
+        route="project",
+        key="sections.overview",
+        question="Which project is open, and what is blocked right now?",
+    ),
+    Section(
+        id="evidence",
+        title="Checks and evidence",
+        route="checks",
+        key="sections.evidence",
+        question="What does each check claim, and what evidence has it produced?",
+    ),
+    Section(
+        id="tasks",
+        title="Tasks and runs",
+        route="project",
+        key="sections.tasks",
+        question="What verdict did each task reach, and what is missing?",
+    ),
+    Section(
+        id="cleanup",
+        title="Cleanup",
+        route="checks",
+        key="sections.cleanup",
+        question="What cleanup is configured, pending, or applied?",
+    ),
+    Section(
+        id="integrations",
+        title="Settings and integrations",
+        route="checks",
+        key="sections.integrations",
+        question="Which components are present, and what needs setup?",
+    ),
+)
+
+SECTION_IDS: tuple[str, ...] = tuple(section.id for section in SECTIONS)
+
+
+def section(section_id: str) -> Section:
+    """The named section, or a refusal that quotes the permitted list."""
+    for candidate in SECTIONS:
+        if candidate.id == section_id:
+            return candidate
+    raise Refused(
+        f"unknown section {section_id!r}; the dashboard has: {', '.join(SECTION_IDS)}"
+    )
 
 #: Repository paths that are policy, not state. Nothing in this package writes
 #: them. `verification/manifest.json` is committed policy whose digest every run

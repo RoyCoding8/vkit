@@ -46,11 +46,13 @@ EXAMPLE = REPO_ROOT / "examples" / "python-cli"
 #: making the assertion agree with itself.
 CHECK_ID = "totals-behavior"
 
-#: Every view the page must keep reachable. Checkpoint 12.2 adds to this list;
-#: nothing in it may disappear, because each is a capability that exists nowhere
-#: else in this build.
+#: Every view the page must keep reachable, in the order the nav presents them.
+#: Checkpoint 12.2 adds five; nothing in this list may disappear, because each is
+#: a capability that exists nowhere else in this build. The order is asserted
+#: against the served nav, so it is the real reading order rather than a list.
 REQUIRED_VIEWS = (
-    "home", "project", "setup", "checks", "runs", "recovery", "operations",
+    "home", "overview", "checks", "evidence", "tasks", "cleanup", "integrations",
+    "project", "setup", "runs", "recovery", "operations",
 )
 
 #: Where each view renders. Home answers four questions and so has four
@@ -58,9 +60,14 @@ REQUIRED_VIEWS = (
 #: what keeps a landing panel from being added without somewhere to draw.
 VIEW_BODIES = {
     "home": ("home-project", "home-available", "home-setup", "home-next"),
+    "overview": ("overview-body",),
+    "checks": ("checks-body",),
+    "evidence": ("evidence-body",),
+    "tasks": ("tasks-body",),
+    "cleanup": ("cleanup-body",),
+    "integrations": ("integrations-body",),
     "project": ("project-body",),
     "setup": ("setup-body",),
-    "checks": ("checks-body",),
     "runs": ("runs-body", "run-detail"),
     "recovery": ("recovery-body",),
     "operations": ("operations-body",),
@@ -566,8 +573,15 @@ function main() {
      that reads empty because nothing ever navigated to it proves nothing, and
      an operator reaches each view from the nav, so the harness does the same.
      Home is opened first and settled before the rest, so the landing page is
-     measured as an operator would meet it rather than after it has been left. */
-  const VIEWS = ["home", "project", "setup", "checks", "runs", "recovery", "operations"];
+     measured as an operator would meet it rather than after it has been left.
+
+     The list is the page's own nav, read out of the served page rather than
+     written out here. A hardcoded copy would go stale the moment a view was
+     added, and the harness would then open the old set and report every new
+     panel as missing -- a failure that reads as a page defect and is not one. */
+  const VIEWS = root.descendants()
+    .filter((n) => n.tagName === "BUTTON" && (n.attrs["data-view"] || ""))
+    .map((n) => n.attrs["data-view"]);
   const opened = VIEWS.reduce(
     (chain, view) => chain.then(() => openView(view)).then(drain),
     Promise.resolve(),
@@ -576,7 +590,10 @@ function main() {
   return opened.then(drain).then(() => {
     for (const id of [
       "home-project", "home-available", "home-setup", "home-next",
-      "project-body", "setup-body", "checks-body",
+      "project-body", "setup-body", "checks-body", "runs-body", "run-detail",
+      "recovery-body", "operations-body",
+      "overview-body", "evidence-body", "tasks-body", "cleanup-body",
+      "integrations-body",
     ]) {
       const node = byId.get(id);
       report.panels[id] = node

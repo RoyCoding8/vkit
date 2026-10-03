@@ -383,7 +383,12 @@ function installationPanel(installed) {
 }
 
 /* A run is started from the check's own row, so the check id never has to be
-   typed and a typo can never be what a refused run means. */
+   typed and a typo can never be what a refused run means.
+
+   The task the run belongs to is shown by name afterwards. It is a real task,
+   admitted through the core's own path, so an operator can read the same verdict
+   from `vkit task finalize`; naming it here is what makes that discoverable
+   rather than a coincidence. */
 function runControls(checkId) {
   const button = el("button", { class: "act", type: "button" }, `Run ${checkId}`);
   const change = el("div", { class: "note" });
@@ -395,8 +400,8 @@ function runControls(checkId) {
         planned.changes.map((c) => c.target).join(", ");
       const result = await api("run_check", { check_id: checkId }, true);
       toast(`run ${result.run_id}: ${result.outcome.result}`);
-      change.textContent = "";
-      await Promise.all([showChecks(), showRuns()]);
+      change.textContent = `task ${result.task_id} generation ${result.generation}`;
+      await Promise.all([showChecks(), showRuns(), showEvidence()]);
     } catch (error) {
       change.replaceChildren(refusal(error));
       toast(error.message, true);
@@ -626,13 +631,368 @@ async function runEnroll(outcome) {
 
 const VIEWS = {
   home: showHome,
+  overview: showOverview,
   project: showProject,
   setup: showSetup,
   checks: showChecks,
+  evidence: showEvidence,
+  tasks: showTasks,
+  cleanup: showCleanup,
+  integrations: showIntegrations,
   runs: showRuns,
   recovery: showRecovery,
   operations: showOperations,
 };
+
+/* A section is a view whose data arrives inside another route's document.
+
+   `api.py` owns the route table, so there is no `/api/cleanup` to call. Every
+   section names the route it rides and the key it reads, and both are declared
+   once in `plan.SECTIONS` so the page and the backend cannot disagree about
+   which section lives on which route. */
+async function sectionOf(route, key) {
+  const document_ = await api(route);
+  const parts = key.split(".");
+  let node = document_;
+  for (const part of parts) {
+    node = node && node[part];
+    if (node === undefined) return null;
+  }
+  return node;
+}
+
+/* An offered action or an explanation of what is missing.
+
+   The rule this whole page is built on: never render a control that cannot work.
+   So an action whose prerequisite is absent is not drawn as a button at all; it
+   is drawn as the sentence naming that prerequisite. A greyed-out button would
+   still look like something to press, and an operator pressing it gets a refusal
+   instead of the explanation they needed. */
+function actionOrReason(action, describe) {
+  if (action.available === false) {
+    return el("p", { class: "why-not", text: action.reason || describe });
+  }
+  return describe();
+}
+
+function kv(...pairs) {
+  const nodes = [];
+  for (const [term, value] of pairs.flat()) {
+    if (value === null || value === undefined) continue;
+    nodes.push(el("dt", { text: term }), el("dd", { class: "mono", text: String(value) }));
+  }
+  return el("dl", { class: "kv" }, ...nodes);
+}
+
+/* ---------------------------------------------------------- checks & evidence
+
+   **The category is rendered beside every verdict, never inside it.** A green
+   `PASS` from a property check and a green `PASS` from a scenario check are the
+   same three characters and mean different things, so a reader who sees only the
+   word cannot tell a sampled-agreement pass from a named-case pass. The category
+   is therefore part of the same rendered string as the verdict, and the receipt's
+   own statement of what it does NOT establish is shown directly beneath it. That
+   second sentence is the one that stops a property pass being read as a
+   scenario pass, because it says out loud what the green mark does not license. */
+async function showEvidence() {
+  const section = await sectionOf("checks", "sections.evidence");
+  if (!section || !section.available) {
+    return fill("evidence-body", panel(el("p", { class: "note", text: section && section.note ? section.note : "the manifest could not be read" })));
+  }
+  const rows = [];
+  for (const check of section.checks) {
+    const latest = check.latest;
+    const boundary = latest.trust_boundary || {};
+    rows.push(panel(
+      el("div", { class: "row" },
+        el("strong", { class: "mono", text: check.id }),
+        /* One token, because the category decides how the word reads. Splitting
+           it from the verdict is what the plan forbids. */
+        el("span", { class: `verdict ${verdictClass(latest.verdict)}`, text: `${check.category} ${latest.verdict || "—"}` }),
+        el("span", { class: "pill", text: check.claim_id })),
+      el("p", { class: "note", text: check.description }),
+      kv(
+        ["establishes", check.establishes],
+        ["does not establish", check.does_not_establish],
+        ["obligations", check.scope.obligations.length ? check.scope.obligations.join(", ") : "none"],
+        ["subject", check.scope.subject_paths.join(", ") || "none"],
+        ["latest run", latest.run_id ? latest.run_id.slice(0, 12) : "never run"],
+        ["run state", latest.state],
+      ),
+      latest.note ? el("p", { class: "why-not", text: latest.note }) : null,
+      satisfiedPanel(latest),
+      prerequisitesPanel(check),
+      runAction(check),
+    ));
+  }
+  return fill("evidence-body", ...rows);
+}
+
+function verdictClass(result) {
+  if (!result) return "missing";
+  return result;
+}
+
+/* The obligations a run actually discharged, from the receipt's `satisfied`.
+
+   Shown because "PASS" alone does not say which of the required obligations were
+   met. A run that satisfied none of them and still reports a PASS is a fact the
+   operator must see, and this is where they see it. */
+function satisfiedPanel(latest) {
+  const entries = latest.satisfied || [];
+  const counter = latest.counterexamples || [];
+  if (!entries.length && !counter.length) return null;
+  const items = entries.map((entry) => el("li", { class: "mono", text: describeObligation(entry) }));
+  const counterItems = counter.map((entry) => el("li", { class: "mono fail", text: describeObligation(entry) }));
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: "obligations" })),
+    items.length ? el("ul", { class: "policy" }, ...items) : el("p", { class: "note", text: "no obligations recorded as satisfied" }),
+    counterItems.length ? el("div", { class: "row" }, el("strong", { text: "counterexamples" })) : null,
+    counterItems.length ? el("ul", { class: "policy" }, ...counterItems) : null,
+  );
+}
+
+/* The receipt stores an obligation object under `obligation`, wrapped in a
+   `case_satisfied` record. Read defensively: a receipt shape this page does not
+   recognise must not blank the panel. */
+function describeObligation(entry) {
+  const obligation = (entry && entry.obligation) || {};
+  const id = obligation.obligation || "(unnamed)";
+  return `${obligation.kind || "obligation"} ${id}`;
+}
+
+/* Each prerequisite and whether it is on PATH. A missing one is named here and
+   is also why the Run button below is not drawn. */
+function prerequisitesPanel(check) {
+  if (!check.prerequisites.length) return null;
+  const items = check.prerequisites.map((need) => el("li", {},
+    el("span", { class: need.found ? "mono" : "mono fail", text: need.name }),
+    el("div", { class: "note mono", text: need.found ? "on PATH" : "not on PATH" })));
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: "prerequisites" })),
+    el("ul", { class: "policy" }, ...items));
+}
+
+/* The Run action, drawn only when it can work. */
+function runAction(check) {
+  return panel(actionOrReason(
+    check.run_action,
+    () => runControls(check.id),
+  ));
+}
+
+/* ------------------------------------------------------------------- tasks
+
+   The verdict shown is the one the core computed. The page does not decide it,
+   does not re-derive it from the runs, and labels it as the core's reading so a
+   reader can tell a computed readiness from a recorded one. */
+async function showTasks() {
+  const section = await sectionOf("project", "sections.tasks");
+  if (!section) return fill("tasks-body", panel(el("p", { class: "note", text: "the runs table could not be read" })));
+  if (!section.tasks.length) {
+    return fill("tasks-body", panel(el("p", { class: "note", text: "no task has been admitted for this project. Running a check on Checks admits one." })));
+  }
+  const panels = section.tasks.map((task) => {
+    if (!task.readable) {
+      return panel(
+        el("div", { class: "row" }, el("strong", { class: "mono", text: task.task_id }), el("span", { class: "verdict BLOCKED", text: "unreadable" })),
+        el("div", { class: "refusal" }, el("div", { class: "why", text: "this task's contract cannot be read" }), el("div", { class: "core", text: task.error })));
+    }
+    const verdict = task.verdict || {};
+    const readiness = verdict.readiness;
+    return panel(
+      el("div", { class: "row" },
+        el("strong", { class: "mono", text: task.task_id }),
+        el("span", { class: `verdict ${verdictClass(readiness)}`, text: readiness || "unknown" }),
+        el("span", { class: "note mono", text: `generation ${task.generation}, status ${task.status}` })),
+      verdict.recorded === false
+        ? el("p", { class: "note", text: "Readiness above is the core's reading, recomputed from the frozen floor and the recorded identities. Viewing this page records nothing." })
+        : null,
+      verdict.error ? el("p", { class: "why-not", text: verdict.error }) : null,
+      gapsPanel(verdict),
+      kv(
+        ["scope", task.contract.scope],
+        ["policy digest", (task.policy_digest || "").slice(0, 12)],
+        ["recorded readiness", task.recorded_readiness || "none recorded"],
+      ),
+      heldPanel(task),
+      requiredClaims(task),
+      taskRuns(task),
+    );
+  });
+  return fill("tasks-body", ...panels);
+}
+
+/* Missing evidence, named. These are the core's own gap strings, carried
+   verbatim: this page does not summarise a refusal into something friendlier. */
+function gapsPanel(verdict) {
+  if (!verdict.gaps || !verdict.gaps.length) return null;
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: "missing evidence" })),
+    el("ul", { class: "policy" }, ...verdict.gaps.map((gap) => el("li", { class: "note", text: gap }))));
+}
+
+function heldPanel(task) {
+  const held = task.held_resources || [];
+  const items = held.map((claim) => el("li", { class: "mono", text: `${claim.key} (${claim.kind}, ${claim.held} held at generation ${claim.generation})` }));
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: "held resources" })),
+    items.length ? el("ul", { class: "policy" }, ...items) : el("p", { class: "note", text: "this task holds no resources" }));
+}
+
+/* What the task must prove before it can be ready. */
+function requiredClaims(task) {
+  const required = (task.contract && task.contract.required_checks) || [];
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: "required claims" })),
+    required.length
+      ? el("ul", { class: "policy" }, ...required.map((id) => el("li", { class: "mono", text: id })))
+      : el("p", { class: "note", text: "no mandatory check floor recorded" }));
+}
+
+/* The runs belonging to this task, each with its verdict, cancellation control
+   and bounded logs. Reached from the task so the operator sees one task's
+   evidence together rather than hunting for it in the global list. */
+function taskRuns(task) {
+  const runs = task.runs || [];
+  if (!runs.length) return panel(el("p", { class: "note", text: "this task has no recorded runs" }));
+  const rows = runs.map((run) => {
+    const cancel = el("button", { class: "act", type: "button" }, "Cancel");
+    cancel.addEventListener("click", () => busy(cancel, "cancelling…", () => cancelRun(run.run_id).then(showTasks)));
+    return el("tr", {},
+      el("td", { class: "mono", text: run.check_id }),
+      el("td", {}, verdict(run.result || (run.lifecycle === "terminal" ? "BLOCKED" : run.lifecycle.toUpperCase()))),
+      el("td", { class: "mono wide-hide", text: run.evidence_kind || "—" }),
+      el("td", { class: "actions" }, cancel));
+  });
+  return panel(table(["check", "result", { label: "category", hideAt: "wide-hide" }, ""], rows));
+}
+
+/* ----------------------------------------------------------------- cleanup
+
+   **The panels this build cannot fill are named, not left blank.** Applied
+   patches, preservation receipts, proposals, and past refusal reasons have no
+   listing backend in this build: the cleanup package hands a receipt to the
+   caller that asked for it and persists only the original bytes. An empty list
+   would read as "nothing has ever been cleaned", which is a different and false
+   claim. So each absent panel is rendered with the backend that is missing. */
+async function showCleanup() {
+  const section = await sectionOf("checks", "sections.cleanup");
+  if (!section) return fill("cleanup-body", panel(el("p", { class: "note", text: "the cleanup policy could not be read" })));
+
+  if (!section.available || section.error) {
+    return fill("cleanup-body", panel(
+      el("div", { class: "refusal" },
+        el("div", { class: "why", text: "the cleanup policy could not be read" }),
+        el("div", { class: "core", text: section.error || section.problem || "no detail" })),
+      unavailablePanel(section)));
+  }
+
+  const policy = section.policy || {};
+  const outstanding = section.outstanding || [];
+  const panels = [
+    panel(
+      el("div", { class: "row" },
+        el("strong", { text: "cleanup mode" }),
+        el("span", { class: `pill ${section.may_write ? "yes" : "no"}`, text: policy.mode || "unknown" })),
+      kv(
+        ["policy file", section.policy_path],
+        ["policy digest", (section.policy_digest || "").slice(0, 12)],
+        ["may write", section.may_write ? "yes" : "no"],
+        ["python version", policy.python_version || "not pinned"],
+      )),
+    panel(
+      el("div", { class: "row" }, el("strong", { text: "rules" })),
+      el("ul", { class: "policy" },
+        ...(section.registered_rules || []).map((rule) => {
+          const enabled = (policy.enabled_rules || []).includes(rule);
+          return el("li", { class: enabled ? "mono" : "mono missing", text: `${rule}${enabled ? "" : " (not enabled)"}` });
+        }))),
+    panel(
+      el("div", { class: "row" }, el("strong", { text: "protected paths" })),
+      el("ul", { class: "policy" },
+        ...(section.protected_paths || []).map((p) => el("li", { class: "mono", text: p })),
+        ...(policy.excluded_paths || []).map((p) => el("li", { class: "mono missing", text: `${p} (excluded by policy)` })))),
+    panel(
+      el("div", { class: "row" }, el("strong", { text: "pending cleanup" })),
+      outstanding.length
+        ? el("ul", { class: "policy" }, ...outstanding.map((item) => el("li", { class: "mono", text: `${item.path} — ${item.rule}` })))
+        : el("p", { class: "note", text: "nothing is owed: every changed line satisfies the enabled rules" })),
+    unavailablePanel(section),
+    panel(el("p", { class: "note", text: section.note })),
+  ];
+  return fill("cleanup-body", ...panels);
+}
+
+function unavailablePanel(section) {
+  const absent = section.unavailable || [];
+  if (!absent.length) return null;
+  const items = absent.map((item) => el("li", {},
+    el("span", { class: "mono strong", text: item.panel }),
+    el("div", { class: "note", text: `not shown: ${item.missing}` })));
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: "not available in this build" })),
+    el("ul", { class: "policy" }, ...items));
+}
+
+/* --------------------------------------------------------- settings & versions
+
+   Read-only, and says so. Configuration editing is checkpoint 12.3. An operator
+   arriving here must not be left hunting for an edit control that is not in this
+   build; the note is at the top so it is read before the components are. */
+async function showIntegrations() {
+  const section = await sectionOf("checks", "sections.integrations");
+  if (!section) return fill("integrations-body", panel(el("p", { class: "note", text: "the integration record could not be read" })));
+
+  const components = (section.components || []).map((component) => el("tr", {},
+    el("td", { class: "mono" }, el("strong", { text: component.id })),
+    el("td", { class: "note", text: component.kind }),
+    el("td", { class: "mono", text: component.version || "—" }),
+    el("td", {}, el("span", { class: `pill ${component.present ? "yes" : "no"}`, text: component.status })),
+    el("td", { class: "mono wide-hide", text: component.detail || "" }),
+  ));
+  const actions = (section.actions || []).map((action) => el("tr", {},
+    el("td", { class: "mono" }, el("strong", { text: action.operation })),
+    el("td", { text: action.effect }),
+    el("td", { class: "actions" }, action.available
+      ? operationButton({ name: action.operation })
+      : el("span", { class: "why-not", text: action.reason })),
+  ));
+  return fill("integrations-body",
+    panel(el("p", { class: "note", text: section.note })),
+    panel(table(["component", "kind", "version", "status", { label: "detail", hideAt: "wide-hide" }], components)),
+    panel(table(["operation", "effect", "apply from here"], actions)));
+}
+
+/* ------------------------------------------------------------------ overview
+
+   The five questions an operator opens the console with, answered in order on
+   the page rather than only in the nav. Built from the runs table for any
+   verdict, so a green installation fact can never stand in for one. */
+async function showOverview() {
+  const section = await sectionOf("project", "sections.overview");
+  if (!section) return fill("overview-body", panel(el("p", { class: "note", text: "the project record could not be read" })));
+  const enrollment = section.enrollment || {};
+  const blockers = section.blockers || [];
+  return fill("overview-body",
+    panel(
+      el("div", { class: "row" },
+        el("strong", { text: "enrollment" }),
+        el("span", { class: `pill ${enrollment.enrolled ? "yes" : "no"}`, text: enrollment.state })),
+      kv(
+        ["root", section.root],
+        ["policy digest", (enrollment.policy_digest || "").slice(0, 12)],
+        ["checks registered", String(section.checks_registered)],
+        ["state store", section.state_writable ? "writable" : `not writable: ${section.state_detail}`],
+      )),
+    panel(
+      el("div", { class: "row" }, el("strong", { text: "blockers" })),
+      blockers.length
+        ? el("ul", { class: "policy" }, ...blockers.map((blocker) => el("li", {},
+            el("span", { class: "strong", text: blocker.what }),
+            el("div", { class: "note", text: `${blocker.detail}. Clears when: ${blocker.clears_when}` }))))
+        : el("p", { class: "note", text: "nothing is blocking work on this project" })));
+}
 
 function open(view) {
   for (const button of document.querySelectorAll("nav button")) {

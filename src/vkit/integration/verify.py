@@ -280,6 +280,24 @@ def _verify_checked_out(
                 "approved driver and expectation declaration",
             ))
 
+        # The candidate is not dirty relative to its own index. It is dirty
+        # relative to its TARGET, which is the only comparison a checkout this
+        # clean can answer and the one an operator actually means by "does this
+        # candidate still owe cleanup". Scoped by the diff and previewed over
+        # every line, because a candidate commit is not a working tree with a
+        # task's changed-lines record behind it.
+        owed = _required_cleanup(
+            project, candidate_fact.sha, target_fact.sha, checkout_project
+        )
+        for path, rule_id in owed:
+            oracle_findings.append(policies.PolicyFinding(
+                "required_cleanup_pending", f"{path}:{rule_id}", "REJECT",
+                f"{path} still owes cleanup the approved policy requires: {rule_id}. "
+                "A protected check does not clean the candidate and then attest to "
+                "its original commit, so this cannot be repaired by this run. Apply "
+                f"the cleanup to {path} and make a new candidate commit",
+            ))
+
         expected_paths = expectations
         executed_expectations = oracles.expectation_identity(
             candidate_checkout.path, expected_paths
@@ -552,6 +570,111 @@ def _parse_candidate_manifest(checkout_project, run_dir: Path) -> Manifest | Non
         return parse_manifest(checkout_project, run_dir / "probe")
     except ManifestError as exc:
         raise IntegrationError(f"the candidate's manifest cannot be used: {exc}") from exc
+
+
+def _required_cleanup(
+    project: Project, candidate: str, target: str, checkout_project
+) -> tuple[tuple[str, str], ...]:
+    """The cleanup this candidate still owes, as `(path, rule_id)` pairs.
+
+    **Why the scope is the diff against the target and not the checkout's own
+    changed set.** `cleanup.candidate_gaps` is `cleanup.freshness` under a name,
+    and `freshness` reads `changed_files(checkout)`, which is
+    `git status --porcelain`. This module calls `checkouts.assert_clean` twice,
+    and `assert_clean` raises unless that status is empty. So at the instant the
+    gap would be read, the checkout is clean by assertion and the changed set is
+    empty: `candidate_gaps(checkout)` returns () for every candidate, and
+    wiring it in beside `assert_clean` would refuse nothing.
+
+    What is actually wrong with a candidate is not that its checkout is dirty. It
+    is that its commit carries cleanup the owner approved and the commit has not
+    applied. The set of paths the candidate changed against the target is the only
+    question a clean checkout can answer that means that, and it is the question
+    an operator is asking anyway.
+
+    **Every line is a changed line here.** `candidate_gaps` scopes the comment
+    rule to the lines a task changed, because it reads a worker's diff and a
+    worker's change has an owner. A candidate commit has no such record: the
+    whole candidate is under review, and its trailing comments are its own.
+
+    **Nothing is written.** `_propose` reaches `preview_comment_cleanup` and
+    `preview_logic_cleanup`, and both propose and compare. `apply_cleanup` is the
+    single writer in the cleanup package and is not called from here; the policy is
+    demoted with `_read_only` so the guarantee is a property of the code rather
+    than a promise by this caller, which is the same device `freshness` uses.
+
+    `_propose` and `_sites` are imported rather than restated. They are the two
+    functions that decide whether a rule has work on a file, and a gate holding a
+    third copy of that decision is how two gates come to disagree about the same
+    file. Only the scope differs from `freshness`, and the scope is the whole
+    reason this function exists. `integration/sandbox.py` and
+    `verifiers/dispatch.py` already reach into a sibling module's private
+    helper for the same reason.
+
+    A path the checker cannot read, a malformed file, an excluded path and a
+    language this build does not apply are all refusals rather than pending work,
+    and none of them is a gap: the checker decided there was nothing safe to
+    write, so nothing is required.
+    """
+    from ..cleanup import hooks as cleanup
+
+    active = cleanup._read_only(cleanup.load_policy(checkout_project))
+    enabled = [rule for rule in cleanup.RULE_ORDER if rule in active.enabled_rules]
+    if not enabled:
+        return ()
+
+    return tuple(
+        (path, rule_id)
+        for path in _candidate_scope(project, candidate, target)
+        if active.rules_for(path)
+        if (checkout_project.root / path).is_file()
+        for rule_id in enabled
+        if _has_work(cleanup, checkout_project, path, rule_id)
+    )
+
+
+def _has_work(cleanup, checkout_project, path: str, rule_id: str) -> bool:
+    """Whether one rule offers an edit on one path, read through the cleanup package.
+
+    Every line counts as changed here, and the comment preview takes a line
+    iterable rather than a sentinel, so `all_lines` expands it once against the
+    bytes the preview is about to read.
+    """
+    if rule_id == cleanup.TRAILING_RULE:
+        lines: Any = cleanup.all_lines((checkout_project.root / path).read_bytes())
+    else:
+        # A logic rule reads the whole file regardless of which lines changed, so
+        # it needs no line evidence and must not be handed any.
+        lines = ()
+    return bool(cleanup._sites(cleanup._propose(checkout_project, path, rule_id, lines)))
+
+
+def _candidate_scope(project: Project, candidate: str, target: str) -> tuple[str, ...]:
+    """Every path the candidate changed against the target, repository-relative.
+
+    `--name-only` rather than a diff parse, so this is Git's own answer to "what
+    did this candidate change" and not a reading of a patch. Both endpoints are
+    commits, never refs, so the scope cannot move under a decision that is being
+    recorded against them.
+
+    A rename reports the path that exists in the tree, which is what a reader
+    needs to act on and what the cleanup preview can read. `--diff-filter=ACMR`
+    drops deletions: a deleted file is nothing left to clean.
+
+    A path listed here that the candidate tree does not hold is skipped by the
+    caller before any read. That is a Git answer about two commits and a
+    filesystem answer about the checkout, and the second is the one that decides
+    whether there is a file to preview. A subdirectory path cannot appear here,
+    because `--name-only` lists blobs.
+    """
+    try:
+        listing = gits.git(
+            project, "diff", "--name-only", "--diff-filter=ACMR",
+            f"{target}..{candidate}",
+        )
+    except gits.GitError:
+        return ()
+    return tuple(dict.fromkeys(line.strip() for line in listing.splitlines() if line.strip()))
 
 
 def _describe_combination(project: Project, candidate: str, target: str) -> dict[str, Any]:

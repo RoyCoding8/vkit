@@ -959,9 +959,9 @@ async function showCleanup() {
 }
 
 /* One applied cleanup: which file, which rule, what it changed, and the
-   receipt that authorized it. The digests are abbreviated because the full
-   value is in the detail line, and a 64-character hex string in a column is
-   unreadable at any width. */
+   receipt that authorized it. Digests are truncated to 12 characters because a
+   full sha256 in a table column is unreadable at any width, and a reader who
+   wants the whole value has it in the section payload. */
 function appliedPanel(section) {
   const applied = section.applied || [];
   const retries = section.already_applied_total || 0;
@@ -984,9 +984,9 @@ function appliedPanel(section) {
     el("p", { class: "note", text: historyNote(section, retries) }));
 }
 
-/* A refusal is the panel an operator reads when a file was left alone, so it
-   carries the checker's reason verbatim. A row that said "refused" and stopped
-   there would be the named-gap problem in a different costume. */
+/* A refusal row states the reason inline because `reason` alone does not tell an
+   operator what to do; `detail` is the checker's own sentence and is preferred
+   whenever it carries one. */
 function refusalsPanel(section) {
   const refusals = section.refusals || [];
   const body = refusals.length
@@ -1011,9 +1011,10 @@ function receiptSummary(receipt) {
   return receipt.result;
 }
 
-/* The count line under both panels. `total` is every recorded outcome and
-   `truncated` says whether this page holds all of them, so a reader can always
-   tell which of the two they are looking at. */
+/* `total` counts every recorded outcome and `truncated` says whether this page
+   holds all of them, so the two sentences never disagree about what is on
+   screen. `retries` is the AlreadyApplied count, which belongs in neither the
+   applied nor the refused panel and would otherwise have no home on the page. */
 function historyNote(section, retries) {
   if (section.history_error) {
     return `the cleanup record could not be read: ${section.history_error}`;

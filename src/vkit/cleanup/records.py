@@ -11,9 +11,8 @@ honest answer with this backend and is the wrong answer now that it exists.
 
 One row per apply outcome. `Applied`, `AlreadyApplied` and `ApplyRefused` are
 already a closed sum in `apply.py`, and a record is that sum projected onto
-durable storage. Modelling it as one type with a `kind` rather than three
-record shapes is what keeps the outcome a fact a reader branches on once, rather
-than a family of almost-identical rows.
+durable storage: one row shape with an `outcome` the reader branches on once,
+rather than three record types that differ only in which fields they leave null.
 
 The outcome is the load-bearing field and it is CHECK-enforced in the table. A
 refusal records the checker's own `reason` and `detail` verbatim, because the
@@ -62,11 +61,12 @@ MAX_RECORDS = 500
 DEFAULT_LIMIT = 50
 
 #: The outcomes, named once so the writer and the reader cannot disagree about the
-#: spelling. The table CHECKs the same three values.
+#: spelling. The table CHECKs the same three values in migration 7; that CHECK is
+#: the authority and is exercised against a fourth value, so this tuple is not a
+#: second place that has to agree with it.
 APPLIED = "applied"
 ALREADY_APPLIED = "already_applied"
 REFUSED = "refused"
-OUTCOMES: tuple[str, ...] = (APPLIED, ALREADY_APPLIED, REFUSED)
 
 
 @dataclass(frozen=True)
@@ -271,12 +271,8 @@ def _row(request, result) -> dict[str, Any]:
         }
 
     if isinstance(result, ApplyRefused):
-        # The digest recorded here is the one the PROPOSAL expected, not one read
-        # off the file, and the difference is the whole of a `before_bytes_changed`
-        # refusal. A dashboard rendering it as "this file was X" would state the
-        # opposite of the truth on the one refusal an operator most needs to read,
-        # so the pair that disambiguates it travels with the row and the panel
-        # shows both.
+        # `observed` is None for a refusal decided before any bytes were read, so
+        # the fallback is the proposal's expected digest. `detail` says which.
         observed = result.observed_before_digest or result.expected_before_digest
         return {
             **common,

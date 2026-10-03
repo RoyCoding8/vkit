@@ -626,16 +626,16 @@ def test_an_unavailable_setup_action_names_its_missing_prerequisite(live) -> Non
 
 
 def test_the_cleanup_section_reports_the_policy_and_names_no_absent_panel(live) -> None:
-    """Cleanup shows what the core holds, and no panel claims a missing backend.
+    """Cleanup shows what the core holds, and claims no panel is missing.
 
-    The policy is the core's own, read through `cleanup.load_policy`. The
-    unavailable list is asserted to be EMPTY, which is the assertion that
-    checkpoint 4's backend landed: this test previously asserted the opposite,
+    The policy is the core's own, read through `cleanup.load_policy`. This test
+    previously asserted the opposite: that the unavailable list was NON-empty,
     because the applied-patch, receipt, proposal and refusal panels had nothing
     behind them and an empty list would have read as "nothing has ever been
     cleaned", which is a different and false claim. Now that every outcome is
-    recorded durably, a panel that still claimed an absent backend would be
-    telling the operator to distrust data the page is showing them.
+    recorded durably, the key is gone from the section, and this asserts it stays
+    gone: an assertion that the key EQUALS an empty list would pass for a
+    section that had deleted the panels along with it.
     """
     url, _ = live
     section = _get(f"{url}/api/checks")["sections"]["cleanup"]
@@ -652,10 +652,11 @@ def test_the_cleanup_section_reports_the_policy_and_names_no_absent_panel(live) 
     assert section["protected_paths"], "no protected paths are reported"
     assert isinstance(section["outstanding"], list), "there is no pending-cleanup list"
 
-    assert section["unavailable"] == [], (
-        "the cleanup section still names a panel as having no backend, while the "
-        "records that fill it are persisted and read back: "
-        f"{section['unavailable']}"
+    assert "unavailable" not in section, (
+        "the cleanup section still carries an `unavailable` key. Every panel now "
+        "has a backend, so the key can only ever be empty, and a page that "
+        "advertises absent panels it no longer has is telling an operator to "
+        "distrust data it is showing them"
     )
     for panel in ("applied", "refusals"):
         assert isinstance(section[panel], list), (

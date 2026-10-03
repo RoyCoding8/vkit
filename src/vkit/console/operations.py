@@ -829,7 +829,8 @@ def cleanup_section(context: Context) -> dict[str, Any]:
     bytes, so there was nothing on disk to list. Naming them was the right call
     with that backend: an empty list reads as "nothing has ever been cleaned",
     which is a different and false claim. `cleanup.records` is that backend, so
-    the panels carry real data and `unavailable` is empty.
+    the panels carry real data, and the `unavailable` key is gone rather than
+    left behind as a list that can only ever be empty.
 
     A refusal is listed with the checker's own reason and detail, because the
     question an operator brings to this page is "why was that file left alone"
@@ -879,7 +880,6 @@ def cleanup_section(context: Context) -> dict[str, Any]:
             "already_applied_total": 0,
             "total": 0,
             "truncated": False,
-            "unavailable": [],
         }
 
     outstanding: list[dict[str, Any]] = []
@@ -891,11 +891,8 @@ def cleanup_section(context: Context) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - report rather than fail the read
         freshness_error = str(exc)
 
-    # A store that cannot be read is reported beside the panels rather than
-    # replacing them: the policy and the outstanding work are still true facts,
-    # and a page that refused to render anything would hide them behind a
-    # failure nobody caused. The keys match `cleanup_summary`'s exactly, so the
-    # page renders the same shape whether or not the record could be read.
+    # The default block carries every key `cleanup_summary` returns, so the page
+    # renders the same shape whether or not the record could be read.
     history: dict[str, Any] = {
         "applied": [], "refusals": [], "applied_total": 0, "refusal_total": 0,
         "already_applied_total": 0, "total": 0, "truncated": False,
@@ -920,7 +917,6 @@ def cleanup_section(context: Context) -> dict[str, Any]:
         **history,
         "history_error": history_error,
         "error": freshness_error,
-        "unavailable": [],
         "note": (
             "This policy is the document the Settings view writes when you change "
             "the cleanup controls there. A change is previewed before it is saved, "

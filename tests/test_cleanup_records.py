@@ -513,7 +513,10 @@ def test_a_policy_that_will_not_parse_still_serves_the_record_panels(tmp_path) -
             f"the section omits {panel!r} when the policy is unusable, so the page "
             "renders a history panel as undefined"
         )
-    assert section["unavailable"] == []
+    assert "unavailable" not in section, (
+        "the section re-advertises absent panels on the unhealthy path, which is "
+        "where an operator is most likely to be reading them"
+    )
 
 
 def test_the_record_table_migrates_onto_a_database_an_older_build_wrote(tmp_path) -> None:
@@ -615,19 +618,20 @@ def test_the_console_shows_the_records_and_names_no_absent_panel(live_console) -
     """The four panels are real, so the "not available in this build" list is empty.
 
     Checkpoint 12.2 named these four as absent because there was nothing behind
-    them. Asserting the list is empty is the assertion that the backend landed,
-    and it has to stay: the page still carries the key, and a future edit that
-    repopulates it would be telling an operator to distrust data the page is
-    showing them.
+    them. Asserting the key is GONE is the assertion that the backend landed, and
+    it has to stay: a page still advertising panels it now fills would tell an
+    operator to distrust data it is showing them. Asserting the list is empty
+    would not do, because a section that had deleted the panels along with the
+    key would pass that too.
     """
     url, context = live_console
 
     with urllib.request.urlopen(f"{url}/api/checks", timeout=60) as response:
         section = json.loads(response.read().decode("utf-8"))["sections"]["cleanup"]
 
-    assert section["unavailable"] == [], (
-        "the cleanup section still names panels as absent while the backend that "
-        f"fills them exists: {section['unavailable']}"
+    assert "unavailable" not in section, (
+        "the cleanup section still carries an `unavailable` key, so the page "
+        "advertises panels it now fills"
     )
     for panel in ("applied", "refusals", "applied_total", "refusal_total"):
         assert panel in section, (

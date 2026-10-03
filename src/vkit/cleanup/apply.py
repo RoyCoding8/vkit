@@ -511,7 +511,10 @@ def _decide(
     *,
     ownership_check,
 ) -> ApplyResult:
-    """The apply itself, without the record. Every branch returns a sum member."""
+    """Runs the apply and returns; `apply_cleanup` records the returned member.
+
+    Split out so that recording cannot be skipped by a branch that returns
+    early, which is the failure the record exists to prevent."""
     failure = _guard(project, request, ownership_check=ownership_check)
     if failure is not None:
         return failure

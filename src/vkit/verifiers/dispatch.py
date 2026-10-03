@@ -18,11 +18,13 @@ wants to know what a run said has to name which of the two it is reading. A
 design where both shared one stream would make "the report says the test passed"
 and "the report said something about the word passed" the same kind of evidence.
 
-**Why an unimplemented kind is BLOCKED rather than absent.** `node_test` and
-`property` are declared in the frozen schema and have no adapter at checkpoint 1.
-They resolve here to a named BLOCKED rather than raising, because a kind the
-manifest can declare and this build cannot run is a fact about the run, and a
-raise would be a crash rather than an answer.
+**Why every kind has a real adapter and none is a stub.** `lean` and `tlc` land
+here at checkpoint 3, and they land the way the plan requires rather than as a
+helper that reports success. Each one launches a real checker through a stdlib-only
+runner, reads that checker's own output, and refuses each way that output can fail
+to answer. There is no fallback adapter that returns a verdict no checker
+produced, because such a thing is worse than an absent one: it converts a missing
+capability into a passing milestone.
 
 **The receipt is built here, once.** It is the projection of an `AdapterResult`
 onto `schemas/receipt.v2.json`, and every field in it is either measured here or
@@ -41,8 +43,8 @@ from typing import Any, Callable
 from .. import __version__
 from ..claimkind import ClaimCategory
 from ..identity import SourceIdentity
-from ..outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
-from . import node_adapter, property_adapter, pytest_adapter
+from ..outcome import Blocked, Failed, Outcome, Passed, ScenarioResult
+from . import lean_adapter, node_adapter, property_adapter, pytest_adapter, tlc_adapter
 from .spec import (
     CheckKind,
     ScenarioCheck,
@@ -261,29 +263,14 @@ def _this_interpreter() -> str:
     return sys.executable
 
 
-def _absent(check_kind: CheckKind, checkpoint: str) -> Adapter:
-    """An adapter that runs nothing and says why.
-
-    A closure rather than a shared default so the reason names the kind, and so
-    a future adapter replacing one of these is a deletion rather than an edit to
-    a message. `argv_for` returns an empty list, which `_preflight` refuses as a
-    launch with nothing to launch, so the refusal is the adapter's own rather than
-    a command that would have run.
-    """
-    return Adapter(
-        kind=check_kind,
-        argv_for=lambda check, run_dir, python: (),
-        read=lambda check, raw: Blocked(
-            BlockedReason.TOOL_MISSING,
-            f"adapter_absent: a {check_kind.value!r} check has no adapter in this "
-            f"build. {checkpoint} supplies one; until then the check is BLOCKED "
-            f"and nothing is launched.",
-        ),
-    )
-
-
 #: The one table. Keyed by the frozen `CheckKind`, so a kind the enum gains is a
 #: `KeyError` at import rather than a silent fall-through to a default adapter.
+#:
+#: All six kinds have an adapter as of checkpoint 3. There is no longer a kind a
+#: manifest can declare and this build cannot run, so the `_absent` helper that
+#: answered for one went with the kinds that used it; a missing adapter is now a
+#: `KeyError` from `for_kind`, which names an unrecognised kind as a manifest bug
+#: rather than as a capability this build lacks.
 ADAPTERS: dict[CheckKind, Adapter] = {
     # Handed the parsed `CheckSpec` rather than the variant. A v1 check has no
     # variant at all, and `manifest._wrap` already copies a v2 scenario check's
@@ -311,8 +298,14 @@ ADAPTERS: dict[CheckKind, Adapter] = {
         kind=CheckKind.PROPERTY, argv_for=_property_argv,
         read=lambda check, raw: property_adapter.interpret(raw, _variant(check)),
     ),
-    CheckKind.LEAN: _absent(CheckKind.LEAN, "Plan 10 checkpoint 3"),
-    CheckKind.TLC: _absent(CheckKind.TLC, "Plan 10 checkpoint 3"),
+    CheckKind.LEAN: Adapter(
+        kind=CheckKind.LEAN, argv_for=lean_adapter.argv_for,
+        read=lambda check, raw: lean_adapter.interpret(raw, _variant(check)),
+    ),
+    CheckKind.TLC: Adapter(
+        kind=CheckKind.TLC, argv_for=tlc_adapter.argv_for,
+        read=lambda check, raw: tlc_adapter.interpret(raw, _variant(check)),
+    ),
 }
 
 

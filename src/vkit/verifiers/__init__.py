@@ -34,6 +34,7 @@ from .dispatch import (
     persist,
     validate_receipt,
 )
+from .lean_adapter import AdapterResult as LeanAdapterResult
 from .node_adapter import AdapterResult as NodeAdapterResult
 from .obligation import (
     CaseObligation,
@@ -69,6 +70,7 @@ from .spec import (
     ToolchainRef,
     evidence_kind,
 )
+from .tlc_adapter import AdapterResult as TlcAdapterResult
 
 __all__ = [
     "ADAPTERS",
@@ -85,6 +87,7 @@ __all__ = [
     "DomainBounds",
     "FingerprintSpec",
     "HypothesisSettings",
+    "LeanAdapterResult",
     "LeanCheck",
     "LeanProfile",
     "ModuleRef",
@@ -104,6 +107,7 @@ __all__ = [
     "SubjectRef",
     "TestedScope",
     "TheoremObligation",
+    "TlcAdapterResult",
     "TlcCheck",
     "ToolchainRef",
     "argv_for",

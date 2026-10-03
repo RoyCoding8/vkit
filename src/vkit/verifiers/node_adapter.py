@@ -56,6 +56,7 @@ import base64
 import json
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 from ..outcome import Blocked, BlockedReason
 from .obligation import CaseObligation, obligation_to_json
@@ -219,6 +220,77 @@ PLAN_MARKER = re.compile(r"^1\.\.(\d+)\s*$", re.MULTILINE)
 def reporter_argv_token() -> str:
     """The `--test-reporter` value naming the inlined reporter."""
     return REPORTER_SCHEME + base64.b64encode(REPORTER_SOURCE.encode("utf-8")).decode("ascii")
+
+
+#: The flag that runs every file in one process, in each spelling the runner has
+#: used. The first is the current one; the second is how Node 22 and 23 spell the
+#: same behaviour, and the reason is that on those lines the flag was not stable
+#: enough to carry without the `experimental_` prefix.
+ISOLATION_FLAG_STABLE = "--test-isolation=none"
+ISOLATION_FLAG_EXPERIMENTAL = "--experimental-test-isolation=none"
+
+#: The first Node major that accepted the unprefixed spelling. Measured: 24.16.0
+#: accepts `--test-isolation=none`; 22.23.3 answers it with `bad option`, exits 9
+#: and writes no report, while accepting `--experimental-test-isolation=none`.
+STABLE_ISOLATION_FROM = 24
+
+
+@lru_cache(maxsize=None)
+def isolation_flag(executable: str) -> str:
+    """The spelling of the no-isolation flag this `node` binary understands.
+
+    **Why the flag is version-dependent at all.** `--test-isolation=none` is what
+    makes required-case accounting mean something: with the default per-file
+    isolation the runner reports each FILE as a test of its own, so a required
+    case would be satisfied by a file that ran no case at all. That reasoning is
+    right on every version. Only the spelling moved.
+
+    A binary that does not recognize the flag exits 9 having written nothing, and
+    `execution._derive` reads that as `artifact_missing` -- "node-report.tap was
+    not written, so the check reported nothing". That refusal is CORRECT and
+    useless: it names the missing file, not the runner's refusal to start. Seven
+    tests in `tests/test_node_verifier.py` failed on ubuntu-latest and
+    windows-latest for this reason and passed on macos-latest, because the macOS
+    image ships Node 24.20.0 and the other two ship Node 22.
+
+    The version is read from the binary rather than guessed from a table of
+    known releases, and an unreadable or unparseable version yields the
+    experimental spelling, which is the one the older and therefore wider range
+    of runners accepts. Node 22 is not going away in a way that makes that the
+    wrong default, and a Node that cannot be asked is a Node whose runner output
+    will not be trusted anyway.
+    """
+    major = _major_version(executable)
+    return ISOLATION_FLAG_STABLE if major >= STABLE_ISOLATION_FROM else ISOLATION_FLAG_EXPERIMENTAL
+
+
+def _major_version(executable: str) -> int:
+    """The binary's major release, or 0 when it will not say.
+
+    0 rather than a raise, because the caller has a usable answer either way and
+    a version probe must not become the reason a check cannot run. `subprocess`
+    is imported here so this module stays importable in a process that has no
+    business spawning anything.
+    """
+    import subprocess
+
+    from ..nowindow import hidden_window
+
+    try:
+        done = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True,
+            timeout=VERSION_PROBE_SECONDS, errors="replace", **hidden_window(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    match = re.search(r"v(\d+)", done.stdout or "")
+    return int(match.group(1)) if match else 0
+
+
+#: How long a version probe waits. A `--version` that has not answered in this
+#: time is a binary that is not going to answer, and the probe's caller has a
+#: default to fall back on.
+VERSION_PROBE_SECONDS = 20
 
 
 #: What separates a required case id into its file and its name.

@@ -28,6 +28,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..nowindow import hidden_window
+
 from ..paths import Project
 
 
@@ -46,6 +48,7 @@ def git(project: Project, *args: str) -> str:
         done = subprocess.run(
             ["git", *args], cwd=project.root, capture_output=True,
             encoding="utf-8", errors="replace", timeout=60, check=False,
+            **hidden_window(),
         )
     except FileNotFoundError as exc:
         raise GitError("git is not installed or not on PATH") from exc
@@ -62,6 +65,7 @@ def git_version() -> str:
         done = subprocess.run(
             ["git", "--version"], capture_output=True, encoding="utf-8",
             errors="replace", timeout=15, check=False,
+            **hidden_window(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise GitError(f"could not read the git version: {exc}") from exc
@@ -89,6 +93,7 @@ def is_ancestor(project: Project, ancestor: str, descendant: str) -> bool:
     done = subprocess.run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
         cwd=project.root, capture_output=True, timeout=60, check=False,
+        **hidden_window(),
     )
     if done.returncode == 0:
         return True
@@ -205,6 +210,7 @@ def git_blob(project: Project, commit: str, path: str) -> bytes:
     done = subprocess.run(
         ["git", "cat-file", "blob", f"{commit}:{Path(path).as_posix()}"],
         cwd=project.root, capture_output=True, timeout=60, check=False,
+        **hidden_window(),
     )
     if done.returncode != 0:
         detail = done.stderr.decode("utf-8", "replace").strip().splitlines()
@@ -220,6 +226,7 @@ def tree_paths(project: Project, commit: str, prefix: str) -> tuple[str, ...]:
     done = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", "-z", commit, "--", prefix],
         cwd=project.root, capture_output=True, timeout=60, check=False,
+        **hidden_window(),
     )
     if done.returncode != 0:
         detail = done.stderr.decode("utf-8", "replace").strip().splitlines()
@@ -250,5 +257,6 @@ def has_commits(project: Project) -> bool:
     done = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", "HEAD"],
         cwd=project.root, capture_output=True, timeout=30, check=False,
+        **hidden_window(),
     )
     return done.returncode == 0 and bool(done.stdout.strip())

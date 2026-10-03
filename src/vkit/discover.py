@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from .nowindow import hidden_window
 from .paths import Project, ProjectError
 
 #: Reports are read by a person or an agent, not archived. A repository with
@@ -308,6 +309,7 @@ def _probe_version(executable: str, args: tuple[str, ...] = ("--version",)) -> s
         done = subprocess.run(
             [found, *args], capture_output=True, encoding="utf-8",
             errors="replace", timeout=15, check=False,
+            **hidden_window(),
         )
     except (OSError, subprocess.SubprocessError):
         return None

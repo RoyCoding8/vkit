@@ -178,6 +178,8 @@ def _environment_facts(check: CheckSpec) -> dict[str, Any]:
     import subprocess
     import sys
 
+    from .nowindow import hidden_window
+
     tools: dict[str, str] = {}
     # `{{python}}` is the only way a check can name an interpreter, so the tool
     # that ran the checks is part of the evidence. A check that substituted some
@@ -189,7 +191,7 @@ def _environment_facts(check: CheckSpec) -> dict[str, Any]:
         try:
             done = subprocess.run(
                 [resolved, *argv[1:]], capture_output=True, encoding="utf-8",
-                errors="replace", timeout=15,
+                errors="replace", timeout=15, **hidden_window(),
             )
         except (OSError, subprocess.SubprocessError):
             continue

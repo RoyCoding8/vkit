@@ -12,12 +12,14 @@ one the product wrote. What varies between tests is the requirement set the task
 pinned at admission, which is the only lever the gap needed: the requirement is
 what says "this run owes a theorem", and nothing else in the system says that.
 
-**Why a pytest check and not a lean one.** `manifest.DECLARED_BUT_UNAVAILABLE`
-refuses `lean` and `tlc` at parse, so no manifest can register a theorem check on
-this build and no Lean toolchain is exercised here. What is exercised is the
+**Why a pytest check and not a lean one.** `lean` and `tlc` now parse and have
+real adapters, but running one means running a real Lean toolchain or a real JRE,
+which this module deliberately does not do. What is exercised here is the
 comparison, through the same public `finalize` every adapter calls, with the
-required category supplied by a contract. A comparison reachable only through a
-check kind this build cannot parse would be untestable and would never run.
+required category supplied by a contract. The Lean and TLC adapters are exercised
+on a real checker in `tests/test_lean_verifier.py` and `tests/test_tlc_verifier.py`,
+including on Ubuntu CI, and this module stays about the acceptance comparison
+alone.
 
 **The obligation half is not a restatement of the identity guard.** A pytest
 check's required test ids are not in the manifest digest at all, because

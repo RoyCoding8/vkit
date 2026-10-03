@@ -208,26 +208,52 @@ def test_a_property_check_may_not_be_constructed_without_a_generator(project) ->
     assert "generator" in str(caught.value), str(caught.value)
 
 
-def test_the_lean_variant_is_declared_and_refused_with_the_missing_capability(project) -> None:
-    """The shape is frozen at checkpoint 1; the runner arrives at checkpoint 3.
+def test_the_lean_variant_parses_and_licenses_theorem_evidence(project) -> None:
+    """The shape froze at checkpoint 1 and the runner arrived at checkpoint 3.
 
-    The refusal names what is missing and says this is not an unknown kind,
-    because those are different failures and a reader told the wrong one would
-    go looking for a typo.
+    The assertion is now the opposite of what it was: the kind parses, and the
+    category it licenses is derived rather than declared. That move is the point of
+    the checkpoint. A capability missing on one host is a BLOCKED raised by the
+    adapter, which can see the toolchain and name it, rather than a parse refusal
+    that told a reader their manifest was malformed and sent them looking for a
+    typo that was not there.
     """
-    with pytest.raises(ManifestError) as caught:
-        parse(project, [a_check(
-            id="ownership", kind="lean",
-            challenge={"module": "Acceptance", "path": "formal/lean/Acceptance.lean"},
-            theorems=["acceptance_ready_iff_all_required_pass"],
-            profile=LeanProfile.UNREVIEWED, permitted_axioms=["propext"],
-            toolchain={"tool": "lean", "version": "4.x.y"},
-        )])
-    message = str(caught.value)
-    assert "BLOCKED" in message
-    assert "Lean toolchain" in message
-    assert "not an unknown kind" in message
-    assert "checkpoint 3" in message
+    manifest = parse(project, [a_check(
+        id="ownership", kind="lean",
+        challenge={"module": "Acceptance", "path": "formal/lean/Acceptance.lean"},
+        theorems=["acceptance_ready_iff_all_required_pass"],
+        profile=LeanProfile.UNREVIEWED, permitted_axioms=["propext"],
+        toolchain={"tool": "lean", "version": "4.x.y"},
+    )])
+    spec = manifest.checks["ownership"]
+    assert spec.kind is CheckKind.LEAN
+    assert spec.evidence_kind() is ClaimCategory.THEOREM
+    assert spec.obligations() == (
+        TheoremObligation("acceptance_ready_iff_all_required_pass", "Acceptance"),
+    )
+    # No scenario ids: a lean check has no scenario to name, and inventing one
+    # would be the claim this contract exists to prevent.
+    assert spec.required_scenarios == ()
+    assert spec.variant.profile == LeanProfile.UNREVIEWED
+    assert spec.variant.permitted_axioms == ("propext",)
+
+
+def test_a_lean_check_that_declared_no_profile_gets_the_unreviewed_one(project) -> None:
+    """The default the plan fixes, and the direction omission cannot invert.
+
+    The weaker profile is what an agent-generated proof gets unless the owner
+    explicitly selects the other, so a check that left the field out must not
+    acquire the stronger profile's trust assumption by omitting it.
+    """
+    entry = a_check(
+        id="ownership", kind="lean",
+        challenge={"module": "Acceptance", "path": "formal/lean/Acceptance.lean"},
+        theorems=["t1"], permitted_axioms=["propext"], toolchain={"tool": "lean"},
+    )
+    entry.pop("profile", None)
+    entry["profile"] = LeanProfile.UNREVIEWED
+    spec = parse(project, [entry]).checks["ownership"]
+    assert spec.variant.profile == LeanProfile.UNREVIEWED
 
 
 def test_the_lean_branch_may_not_carry_required_scenarios(project) -> None:
@@ -245,20 +271,31 @@ def test_the_lean_branch_may_not_carry_required_scenarios(project) -> None:
     assert "BLOCKED" not in message, "the shape was wrong, so the capability is not the reason"
 
 
-def test_the_tlc_variant_is_declared_and_refused_with_the_missing_capability(project) -> None:
-    with pytest.raises(ManifestError) as caught:
-        parse(project, [a_check(
-            id="model", kind="tlc",
-            model={"module": "OwnershipAcceptance", "path": "formal/tla/OwnershipAcceptance.tla"},
-            config="formal/tla/OwnershipAcceptance.cfg",
-            properties=["NoDoubleOwnership"], bounds={"owners": 2, "resources": 2},
-            fingerprint={"constants_from_config": True, "checksum_states": False, "workers": 1},
-            toolchain={"tool": "tlc"},
-        )])
-    message = str(caught.value)
-    assert "BLOCKED" in message
-    assert "JRE" in message and "tla2tools.jar" in message
-    assert "not an unknown kind" in message
+def test_the_tlc_variant_parses_and_licenses_finite_model_evidence(project) -> None:
+    """The same move as the lean branch, for the model-checking one.
+
+    FINITE_MODEL is derived from the variant and the obligations carry their
+    bounds, because a run at different bounds is a different claim. Asserting the
+    bounds survive parsing is what makes the receipt's own `bounds` field mean
+    something later.
+    """
+    manifest = parse(project, [a_check(
+        id="model", kind="tlc",
+        model={"module": "OwnershipAcceptance", "path": "formal/tla/OwnershipAcceptance.tla"},
+        config="formal/tla/OwnershipAcceptance.cfg",
+        properties=["NoDoubleOwnership"], bounds={"owners": 2, "resources": 2},
+        fingerprint={"constants_from_config": True, "checksum_states": False, "workers": 1},
+        toolchain={"tool": "tlc"},
+    )])
+    spec = manifest.checks["model"]
+    assert spec.kind is CheckKind.TLC
+    assert spec.evidence_kind() is ClaimCategory.FINITE_MODEL
+    assert spec.obligations() == (
+        PropertyObligation("NoDoubleOwnership", (("owners", 2), ("resources", 2))),
+    )
+    assert spec.required_scenarios == ()
+    assert spec.variant.bounds.as_pairs == (("owners", 2), ("resources", 2))
+    assert spec.variant.fingerprint.workers == 1
 
 
 def test_the_tlc_branch_may_not_omit_bounds_or_fingerprint(project) -> None:

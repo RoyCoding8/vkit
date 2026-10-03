@@ -26,7 +26,6 @@ from .schemas import (
     MANIFEST_V2,
     SCHEMA_VERSIONS,
     SchemaValidationError,
-    schema_version,
     validate,
 )
 from .verifiers import (
@@ -35,6 +34,7 @@ from .verifiers import (
     DomainBounds,
     FingerprintSpec,
     HypothesisSettings,
+    LeanCheck,
     LeanProfile,
     ModuleRef,
     NativeCheckSpec,
@@ -62,27 +62,14 @@ MAX_TIMEOUT_SECONDS = 86400.0
 #: nothing else has to spell it out.
 _SCHEMA_FOR_VERSION = {1: MANIFEST, 2: MANIFEST_V2}
 
-#: The kinds that are declared in the schema and refused at parse. The shape is
-#: frozen (Plan 10 checkpoint 1) while the capability to run it is not (it lands
-#: at checkpoint 3), so the refusal has to name what is missing rather than
-#: calling the kind unknown: a kind this build does not recognise would be a
-#: different failure and a reader would be told the wrong thing.
-DECLARED_BUT_UNAVAILABLE = (CheckKind.LEAN, CheckKind.TLC)
-
-_UNAVAILABLE_REASON = {
-    CheckKind.LEAN: (
-        "a lean check needs the pinned Lean toolchain and comparator, which this "
-        "build does not launch yet. Plan 10 checkpoint 1 freezes the declaration "
-        "and checkpoint 3 supplies the runner; until then the check is BLOCKED "
-        "and runs nothing."
-    ),
-    CheckKind.TLC: (
-        "a tlc check needs a JRE and a pinned tla2tools.jar, which this build "
-        "does not launch yet. Plan 10 checkpoint 1 freezes the declaration and "
-        "checkpoint 3 supplies the runner; until then the check is BLOCKED and "
-        "runs nothing."
-    ),
-}
+#: Every kind the v2 schema declares has an adapter as of Plan 10 checkpoint 3, so
+#: there is no longer a kind this build accepts in a manifest and cannot run. The
+#: refusal that used to live here named checkpoint 3 as the thing that would
+#: supply the runner, and it is gone: `lean` and `tlc` parse into their variants
+#: and are BLOCKED later, by the adapter, when the toolchain or the isolation the
+#: check declared is genuinely missing. That is the better place for the refusal,
+#: because a capability missing on one host is not a manifest bug, and a reader
+#: told a manifest was malformed would go looking for a typo that is not there.
 
 
 def _digest_of(value: Any) -> str:
@@ -520,15 +507,6 @@ def _build_check(
         return _wrap(common, required, command, variant, 1)
 
     kind = CheckKind(entry["kind"])
-    if kind in DECLARED_BUT_UNAVAILABLE:
-        raise ManifestError(
-            f"check {check_id!r}: kind {kind.value!r} is BLOCKED. "
-            f"{_UNAVAILABLE_REASON[kind]} This is not an unknown kind: the "
-            f"declaration is accepted by schema version "
-            f"{schema_version(MANIFEST_V2)}, and refusing it here is what stops "
-            f"it running under a default."
-        )
-
     variant = _variant_for(kind, entry, common, check_id)
     return _wrap(common, (), variant.argv, variant, 2)
 

@@ -40,11 +40,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 REPORT_VERSION = 1
+
+#: The ANSI SGR escapes TLC's help text carries. Stripped before the version is
+#: read out of it, because `-help` bolds its section headings and the escape sits
+#: between the start of a line and the word a prefix match would look for.
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -199,14 +205,33 @@ def main(argv: list[str]) -> int:
 def _version_of(help_run: dict) -> str:
     """TLC's own version string, asked for rather than remembered.
 
-    `tlc2.TLC -help` writes the version banner to stdout. A run whose banner is
-    absent records `unreported`, which is a fact about the answer rather than a
-    plausible default, and the receipt carries it either way.
+    `tlc2.TLC -help` writes the version into the NAME section's description
+    line, and measured on TLC 2.19 that line carries an ANSI bold escape before
+    `TLC` and a tab before the text:
+
+        \\x1b[1mNAME\\x1b[0m
+        \\tTLC - provides model checking and simulation of TLA+
+        specifications - Version 2.19 of 08 August 2024
+
+    The first version matched a line STARTING with `TLC2 Version`, which is the
+    banner a real run prints rather than the one `-help` prints, so every report
+    recorded `unreported` and the receipt carried a tool identity that had in
+    fact been measured. The search is now for the version phrase anywhere in the
+    help text, with the escapes stripped first so a line that starts with one
+    still matches.
     """
     blob = (help_run.get("stdout") or "") + (help_run.get("stderr") or "")
-    for line in blob.splitlines():
+    plain = _ANSI.sub("", blob)
+    match = re.search(
+        r"TLC - provides model checking and simulation of TLA\+ specifications"
+        r" - Version ([^\r\n]+)",
+        plain,
+    )
+    if match:
+        return f"TLC {match.group(1).strip()}"
+    for line in plain.splitlines():
         stripped = line.strip()
-        if stripped.lower().startswith("tlc2 version") or "TLC2 Version" in stripped:
+        if stripped.startswith("TLC2 Version"):
             return stripped
     return "unreported"
 

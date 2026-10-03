@@ -746,6 +746,36 @@ def _run_real(tmp_path: Path, source: str) -> tuple[bytes, TlcCheck]:
     return report.read_bytes(), check
 
 
+def test_the_tool_version_is_read_out_of_the_help_text_tlc_prints() -> None:
+    """`-help` carries the version, and its escapes are in the way of reading it.
+
+    Measured on TLC 2.19: the NAME section's description line is bolded with an
+    ANSI escape before `TLC` and a tab before the text, and the version phrase is
+    the second half of that same line. A reader that matched a line STARTING with
+    the banner a real run prints found nothing here and recorded `unreported` on
+    every report, which is a receipt carrying a tool identity that had in fact
+    been measured and thrown away.
+    """
+    from vkit.verifiers import tlc_runner
+
+    help_text = (
+        "\x1b[1mNAME\x1b[0m\r\n\r\n"
+        "\tTLC - provides model checking and simulation of TLA+ specifications"
+        " - Version 2.19 of 08 August 2024\r\n\r\n"
+        "\x1b[1mSYNOPSIS\x1b[0m\r\n"
+    )
+    assert tlc_runner._version_of({"stdout": help_text, "stderr": ""}) == (
+        "TLC 2.19 of 08 August 2024"
+    )
+    # A run banner is the other spelling, and both are real output.
+    banner = "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)\n"
+    assert tlc_runner._version_of({"stdout": banner, "stderr": ""}) == (
+        "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+    )
+    # Neither spelling present is a fact about the answer, not a default.
+    assert tlc_runner._version_of({"stdout": "", "stderr": ""}) == "unreported"
+
+
 @needs_tlc
 def test_a_real_model_satisfying_its_properties_passes(tmp_path: Path) -> None:
     """The positive case, run by a real TLC on a real JRE.

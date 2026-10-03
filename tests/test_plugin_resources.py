@@ -250,14 +250,24 @@ def test_installed_console_uses_packaged_marketplace(wheel: Path, tmp_path: Path
         "--disable-pip-version-check", "--target", str(target), str(wheel),
     ], cwd=tmp_path)
     assert installed.returncode == 0, installed.stderr
+    # `checks_view` reads the repository through its context, so the probe needs
+    # one that names a real project. A `SimpleNamespace` was enough when the
+    # view was `manifest` and the host record only, and stopped being enough the
+    # moment the cleanup section joined it -- which is how a fabricated stand-in
+    # for a frozen dataclass outlived the fields it was standing in for.
+    shop = tmp_path / "shop"
+    shop.mkdir()
     code = "\n".join([
-        "import json, sys",
+        "import json, subprocess, sys",
         f"sys.path.insert(0, {str(target)!r})",
         "from pathlib import Path",
-        "from types import SimpleNamespace",
         "import vkit",
         "from vkit import pluginres",
         "from vkit.console import operations",
+        f"shop = {str(shop)!r}",
+        "subprocess.run(['git', 'init', '-q'], cwd=shop, check=True)",
+        "subprocess.run(['git', '-c', 'user.email=t@t', '-c', 'user.name=t',",
+        "                'commit', '--allow-empty', '-qm', 'shop'], cwd=shop, check=True)",
         "calls = []",
         "def host(args):",
         "    calls.append(args)",
@@ -267,7 +277,7 @@ def test_installed_console_uses_packaged_marketplace(wheel: Path, tmp_path: Path
         "operations._installed_plugin_record = lambda _: None",
         "root = pluginres.resolve_plugin_root()",
         "result = operations.install(None)",
-        "view = operations.checks_view(SimpleNamespace(manifest=None, manifest_error=None))",
+        "view = operations.checks_view(operations.open_context(shop))",
         "assert result['installed_from'] == str(root / 'plugin')",
         "assert view['installed']['source'] == result['installed_from']",
         "assert calls == [['plugin', 'validate', '--strict', str(root)],",

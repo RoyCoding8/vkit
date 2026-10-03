@@ -19,12 +19,70 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .claimkind import ClaimCategory
 from .paths import Project
-from .schemas import MANIFEST, SCHEMA_VERSION, SchemaValidationError, validate
+from .schemas import (
+    MANIFEST,
+    MANIFEST_V2,
+    SCHEMA_VERSIONS,
+    SchemaValidationError,
+    schema_version,
+    validate,
+)
+from .verifiers import (
+    CaseObligation,
+    CheckKind,
+    DomainBounds,
+    FingerprintSpec,
+    HypothesisSettings,
+    LeanProfile,
+    ModuleRef,
+    NativeCheckSpec,
+    NodeTestCheck,
+    Obligation,
+    PinnedRunner,
+    PropertyCheck,
+    PropertyObligation,
+    PytestCheck,
+    ReplaySettings,
+    ScenarioCheck,
+    SubjectRef,
+    TheoremObligation,
+    TlcCheck,
+    ToolchainRef,
+    evidence_kind,
+)
 
-# A run must never be allowed to hang forever, and a day is long enough for any
-# real check while still being a bound.
+#: A run must never be allowed to hang forever, and a day is long enough for any
+#: real check while still being a bound.
 MAX_TIMEOUT_SECONDS = 86400.0
+
+#: The schema each manifest version is read under, and the variant each `kind`
+#: builds. Both are tables so the parser has one place that knows the mapping and
+#: nothing else has to spell it out.
+_SCHEMA_FOR_VERSION = {1: MANIFEST, 2: MANIFEST_V2}
+
+#: The kinds that are declared in the schema and refused at parse. The shape is
+#: frozen (Plan 10 checkpoint 1) while the capability to run it is not (it lands
+#: at checkpoint 3), so the refusal has to name what is missing rather than
+#: calling the kind unknown: a kind this build does not recognise would be a
+#: different failure and a reader would be told the wrong thing.
+DECLARED_BUT_UNAVAILABLE = (CheckKind.LEAN, CheckKind.TLC)
+
+_UNAVAILABLE_REASON = {
+    CheckKind.LEAN: (
+        "a lean check needs the pinned Lean toolchain and comparator, which this "
+        "build does not launch yet. Plan 10 checkpoint 1 freezes the declaration "
+        "and checkpoint 3 supplies the runner; until then the check is BLOCKED "
+        "and runs nothing."
+    ),
+    CheckKind.TLC: (
+        "a tlc check needs a JRE and a pinned tla2tools.jar, which this build "
+        "does not launch yet. Plan 10 checkpoint 1 freezes the declaration and "
+        "checkpoint 3 supplies the runner; until then the check is BLOCKED and "
+        "runs nothing."
+    ),
+}
 
 
 def _digest_of(value: Any) -> str:
@@ -72,6 +130,11 @@ class FixtureIdentity:
 class CheckSpec:
     """One executable, fully resolved against the repository root.
 
+    Deprecated in favour of the `verifiers.spec` union and kept only as the name
+    every existing caller imports. A v2 check is one of the six variants in
+    `VARIANTS`, and a v1 check is a `ScenarioCheck`, so there is one type behind
+    both readings rather than a v1 shape and a v2 shape that disagree.
+
     `argv` still holds the placeholders unexpanded. They are substituted once the
     run directory exists, because that path is only known at run time and a
     check's own arguments are the only thing that legitimately needs it.
@@ -87,6 +150,44 @@ class CheckSpec:
     prerequisites: tuple[Prerequisite, ...]
     inputs: tuple[str, ...]
     expectations: tuple[str, ...] | None = None
+    #: The variant this check was parsed into. A v1 check is a `ScenarioCheck`
+    #: with a v1-shaped command, so a v1 manifest is a `scenario` check by the
+    #: only reading it has rather than a second shape with no category.
+    variant: NativeCheckSpec | None = None
+    #: The manifest version this check was declared under. It is a field rather
+    #: than something derived from the variant, because a v1 check and a v2
+    #: `scenario` check carry the same fields and the two must still produce
+    #: different digests: the version is what tells a reader which contract the
+    #: evidence was produced under.
+    declared_version: int = 1
+    subject: SubjectRef | None = None
+    claim_id: str | None = None
+
+    @property
+    def kind(self) -> CheckKind:
+        return CheckKind.SCENARIO if self.variant is None else self.variant.kind
+
+    def evidence_kind(self) -> ClaimCategory:
+        """The category a PASS from this check licenses.
+
+        Derived from the variant, never declared. A v1 check has no variant
+        beyond its scenario reading, which is what makes a legacy driver unable
+        to claim `theorem_checking` no matter what its file says.
+        """
+        if self.variant is None:
+            return ClaimCategory.SCENARIO
+        return evidence_kind(self.variant)
+
+    def obligations(self) -> tuple[Obligation, ...]:
+        """The obligations a receipt must discharge for this check.
+
+        A v1 check's `required_scenarios` are case obligations, which is what
+        they always were; `CaseObligation` is the reading, not a translation
+        layer over a different fact.
+        """
+        if self.variant is not None:
+            return self.variant.obligations
+        return tuple(CaseObligation(s) for s in self.required_scenarios)
 
     def resolved_argv_for(self, run_dir: Path, python: str | None) -> tuple[str, ...]:
         """The exact list to execute. Only two placeholders exist, both documented
@@ -136,7 +237,9 @@ class Manifest:
         derivation and the omission is invisible at the call site.
         """
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": max(
+                (c.declared_version for c in self.checks.values()), default=1
+            ),
             "description": self.description,
             "checks": [
                 {
@@ -158,6 +261,19 @@ class Manifest:
                         for p in check.prerequisites
                     ],
                     "inputs": list(check.inputs),
+                    # The kind and the obligations are inside the digest because
+                    # a manifest that re-declares the same commands as a
+                    # different kind is a different policy, and one that drops a
+                    # theorem is a different policy again. Leaving them out would
+                    # make a renamed check produce the same digest as the one it
+                    # replaced, which is the exact change acceptance exists to
+                    # notice.
+                    "kind": check.kind.value,
+                    "subject": {
+                        "paths": list(check.subject.paths) if check.subject else [],
+                        "digest": check.subject.digest if check.subject else None,
+                    },
+                    "claim_id": check.claim_id or "",
                     **({"expectations": list(check.expectations)}
                        if check.expectations is not None else {}),
                 }
@@ -322,13 +438,15 @@ def parse_manifest_bytes(
     if not isinstance(raw, dict):
         raise ManifestError(f"{origin} must contain a JSON object")
     version = raw.get("schema_version")
-    if version != SCHEMA_VERSION:
+    schema_name = _SCHEMA_FOR_VERSION.get(version) if isinstance(version, int) else None
+    if schema_name is None:
+        supported = ", ".join(str(v) for v in sorted(_SCHEMA_FOR_VERSION))
         raise ManifestError(
-            f"unsupported manifest schema_version {version!r}; this build supports {SCHEMA_VERSION}"
+            f"unsupported manifest schema_version {version!r}; this build reads {supported}"
         )
 
     try:
-        validate(origin, MANIFEST, raw)
+        validate(origin, schema_name, raw)
     except SchemaValidationError as exc:
         raise ManifestError(f"{origin} rejected: {exc.reason}") from exc
 
@@ -337,55 +455,244 @@ def parse_manifest_bytes(
         check_id = entry["id"]
         if check_id in checks:
             raise ManifestError(f"duplicate check id {check_id!r} in {origin}")
-
-        argv = tuple(entry["command"])
-        if any(not isinstance(part, str) or not part for part in argv):
-            raise ManifestError(f"check {check_id!r}: command entries must be nonempty strings")
-
-        timeout = float(entry["timeout_seconds"])
-        if not 0 < timeout <= MAX_TIMEOUT_SECONDS:
-            raise ManifestError(
-                f"check {check_id!r}: timeout_seconds must be positive and at most "
-                f"{MAX_TIMEOUT_SECONDS:g}, got {timeout:g}"
-            )
-
-        required = tuple(entry["required_scenarios"])
-        if not required:
-            raise ManifestError(f"check {check_id!r}: at least one required scenario is mandatory")
-        duplicates = {s for s in required if required.count(s) > 1}
-        if duplicates:
-            raise ManifestError(
-                f"check {check_id!r}: duplicate required scenarios {sorted(duplicates)}"
-            )
-
-        inputs = tuple(entry.get("inputs", ()))
-        expectations = entry.get("expectations")
-        if expectations is not None:
-            undeclared = sorted(set(expectations) - set(inputs))
-            if undeclared:
-                raise ManifestError(
-                    f"check {check_id!r}: expectations must also be declared in inputs: "
-                    f"{', '.join(undeclared)}"
-                )
-
-        checks[check_id] = CheckSpec(
-            id=check_id,
-            description=entry.get("description", ""),
-            argv=argv,
-            cwd=_resolve_cwd(project.root, entry.get("cwd"), check_id),
-            timeout_seconds=timeout,
-            required_scenarios=required,
-            artifact_name=_resolve_artifact(run_dir, entry["artifact"], check_id),
-            prerequisites=tuple(
-                Prerequisite(p["name"], p["executable"], tuple(p.get("args", ())))
-                for p in entry.get("prerequisites", ())
-            ),
-            inputs=inputs,
-            expectations=None if expectations is None else tuple(expectations),
-        )
+        checks[check_id] = _build_check(entry, project=project, run_dir=run_dir,
+                                       version=version)
 
     return Manifest(
         project=project,
         description=raw.get("description", ""),
         checks=checks,
+    )
+
+
+def _build_check(
+    entry: dict, *, project: Project, run_dir: Path, version: int
+) -> CheckSpec:
+    """One parsed check, as the variant its `kind` selects.
+
+    A v1 entry has no `kind` and is a scenario driver by the only reading it has,
+    so it becomes a `ScenarioCheck` with a `ScenarioCheck` variant attached. That
+    is what lets one code path serve both versions: `evidence_kind` answers
+    SCENARIO for both, and a v1 driver therefore cannot reach any other category.
+    """
+    check_id = entry["id"]
+    timeout = float(entry["timeout_seconds"])
+    if not 0 < timeout <= MAX_TIMEOUT_SECONDS:
+        raise ManifestError(
+            f"check {check_id!r}: timeout_seconds must be positive and at most "
+            f"{MAX_TIMEOUT_SECONDS:g}, got {timeout:g}"
+        )
+
+    inputs = tuple(entry.get("inputs", ()))
+    expectations = entry.get("expectations")
+    if expectations is not None:
+        undeclared = sorted(set(expectations) - set(inputs))
+        if undeclared:
+            raise ManifestError(
+                f"check {check_id!r}: expectations must also be declared in inputs: "
+                f"{', '.join(undeclared)}"
+            )
+
+    common = dict(
+        id=check_id,
+        description=entry.get("description", ""),
+        cwd=_resolve_cwd(project.root, entry.get("cwd"), check_id),
+        timeout_seconds=timeout,
+        artifact_name=_resolve_artifact(run_dir, entry["artifact"], check_id),
+        prerequisites=tuple(
+            Prerequisite(p["name"], p["executable"], tuple(p.get("args", ())))
+            for p in entry.get("prerequisites", ())
+        ),
+        inputs=inputs,
+        expectations=None if expectations is None else tuple(expectations),
+        subject=_subject(entry.get("subject")),
+        claim_id=entry.get("claim_id", check_id),
+    )
+
+    if version == 1:
+        required = tuple(entry["required_scenarios"])
+        _require_nonempty(check_id, "scenario", required)
+        _require_distinct(check_id, "scenario", required)
+        command = tuple(entry["command"])
+        _require_argv(check_id, command)
+        variant = ScenarioCheck(**common, command=command,
+                                required_scenarios=tuple(CaseObligation(s) for s in required))
+        return _wrap(common, required, command, variant, 1)
+
+    kind = CheckKind(entry["kind"])
+    if kind in DECLARED_BUT_UNAVAILABLE:
+        raise ManifestError(
+            f"check {check_id!r}: kind {kind.value!r} is BLOCKED. "
+            f"{_UNAVAILABLE_REASON[kind]} This is not an unknown kind: the "
+            f"declaration is accepted by schema version "
+            f"{schema_version(MANIFEST_V2)}, and refusing it here is what stops "
+            f"it running under a default."
+        )
+
+    variant = _variant_for(kind, entry, common, check_id)
+    return _wrap(common, (), variant.argv, variant, 2)
+
+
+def _wrap(common: dict, required_scenarios: tuple[str, ...],
+          command: tuple[str, ...], variant, version: int) -> CheckSpec:
+    return CheckSpec(
+        **common,
+        argv=command,
+        required_scenarios=_scenario_names(variant, required_scenarios),
+        variant=variant,
+        declared_version=version,
+    )
+
+
+def _scenario_names(variant, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    """The scenario ids a check reports, read off its obligations.
+
+    `required_scenarios` stays populated for a v2 scenario check because the
+    console view, the MCP check view, `verify.py` and `execution` all read it, and
+    the obligation a scenario check carries is exactly its scenario id. Leaving it
+    empty made those four callers report a check with no required cases, which is
+    a false statement about the policy rather than a stale field.
+
+    For every other kind it stays empty, because a `lean` or `tlc` check has no
+    scenario to name and inventing one would be the claim this contract exists to
+    prevent. A caller that needs the general set asks `obligations()`.
+    """
+    if not isinstance(variant, ScenarioCheck):
+        return ()
+    return tuple(obligation.test_id for obligation in variant.required_scenarios)
+
+
+def _subject(raw: dict | None) -> SubjectRef:
+    """The declared subject, defaulting to an empty one.
+
+    A v1 manifest has no `subject` key, and an absent subject is not the same as
+    a claim about nothing: it is a manifest written before the field existed. The
+    empty ref records that honestly, and the receipt carries whatever vkit
+    measured.
+    """
+    if not raw:
+        return SubjectRef()
+    return SubjectRef(tuple(raw.get("paths", ())), raw.get("digest"))
+
+
+def _require_nonempty(check_id: str, what: str, values: tuple) -> None:
+    if not values:
+        raise ManifestError(
+            f"check {check_id!r}: at least one required {what} is mandatory. A "
+            f"check that exercises nothing and passes is the failure "
+            f"CONTRACT.md forbids."
+        )
+
+
+def _require_distinct(check_id: str, what: str, values: tuple) -> None:
+    duplicates = sorted({v for v in values if list(values).count(v) > 1})
+    if duplicates:
+        raise ManifestError(
+            f"check {check_id!r}: duplicate required {what} {duplicates}"
+        )
+
+
+def _require_argv(check_id: str, command: tuple[str, ...]) -> None:
+    if any(not isinstance(part, str) or not part for part in command):
+        raise ManifestError(
+            f"check {check_id!r}: command entries must be nonempty strings"
+        )
+
+
+def _variant_for(kind: CheckKind, entry: dict, common: dict, check_id: str):
+    """The variant for one `kind`, built from the fields that kind has.
+
+    Every read here is a direct index on a field the branch's schema already
+    required, so a missing one is a schema bug rather than a shape a candidate
+    can reach.
+    """
+    if kind is CheckKind.SCENARIO:
+        command = tuple(entry["command"])
+        _require_argv(check_id, command)
+        names = tuple(entry["required_scenarios"])
+        _require_nonempty(check_id, "scenario", names)
+        _require_distinct(check_id, "scenario", names)
+        return ScenarioCheck(**common, command=command,
+                             required_scenarios=tuple(CaseObligation(s) for s in names))
+
+    if kind in (CheckKind.PYTEST, CheckKind.PROPERTY):
+        runner = PinnedRunner(entry["runner"]["executable"],
+                              tuple(entry["runner"]["base_argv"]))
+        tests = tuple(entry["required_tests"])
+        _require_nonempty(check_id, "test", tests)
+        _require_distinct(check_id, "test", tests)
+        shared = dict(
+            **common,
+            required_tests=tests,
+            runner=runner,
+            report_format=entry["report_format"],
+            expect_report_version=int(entry["expect_report_version"]),
+        )
+        if kind is CheckKind.PYTEST:
+            return PytestCheck(**shared)
+        generator = entry["generator"]
+        return PropertyCheck(
+            **shared,
+            generator=HypothesisSettings(
+                int(generator["max_examples"]),
+                int(generator["stateful_step_count"]),
+                generator["deadline"],
+                tuple(generator["suppress_health_check"]),
+            ),
+            replay=ReplaySettings(
+                entry["replay"]["database"],
+                entry["replay"]["seed"],
+            ) if entry.get("replay") else None,
+        )
+
+    if kind is CheckKind.NODE_TEST:
+        runner = PinnedRunner(entry["runner"]["executable"],
+                              tuple(entry["runner"]["base_argv"]))
+        tests = tuple(entry["required_tests"])
+        _require_nonempty(check_id, "test", tests)
+        _require_distinct(check_id, "test", tests)
+        return NodeTestCheck(
+            **common, required_tests=tests, runner=runner,
+            report_format=entry["report_format"],
+            expect_report_version=int(entry["expect_report_version"]),
+        )
+
+    if kind is CheckKind.LEAN:
+        module = entry["challenge"]["module"]
+        theorems = tuple(TheoremObligation(name, module) for name in entry["theorems"])
+        _require_nonempty(check_id, "theorem", theorems)
+        return LeanCheck(
+            **common,
+            challenge=ModuleRef(module, entry["challenge"]["path"]),
+            theorems=theorems,
+            profile=entry["profile"],
+            permitted_axioms=tuple(entry["permitted_axioms"]),
+            toolchain=_toolchain(entry["toolchain"]),
+        )
+
+    declared = tuple(entry["bounds"].items())
+    properties = tuple(PropertyObligation(name, declared) for name in entry["properties"])
+    _require_nonempty(check_id, "model property", properties)
+    fingerprint = entry["fingerprint"]
+    return TlcCheck(
+        **common,
+        model=ModuleRef(entry["model"]["module"], entry["model"]["path"]),
+        config=entry["config"],
+        properties=properties,
+        bounds=DomainBounds(declared),
+        fingerprint=FingerprintSpec(
+            bool(fingerprint["constants_from_config"]),
+            bool(fingerprint["checksum_states"]),
+            int(fingerprint["workers"]),
+        ),
+        toolchain=_toolchain(entry["toolchain"]),
+    )
+
+
+def _toolchain(raw: dict) -> ToolchainRef:
+    return ToolchainRef(
+        raw["tool"],
+        raw.get("version"),
+        raw.get("comparator"),
+        raw.get("jar_sha256"),
     )

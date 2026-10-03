@@ -244,7 +244,7 @@ $ <venv>/Scripts/python.exe -m pip install -e ".[test]"
 $ <venv>/Scripts/python.exe -m pytest tests/
 ```
 
-Collected on 2026-10-02 for the repair branch: `845 tests collected`. That is the collected count, not a
+Collected on 2026-10-02 for the repair branch: `885 tests collected`. That is the collected count, not a
 passed count. Full execution is delegated to GitHub CI; no full local suite was run during this repair. A
 passed count carried forward from a revision where fewer tests existed would be a
 count measured about a different tree.

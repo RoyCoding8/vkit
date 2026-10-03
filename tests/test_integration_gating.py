@@ -128,16 +128,19 @@ def test_a_candidate_owning_no_pending_cleanup_is_accepted(tmp_path: Path) -> No
     """The control: cleanup enabled, nothing owed, the candidate is accepted.
 
     Without it, a gate that refused every candidate would satisfy every assertion
-    below.
+    below. The change is a real one that carries no removable comment, so the
+    tree differs from the target and the candidate is not the target.
     """
     repo, target = cleanup_enabled_repository(tmp_path)
     fx.checkout_branch(repo, "ordinary", target)
     candidate = fx.replace_in(
         repo, fx.QUOTE_NAME,
-        "        reason = \"allowed\"",
-        "        reason = \"allowed\"  # inside the rule, so no clamp",
-        "note why the discount is inside the rule",
+        '    before = subtotal(prices_cents, quantities)',
+        '    before = subtotal(prices_cents, quantities)  # the order total before any discount',
+        "note what the total starts from",
     )
+    _apply_approved_cleanup_to(repo, fx.QUOTE_NAME)
+    candidate = fx.commit_all(repo, "apply the approved cleanup")
 
     done, record = protected_verify(repo, candidate, target)
 
@@ -204,11 +207,24 @@ def test_a_rejected_candidate_checkout_is_byte_identical_and_head_unmoved(
 ) -> None:
     """The load-bearing assertion, and the one easiest to fake.
 
-    Every file in the checkout is read before the decision and again after, each
-    hashed rather than compared through Git, and HEAD is read separately because
-    a clean tree and the right revision are different facts. A gate that cleaned
-    the checkout would leave the comment gone and the tree clean, so both of those
-    would still look right -- the bytes are what catch it.
+    A gate that cleaned the checkout would leave the comment GONE and the tree
+    still clean, so `git status` would report nothing and the test would pass.
+    The comment's own bytes are therefore asserted directly: the file the
+    candidate committed, with its trailing comment, must still be on disk exactly
+    as the candidate wrote it.
+
+    **Why the comparison normalizes line endings.** On this host
+    `core.autocrlf=true`, so Git writes CRLF into a linked worktree and stores LF
+    in the blob. Measured on the fixture: `pricing/quote.py` is 2353 bytes with
+    zero CRLF in the blob and 2415 bytes with 62 CRLF in the worktree, and
+    `git status` is empty while they differ. Git considers the worktree file
+    unmodified, so the difference is in what Git chose to write, not in what the
+    candidate shipped. Comparing raw bytes against the blob would therefore fail
+    on every candidate on this host and prove nothing about the gate, so both
+    sides are normalized to LF first. That is a stated limit rather than a
+    convenience: a transient edit that is reverted with the line endings
+    restored would not be visible here either, and CONTRACT.md already says the
+    before/after digests cannot detect a transient edit that is restored.
     """
     repo, target = cleanup_enabled_repository(tmp_path)
     candidate = commented_candidate(repo, target)
@@ -219,13 +235,24 @@ def test_a_rejected_candidate_checkout_is_byte_identical_and_head_unmoved(
     checkout = Path(record["checkout"])
     assert checkout.is_dir(), f"{checkout} was not kept, so there is nothing to inspect"
 
-    committed = _committed_bytes(repo, candidate)
-    on_disk = _checkout_bytes(checkout)
-    assert on_disk == committed, (
-        "the candidate checkout does not hold the bytes of the commit it was "
-        f"materialized from; only in the checkout: "
-        f"{sorted(set(on_disk) - set(committed))}"
+    # The comment the gate refused to remove is still on disk. This is the
+    # assertion that fails first if anything ever cleans the candidate.
+    on_disk = (checkout / fx.RULES_NAME).read_text(encoding="utf-8")
+    assert "# the most a promotion may take off" in on_disk, (
+        "the trailing comment is gone from the candidate checkout: the gate "
+        "cleaned the candidate instead of demanding a new commit"
     )
+    assert on_disk == (repo / fx.RULES_NAME).read_text(encoding="utf-8"), (
+        "the candidate checkout does not hold the bytes the candidate committed"
+    )
+
+    on_disk_digests = _checkout_bytes(checkout)
+    committed_digests = _committed_bytes(repo, candidate)
+    assert on_disk_digests == committed_digests, (
+        "the checkout differs from the commit beyond line endings; "
+        f"only in the checkout: {sorted(set(on_disk_digests) - set(committed_digests))}"
+    )
+
     assert fx.git(repo, "-C", str(checkout), "rev-parse", "HEAD") == candidate
     assert fx.git(repo, "-C", str(checkout), "status", "--porcelain",
                   "--untracked-files=all") == ""
@@ -273,35 +300,55 @@ def test_the_gate_reads_the_owners_policy_rather_than_assuming(tmp_path: Path) -
 
 
 def test_cleanup_in_a_file_the_candidate_never_touched_is_not_owed(tmp_path: Path) -> None:
-    """Scope is the candidate's own change.
+    """Scope is the candidate's own change against its own target.
 
-    An approved trailing comment on a file the candidate does not touch was
-    already in the target, so the candidate did not create it. Plan 11's scope
-    is a task-owned changed line, and applying it to a whole repository would
-    make the gate unpassable for any project that predates the policy.
+    An approved trailing comment sits in `pricing/rules.py`, committed BEFORE the
+    target the candidate is built on. The candidate changes `pricing/quote.py`
+    only, so it never authored the comment and is not asked to remove it.
+
+    This is the boundary that keeps the gate usable. Scope measured against the
+    caller's checkout would ask about whatever happens to be dirty in a working
+    tree; scope measured against the whole tree would make every repository that
+    predates the policy unpassable, because a comment nobody touched is still in
+    it forever.
     """
-    repo, target = cleanup_enabled_repository(tmp_path)
-    fx.checkout_branch(repo, "inherited", target)
+    repo = fx.build_repository(tmp_path)
 
+    fx.checkout_branch(repo, "pre-existing", fx.baseline_revision(repo))
     rules = repo / fx.RULES_NAME
     rules.write_text(
         rules.read_text(encoding="utf-8").replace(
-            TRAILING_COMMENT_OLD, f"{TRAILING_COMMENT_OLD}  # a pre-existing note"
+            TRAILING_COMMENT_OLD, f"{TRAILING_COMMENT_OLD}  # a note that predates the candidate"
         ),
         encoding="utf-8",
     )
-    inherited = fx.commit_all(repo, "an approved comment predates the candidate")
+    target = fx.commit_all(repo, "a comment lands before cleanup is enabled")
+
+    # Cleanup is enabled ON the target, so the candidate inherits the policy and
+    # owes cleanup for what it does in its own diff.
+    (repo / "verification").mkdir(parents=True, exist_ok=True)
+    (repo / "verification" / "cleanup.json").write_text(
+        json.dumps(CLEANUP_POLICY, indent=2) + "\n", encoding="utf-8"
+    )
+    target = fx.commit_all(repo, "enable automatic cleanup")
+
+    fx.checkout_branch(repo, "unrelated-change", target)
     candidate = fx.replace_in(
         repo, fx.QUOTE_NAME,
-        '        reason = "allowed"',
-        '        reason = "allowed"  # inside the rule, so no clamp',
-        "change a different file",
+        '    before = subtotal(prices_cents, quantities)',
+        '    before = subtotal(prices_cents, quantities)  # the order total before any discount',
+        "note what the total starts from",
     )
+    _apply_approved_cleanup_to(repo, fx.QUOTE_NAME)
+    candidate = fx.commit_all(repo, "apply the approved cleanup to its own change")
 
-    done, record = protected_verify(repo, candidate, inherited)
+    done, record = protected_verify(repo, candidate, target)
 
     assert done.returncode == EXIT_OK, record
-    assert record["decision"] == "ACCEPTED", record
+    assert record["decision"] == "ACCEPTED", (
+        f"the gate demanded cleanup for a file the candidate never changed: "
+        f"{record['gaps']}"
+    )
 
 
 def test_the_rejection_is_recorded_as_a_policy_finding(tmp_path: Path) -> None:
@@ -435,44 +482,57 @@ def test_the_reachable_evidence_kind_half_is_the_one_already_in_place(
 
 
 def apply_approved_cleanup(repo: Path, at: str) -> str:
-    """What the approved trailing-comment rule would remove, then committed.
+    """The approved trailing-comment cleanup applied and committed, for `pricing/rules.py`."""
+    _apply_approved_cleanup_to(repo, fx.RULES_NAME)
+    return fx.commit_all(repo, "apply the approved trailing-comment cleanup")
 
-    Driven through the product's own preview so the "already cleaned" candidate
+
+def _apply_approved_cleanup_to(repo: Path, name: str) -> None:
+    """What the approved rules would remove from one file, written in place.
+
+    Driven through the product's own preview so a "already cleaned" candidate
     carries exactly the bytes the checker preserves, rather than a hand-written
-    edit that might not be what the rule produces. A refusal here would mean the
-    fixture does not owe what the tests below think it owes, so it is asserted
-    rather than assumed.
+    edit that might not be what the rule produces. A preview finding nothing is
+    asserted rather than assumed: a silent no-op would let a fixture that does not
+    owe what the test thinks it owes pass for the wrong reason.
     """
     from vkit.cleanup.comments import preview_comment_cleanup
     from vkit.cleanup.hooks import all_lines
     from vkit.paths import open_project
 
-    path = repo / fx.RULES_NAME
+    path = repo / name
     proposal = preview_comment_cleanup(
-        open_project(repo), fx.RULES_NAME, changed_lines=all_lines(path.read_bytes())
+        open_project(repo), name, changed_lines=all_lines(path.read_bytes())
     )
     removed = getattr(proposal, "removed", ())
-    assert removed, f"the approved rule found nothing to remove in {fx.RULES_NAME}"
+    assert removed, f"the approved rule found nothing to remove in {name}"
     path.write_bytes(proposal.after_bytes)
-    return fx.commit_all(repo, "apply the approved trailing-comment cleanup")
 
 
 def _db(repo: Path) -> Path:
     return repo / ".git" / "verification-kit" / "state.sqlite3"
 
 
+#: CRLF, and LF. A host with `core.autocrlf=true` has Git write CRLF into a
+#: linked worktree while the blob holds LF, so both sides of a byte comparison are
+#: normalized before hashing. Measured on the fixture; see the byte-identity test.
+CRLF = b"\r\n"
+LF = b"\n"
+
+
 def _checkout_bytes(root: Path) -> dict[str, str]:
     """Every file in the checkout, hashed by content, keyed by relative path.
 
     `.git` is excluded because a linked worktree's administrative file is not
-    source and legitimately differs between checkouts.
+    source and legitimately differs between checkouts. Line endings are
+    normalized, because on this host they differ from the blob by construction.
     """
     digests: dict[str, str] = {}
     for path in sorted(root.rglob("*")):
         if not path.is_file() or ".git" in path.relative_to(root).parts:
             continue
         digests[path.relative_to(root).as_posix()] = hashlib.sha256(
-            path.read_bytes()
+            path.read_bytes().replace(CRLF, LF)
         ).hexdigest()
     return digests
 
@@ -485,8 +545,10 @@ def _committed_bytes(repo: Path, commit: str) -> dict[str, str]:
     """
     digests: dict[str, str] = {}
     for name in fx.git(repo, "ls-tree", "-r", "--name-only", commit).splitlines():
-        if name and name != ".gitignore":
-            digests[name] = hashlib.sha256(_blob(repo, commit, name)).hexdigest()
+        if name:
+            digests[name] = hashlib.sha256(
+                _blob(repo, commit, name).replace(CRLF, LF)
+            ).hexdigest()
     return digests
 
 
@@ -499,6 +561,6 @@ def _blob(repo: Path, commit: str, path: str) -> bytes:
     """
     done = subproc.run(
         ["git", "-C", str(repo), "cat-file", "blob", f"{commit}:{path}"],
-        capture_output=True, check=True, **subproc.hidden_window(),
+        capture_output=True, check=True,
     )
     return done.stdout

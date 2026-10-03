@@ -51,7 +51,14 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13.14"
+          # The 3.13 series, NOT the exact patch the suite workflow pins. That
+          # pin exists because the cleanup compiled-equality check is scoped to
+          # one compiler and `TESTED_CPYTHON_VERSIONS` holds 3.13.14. This job
+          # runs no compiled-equality check, so it needs a series rather than a
+          # version: asking setup-python for a patch release it has dropped from
+          # its manifest fails with "not found in the local cache", which is a
+          # configuration error and not a result about anything.
+          python-version: "3.13"
 
       # elan, then exactly one toolchain. `leanup` is deliberately not used: it
       # tracks the latest release, and this job's whole claim is that the reader
@@ -61,6 +68,12 @@ jobs:
           set -eu
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --default-toolchain "$LEAN_TOOLCHAIN"
+          # `GITHUB_PATH` applies to LATER steps only, so this step cannot
+          # verify the install through it: the shims are not on this step's
+          # PATH yet and `lean --version` exits 127 here. Export the directory
+          # into this shell as well, which is what makes the version check
+          # below a real check rather than a line that always fails.
+          export PATH="$HOME/.elan/bin:$PATH"
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
           lean --version
           lake --version
@@ -113,7 +126,14 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13.14"
+          # The 3.13 series, NOT the exact patch the suite workflow pins. That
+          # pin exists because the cleanup compiled-equality check is scoped to
+          # one compiler and `TESTED_CPYTHON_VERSIONS` holds 3.13.14. This job
+          # runs no compiled-equality check, so it needs a series rather than a
+          # version: asking setup-python for a patch release it has dropped from
+          # its manifest fails with "not found in the local cache", which is a
+          # configuration error and not a result about anything.
+          python-version: "3.13"
 
       # A JRE, not a JDK: TLC needs to run, not to compile. `actions/setup-java`
       # is used rather than an apt install so the version is pinned and the

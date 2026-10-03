@@ -51,18 +51,26 @@ engineering decisions.
 
 ## Keep this task list current
 
-- [ ] 12.1: installed dashboard launcher and existing page work.
-- [ ] 10.1: shared evidence types and a public pytest vertical path work.
-- [ ] 10.2: Node and property evidence retain their precise scope.
-- [ ] 10.3: actual Lean and TLC positive and negative cases run in CI.
+- [x] 12.1: installed dashboard launcher and existing page work.
+- [x] 10.1: shared evidence types and a public pytest vertical path work.
+- [x] 10.2: Node and property evidence retain their precise scope.
+- [x] 10.3: actual Lean and TLC positive and negative cases run in CI.
 - [ ] 10.4: approved integration, finalization, and installed packaging are verified.
-- [ ] 11.1: Python cleanup preview protects directives and executable content.
-- [ ] 11.2: guarded apply, restricted logic rules, conflicts, and retries are verified.
+- [x] 11.1: Python cleanup preview protects directives and executable content.
+- [x] 11.2: guarded apply, restricted logic rules, conflicts, and retries are verified.
 - [ ] 11.3: hooks and shared verification enforce freshness without mutating protected candidates.
 - [ ] 11.4 and 12.2: dashboard displays cleanup and actual task/evidence state.
-- [ ] 12.3: configuration preview/save preserves pinned obligations and protected policy authority.
-- [ ] 12.4: standalone MCP works without a Claude plugin or installed skills.
+- [x] 12.3: configuration preview/save preserves pinned obligations and protected policy authority.
+- [x] 12.4: standalone MCP works without a Claude plugin or installed skills.
 - [ ] Final handback includes exact candidate, CI receipts, negative cases, and unresolved limits.
+
+Three are left unchecked on purpose, not overlooked. 10.4 and 11.3 are built and
+merged, but each left a gap in the same file: `integration/verify.py` builds its
+acceptance from `policy.compare` rather than `tasks.finalize`, and never calls
+`cleanup.hooks.candidate_gaps`. A protected candidate therefore does not yet
+weigh evidence kind or obligations, and required cleanup does not yet reject it.
+That work is in flight. 11.4 is not a separate checkpoint; it is the console
+exposure of 11.3's receipts, which lands with that gap.
 
 After each checkpoint, append a short evidence entry below with its commit,
 commands, CI tested SHA, artifacts, and limitations. Mark it complete only from
@@ -150,4 +158,76 @@ live-host or scale limits. The reviewer will audit this evidence independently.
 
 ## Checkpoint evidence
 
-No implementation checkpoint above has completed yet.
+Recorded 2026-10-03 from actual execution. Full run-by-run detail is in
+`orchestrate/vkit-program/overview.md` under CI history.
+
+### What CI proved, and what it cost to get there
+
+Five suite runs and two formal-verifier runs were needed. Nothing in this
+program was verified by more than one platform until run four.
+
+| Run | SHA | Result | What it found |
+| --- | --- | --- | --- |
+| 37095912191 | ffa2346 | fail, 23 | `TESTED_CPYTHON_VERSIONS` held only 3.13.14 while the runner resolved 3.13.15. The guard refusing an unmeasured compiler was correct; the workflow pin was wrong. |
+| 37101072951 | d4308a3 | fail, 11 | Node 22 spells the isolation flag differently; a Windows-authored payload path split with POSIX rules; a symlink guard ordered after containment so its token was unreachable; and a POSIX **false pass** where a Windows absolute path was treated as relative and passed containment. |
+| 37102550231 | 15c77e8 | fail, 2 | A test fixture seeded a run with no receipt, and acceptance correctly refused a run that established nothing about what kind of evidence it was. |
+| 37108770250 | 616efa4 | **green** | 1143 passed, 80 skipped on Ubuntu; macOS and Windows also green. |
+| 37127195856 / 37127367490 | 1c3f817 / eaab533 | fail | The formal workflow's Lean job verified its own install before `GITHUB_PATH` applied, and both jobs pinned a patch release the runner manifest had dropped. |
+| 37127367490 | eaab533 | Lean green, TLC fail | Lean: 30 passed on the real kernel. TLC's guard fired correctly, because it named Lean cases inside the TLC job. |
+| 37127872623 | 5bed3a6 | **formal green** | Lean and TLC both pass on Ubuntu with real toolchains, positive and negative cases. |
+
+### Verified per checkpoint
+
+- **12.1** — `vkit console --json --port 0 --no-browser` driven outside the
+  suite: printed `http://127.0.0.1:53887/`, served a 3934-byte page opening on
+  `home`, all four landing panels present, API reads 200, session token
+  substituted and absent from the URL. The misleading `readiness` view is now
+  `setup` and no longer renders ready/not-ready.
+- **10.1** — evidence category is a total function over six keyword-only
+  variants with no declared category field. A `lean` check has no
+  `required_scenarios` to be empty, so the refusal follows from the shape.
+- **10.2** — Node and property receipts list real checked cases. The same file
+  declared `pytest` yields `scenario`; only a `property` variant with a
+  generator block yields `property`.
+- **10.3** — Lean 30 passed and TLC 34 passed on Ubuntu with the real kernel
+  and a pinned tla2tools jar. Negative cases fail: `sorry` → `incomplete_proof`,
+  an added axiom → a counterexample, a violating model → FAIL with states left
+  on the queue.
+- **10.4** — a requirement is a frozen typed value carrying its check id,
+  evidence kind and obligations, derived at admission. Installed wheel outside
+  the checkout runs a verifier with no source dependency.
+- **11.1** — 18 directive rules, each verified against a fetched primary source.
+  Zero directives wrongly removable and zero ordinary comments wrongly kept.
+- **11.2** — `compile('x = 0.0')` and `compile('x = -0.0')` produce identical
+  bytecode and `==` says equal; only the constant's exact form separates them.
+  Of two logic rules, only trailing `else: pass` can apply automatically.
+- **12.2** — five evidence sections render real records. Viewing a page does
+  not mutate task state. Four cleanup panels are named as unavailable rather
+  than rendered empty.
+- **12.3** — one operation that can name no path. Saving a proposal that drops
+  four of six obligations leaves the pinned contract byte-identical and
+  readiness never improves.
+- **12.4** — `shutil.which('vkit')` resolves to a *different* install than the
+  venv serving the console, so the panel reads the installed script from
+  `importlib.metadata`. Configured and connected are separate facts.
+
+### Unresolved limits, recorded rather than smoothed over
+
+1. `integration/verify.py` builds acceptance from `policy.compare`, not
+   `tasks.finalize`, and never calls `cleanup.hooks.candidate_gaps`. A protected
+   candidate does not yet weigh evidence kind or required cleanup.
+2. The Lean unreviewed profile's **comparator is not discharged**. The schema
+   constrains `toolchain.comparator` to a bare string and no evidence settled
+   whether it names a binary or a lake workspace.
+3. `reviewed_proof_sources` requires Linux isolation; BLOCKED on Windows.
+4. Browser acceptance is unverified everywhere: computed contrast, real focus
+   rings, narrow-window layout and live-region quality. No browser stack is
+   permitted locally and none exists in CI.
+5. The AST guard over the console package does not catch
+   `Path("verification/manifest.json").write_text(...)`, because the protected
+   part lands in the `Path` call rather than the writer call. Pre-existing, and
+   measured against the base commit by the checkpoint 12.3 worker.
+6. `pyproject.toml` pins `mcp>=2.2,<3` as a float. The SDK stopped serializing
+   an `experimental` capability in 2.3.0 and a test was corrected for it.
+7. Roughly 80 tests are platform-gated and skip on Windows. The POSIX real-process
+   and process-identity tests have only ever executed on the Ubuntu runner.

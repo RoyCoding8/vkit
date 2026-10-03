@@ -49,6 +49,37 @@ dependencies and integration order. Independent subtasks can run concurrently
 under the slot policy below. Do not wait for permission on routine reversible
 engineering decisions.
 
+## Project memories, read and verified against this checkout
+
+Both project-specific memories were read in full. Each is a point-in-time
+observation, so its claims were checked rather than carried forward:
+
+- `escalate-after-two-tries` (`type: feedback`) — the ladder is two dispatched
+  attempts, then a swarm, then an honest negative recorded where a reader will
+  find it. It governed this session in three places: the Node/TLC defect that
+  took two attempts was escalated to `/swarm` rather than retried; limit 9, the
+  protected-integration routing, is written up as a measured BLOCKED with the
+  two digests rather than quietly attempted a third time; and the `.worktrees/
+  12-1a` removal, which resisted `rmdir`, is reported as unremoved after two
+  tries rather than forced.
+- `vkit-repair-wave-verification` (`type: project`) — records R1–R4b merged and
+  R2/R5 outstanding, and two defect classes that survived worker self-report:
+  a suite the worker never ran, and an intermittent Windows socket race that a
+  6-attempt regression test passed against. Its operative guidance held. The
+  repair baseline it points at is `docs/REPAIR-VERIFICATION.md`, which records
+  `e211eb2` and a 757-test collection; this branch collects 1316, so that
+  figure is superseded rather than contradicted. `review/AUDIT.md` no longer
+  exists in this checkout, so its `review/probe_*.py` gates cannot be run and
+  the merged-tip discipline it prescribes was met instead by CI on three
+  platforms. Its "write tooling in Python, not shell" ruling is intact: zero
+  `.sh` files remain and both workflows are YAML over Python entry points.
+
+One caution the memory itself carries, honoured here: it says a green branch
+proves nothing about the merge. That is why every checkpoint in this list was
+recorded from a run on the merged tip rather than from a worker's own report,
+and why the two audit agents in this session were worth their cost — they found
+four errors in this document's own CI table, including two I introduced.
+
 ## Keep this task list current
 
 - [x] 12.1: installed dashboard launcher and existing page work.

@@ -377,15 +377,26 @@ def _guard(
             f"{request.relative_path} no longer exists; a proposal cannot be applied to "
             "a file that is gone",
         )
+    # The symlink check runs FIRST, and the reason is that the two guards refuse
+    # overlapping inputs with different names. `_check_path` resolves the path
+    # and compares, so a symlink pointing outside the root trips it and returns
+    # `path_escape` -- the consequence, without the cause. A guard is where the
+    # refusal has to be legible, so the specific name has to win the ordering.
+    #
+    # The security posture is unchanged: both guards run, both still refuse, and
+    # neither has a side effect, so no input that was refused becomes a write.
+    # `_check_path` still runs second and still holds every non-symlink escape
+    # (`../`, an absolute path, `a/../../b`), which is what the preview relies
+    # on.
+    symlink = _reject_symlink(target, project.root.resolve())
+    if symlink is not None:
+        return _refuse(request, "symlink_or_escape", symlink)
     # The same path check the preview ran, at the same point, so a path the
     # preview refused cannot be reached by a proposal that was constructed
     # somewhere else.
     path_refusal = _check_path(project, request.relative_path)
     if path_refusal is not None:
         return _refuse(request, path_refusal.reason.value, path_refusal.detail)
-    symlink = _reject_symlink(target, project.root.resolve())
-    if symlink is not None:
-        return _refuse(request, "symlink_or_escape", symlink)
 
     failure = _verify_receipt(request)
     if failure is not None:

@@ -41,6 +41,7 @@ from ..tasks import (
     validate_host_binding,
     verify_ownership,
 )
+from ..verifiers import describe_obligation
 
 # --- bounds -----------------------------------------------------------------
 #
@@ -319,13 +320,229 @@ class _Handled(Exception):
         self.result = result
 
 
+# --- backend capabilities ----------------------------------------------------
+#
+# "What this build can produce" is a fact about two different things, and the
+# report keeps them apart because they have been confused before. Whether an
+# ADAPTER is registered is a property of the build and never changes with the
+# machine. Whether the TOOLCHAIN that adapter needs is installed is a property
+# of this machine. A single "supported" flag over one of the two is a receipt
+# for the other, and an agent that believes it can run a property check on a
+# host without Hypothesis loses a round trip and reads the server as unreliable
+# rather than the environment as incomplete.
+
+
+def _backend_capabilities() -> dict[str, Any]:
+    """What this build's backend can produce, and what this machine is missing.
+
+    `supported` comes from `manifest.DECLARED_BUT_UNAVAILABLE` rather than from
+    probing the adapters. That constant is the table the parser itself refuses
+    against: `parse_manifest` raises `ManifestError` for a `lean` or `tlc`
+    check with the reason recorded there. Reading the parser's own table means
+    the capability report cannot claim support for a kind the manifest would
+    refuse a moment later.
+
+    The two views are reported side by side rather than merged. `kinds` is the
+    per-check-kind question, and `categories` is the per-claim question: the
+    same check kind and the same category answer different things, because a
+    `pytest` check produces SCENARIO evidence while a `property` check produces
+    PROPERTY evidence, and a caller choosing what to require needs the second
+    vocabulary.
+    """
+    from ..claimkind import ClaimCategory
+    from ..manifest import DECLARED_BUT_UNAVAILABLE
+    from ..verifiers import ADAPTERS
+    from ..verifiers.spec import VARIANTS
+
+    unavailable = set(DECLARED_BUT_UNAVAILABLE)
+    kinds = []
+    for kind in VARIANTS:
+        entry: dict[str, Any] = {"kind": kind.value, "supported": kind not in unavailable}
+        if kind in unavailable:
+            entry["reason"] = (
+                f"a {kind.value!r} check is accepted by the manifest schema and "
+                f"refused by the parser, so this build cannot run one"
+            )
+            entry["toolchain_present"] = False
+        else:
+            entry["adapter"] = ADAPTERS[kind].identity()
+            entry["toolchain_present"] = _toolchain_present(kind)
+        kinds.append(entry)
+
+    return {
+        "kinds": kinds,
+        "categories": [
+            {
+                "value": category.value,
+                "establishes": category.establishes,
+                "does_not_establish": category.does_not_establish,
+                "needs_toolchain": category.needs_toolchain,
+            }
+            for category in ClaimCategory
+        ],
+    }
+
+
+#: The executable each kind's adapter shells out to, for the kinds that shell
+#: out at all. Read from the module rather than from the adapter, because an
+#: adapter's argv is a function of the check and asking it here would need a
+#: check this report is describing.
+#:
+#: Only a shell-out appears. Hypothesis is what a `property` check needs, and it
+#: is a Python package rather than a program on PATH, so it is probed by import
+#: below rather than by `which`. A list that said otherwise would report
+#: `toolchain_present: false` on every machine, which is the kind of quiet
+#: falsehood a capability report must not carry.
+_KIND_TOOLCHAIN_EXECUTABLES: dict[str, tuple[str, ...]] = {
+    "node_test": ("node",),
+}
+
+#: The Python distribution a kind needs, probed by import rather than by PATH.
+#: Recorded per kind because the requirement belongs to the adapter, not to the
+#: category: a `property` check is the only one that imports Hypothesis, and a
+#: `scenario` check that happens to produce property-shaped output needs nothing.
+_KIND_TOOLCHAIN_MODULES: dict[str, tuple[str, ...]] = {
+    "property": ("hypothesis",),
+}
+
+
+def _toolchain_present(kind: Any) -> bool:
+    """Whether everything this kind's adapter needs is present right now.
+
+    True for a kind that needs nothing beyond the repository's own command and
+    the interpreter running this process. That is a statement about the
+    requirement being empty, not a claim that a probe found something, and the
+    row says so: a kind with no external toolchain has none to report.
+    """
+    import importlib.util
+
+    if any(shutil.which(name) is None for name in _KIND_TOOLCHAIN_EXECUTABLES.get(kind.value, ())):
+        return False
+    return all(
+        importlib.util.find_spec(module) is not None
+        for module in _KIND_TOOLCHAIN_MODULES.get(kind.value, ())
+    )
+
+
+# --- cleanup ------------------------------------------------------------------
+
+#: The cleanup panels this build cannot fill, named so the response says which
+#: they are rather than leaving an absent key to be read as "none exist".
+#:
+#: The cleanup package returns a preservation receipt on the `Applied` value it
+#: hands its caller and persists only the original bytes, so there is no
+#: applied-patch list, no receipt collection and no stored proposal to read
+#: back. The console's cleanup section already carries this tuple for the same
+#: reason; it is restated rather than imported because `console.operations`
+#: imports this module's package for its own dispatch, and importing back up that
+#: edge is a cycle.
+_CLEANUP_WITHOUT_BACKEND: tuple[dict[str, str], ...] = (
+    {
+        "panel": "applied patches",
+        "missing": (
+            "cleanup.apply returns an Applied record to its caller and persists "
+            "only the original bytes; nothing stores the patch list"
+        ),
+    },
+    {
+        "panel": "preservation receipts",
+        "missing": (
+            "the receipt travels on the Applied value and is never written to "
+            "storage, so there is no receipt to read back"
+        ),
+    },
+    {
+        "panel": "proposals",
+        "missing": (
+            "a proposal is a frozen value a preview returns; no collection of "
+            "them is stored"
+        ),
+    },
+)
+
+
+def _cleanup_support(project: Project) -> dict[str, Any]:
+    """Whether cleanup can act on this project, and under what policy.
+
+    Read-only by construction rather than by promise: `cleanup.freshness`
+    forces the policy to preview mode on a copy, so calling it cannot apply a
+    change. The policy file lives under `verification/`, and no MCP tool writes
+    there.
+
+    **Imported inside the function rather than at module scope.** `cleanup
+    .comments` imports `console.plan` for `under_protected_path`, so a
+    module-level import closes a cycle through this package. The console's
+    `cleanup_section` already documents this and does the same thing.
+    """
+    from ..cleanup import hooks as cleanup_hooks
+
+    problem = cleanup_hooks.policy_problem(project)
+    if problem is not None:
+        return {
+            "available": False,
+            "problem": problem,
+            "policy_path": cleanup_hooks.POLICY_RELATIVE,
+            "may_write": False,
+            "mode": None,
+            "outstanding": [],
+            "registered_rules": list(cleanup_hooks.RULE_ORDER),
+            "unavailable": list(_CLEANUP_WITHOUT_BACKEND),
+        }
+
+    policy = cleanup_hooks.load_policy(project)
+    try:
+        owed = [
+            {"path": entry.partition(":")[0], "rule": entry.partition(":")[2]}
+            for entry in cleanup_hooks.freshness(project, policy=policy)
+        ]
+        error: str | None = None
+    except Exception as exc:  # noqa: BLE001 - inspection reports, it does not raise
+        owed, error = [], str(exc)
+
+    return {
+        "available": error is None,
+        "problem": None,
+        "policy_path": cleanup_hooks.POLICY_RELATIVE,
+        "may_write": policy.may_write(),
+        "mode": policy.mode.value,
+        "outstanding": owed,
+        "registered_rules": list(cleanup_hooks.RULE_ORDER),
+        "error": error,
+        "unavailable": list(_CLEANUP_WITHOUT_BACKEND),
+    }
+
+
 # --- project_inspect ---------------------------------------------------------
 
 def _check_view(spec: CheckSpec, missing: list[str]) -> dict[str, Any]:
+    """One check, in the shape a reader choosing between checks needs.
+
+    `required_scenarios` and `obligations` are both carried and neither replaces
+    the other. `required_scenarios` is populated only for a scenario check --
+    `manifest._scenario_names` returns `()` for every other kind, because
+    inventing a scenario id for a `lean` or `tlc` check "would be the claim this
+    contract exists to prevent" -- so before this change a check whose
+    obligations are named tests or model properties came back with an empty list
+    that reads as "this check requires nothing". That is a false statement about
+    the policy rather than a stale field, and the console's evidence section had
+    already been repaired the same way. The obligations are described through
+    the core's own `describe_obligation`, so the string here is the string the
+    receipt uses for the same obligation.
+
+    `category` travels with the check for the same reason the console's section
+    carries it: a scenario pass says a named sequence produced an observed
+    result and a property pass says no disagreement was found over generated
+    sequences, and a reader told only the check id cannot tell which one it is
+    looking at.
+    """
     return {
         "id": spec.id,
         "description": spec.description,
+        "category": spec.evidence_kind().value,
         "required_scenarios": list(spec.required_scenarios),
+        "obligations": [
+            describe_obligation(obligation) for obligation in spec.obligations()
+        ],
         "artifact": spec.artifact_name,
         "timeout_seconds": spec.timeout_seconds,
         "prerequisites": [
@@ -391,6 +608,15 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
         "checks": [],
         "gaps": [],
         "truncated": False,
+        # The four fields below are facts about the ENVIRONMENT rather than
+        # about this manifest, so they are computed before the no-manifest
+        # branch returns. A client asking a repository that cannot run anything
+        # still needs to know what this build could produce, and it needs to know
+        # it is missing everything rather than discovering the absence of a key.
+        "capabilities": _backend_capabilities(),
+        "usable_check_ids": [],
+        "prerequisite_gaps": [],
+        "cleanup": _cleanup_support(server.project),
     }
 
     # A repository may hold a hand-maintained manifest that was never proposed
@@ -478,6 +704,42 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
     }
     for executable in sorted(missing_executables):
         content["gaps"].append(f"{executable!r} is not on PATH")
+
+    # `usable_check_ids` answers "which of these can I actually call", which is a
+    # different question from "which are registered" and the one an agent acts
+    # on. It is derived from the same `shutil.which` census the gaps come from,
+    # so the two cannot disagree about the same machine.
+    #
+    # A check with no declared prerequisite is usable by this measure and is
+    # still refused by admission on an unenrolled policy. That is the existing
+    # split between `execution_available` and `policy_accepted`, and this field
+    # does not fold the two together: it answers about the environment, and a
+    # client that needs both checks both.
+    on_path = {
+        p.executable
+        for c in manifest.checks.values()
+        for p in c.prerequisites
+        if shutil.which(p.executable) is not None
+    }
+    content["usable_check_ids"] = [
+        check.id
+        for check in sorted(manifest.checks.values(), key=lambda c: c.id)
+        if all(p.executable in on_path for p in check.prerequisites)
+    ]
+    # Every declared prerequisite and its state, not only the missing ones. A
+    # census is what makes "this check needs nothing installed" distinguishable
+    # from "this check needs nothing at all", which an absence-only list renders
+    # identically.
+    content["prerequisite_gaps"] = [
+        {
+            "check_id": check.id,
+            "name": need.name,
+            "executable": need.executable,
+            "present": need.executable not in missing_executables,
+        }
+        for check in sorted(manifest.checks.values(), key=lambda c: c.id)
+        for need in check.prerequisites
+    ]
 
     selected = [c for c in manifest.checks.values() if not wanted or c.id in wanted]
     unknown = wanted - set(manifest.checks)

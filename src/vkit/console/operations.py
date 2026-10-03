@@ -18,10 +18,14 @@ so and performs nothing.
 """
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
-from dataclasses import dataclass
-from pathlib import Path
+import threading
+import time
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from ..identity import compute_source_identity
@@ -58,6 +62,14 @@ from .plan import (
 
 class ConsoleError(Exception):
     """The console could not answer. Never a refusal, which is a separate type."""
+
+
+#: How long one connection probe may take in total. A handshake measures at ~0.9s
+#: on this host -- interpreter start and SDK import dominate -- so this is a
+#: ceiling against a hung server rather than a tight bound, and it exists so a
+#: server that starts and then never answers is reported instead of holding the
+#: console's request open.
+PROBE_TIMEOUT_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -1680,6 +1692,11 @@ def integrations_section(context: Context) -> dict[str, Any]:
         "editable": False,
         "package": package,
         "marketplace_registered": _marketplace_registered(),
+        # Checkpoint 12.4's panel, riding this section because `api.py` owns the
+        # route table and no route may be added for it. The section is already
+        # where an operator looks for "which components are present and what
+        # needs setup", and this answers exactly that for the agent connection.
+        "connection": mcp_connection(context),
         "note": (
             "Configuration editing is checkpoint 12.3 and is not on the writable "
             "surface in this build. Everything here is read-only."
@@ -1694,6 +1711,662 @@ def _host_cli_block(name: str) -> str | None:
         f"Code is the prerequisite. This is the core's own refusal, not this "
         f"page's."
     )
+
+
+# ------------------------------------------------- checkpoint 12.4: the panel
+#
+# The connection panel answers "what do I paste into my agent", and it is the
+# first place in this product that has to keep two facts apart that look like one.
+#
+# **Configured** is what a host's file says. The console did not write that
+# file, so it can only read it back. **Connected** is what a real MCP handshake
+# proves: a subprocess launched, an `initialize` frame answered, `tools/list`
+# read off the wire. `vkit mcp serve --json` settles neither -- it returns before
+# touching the transport, so it prints a full six-tool catalogue with the SDK
+# absent while the same command without `--json` exits 5. A catalogue is a
+# statement about the table, never about a running server, and the panel reports
+# it as a third thing rather than folding it into either.
+#
+# **The probe crosses a process boundary, so the guards live at it.** Everything
+# it accepts is checked before a byte is written to a pipe: the command must be
+# an existing file, the root must be a project, and the whole thing is bounded by
+# a deadline. Inside that boundary the protocol is just bytes.
+
+
+@dataclass(frozen=True)
+class Probe:
+    """One handshake attempt, and its outcome as three distinct answers.
+
+    Modelled as one type because these three are genuinely different facts about
+    one attempt, and a reader who cannot tell them apart is the reader this
+    checkpoint exists for:
+
+        not_probed      nothing was measured
+        not_connected   something was measured and it did not complete
+        connected       a real `initialize` and `tools/list` came back
+
+    `not_probed` is not `not_connected` with a default. A panel that reported
+    every unprobed host as broken would train its reader to ignore the field,
+    which is the failure mode this whole section is built against.
+    """
+
+    state: str
+    handshake: bool
+    reason: str | None = None
+    tool_names: list[str] = field(default_factory=list)
+    server_info: dict[str, str] = field(default_factory=dict)
+    protocol_version: str | None = None
+    project_root: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "handshake": self.handshake,
+            "reason": self.reason,
+            "tool_names": list(self.tool_names),
+            "server_info": dict(self.server_info),
+            "protocol_version": self.protocol_version,
+            "project_root": self.project_root,
+        }
+
+
+def _console_script(name: str = "vkit") -> str | None:
+    """The absolute path of the console script THIS installation placed on disk.
+
+    Read out of `importlib.metadata`, not predicted from `sys.executable` and not
+    taken from `shutil.which`. Both alternatives are wrong in ways this product
+    has already been bitten by:
+
+    * Predicting the layout from the interpreter's own directory assumes one.
+      A POSIX `setup-python` puts the interpreter under a framework prefix and
+      the script in `~/.local/bin`, so nothing need be beside it.
+    * `shutil.which` answers for whatever is first on PATH, which on a host with
+      two installs is the other one. Measured on the development machine:
+      `which vkit` resolves to `C:\\CLI\\cx\\.venv\\Scripts\\vkit.EXE` while the
+      console serving this panel runs from a different venv entirely. A snippet
+      built from the PATH answer would start a server bound to that install and
+      report success, which is the false receipt this checkpoint removes.
+
+    `None` means this installation placed no such script, which is a real answer
+    for a source checkout that was never installed. The panel reports it rather
+    than falling back to a guess, because a fallback is what produced the wrong
+    path in the first place.
+    """
+    from importlib.metadata import PackageNotFoundError, entry_points
+
+    try:
+        found_scripts = entry_points(group="console_scripts")
+    except PackageNotFoundError:  # pragma: no cover - no distribution at all
+        return None
+    for entry in found_scripts:
+        if entry.name != name:
+            continue
+        distribution = entry.dist
+        for relative in distribution.files or ():
+            if PureWindowsPath(str(relative)).stem.lower() != name.lower():
+                continue
+            resolved = Path(distribution.locate_file(relative))
+            if resolved.is_file():
+                return str(resolved.resolve())
+    return None
+
+
+def connection_snippet(context: Context) -> dict[str, Any]:
+    """The host-neutral configuration an operator pastes into any MCP host.
+
+    The shape is the one every host reading `mcpServers` understands. It is NOT
+    `plugin/.mcp.json`, which is one host's configuration: that file names a
+    bare `vkit` that only resolves under that host's PATH, and carries a
+    `${user_config.project_root}` substitution this console has no business
+    emitting.
+
+    **`note` is load-bearing and the assertion is on it.** A generated snippet
+    is a starting point. Nothing here has been started, and a panel that let a
+    reader take a pasted JSON block for a working connection would be repeating
+    the exact defect this section corrects.
+    """
+    command = _console_script()
+    root = str(context.project.root)
+    return {
+        "mcpServers": {
+            "vkit": {
+                "command": command if command is not None else "vkit",
+                "args": ["mcp", "serve", "--project", root],
+            }
+        },
+        "resolved": command is not None,
+        "note": (
+            "This is generated configuration, not a verified connection. "
+            "Nothing here has been started; paste it into your host, then read "
+            "the connection state below. A host reports CONFIGURED when its own "
+            "file says so, and CONNECTED only after a real MCP handshake."
+        ),
+    }
+
+
+def host_config_document(
+    context: Context, *, command: str, project_root: str, host: str = "test"
+) -> dict[str, Any]:
+    """One host's configuration, as a value.
+
+    Held as a value rather than read from a file so the panel's two halves can be
+    exercised independently: `mcp_connection` takes this as an argument, so a
+    test can hand it a command that does not exist and read what the panel says,
+    without needing a real host to have been misconfigured first. The real
+    reader is `discover_host`, and this is the shape it produces.
+    """
+    return {"host": host, "command": command, "project_root": project_root}
+
+
+def unknown_host(context: Context) -> dict[str, Any]:
+    """No host configuration was found on this machine, and that is the answer.
+
+    `None` rather than a default host with invented state. The panel publishes
+    the snippet to paste and says plainly that nothing is configured, because
+    answering about a host nobody named would be the panel deciding which host
+    the operator uses.
+    """
+    return {"host": "unknown", "command": None, "project_root": None, "discovered": False}
+
+
+def discover_host(context: Context) -> dict[str, Any]:
+    """Read the host's own `mcpServers` record, if this machine has one.
+
+    Claude Code's user record is at `~/.claude.json`, and its `mcpServers` key
+    is read directly. It is a READ: the console does not write it, and `remove`
+    stays the only operation that touches host state. A host with no record
+    returns `unknown_host` rather than an empty one, so the panel can say
+    "nothing configured" instead of "configured with nothing".
+    """
+    record = Path.home() / ".claude.json"
+    if not record.is_file():
+        return unknown_host(context)
+    try:
+        document = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return unknown_host(context)
+    entry = (document.get("mcpServers") or {}).get("vkit")
+    if not isinstance(entry, dict) or not entry.get("command"):
+        return unknown_host(context)
+    args = entry.get("args") or []
+    root = None
+    if "--project" in args:
+        after = args[list(args).index("--project") + 1:]
+        if after:
+            root = after[0]
+    return {
+        "host": "claude-code",
+        "command": entry["command"],
+        "project_root": root,
+        "discovered": True,
+    }
+
+
+def _configured_state(host: dict[str, Any], console_root: str) -> dict[str, Any]:
+    """What the host's file says, with nothing inferred from whether it works.
+
+    The `command` is reported exactly as the file spells it, which is the whole
+    point: a host configured with a bare `vkit` and a host configured with an
+    absolute path are both configured, and the panel does not rewrite one into
+    the other. `command_exists` is a separate fact about this machine's disk,
+    and it is reported next to the file's own claim rather than instead of it.
+    """
+    command = host.get("command")
+    root = host.get("project_root")
+    return {
+        "host": host.get("host", "unknown"),
+        "present": command is not None,
+        "command": command,
+        "command_exists": bool(command) and Path(command).is_file(),
+        "project_root": root,
+        "project_root_matches_console": root is not None and root == console_root,
+        "source": "host configuration file" if host.get("discovered") else "none found",
+    }
+
+
+def probe_connection(
+    command: str, project_root: str, *, timeout: float = PROBE_TIMEOUT_SECONDS
+) -> Probe:
+    """Complete a real MCP handshake against a real subprocess, or report why not.
+
+    This is the artifact. A generated snippet is a proxy for a connection and a
+    `tools/list` catalogue is a proxy for a connection; only a subprocess that
+    answered `initialize` and `tools/list` is the thing itself.
+
+    **It writes bytes on the wire, not JSON-RPC objects.** The frames are
+    assembled as text and written to a pipe by hand rather than handed to the
+    server's own SDK session, because a client built from the same SDK as the
+    server would agree with it about a changed contract. The rule this file
+    inherits from `tests/mcp_client.py`: the reader must not be able to agree
+    with the server by construction.
+
+    Every refusal before the launch is a boundary decision, and it happens here
+    where the process boundary is: a command that is not an existing file, and a
+    root that is not a project. Both are reported as `not_connected` with the
+    reason, because an operator reading a panel needs one reading for "it does
+    not work" rather than a traceback from a read-only view.
+
+    The deadline is the outer bound on the whole exchange. A server that starts
+    and then never answers is exactly the failure this panel has to survive, and
+    an unbounded read would hang the console rather than report it.
+    """
+    resolved = Path(command)
+    if not resolved.is_file():
+        return Probe(
+            "not_connected", False,
+            reason=f"{command} is not a file on this machine, so no server could start from it",
+        )
+    try:
+        open_project(project_root)
+    except (ProjectError, OSError) as exc:
+        return Probe(
+            "not_connected", False,
+            reason=f"{project_root} is not a project root this server could bind to: {exc}",
+        )
+
+    try:
+        return _handshake(resolved, project_root, timeout)
+    except OSError as exc:
+        # `FileNotFoundError` and a permission refusal land here, and both are
+        # answers about this machine rather than bugs in the panel.
+        return Probe(
+            "not_connected", False,
+            reason=f"the server could not be launched: {exc}",
+            project_root=project_root,
+        )
+    except ProbeTimeout as exc:
+        return Probe("not_connected", False, reason=str(exc), project_root=project_root)
+
+
+class ProbeTimeout(Exception):
+    """The handshake did not complete inside its deadline."""
+
+
+def _handshake(command: Path, project_root: str, timeout: float) -> Probe:
+    """One `initialize`, one `tools/list`, over a real pipe pair.
+
+    Read on a thread with a deadline rather than with a blocking read, because a
+    server that answers neither frame would otherwise hold this call open until
+    the console's own request timed out, which is the failure the probe exists
+    to report.
+    """
+    lines: list[str] = []
+    errors: list[str] = []
+    process = _launch(command, project_root)
+    try:
+        _pump(process, lines, errors)
+        _exchange(process, lines, errors, timeout)
+    finally:
+        _stop(process)
+    result = _read_probe(lines, errors)
+    # The root the probe ASKED for, reported on the outcome. It is the panel's
+    # own record of what it launched, which is what an operator needs when the
+    # handshake fails: the server's own stderr names its bound root, and this is
+    # the value that was handed to it.
+    return replace(result, project_root=project_root)
+
+
+def _launch(command: Path, project_root: str) -> Any:
+    """Start the server with three pipes and no console window.
+
+    `vkit.nowindow.hidden_window` rather than raw keywords: on Windows a console
+    application launched from the console's own process opens a window over
+    whatever the operator was using, and the console is exactly the process a
+    person is looking at. Binary pipes, because a child writing one protocol
+    frame to a pipe nobody is reading blocks in its own line buffering.
+    """
+    from .. import nowindow
+
+    environment = dict(os.environ)
+    # This console's own `src` first, so the probe measures the code serving the
+    # page rather than whichever install happens to lead on the path.
+    here = Path(__file__).resolve().parents[2]
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(here), environment.get("PYTHONPATH", "")]
+    )
+    return subprocess.Popen(
+        [str(command), "mcp", "serve", "--project", project_root],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        bufsize=0, env=environment, cwd=str(here),
+        **nowindow.hidden_window(),
+    )
+
+
+def _pump(process: Any, lines: list[str], errors: list[str]) -> None:
+    """Two reader threads, one per stream, and no other reader anywhere.
+
+    A second reader racing the first for the same pipe loses frames silently,
+    which shows up as a probe that hangs rather than as a failure.
+    """
+    def _read(stream: Any, sink: list[str]) -> None:
+        try:
+            for raw in stream:
+                sink.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+        except (OSError, ValueError):
+            pass
+
+    for stream, sink in ((process.stdout, lines), (process.stderr, errors)):
+        threading.Thread(target=_read, args=(stream, sink), daemon=True).start()
+
+
+def _exchange(process: Any, lines: list[str], errors: list[str], timeout: float) -> None:
+    """Write the two frames a client must send, and wait for both answers.
+
+    `initialize` first, because the protocol requires it and a `tools/list`
+    before it is a `tools/list` a real client could not have sent. The
+    notification is sent after the result arrives, which is where it belongs.
+    """
+    deadline = time.monotonic() + timeout
+    _send(process, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "vkit-console-probe", "version": "1.0.0"},
+        },
+    })
+    _await(lines, deadline, errors, "initialize")
+    _send(process, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+    _send(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    _await(lines, deadline, errors, "tools/list")
+
+
+def _send(process: Any, frame: dict[str, Any]) -> None:
+    stream = process.stdin
+    if stream is None:
+        raise ProbeTimeout("the server's stdin was not connected")
+    try:
+        stream.write((json.dumps(frame) + "\n").encode("utf-8"))
+        stream.flush()
+    except (OSError, ValueError) as exc:
+        raise ProbeTimeout(f"the server stopped reading before the exchange finished: {exc}")
+
+
+def _await(
+    lines: list[str], deadline: float, errors: list[str], method: str
+) -> dict[str, Any]:
+    """The frame answering `method`, or a failure naming what went wrong."""
+    while True:
+        for candidate in list(lines):
+            if not candidate.strip():
+                lines.remove(candidate)
+                continue
+            try:
+                frame = json.loads(candidate)
+            except json.JSONDecodeError:
+                # stdout carries protocol frames only. A line that is not JSON is
+                # a broken server, not a frame to skip past, and continuing here
+                # is how a banner silently becomes the answer to tools/list.
+                raise ProbeTimeout(
+                    f"the server wrote a line that is not a protocol frame, which "
+                    f"corrupts the stream for any client: {candidate[:200]!r}"
+                )
+            if frame.get("id") == 1 and method == "initialize":
+                return frame
+            if frame.get("id") == 2 and method == "tools/list":
+                return frame
+        if time.monotonic() >= deadline:
+            raise ProbeTimeout(f"no {method} answer within {timeout:g}s: {tail(errors) or 'no stderr'}")
+        time.sleep(0.05)
+
+
+def tail(errors: list[str], count: int = 5) -> str:
+    """The last few stderr lines, which is where a refusal goes.
+
+    stdout is the protocol channel and a server that failed to start says why on
+    stderr, so this is the only place its own explanation can be read from.
+    """
+    return " | ".join(errors[-count:])
+
+
+def _stop(process: Any) -> None:
+    """Close the pipe and wait, killing rather than leaving a server running.
+
+    A leaked `mcp serve` holds the bound project open, so a panel the operator
+    opened once would accumulate processes for as long as the console runs.
+    """
+    try:
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+    except (OSError, ValueError):
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:  # pragma: no cover - already killed
+            pass
+
+
+def _read_probe(lines: list[str], errors: list[str]) -> Probe:
+    """The handshake's outcome, read off the recorded frames.
+
+    `tools/list` is the frame that settles it. A server that handshakes and then
+    publishes nothing is connected to nothing useful, and the six names are what
+    a host will actually call.
+    """
+    handshake: dict[str, Any] = {}
+    tools: list[dict[str, Any]] = []
+    for candidate in lines:
+        try:
+            frame = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        result = frame.get("result") or {}
+        if frame.get("id") == 1:
+            handshake = result
+        elif frame.get("id") == 2:
+            tools = result.get("tools") or []
+    if not handshake:
+        return Probe("not_connected", False, reason=tail(errors) or "no handshake frame")
+    if not tools:
+        return Probe("not_connected", False, reason="the server published no tools")
+    return Probe(
+        "connected", True,
+        tool_names=[str(tool.get("name")) for tool in tools],
+        server_info={
+            key: str(value)
+            for key, value in (handshake.get("serverInfo") or {}).items()
+        },
+        protocol_version=handshake.get("protocolVersion"),
+    )
+
+
+def mcp_catalogue(context: Context) -> dict[str, Any]:
+    """The six-tool catalogue, and the fact that it proves nothing about serving.
+
+    This is what `vkit mcp serve --project ROOT --json` returns, called here
+    rather than shelled out so the panel does not launch a process to learn a
+    constant. `touches_transport` is False and it is not decoration: the command
+    returns before the transport is touched, so it prints a full catalogue with
+    the SDK absent while the same command without `--json` exits 5.
+    """
+    from ..mcp import tool_definitions
+
+    return {
+        "command": "mcp serve",
+        "project": str(context.project.root),
+        "tools": tool_definitions(),
+        "touches_transport": False,
+        "note": (
+            "The catalogue is the published tool table, read without starting a "
+            "transport. It is what the server would advertise, and is not "
+            "evidence that a server can serve: `vkit mcp serve --json` returns "
+            "before the transport is touched and exits 0 with the MCP SDK "
+            "absent."
+        ),
+    }
+
+
+def mcp_connection(
+    context: Context, *, host: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The connection panel's whole document, in one value.
+
+    Three things, deliberately not one status. `configured` reads the host's own
+    file. `connected` is a real handshake, or `not_probed` when there was nothing
+    to probe. `catalogue` is the tool table, which is evidence about neither.
+
+    **The probe runs on its own, with no button.** Two facts made a button the
+    wrong shape. `api.py` owns the route table and this package cannot add a
+    route, so there was nowhere for a "probe" request to arrive; and the
+    operator's question is "is this working", which a panel that answers
+    `not_probed` until a button is found has not answered at all.
+
+    So the probe is spent where it is meaningful and not otherwise: a handshake
+    runs only when the host names both a command and a project root. Nothing is
+    configured, nothing is launched, and the panel says `not_probed` -- which is
+    the truth. Something is configured, the subprocess runs and the panel says
+    what actually happened. Measured at ~0.9s per handshake on this host, which
+    is the price of an answer that is never stale.
+    """
+    chosen = discover_host(context) if host is None else host
+    command = chosen.get("command")
+    root = chosen.get("project_root")
+    if command and root:
+        result = probe_connection(str(command), str(root))
+    else:
+        result = Probe("not_probed", False)
+    return {
+        "snippet": connection_snippet(context),
+        "text": mcp_connection_text(context),
+        "configured": _configured_state(chosen, str(context.project.root)),
+        "connected": result.to_json(),
+        "catalogue": mcp_catalogue(context),
+        "capability_gaps": capability_gaps(context, chosen),
+        "on_path_vkit": _on_path_vkit(),
+    }
+
+
+def mcp_connection_text(context: Context) -> str:
+    """The snippet as an operator pastes it, and as a page renders it.
+
+    `ensure_ascii=False`, so a project path with an accent in it survives into
+    the text. The escaped form is valid JSON that names a path the filesystem
+    does not have, which is worse than ugly.
+    """
+    return json.dumps(connection_snippet(context), indent=2, ensure_ascii=False)
+
+
+def _on_path_vkit() -> str | None:
+    """What PATH would run, reported as a separate fact.
+
+    Kept beside the resolved command rather than instead of it, because on a
+    host with two installs these genuinely differ and an operator deciding which
+    one their host will launch needs both. On this machine they do differ.
+    """
+    import shutil
+
+    return shutil.which("vkit")
+
+
+#: What a host can and cannot do, as a table rather than a set of sentences.
+#:
+#: The whole point of this panel is that "connected" is not the whole story. A
+#: standalone MCP host can call `task_begin`, `check_start`, `run_get` and
+#: `task_finalize` explicitly and reach a real verdict. It cannot inherit
+#: Claude's automatic completion gate, and it cannot get automatic edit cleanup,
+#: because those are lifecycle hooks belonging to that host, not properties of
+#: the protocol. A host without hooks is NOT less correct; it is explicit, and
+#: an operator who believes otherwise will wait for a gate that will never fire.
+_CAPABILITY_ROWS: tuple[dict[str, Any], ...] = (
+    {
+        "capability": "discover and call the six tools",
+        "requires": "MCP stdio",
+        "automatic": False,
+        "detail": "project_inspect, task_begin, check_start, run_get, run_cancel "
+                  "and task_finalize, over standard MCP discovery and calls",
+    },
+    {
+        "capability": "explicit verification and finalization",
+        "requires": "MCP stdio",
+        "automatic": False,
+        "detail": "a host may call check_start and task_finalize itself and reach "
+                  "READY, REJECTED or BLOCKED from real evidence",
+    },
+    {
+        "capability": "automatic completion gate on Stop",
+        "requires": "host lifecycle hooks",
+        "automatic": True,
+        "detail": "Claude Code's Stop hook is what blocks a finish until a task "
+                  "finalizes. A host without lifecycle hooks does NOT inherit "
+                  "it: the gate is the host's, and the operator or the agent "
+                  "calls task_finalize explicitly.",
+    },
+    {
+        "capability": "automatic edit cleanup",
+        "requires": "host lifecycle hooks",
+        "automatic": True,
+        "detail": "the PostToolUse hook on Edit and Write is what offers cleanup. "
+                  "Without lifecycle hooks an edit is not cleaned up until a "
+                  "tool call asks.",
+    },
+    {
+        "capability": "session and agent identity",
+        "requires": "nothing beyond MCP",
+        "automatic": False,
+        "detail": "task_begin accepts a host object carrying session_id and an "
+                  "optional agent_id, so any host may bind its own identity "
+                  "explicitly. Claude's SessionStart and SubagentStart hooks "
+                  "supply it automatically; a standalone host passes what it has, "
+                  "or binds no host at all.",
+    },
+    {
+        "capability": "workflow skills",
+        "requires": "the Claude plugin, or manual guidance",
+        "automatic": False,
+        "detail": "four skills offer onboarding, the work sequence, running "
+                  "verification and explaining status. They are workflow help, "
+                  "not a prerequisite for correctness: the six tools do not "
+                  "depend on any of them.",
+    },
+)
+
+
+def capability_gaps(
+    context: Context, host: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """What this host has, and what it does not.
+
+    A row is `supported` when this host satisfies its `requires`. The rows that
+    need lifecycle hooks are the interesting ones, and they are the reason this
+    function exists: "connected" and "as capable as Claude Code" are different
+    claims, and only the second one is false for a standalone host.
+
+    Only two host shapes are recognised. A host this build has no adapter for is
+    reported as `unknown` with every hook-dependent capability withheld, which is
+    the honest answer rather than an optimistic default. Building a per-host
+    adapter for a host nobody has selected is the thing checkpoint 12.4 says not
+    to do.
+    """
+    chosen = discover_host(context) if host is None else host
+    name = str(chosen.get("host", "unknown"))
+    if name == "claude-code":
+        shape, lifecycle = "claude", True
+    elif name == "test":
+        shape, lifecycle = "test", False
+    else:
+        shape, lifecycle = "unknown", False
+
+    rows = []
+    for row in _CAPABILITY_ROWS:
+        needs_hooks = row["requires"] == "host lifecycle hooks"
+        supported = not needs_hooks or lifecycle
+        rows.append({**row, "supported": supported, "row": shape})
+    return {
+        "host": name,
+        "shape": shape,
+        "lifecycle_hooks": lifecycle,
+        "rows": rows,
+        "missing": [row["capability"] for row in rows if not row["supported"]],
+        "note": (
+            "Supported means this host provides what the row requires. It is not "
+            "a claim that the capability is automatic: an agent on a host with "
+            "no lifecycle hooks calls task_finalize explicitly, and a missing "
+            "gate is a missing gate."
+        ),
+    }
 
 
 # ----------------------------------------------------------------- internals

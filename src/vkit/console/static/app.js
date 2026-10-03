@@ -985,7 +985,125 @@ async function showIntegrations() {
   return fill("integrations-body",
     panel(el("p", { class: "note", text: section.note })),
     panel(table(["component", "kind", "version", "status", { label: "detail", hideAt: "wide-hide" }], components)),
-    panel(table(["operation", "effect", "apply from here"], actions)));
+    panel(table(["operation", "effect", "apply from here"], actions)),
+    connectionPanels(section.connection));
+}
+
+/* --------------------------------------------------- the agent connection
+
+   CONFIGURED and CONNECTED are two different facts and the panel never merges
+   them. CONFIGURED is what the host's own file says, which the console did not
+   write and can only read back. CONNECTED is what a real MCP handshake proved:
+   a subprocess launched, an initialize frame answered, tools/list read off the
+   wire. The snippet above is a third thing again -- generated configuration,
+   pasted into a host that has not run it yet -- and it is labelled that way.
+
+   There is no probe button. `api.py` owns the route table, so there is nowhere
+   for a "probe now" request to arrive, and a panel that answered `not_probed`
+   until a button was found had not answered the operator's question at all. The
+   handshake runs when the host names both a command and a project root, which is
+   the only case where it can mean anything. */
+function connectionPanels(connection) {
+  if (!connection) return null;
+
+  const configured = connection.configured || {};
+  const connected = connection.connected || {};
+  const state = connected.state;
+  /* Three states, three renderings. `not_probed` is not `not_connected`: the
+     first says nothing was measured and the second says a measurement failed,
+     and a reader who cannot tell them apart will stop reading this field. */
+  const verdict = {
+    connected: ["yes", "a real MCP handshake completed against this command"],
+    not_connected: ["no", connected.reason || "the probe did not complete"],
+    not_probed: ["unknown", "nothing is configured on this machine, so nothing was started"],
+  }[state] || ["unknown", String(state)];
+
+  const stateRows = [
+    el("tr", {},
+      el("td", {}, el("strong", { text: "configured" })),
+      el("td", {}, el("span", {
+        class: `pill ${configured.present ? "yes" : "no"}`,
+        text: configured.present ? "yes" : "not configured",
+      })),
+      el("td", { class: "note", text: configured.present
+        ? `${configured.host} names ${configured.command}` +
+          (configured.command_exists ? "" : ", which is not a file on this machine")
+        : `no ${configured.host} configuration was found on this machine` })),
+    el("tr", {},
+      el("td", {}, el("strong", { text: "connected" })),
+      el("td", {}, el("span", {
+        class: `pill ${state === "connected" ? "yes" : "no"}`,
+        text: verdict[0],
+      })),
+      el("td", { class: "note", text: verdict[1] })),
+  ];
+
+  return panel(
+    el("h3", { text: "Agent connection" }),
+    el("p", { class: "note", text: (connection.snippet || {}).note || "" }),
+    panel(table(["", "state", "what that means"], stateRows)),
+    (connected.state === "connected"
+      ? el("p", { class: "note", text:
+          `the handshake returned ${connected.tool_names.length} tools over ` +
+          `${connected.protocol_version}: ${connected.tool_names.join(", ")}` })
+      : null),
+    snippetPanel(connection.text),
+    cataloguePanel(connection.catalogue),
+    capabilityPanel(connection.capability_gaps),
+  );
+}
+
+/* The snippet, in a pre the operator can select, with a copy button. It is
+   never labelled as working: it is configuration, and nothing has run it. */
+function snippetPanel(text) {
+  if (!text) return null;
+  const copy = el("button", { type: "button", text: "Copy" });
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("configuration copied; it is not a verified connection");
+    } catch (error) {
+      toast("the browser refused clipboard access; select the text and copy it", true);
+    }
+  });
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: "configuration to paste" }), copy),
+    el("pre", { class: "mono snippet", text }),
+    el("p", { class: "note", text: "Paste this into your host's MCP configuration. It has not been started." }),
+  );
+}
+
+/* The catalogue, named as the third kind of evidence. `vkit mcp serve --json`
+   returns before the transport is touched, so it prints all six tools with the
+   MCP SDK absent while the same command without --json exits 5. Showing it
+   beside a handshake is what stops it reading as one. */
+function cataloguePanel(catalogue) {
+  if (!catalogue) return null;
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: "tool catalogue" })),
+    el("p", { class: "note", text: catalogue.note }),
+    el("p", { class: "mono note", text: (catalogue.tools || []).map((t) => t.name).join(", ") }),
+  );
+}
+
+/* What this host can and cannot do. The rows needing lifecycle hooks are the
+   point: a standalone MCP host reaches a real verdict by calling task_finalize
+   explicitly, and it does NOT inherit Claude's automatic Stop gate. A missing
+   gate shown as a row is a fact; the same gate silently assumed is a wait that
+   never ends. */
+function capabilityPanel(gaps) {
+  if (!gaps) return null;
+  const rows = (gaps.rows || []).map((row) => el("tr", {},
+    el("td", {}, el("span", { class: `pill ${row.supported ? "yes" : "no"}`, text: row.supported ? "yes" : "no" })),
+    el("td", {}, el("strong", { text: row.capability })),
+    el("td", { class: "note", text: row.requires }),
+    el("td", { class: "note", text: row.detail }),
+  ));
+  return panel(
+    el("div", { class: "row" }, el("strong", { text: `capability for this host (${gaps.host})` })),
+    el("p", { class: "note", text: gaps.note }),
+    table(["supported", "capability", "requires", "what it means"], rows),
+  );
 }
 
 /* ------------------------------------------------------------------ overview

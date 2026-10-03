@@ -1,0 +1,172 @@
+name: Formal verifiers
+
+# The real Lean and TLC cases. Separate from `ci.yml` because this job installs
+# toolchains the suite does not otherwise need, and because a failure here means a
+# checker refused a proof, not that the product regressed. Keeping them apart
+# stops a Lean release moving from breaking the matrix from breaking every PR.
+#
+# Both tools are pinned by digest. A floating tag would make this job's verdict a
+# fact about whatever a maintainer published most recently, which is exactly the
+# overstatement `plans/10-native-verifiers.md:93` forbids when it names the TLC
+# implementation as the authority for its output codes. The digests below are the
+# values a maintainer must MEASURE on the release they intend to pin; a bump moves
+# the digest and nothing else, and the job fails loudly if the digest does not match
+# the file that was downloaded.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Lean toolchain, pinned exactly. `elan` resolves this through
+  # `lean-toolchain` when a project declares one and falls back to this otherwise;
+  # the adapter's argv is measured against 4.34.1, whose `--json` message shapes
+  # are what `lean_adapter` parses, so a major bump is a measured change and not a
+  # version bump.
+  LEAN_TOOLCHAIN: leanprover/lean4:v4.34.1
+  # The TLA+ tools. Both values below were MEASURED, not copied from a release
+  # page: `v1.7.4` is what the GitHub releases API reported as latest when this
+  # was written, and the digest is sha256 over the 2,274,532 bytes that URL
+  # actually served. The job verifies the digest before the jar is used and fails
+  # loudly if it does not match, which is the same check `tlc_runner` makes, so
+  # the CI environment and the product agree about which checker ran.
+  #
+  # A bump moves BOTH values together, and the digest is what makes the bump
+  # reviewable: a maintainer re-measures the file and states the new value rather
+  # than trusting a tag.
+  TLA2TOOLS_VERSION: 1.7.4
+  TLA2TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+
+jobs:
+  lean:
+    name: Lean (real kernel, both profiles)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.14"
+
+      # elan, then exactly one toolchain. `leanup` is deliberately not used: it
+      # tracks the latest release, and this job's whole claim is that the reader
+      # matches the toolchain's output.
+      - name: Install elan and the pinned Lean toolchain
+        run: |
+          set -eu
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$LEAN_TOOLCHAIN"
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          lean --version
+          lake --version
+
+      - name: Install the package
+        run: |
+          set -eu
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+
+      # The unreviewed profile, on this Linux runner. This is the case
+      # `plans/10-native-verifiers.md:85` asks for: the reviewed profile requires
+      # a host that isolates a proof build, and Ubuntu CI is the environment the
+      # plan nominates for it. `requires_isolation()` answers on the platform, so
+      # this step is what turns that gate from a refusal into a real run.
+      - name: Lean adapter, positive and negative cases
+        run: |
+          set -eu
+          python -m pytest tests/test_lean_verifier.py -v -ra -o addopts= -p no:cacheprovider
+
+      # A green run of the file above includes the reviewed-profile refusals,
+      # which on Linux are the acceptance rather than the isolation refusal. This
+      # step asserts the reviewed profile's positive path directly, so a Linux
+      # regression in the recheck comparison cannot hide behind the unreviewed
+      # cases passing.
+      - name: The reviewed profile is exercised, not refused
+        run: |
+          set -eu
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          ROOT = Path.cwd()
+          sys.path.insert(0, str(ROOT / "src"))
+          from vkit.verifiers import lean_adapter
+          assert lean_adapter.requires_isolation(), (
+              "this job runs on Linux precisely so the reviewed profile's isolation "
+              "gate is satisfied; if this fails the gate no longer describes what "
+              "an Ubuntu runner provides"
+          )
+          assert lean_adapter.isolation_required("reviewed_proof_sources")
+          assert not lean_adapter.isolation_required("unreviewed_agent")
+          print("reviewed profile gate: satisfied on this runner")
+          PY
+
+  tlc:
+    name: TLC (real JRE, real tla2tools)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.14"
+
+      # A JRE, not a JDK: TLC needs to run, not to compile. `actions/setup-java`
+      # is used rather than an apt install so the version is pinned and the
+      # runner image cannot change it underneath a green run.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # The jar, by digest. Checked before it is used, and the same check the
+      # adapter makes: a jar that does not measure what the job pinned is not run.
+      - name: Install the pinned tla2tools.jar
+        run: |
+          set -eu
+          jar="tla2tools.jar"
+          curl -sSfL -o "$jar" \
+            "https://github.com/tlaplus/tlaplus/releases/download/v${TLA2TOOLS_VERSION}/tla2tools.jar"
+          echo "${TLA2TOOLS_SHA256}  ${jar}" | sha256sum -c -
+          mkdir -p "$HOME/tla"
+          mv "$jar" "$HOME/tla/tla2tools.jar"
+          echo "VKIT_TLA2TOOLS_JAR=$HOME/tla/tla2tools.jar" >> "$GITHUB_ENV"
+
+      - name: Install the package
+        run: |
+          set -eu
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+
+      # The positive case and the negative case, both through the real checker. The
+      # negative case is the one this job exists for: `test_a_real_violating_model_fails`
+      # defines `NoDoubleOwnership` so that it is false in a reachable state, and
+      # TLC must find it. A job that only ran the positive case would be satisfied
+      # by an adapter that passed everything.
+      - name: TLC adapter, positive and negative cases
+        run: |
+          set -eu
+          java -version
+          python -m pytest tests/test_tlc_verifier.py -v -ra -o addopts= -p no:cacheprovider
+
+      # The reader is exercised on this runner too, so a refusal that only fails on
+      # Ubuntu is caught here rather than being reported by a maintainer. Nothing
+      # in these files is Linux-specific except the reviewed-profile gate, so this
+      # asserts they ran rather than skipped.
+      - name: The real checker cases actually ran
+        run: |
+          set -eu
+          python -m pytest tests/test_tlc_verifier.py tests/test_lean_verifier.py \
+            -o addopts= -p no:cacheprovider -ra -k "real" -v 2>&1 | tee run.log
+          # A skip here means the capability probe did not find what this job
+          # installed, which would leave the real cases unexercised and the job
+          # green. That is the failure this step exists to prevent.
+          if grep -q "SKIPPED" run.log; then
+            echo "a real-checker case was skipped on a runner that installed the toolchain" >&2
+            grep "SKIPPED" run.log >&2
+            exit 1
+          fi

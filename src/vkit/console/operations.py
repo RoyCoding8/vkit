@@ -40,9 +40,7 @@ from ..recover import Report as RecoveryReport
 from ..recover import inspect as inspect_recovery
 from ..storage import Store, StoreError, probe_state, read_receipt
 from ..supervisor import SupervisorError, cancel_run, start_run
-# The core's own serializer for an obligation, so the name the console shows for
-# a required obligation is the same name the receipt that discharges it uses.
-from ..verifiers import obligation_to_json
+from ..verifiers import describe_obligation
 from .plan import (
     DEFAULT_RUN_LIMIT,
     LOOPBACK_HOST,
@@ -322,7 +320,23 @@ def _checks_document(context: Context) -> dict[str, Any]:
                 "command": list(check.argv),
                 "cwd": str(check.cwd),
                 "timeout_seconds": check.timeout_seconds,
+                # The category a PASS from this check licenses, derived the same
+                # way every other surface derives it. A reader choosing a check
+                # has to know which kind of claim it discharges before running
+                # it, not after.
+                "evidence_kind": check.evidence_kind().value,
                 "required_scenarios": list(check.required_scenarios),
+                # Every obligation this check declares, in the words
+                # `obligation.describe` gives them. `required_scenarios` above is
+                # only ever the case obligations, so for a check whose obligations
+                # are theorem names or model properties that field is empty and
+                # the page would render an empty list where the check has real
+                # obligations. Both fields are kept rather than one replacing the
+                # other: a caller that wants the case ids alone still has them.
+                "obligations": [
+                    describe_obligation(obligation)
+                    for obligation in check.obligations()
+                ],
                 "artifact": check.artifact_name,
                 "prerequisites": [
                     {"name": need.name, "executable": need.executable, "args": list(need.args)}
@@ -393,10 +407,10 @@ def evidence_section(context: Context) -> dict[str, Any]:
                 # receipt's `satisfied` entries refer to. Passing them straight
                 # into a response was a TypeError from `json.dumps` on the first
                 # request that reached this view; they are serialized through the
-                # core's own `obligation_to_json`, so the name the page shows is
+                # core's own `describe_obligation`, so the name the page shows is
                 # the name the receipt uses for the same obligation.
                 "obligations": [
-                    obligation_to_json(obligation)
+                    describe_obligation(obligation)
                     for obligation in check.obligations()
                 ],
                 "subject_paths": list(check.subject.paths) if check.subject else [],
@@ -739,12 +753,30 @@ def run_detail_view(context: Context, run_id: str) -> dict[str, Any]:
         "lifecycle": report.get("lifecycle"),
         "pending": False,
         "check_id": report.get("check_id"),
+        "evidence_kind": _evidence_kind(context, run_id),
         "process": report.get("process"),
         # Only the streams this run actually recorded. A cancel report names no
         # log at all, and listing one anyway would send the page looking for a
         # file the store does not hold.
         "logs": [stream for stream in ("stdout", "stderr") if logs.get(stream)],
     }
+
+
+def _evidence_kind(context: Context, run_id: str) -> str | None:
+    """The category of the evidence this run produced, or None if it recorded none.
+
+    Read from the receipt beside the run's report, which is the same document
+    `Store.publish` copies the category from and the same one the CLI reads. Not
+    from the run row, because this function has one `run_id` and the row query
+    has no filter for one. Not from the check's declaration either, which would
+    report the category a check *would* produce rather than the one a run
+    recorded, and those differ for every run that was refused.
+
+    A run with no receipt is a run that established nothing, so there is no
+    category to show and None is the answer rather than a default.
+    """
+    receipt = read_receipt(context.store.run_dir(run_id))
+    return None if receipt is None else receipt.get("evidence_kind")
 
 
 def recovery_view(context: Context) -> dict[str, Any]:

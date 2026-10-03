@@ -34,6 +34,7 @@ from .dispatch import (
     persist,
     validate_receipt,
 )
+from .node_adapter import AdapterResult as NodeAdapterResult
 from .obligation import (
     CaseObligation,
     Obligation,
@@ -44,6 +45,7 @@ from .obligation import (
     obligation_to_json,
     obligations_from_scenarios,
 )
+from .property_adapter import PropertyAdapterResult, TestedScope
 from .pytest_adapter import AdapterResult
 from .spec import (
     VARIANTS,
@@ -87,9 +89,11 @@ __all__ = [
     "LeanProfile",
     "ModuleRef",
     "NativeCheckSpec",
+    "NodeAdapterResult",
     "NodeTestCheck",
     "Obligation",
     "PinnedRunner",
+    "PropertyAdapterResult",
     "PropertyCheck",
     "PropertyObligation",
     "PytestCheck",
@@ -98,6 +102,7 @@ __all__ = [
     "ScenarioCheck",
     "ScenarioReading",
     "SubjectRef",
+    "TestedScope",
     "TheoremObligation",
     "TlcCheck",
     "ToolchainRef",

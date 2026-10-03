@@ -5,6 +5,14 @@ loaded into the pinned runner by the argv `dispatch` builds, and it writes a
 versioned document naming every test the runner actually executed. The second
 reads that document back and decides what the run established.
 
+Each entry carries the generator settings the test ran under, which are null
+for every test that is not a Hypothesis one. That is the only field here that
+depends on a library rather than on the runner, and it is recorded on every
+entry rather than only on the ones that need it so that a report's shape does
+not depend on which tests happened to be property tests. `property_adapter`
+reads them; `interpret` below does not, because a `pytest` check over a
+Hypothesis file is SCENARIO evidence and the settings do not change that.
+
 **Why vkit produces the report rather than importing a plugin that does.** A
 third-party report plugin is the obvious source of a structured pytest report,
 and this build has no way to depend on one: `pyproject.toml` is not this
@@ -109,12 +117,18 @@ class TestOutcome:
     `outcome` is the runner's own word and is not translated here. Translating
     it at this layer would put a second vocabulary beside the first, and the two
     would drift the first time the runner added a word.
+
+    `generator` is the Hypothesis settings this test ran under, or None when it
+    is not a Hypothesis test. It is carried rather than acted on: a pytest check
+    that happens to run a property test is still SCENARIO evidence, and it is
+    `property_adapter` that reads the field.
     """
 
     nodeid: str
     outcome: str
     duration: float
     message: str
+    generator: dict | None = None
 
     @property
     def passed(self) -> bool:
@@ -153,6 +167,12 @@ class AdapterResult:
     passed: tuple[CaseObligation, ...]
     observations: tuple[tuple[CaseObligation, str], ...]
     counterexamples: tuple[tuple[CaseObligation, str], ...]
+    #: The generator settings each required test ran under, keyed by test id.
+    #: Present only for a run whose report carried them, so it is absent rather
+    #: than empty on every pytest run. `property_adapter` reads it; a pytest
+    #: check does not, because a `pytest` variant is SCENARIO evidence whatever
+    #: the tests inside it happen to be.
+    generator_settings: dict[str, dict] | None = None
 
     @property
     def is_pass(self) -> bool:
@@ -265,7 +285,49 @@ def pytest_runtest_makereport(item: Any, call: Any) -> None:
         ),
         "duration": float(getattr(call, "duration", 0.0)),
         "message": skipped if skipped is not None else _message(excinfo),
+        # Null for every test that is not a Hypothesis one. A property result is
+        # read off these settings rather than off the manifest's declaration,
+        # because a decorator or a conftest profile can move the settings after
+        # the manifest was written, and a receipt that described the declaration
+        # would describe the request rather than the run.
+        "generator": _generator_settings(item) if call.when == "call" else None,
     })
+
+
+def _generator_settings(item: Any) -> dict | None:
+    """The Hypothesis settings this test actually ran under, or None.
+
+    Read off the test object rather than out of the manifest, and only when the
+    test really is a Hypothesis one: `getattr` rather than a membership test, so
+    a runner that drops or renames the attribute leaves a null here instead of
+    an `AttributeError` on every test in the suite.
+
+    Measured on hypothesis 6.168.3: a `@given` test carries
+    `_hypothesis_internal_use_settings` on its function, and at the end of the
+    call phase it reflects the profile in force rather than the library default.
+    `deadline` is read off the object because a settings object whose deadline is
+    unset reports it as `None` rather than as a number, and a null here means the
+    check declared none.
+    """
+    settings = getattr(
+        getattr(item, "function", None), "_hypothesis_internal_use_settings", None,
+    )
+    if settings is None:
+        return None
+    deadline = settings.deadline
+    return {
+        "max_examples": int(settings.max_examples),
+        "stateful_step_count": int(settings.stateful_step_count),
+        # A timedelta in seconds, or None. Not `.total_seconds()` blindly: a
+        # settings object can carry `deadline=None` and that is a fact about the
+        # run, not a value to coerce.
+        "deadline": None if deadline is None else deadline.total_seconds(),
+        "suppress_health_check": [
+            getattr(check, "__name__", str(check))
+            for check in settings.suppress_health_check
+        ],
+        "database": type(settings.database).__name__ if settings.database else None,
+    }
 
 
 def _is_assertion(excinfo: Any) -> bool:
@@ -442,7 +504,14 @@ def _read(raw: bytes) -> RunnerReport | Blocked:
                 "report_malformed", BlockedReason.ARTIFACT_MALFORMED,
                 f"test {nodeid!r} reports a non-textual message",
             )
-        parsed.append(TestOutcome(nodeid, outcome, float(duration), message))
+        generator = entry.get("generator")
+        if generator is not None and not _is_generator(generator):
+            return _refuse(
+                "report_malformed", BlockedReason.ARTIFACT_MALFORMED,
+                f"test {nodeid!r} reports generator settings that are not the "
+                "documented shape, so what it sampled cannot be read",
+            )
+        parsed.append(TestOutcome(nodeid, outcome, float(duration), message, generator))
 
     contradiction = _contradiction(parsed)
     if contradiction is not None:
@@ -453,6 +522,35 @@ def _read(raw: bytes) -> RunnerReport | Blocked:
             "describe one execution",
         )
     return RunnerReport(version, True, tuple(parsed))
+
+
+#: The keys a `generator` block carries. Closed, because a settings document
+#: read with today's meanings is a guess about a future Hypothesis release, and
+#: this reader must not read more out of the document than it was written to
+#: mean.
+_GENERATOR_KEYS = frozenset({
+    "max_examples", "stateful_step_count", "deadline",
+    "suppress_health_check", "database",
+})
+
+
+def _is_generator(document: Any) -> bool:
+    """Whether a `generator` block is the shape this code reads.
+
+    Parsed, not cast. A report is written by a plugin inside the pinned runner
+    process and read by the core, so it is as much an external document as the
+    check's own artifact is, and it gets the same refusals.
+    """
+    if not isinstance(document, dict) or not _GENERATOR_KEYS <= set(document):
+        return False
+    if not isinstance(document["max_examples"], int):
+        return False
+    if not isinstance(document["stateful_step_count"], int):
+        return False
+    deadline = document["deadline"]
+    if deadline is not None and not isinstance(deadline, (int, float)):
+        return False
+    return isinstance(document["suppress_health_check"], list)
 
 
 def _contradiction(tests: list[TestOutcome]) -> tuple[str, str, str] | None:
@@ -518,9 +616,12 @@ def interpret(raw: bytes, check: PytestCheck) -> AdapterResult | Blocked:
     passed: list[CaseObligation] = []
     counterexamples: list[tuple[CaseObligation, str]] = []
     observations: list[tuple[CaseObligation, str]] = []
+    generator_settings: dict[str, dict] = {}
     for test_id in check.required_tests:
         result = reported[test_id]
         obligation = CaseObligation(test_id)
+        if result.generator is not None:
+            generator_settings[test_id] = result.generator
         if result.outcome == FAILED:
             counterexamples.append((obligation, result.message or "the assertion failed"))
             continue
@@ -530,5 +631,6 @@ def interpret(raw: bytes, check: PytestCheck) -> AdapterResult | Blocked:
             f"the runner reported {result.outcome} in {result.duration:g}s",
         ))
     return AdapterResult(
-        tuple(passed), tuple(observations), tuple(counterexamples)
+        tuple(passed), tuple(observations), tuple(counterexamples),
+        generator_settings or None,
     )

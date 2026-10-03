@@ -30,23 +30,29 @@ says the runner could not deliver an answer at all. The runner's own vocabulary
 distinguishes them, and collapsing the two is what turns a broken environment
 into a red test that a reader is invited to go and fix.
 
-**The refusals, each with one reason.** Seven ways a report can fail to answer
-the question are refused separately rather than as one "malformed", because each
-has a different repair and a reader who is told only "malformed" has to
-rediscover which. `BlockedReason` is frozen in `vkit.outcome` and enumerated
-again by `schemas/run-report.v1.json`, so the distinction is carried in the
-detail's leading token. Each token below is the whole contract of that refusal;
-a caller may match on it and the string is covered by a test.
+**The refusals, each with one reason.** Six ways a report can fail to answer the
+question are refused separately rather than as one "malformed", because each has
+a different repair and a reader who is told only "malformed" has to rediscover
+which. `BlockedReason` is frozen in `vkit.outcome` and enumerated again by
+`schemas/run-report.v1.json`, so the distinction is carried in the detail's
+leading token. Each token below is the whole contract of that refusal; a caller
+may match on it and the string is covered by a test.
 
-  report_absent          the runner wrote no report at all
-  report_truncated       the document's own completeness marker says it stopped early
   report_version         the document is not a version this code reads
+  report_truncated       the document's own completeness marker says it stopped early
   report_malformed       the document is not the shape this code reads
   report_empty           the runner collected no tests at all
   report_contradiction   one test id carries two different results
   required_test_absent   a required test id never appears in the report
   required_test_skipped  a required test id appears, but was not run
   infrastructure_error   a test errored before it could assert anything
+
+**A report that was never written is not in that list**, and the omission is
+deliberate rather than an oversight. This adapter only reads bytes it was given,
+so a runner that wrote nothing is caught one layer up: `execution._derive` sees
+no artifact and returns `BlockedReason.ARTIFACT_MISSING` naming the file. An
+earlier draft of this docstring listed a `report_absent` token here; nothing
+produced it, and the refusal that actually happens names the artifact instead.
 """
 from __future__ import annotations
 
@@ -311,11 +317,14 @@ def _message(excinfo: Any) -> str:
 
 
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
-    """Write the report, or say that it could not be written.
+    """Write the report, whether or not the session succeeded.
 
-    A failure to write is recorded as an absent report rather than swallowed:
-    `report_absent` names a runner that produced nothing, and a report that
-    could not be written is that, not a pass.
+    The hook is deliberately not wrapped in a try. A writer that swallowed its
+    own failure would leave a run with no report and no explanation, and the
+    refusal that reaches the reader would be `artifact_missing`, naming a
+    missing file rather than the error that stopped it being written. Letting it
+    raise puts the traceback in the run's stderr log, which is where a reader
+    looks.
     """
     path = session.config.getoption(REPORT_FLAG, None)
     if not path:

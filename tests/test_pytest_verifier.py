@@ -434,7 +434,6 @@ def test_a_failed_assertion_is_not_reported_as_an_infrastructure_error() -> None
 # so a change to one is a change to this file too, and the tests below assert
 # the exact string rather than searching the detail for a keyword.
 
-REPORT_ABSENT = "report_absent"
 REPORT_TRUNCATED = "report_truncated"
 REPORT_VERSION = "report_version"
 REPORT_EMPTY = "report_empty"

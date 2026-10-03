@@ -145,6 +145,21 @@ def _publish_pass(store: Store, task_id: str, attempt: int, source: dict | None 
                            _FIXTURE_DIGEST["value"] if fixture_digest is Ellipsis
                            else fixture_digest
                        ))
+    # A real run's adapter writes a receipt into the run directory, and
+    # `Store.publish` reads the evidence kind and obligations out of that file
+    # rather than out of the report. Without one, a run has established nothing
+    # about WHAT KIND of evidence it is, and acceptance refuses to let it
+    # discharge a requirement that names a kind. See `storage.Store.publish`.
+    receipt = store.run_dir(run_id) / "receipt.v2.json"
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps({
+        "schema_version": 2,
+        "status": "PASS",
+        "evidence_kind": "scenario",
+        "check_id": CHECK_ID,
+        "satisfied": [],
+        "counterexamples": [],
+    }), encoding="utf-8")
     store.publish(run_id, {
         "run_id": run_id, "lifecycle": "terminal", "ended_at": "t",
         "outcome": {"result": "PASS", "scenarios": [

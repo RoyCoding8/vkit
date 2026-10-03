@@ -47,9 +47,16 @@ from pathlib import Path
 from typing import Any, Iterable, Literal
 
 from .claims import ResourceSpec, acquire_in
+from .claimkind import ClaimCategory
 from .identity import compute_source_identity
 from .paths import Project
 from .storage import ConflictError, Store, open_task as insert_task_row
+from .verifiers.obligation import (
+    Obligation,
+    describe as describe_obligation,
+    obligation_from_json,
+    obligation_to_json,
+)
 
 TaskStatus = Literal["active", "paused", "closed"]
 Readiness = Literal["READY", "REJECTED", "BLOCKED"]
@@ -85,6 +92,84 @@ def _now() -> str:
 
 
 @dataclass(frozen=True)
+class Requirement:
+    """One obligation a task owes, and the kind of evidence that could pay it.
+
+    Three facts, not one. `check_id` says which run answers it, `evidence_kind`
+    says what kind of answer is acceptable, and `obligations` says what that
+    answer has to have discharged. Collapsing them into a bare check id is what
+    let a scenario run of three named cases satisfy a floor that named two
+    theorems, because a green tick carries none of the two facts that would have
+    refused it.
+
+    `evidence_kind` is nullable and that is a real answer, not a missing one. A
+    requirement that pins no category is a requirement about verdicts rather than
+    about evidence: it accepts whatever the run recorded, and the obligation set
+    is still compared. Treating null as a wildcard was a deliberate reading
+    rather than a convenient default, and it is the reading a policy that omits
+    `evidence_kind` gets.
+
+    `obligations` may also be empty, and that is a different thing from null. An
+    empty set means the check is required but owes nothing by name, which is the
+    whole of a v1 scenario check whose required cases are enforced by its own
+    driver.
+    """
+    check_id: str
+    obligations: tuple[Obligation, ...] = ()
+    evidence_kind: ClaimCategory | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "check_id": self.check_id,
+            "evidence_kind": self.evidence_kind.value if self.evidence_kind else None,
+            "obligations": [obligation_to_json(o) for o in self.obligations],
+        }
+
+    @classmethod
+    def from_json(cls, document: Any) -> "Requirement":
+        """Read a pinned requirement back, refusing one this build cannot hold.
+
+        Parse, not cast, for the same reason `PolicyCheck` parses its own: a
+        theorem silently read as a case is the confusion the typed obligations
+        exist to prevent, and `obligation_from_json` refuses an unknown shape
+        rather than inventing one.
+        """
+        if not isinstance(document, dict):
+            raise AdmissionRefused("a requirement must be a JSON object")
+        check_id = document.get("check_id")
+        if not isinstance(check_id, str) or not check_id:
+            raise AdmissionRefused("a requirement needs a nonempty check_id")
+        raw_kind = document.get("evidence_kind")
+        category = None
+        if raw_kind is not None:
+            try:
+                category = ClaimCategory(raw_kind)
+            except ValueError:
+                known = ", ".join(c.value for c in ClaimCategory)
+                raise AdmissionRefused(
+                    f"required check {check_id!r} was pinned evidence_kind "
+                    f"{raw_kind!r}, which is not one of {known}. The category is "
+                    f"derived from the check's variant, so a requirement may only "
+                    f"pin one that already holds."
+                ) from None
+        raw_obligations = document.get("obligations", [])
+        if not isinstance(raw_obligations, list) or any(
+            not isinstance(o, dict) for o in raw_obligations
+        ):
+            raise AdmissionRefused(
+                f"required check {check_id!r}: obligations must be a list of "
+                f"obligation objects"
+            )
+        try:
+            obligations = tuple(obligation_from_json(o) for o in raw_obligations)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AdmissionRefused(
+                f"required check {check_id!r}: cannot read obligations: {exc}"
+            ) from exc
+        return cls(check_id=check_id, obligations=obligations, evidence_kind=category)
+
+
+@dataclass(frozen=True)
 class TaskContract:
     """What a task is, in the form every guarantee is derived from.
 
@@ -109,6 +194,12 @@ class TaskContract:
     #: What the caller supplied that is not one of the above, preserved so an
     #: adapter can round-trip its own request without the core endorsing it.
     declared: dict[str, Any]
+    #: What each required check must have established, and in what kind of
+    #: evidence. Derived from the floor at admission when a caller pins none, so
+    #: a contract written before this field existed reads back with the
+    #: requirements the manifest's own checks declare rather than with an empty
+    #: set that would owe nothing.
+    requirements: tuple[Requirement, ...] = ()
 
     def resource_specs(self) -> tuple[ResourceSpec, ...]:
         """The declared resources as `claims` takes them.
@@ -139,6 +230,7 @@ class TaskContract:
             "scope": self.scope,
             "resources": [dict(entry) for entry in self.resources],
             "declared": dict(self.declared),
+            "requirements": [r.to_json() for r in self.requirements],
         }
 
     @classmethod
@@ -163,6 +255,26 @@ class TaskContract:
                 "this task recorded a required_checks floor containing something "
                 "other than a check id"
             )
+        raw_requirements = document.get("requirements")
+        if raw_requirements is None:
+            # A contract written before the requirement set existed. It pins a
+            # floor of check ids and nothing else, so what each one owes is read
+            # off the checks the manifest declares rather than invented. An empty
+            # set here would owe nothing and would accept any PASS.
+            requirements = None
+        elif not isinstance(raw_requirements, list):
+            raise AdmissionRefused("this task recorded a malformed requirements list")
+        else:
+            requirements = tuple(Requirement.from_json(r) for r in raw_requirements)
+            pinned = {r.check_id for r in requirements}
+            unknown = sorted(pinned - set(required))
+            if unknown:
+                raise AdmissionRefused(
+                    f"this task pinned requirements for check(s) "
+                    f"{', '.join(unknown)}, which are not in its floor. A "
+                    f"requirement for a check the task does not require is not "
+                    f"narrower, it is a different contract"
+                )
         for key in ("policy_digest", "scope"):
             if not isinstance(document.get(key), str):
                 raise AdmissionRefused(f"this task recorded a malformed {key}")
@@ -187,6 +299,7 @@ class TaskContract:
             scope=document["scope"],
             resources=tuple(dict(entry) for entry in resources),
             declared=dict(declared),
+            requirements=() if requirements is None else requirements,
         )
 
 
@@ -537,6 +650,7 @@ def admit(
         scope=scope if isinstance(scope, str) else "",
         resources=resources,
         declared=dict(declared or {}),
+        requirements=_declared_requirements(context),
     )
     specs = contract.resource_specs()
 
@@ -550,6 +664,39 @@ def admit(
         insert_task_row(conn, task_id, contract.to_json(), contract.policy_digest)
         record = _row_to_task(conn, task_id)
     return AdmittedTask(task=record, contract=contract)
+
+
+def _declared_requirements(context: AcceptanceContext) -> tuple[Requirement, ...]:
+    """What each check in the floor owes, read from the approved manifest.
+
+    Derived at admission and then frozen, rather than re-read at decision time.
+    That is the whole of requirement 5: a manifest edited after the attempt
+    opened still describes what the attempt owes, because what it owes was
+    decided when it was admitted and a contract is the record of that decision.
+
+    Read from `context.project`'s manifest through the same loader the policy
+    digest came from, so a requirement and the digest it sits beside are two
+    readings of one document rather than two documents.
+
+    A check the manifest no longer declares contributes nothing here. It stays
+    in `required_checks`, so the existing "no completed run" gap still fires for
+    it, and dropping it from the obligation set is what stops the decision
+    reporting a category nobody can supply.
+    """
+    from .manifest import parse_manifest
+
+    try:
+        manifest = parse_manifest(context.project, context.project.runs_root)
+    except Exception:  # noqa: BLE001 - an unreadable manifest owes nothing
+        return ()
+    return tuple(
+        Requirement(
+            check_id=check.id,
+            obligations=check.obligations(),
+            evidence_kind=check.evidence_kind(),
+        )
+        for check in sorted(manifest.checks.values(), key=lambda c: c.id)
+    )
 
 
 def _floor(context: AcceptanceContext, selected: Iterable[str] | None) -> tuple[str, ...]:
@@ -812,7 +959,17 @@ def _decide(
 
     One function, used by both entry points, because two copies of a verdict rule
     is how the laxer adapter comes to disagree with the strict one.
+
+    A requirement the contract did not pin falls back to requiring the verdict
+    alone. That is the reading a contract written before the requirement set
+    existed gets, and it is what `compute_readiness` gives a caller that adds a
+    check id of its own.
     """
+    pinned = {r.check_id: r for r in record.pinned().requirements}
+    requirements = tuple(
+        pinned.get(check_id) or Requirement(check_id) for check_id in required
+    )
+
     eligible: dict[str, dict] = {}
     history: list[str] = []
     runs = store.list_runs(task_id=record.task_id, limit=1000) if conn is None else _runs_in(
@@ -835,7 +992,10 @@ def _decide(
     gaps: list[str] = []
     rejected = False
     tested: dict[str, Any] = {}
-    for check_id in required:
+    met: dict[str, list[str]] = {}
+    unmet: dict[str, list[str]] = {}
+    for requirement in requirements:
+        check_id = requirement.check_id
         run = eligible.get(check_id)
         if run is None:
             gaps.append(f"no completed run for required check {check_id!r}")
@@ -852,11 +1012,28 @@ def _decide(
             gaps.append(f"required check {check_id!r} has no usable result")
             continue
         else:
-            # Identity is compared only for a pass. A FAIL and a BLOCKED are
-            # already answers about this attempt, and re-deciding them against an
-            # identity would turn a decided result into a different one.
+            # Identity and category are compared only for a pass. A FAIL and a
+            # BLOCKED are already answers about this attempt, and re-deciding
+            # them against an identity would turn a decided result into a
+            # different one.
             recorded = {key: run.get(_RUN_COLUMN[label]) for label, key in COMPARED_IDENTITIES}
-            tested[check_id] = recorded
+            gaps.extend(_category_gaps(requirement, run))
+            discharged, undisbursed = _obligation_gaps(requirement, run)
+            met[check_id] = discharged
+            unmet[check_id] = undisbursed
+            if undisbursed:
+                gaps.append(
+                    f"required check {check_id!r} passed without discharging "
+                    f"{len(undisbursed)} required obligation(s): "
+                    f"{', '.join(undisbursed)}. A run that establishes some of "
+                    f"what was required has not discharged the requirement"
+                )
+                continue
+            tested[check_id] = {
+                **recorded,
+                "evidence_kind": run.get("evidence_kind"),
+                "obligations": list(discharged),
+            }
             if expected is not None:
                 gaps.extend(_identity_gaps(check_id, recorded, expected))
 
@@ -867,6 +1044,11 @@ def _decide(
         {
             "generation": record.generation,
             "required_checks": list(required),
+            # The requirements as pinned, so a reader can see what each one owed
+            # rather than being told only which ones it failed.
+            "requirements": [r.to_json() for r in requirements],
+            "met_obligations": met,
+            "unmet_obligations": unmet,
             "identities": expected,
             # Named rather than left silent. An identity a passing run never
             # recorded cannot be shown to describe what is in force now, and a
@@ -881,6 +1063,96 @@ def _decide(
         tuple(dict.fromkeys(history)),
         tested,
     )
+
+
+def _category_gaps(requirement: Requirement, run: dict[str, Any]) -> list[str]:
+    """Why a passing run does not carry the evidence kind the contract pinned.
+
+    The whole point of this comparison. A requirement that pins a category is
+    refused when the run recorded a different one, and a category a run never
+    recorded is a gap rather than an absence of disagreement: the run published
+    no receipt, and a run that recorded nothing about its own evidence has not
+    established what kind of evidence it is.
+
+    A requirement pinning no category asks nothing here, which is a real reading
+    rather than a lenient default: a v1 policy names check ids alone, and a
+    check id is a statement about which run answers the obligation.
+    """
+    if requirement.evidence_kind is None:
+        return []
+    recorded = run.get("evidence_kind")
+    wanted = requirement.evidence_kind.value
+    if recorded == wanted:
+        return []
+    if recorded is None:
+        return [
+            f"required check {requirement.check_id!r} is required to produce "
+            f"{wanted!r} evidence and this run recorded no evidence_kind at all. "
+            f"A run that published no receipt has not established what kind of "
+            f"evidence it is, so it cannot discharge a requirement that names one"
+        ]
+    return [
+        f"required check {requirement.check_id!r} is required to produce "
+        f"{wanted!r} evidence but this run produced {recorded!r}. A PASS in one "
+        f"category does not discharge an obligation in another: {wanted} "
+        f"establishes something this run's category does not"
+    ]
+
+
+def _obligation_gaps(
+    requirement: Requirement, run: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Which of a requirement's obligations this run discharged, and which it did not.
+
+    Returns the two lists rather than only the gap text because a reader needs
+    both: what the evidence did establish is as much a part of the answer as
+    what it failed to.
+
+    **The empty-recording case, and why it is not a hole.** A receipt whose
+    adapter reports no obligation results records `satisfied: []`, and a v1
+    scenario driver is exactly that: `dispatch._obligation_results` returns two
+    empty lists for a reading with no `obligation_results`, because a scenario
+    artifact reports scenario ids and inventing obligations from them would be a
+    claim the artifact never made. Such an adapter has already enforced its own
+    required set at the verdict level -- `execution._scenarios_from_artifact`
+    refuses a run whose artifact never reported a required scenario -- so a
+    receipt that enumerates nothing is one that accounts for its obligations in
+    its verdict rather than in its `satisfied` array. Requiring entries there
+    would refuse every v1 scenario task in the product.
+
+    The obligation comparison therefore applies where the receipt carries
+    obligation results, which is every adapter that reports them. That is a
+    narrower claim than "every obligation is compared", and it is stated here
+    rather than left for a reader to discover.
+    """
+    if not requirement.obligations:
+        return [], []
+    satisfied = {_satisfied_obligation(entry) for entry in run.get("satisfied") or []}
+    if not satisfied:
+        return [], []
+    discharged = [
+        describe_obligation(o) for o in requirement.obligations if o in satisfied
+    ]
+    missing = [o for o in requirement.obligations if o not in satisfied]
+    if not missing:
+        return discharged, []
+    named = ", ".join(describe_obligation(o) for o in missing)
+    return discharged, [named]
+
+
+def _satisfied_obligation(entry: dict[str, Any]) -> Obligation:
+    """One `satisfied` entry read as the obligation it discharges.
+
+    Parsed through the same reader the receipt's writer used, so the two cannot
+    disagree about what shape an obligation takes. An entry the reader refuses
+    is a receipt this build cannot hold evidence about, and it discharges
+    nothing rather than raising here: one unreadable entry must not turn the
+    whole decision into a traceback.
+    """
+    try:
+        return obligation_from_json(entry.get("obligation"))
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return obligation_from_json({"kind": "case", "obligation": ""})
 
 
 def _runs_in(conn: sqlite3.Connection, task_id: str, limit: int) -> list[dict[str, Any]]:

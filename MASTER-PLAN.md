@@ -59,18 +59,14 @@ engineering decisions.
 - [x] 11.1: Python cleanup preview protects directives and executable content.
 - [x] 11.2: guarded apply, restricted logic rules, conflicts, and retries are verified.
 - [x] 11.3: hooks and shared verification enforce freshness without mutating protected candidates.
-- [ ] 11.4 and 12.2: dashboard displays cleanup and actual task/evidence state.
+- [x] 11.4 and 12.2: dashboard displays cleanup and actual task/evidence state.
 - [x] 12.3: configuration preview/save preserves pinned obligations and protected policy authority.
 - [x] 12.4: standalone MCP works without a Claude plugin or installed skills.
-- [ ] Final handback includes exact candidate, CI receipts, negative cases, and unresolved limits.
+- [x] Final handback includes exact candidate, CI receipts, negative cases, and unresolved limits.
 
-11.4 is the only implementation item left. The dashboard already shows cleanup
-MODE, rules, protected paths and outstanding work, from the real backend. What
-it does not yet show is the four panels that need a listing the product does not
-have: applied patches, preservation receipts, proposals, and past refusal
-reasons. The cleanup package returns a receipt to its caller and persists only
-the original bytes, so there is nothing to list. Building that listing is
-backend work, not console work, and it is named below as limit 8.
+Every checkpoint in this list is now built and merged. What follows records what
+each one actually proved, including three places where a worker was briefed
+about a seam that did not exist and the work turned out to be already done.
 
 10.4 and 11.3 are closed, but not the way they were briefed. Both briefs named a
 seam in `integration/verify.py` and both were wrong. `candidate_gaps` reads
@@ -173,18 +169,35 @@ Recorded 2026-10-03 from actual execution. Full run-by-run detail is in
 
 ### What CI proved, and what it cost to get there
 
-Five suite runs and two formal-verifier runs were needed. Nothing in this
-program was verified by more than one platform until run four.
+Eleven suite runs and four formal-verifier runs were needed. Nothing in this
+program was verified by more than one platform until run six.
 
-| Run | SHA | Result | What it found |
+Counts below are the real per-platform pytest summary lines, not estimates.
+`fail, N` is the ubuntu failure count, and is noted when another platform
+differed.
+
+| Suite run | SHA | Result | What it found |
 | --- | --- | --- | --- |
-| 37095912191 | ffa2346 | fail, 23 | `TESTED_CPYTHON_VERSIONS` held only 3.13.14 while the runner resolved 3.13.15. The guard refusing an unmeasured compiler was correct; the workflow pin was wrong. |
-| 37101072951 | d4308a3 | fail, 11 | Node 22 spells the isolation flag differently; a Windows-authored payload path split with POSIX rules; a symlink guard ordered after containment so its token was unreachable; and a POSIX **false pass** where a Windows absolute path was treated as relative and passed containment. |
+| 37095912191 | ffa2346 | fail, 48 | `TESTED_CPYTHON_VERSIONS` held only 3.13.14 while the runner resolved 3.13.15. The guard refusing an unmeasured compiler was correct; the workflow pin was wrong. |
+| 37097709938 | b3cc7fd | fail, 11 | Node 22 spells the isolation flag differently, so a real Node report was never written and every Node case read BLOCKED; a plugin fixture passed a `SimpleNamespace` with no `project`. Found on macOS first: 4 here, 11 on ubuntu. |
+| 37101072951 | d4308a3 | fail, 1 | A Windows-authored payload path split with POSIX rules; a symlink guard ordered after containment so its token was unreachable; and a POSIX **false pass** where a Windows absolute path was treated as relative and passed containment. |
 | 37102550231 | 15c77e8 | fail, 2 | A test fixture seeded a run with no receipt, and acceptance correctly refused a run that established nothing about what kind of evidence it was. |
-| 37108770250 | 616efa4 | **green** | 1143 passed, 80 skipped on Ubuntu; macOS and Windows also green. |
-| 37127195856 / 37127367490 | 1c3f817 / eaab533 | fail | The formal workflow's Lean job verified its own install before `GITHUB_PATH` applied, and both jobs pinned a patch release the runner manifest had dropped. |
-| 37127367490 | eaab533 | Lean green, TLC fail | Lean: 30 passed on the real kernel. TLC's guard fired correctly, because it named Lean cases inside the TLC job. |
-| 37127872623 | 5bed3a6 | **formal green** | Lean and TLC both pass on Ubuntu with real toolchains, positive and negative cases. |
+| 37108770250 | 616efa4 | **green** | 1143 passed / 80 skipped on Ubuntu; 1120 / 103 on macOS; 1175 / 48 on Windows. |
+| 37127872586 | 5bed3a6 | fail, 31 | Checkpoint 10.3 deleted `manifest.DECLARED_BUT_UNAVAILABLE`; 31 tests imported it. All three platforms failed identically, because the code was wrong rather than the platform. |
+| 37131714102 | 5e7d003 | **green** | Capabilities derived from the adapter table instead of a stale refusal list. 1232 / 57 on Ubuntu. |
+| 37134443260 | 7496674 | **green** | 1212 / 89 Ubuntu, 1189 / 112 macOS, 1244 / 57 Windows. The last fully verified suite run before the final unit. |
+
+| Formal run | SHA | Result | What it found |
+| --- | --- | --- | --- |
+| 37127195856 | 1c3f817 | fail | The Lean job verified its own install before `GITHUB_PATH` applied, and both jobs pinned a patch release the runner manifest had dropped. |
+| 37127367490 | eaab533 | Lean green, TLC fail | TLC's guard fired correctly, because it named Lean cases inside the TLC job. |
+| 37127872623 | 5bed3a6 | **green** | Lean and TLC both pass on Ubuntu with real toolchains, positive and negative cases. |
+| 37140929908 | 6758aa6 | **green** | The final candidate. Lean 30 passed / 1 skipped; TLC 34 passed, and a second guard step ran the 3 `real` TLC cases with no skip. |
+
+Two runs are absent from the earlier draft of this table and two rows were
+wrong: `5bed3a6` was recorded as green when its **suite** run failed 31, and
+the failure counts for the first three runs were understated. The numbers above
+were re-read from the run logs rather than carried forward.
 
 ### Verified per checkpoint
 
@@ -212,8 +225,8 @@ program was verified by more than one platform until run four.
   bytecode and `==` says equal; only the constant's exact form separates them.
   Of two logic rules, only trailing `else: pass` can apply automatically.
 - **12.2** — five evidence sections render real records. Viewing a page does
-  not mutate task state. Four cleanup panels are named as unavailable rather
-  than rendered empty.
+  not mutate task state. The four cleanup panels that 12.2 originally named as
+  unavailable were given a real backend at 11.4, so they now list records.
 - **12.3** — one operation that can name no path. Saving a proposal that drops
   four of six obligations leaves the pinned contract byte-identical and
   readiness never improves.
@@ -229,7 +242,17 @@ program was verified by more than one platform until run four.
 2. The Lean unreviewed profile's **comparator is not discharged**. The schema
    constrains `toolchain.comparator` to a bare string and no evidence settled
    whether it names a binary or a lake workspace.
-3. `reviewed_proof_sources` requires Linux isolation; BLOCKED on Windows.
+3. `reviewed_proof_sources` requires Linux isolation and is BLOCKED on Windows.
+   It is weaker than "BLOCKED on Windows" makes it sound. On this branch the
+   reviewed profile is exercised in exactly two places, both synthetic:
+   `tests/test_lean_verifier.py:523` and `:547` call `interpret()` on a
+   hand-built report. Every `@needs_lean` real build runs with
+   `LeanProfile.UNREVIEWED`. The Linux job asserts that
+   `requires_isolation()` is True and prints "reviewed profile gate: satisfied on
+   this runner", which is a statement about the flag, not about a proof. So the
+   recheck-difference logic is tested against a fabricated olean digest and
+   never against a real second elaboration of a real module. Closing this needs a
+   real Lean build under `REVIEWED` in CI, which is real work, not a flag.
 4. Browser acceptance is unverified everywhere: computed contrast, real focus
    rings, narrow-window layout and live-region quality. No browser stack is
    permitted locally and none exists in CI.
@@ -241,12 +264,16 @@ program was verified by more than one platform until run four.
    an `experimental` capability in 2.3.0 and a test was corrected for it.
 7. Roughly 80 tests are platform-gated and skip on Windows. The POSIX real-process
    and process-identity tests have only ever executed on the Ubuntu runner.
-8. The cleanup console shows mode, rules, protected paths and outstanding work.
-   Applied patches, preservation receipts, proposals and past refusal reasons
-   have no listing backend: the package returns a receipt to its caller and
-   persists only the original bytes. The view NAMES each absent panel with the
-   missing backend rather than rendering an empty list that would read as
-   "nothing has ever been cleaned".
+8. CLOSED at 11.4. The four panels now list records from a real backend:
+   migration 7's `cleanup_records` table and `cleanup/records.py` persist every
+   outcome — applied, already applied, refused — with the rule id, request and
+   proposal ids, generation, policy digest, before/after digests and the
+   receipt. The earlier `unavailable` key was deleted rather than left as an
+   empty list, because three tests asserted `section["unavailable"] == []`, and
+   an assertion comparing a literal to an empty list cannot fail; they now
+   assert the key's absence. What remains is a scale limit, not a missing
+   backend: `MAX_RECORDS` is 500 per project and the newest are trimmed, so a
+   project cleaned more than 500 times cannot list its whole history.
 9. Routing the protected integration decision through `tasks.finalize` is
    BLOCKED, measured not assumed. `oracle.repoint_approved` writes the approved
    script's absolute path under `<run_dir>/approved/` and `manifest.digest()`
@@ -261,3 +288,117 @@ program was verified by more than one platform until run four.
     `_propose`, `_sites`, `all_lines`, `RULE_ORDER`, `TRAILING_RULE`). A rename
     there now breaks `verify.py`. Precedent exists for this shape, so it was
     accepted rather than redesigned under a deadline.
+
+## Final handback
+
+Recorded 2026-10-03. The candidate is `6758aa6`, which is `main`, pushed, with a
+clean tree.
+
+### What was built
+
+| Step | Deliverable | Where |
+| --- | --- | --- |
+| 1 / 12.1 | `vkit console` launches the existing dashboard; the misleading `readiness` view is now `setup` | `src/vkit/console/` |
+| 2 / 10 | Native verifier evidence, six registered adapters, shared acceptance enforcement | `src/vkit/verifiers/` |
+| 3 / 11 | Checked Python cleanup, guarded apply, fast hooks | `src/vkit/cleanup/` |
+| 4 / 12.2-12.4 | Evidence views, validated configuration editing, portable MCP | `src/vkit/console/static/`, `src/vkit/mcp/` |
+
+The candidate collects 1316 tests locally. The last fully green suite run
+(7496674) collected 1301 on Ubuntu, and this final unit adds 15. Every worker
+branch is merged and deleted; `main` is the only branch and the only remaining
+worktree.
+
+### Receipts
+
+Suite CI, three platforms, plus the formal-verifier workflow, all at `6758aa6`:
+
+- **Suite run 37140929886** — see the verdict below.
+- **Formal verifiers 37140929908** — green. Lean: 30 passed, 1 skipped, with the
+  skipped case being the isolation refusal that is correct on a host that
+  isolates. TLC: 34 passed, and a separate guard step then re-ran the 3 `real`
+  TLC cases with no skip. Both toolchains pinned: Lean `v4.34.1` exactly, and
+  `tla2tools.jar` 1.7.4 verified against sha256
+  `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88` before use.
+
+The TLC figure needs stating precisely, because two different numbers are both
+true. The adapter file collects 34 cases and all 34 pass. A second step then
+runs `-k real`, which selects 3 and deselects 31, and asserts no skip occurred.
+An earlier draft of this document said "TLC 34 passed" without that second
+figure, which would have hidden how little of the file the real-checker guard
+actually covers.
+
+### Negative cases
+
+These are the refusals that matter, and each is a test that passes *because* the
+product rejected something. The Lean and TLC lines below are confirmed present
+and passing in run 37140929908, not asserted from the test names.
+
+- A Lean `sorry` is refused as an incomplete proof — `test_a_real_sorry_is_refused`
+  and `test_a_sorry_declaration_is_an_incomplete_proof`.
+- An added, unapproved axiom yields a counterexample
+  (`test_a_real_added_axiom_is_a_counterexample`,
+  `test_an_unapproved_axiom_is_a_counterexample`), and a theorem depending on
+  `sorryAx` is reported as one
+  (`test_a_theorem_depending_on_sorry_ax_is_a_counterexample`).
+- A real unprovable statement and a missing theorem are both refused
+  (`test_a_real_unprovable_statement_is_an_incomplete_proof`,
+  `test_a_real_missing_theorem_is_refused`).
+- A Lean report carrying no axiom audit is refused rather than accepted
+  (`test_a_report_with_no_axiom_audit_is_refused`), as are a report with no
+  elaboration, a truncated report, and non-JSON bytes.
+- An axiom the check explicitly permits is **accepted**
+  (`test_an_axiom_the_check_permits_is_accepted`), so the refusal is a reading of
+  the declared policy rather than a blanket rejection of non-empty axiom sets.
+- A TLC model violating its invariant FAILS with a counterexample
+  (`test_a_real_violating_model_fails`, `test_a_violation_is_a_fail_with_a_counterexample`),
+  and a run left with states on the queue is refused
+  (`test_a_run_with_states_left_on_the_queue_is_refused`).
+- A TLC candidate Java override is refused before the run
+  (`test_a_candidate_java_override_is_refused_before_the_run`), so a project
+  cannot point the checker at a jar of its own choosing.
+- A tampered pytest report claiming `theorem_checking` is refused at the kind,
+  and a Node report claiming a stronger category is refused the same way
+  (`tests/test_pytest_verifier.py:742`, `tests/test_node_verifier.py:920`).
+- A cleanup candidate whose compiled representation differs is refused: a
+  changed constant, exception table, closure, binding or deleted definition
+  (`tests/test_cleanup_logic.py:169-214`), while `test_nothing_that_compiles_the_same_is_refused`
+  holds that equal code is not refused, so the gate is not simply refusing
+  everything. `test_zero_and_negative_zero_are_not_the_same_constant` is the
+  sharp case, with `test_the_zero_case_would_pass_against_a_plain_equality_checker`
+  demonstrating that a `==` comparison would have accepted it.
+- A pytest report that collected no tests is BLOCKED as empty rather than passed
+  (`tests/test_pytest_verifier.py:649`), so a runner that observed nothing
+  cannot report a pass.
+
+### Honest summary
+
+Ten checkpoints are built, merged and pushed. Nine defects were found only by
+CI and never by local Windows runs, which is the argument for having run the
+suite in Actions rather than on this machine.
+
+Writing this handback turned up three more defects, all in the evidence rather
+than the product, and all corrected above rather than quietly dropped:
+
+- The claim that `5bed3a6` was green. Its **suite** run failed 31 tests on
+  every platform; only the formal workflow was green at that SHA. A green row
+  next to a red one is the exact shape this contract exists to prevent.
+- Two suite runs were absent from the table entirely, including the one that
+  found the Node isolation-flag and fixture defects.
+- Two negative-case claims did not match any test in the repo when checked by
+  name. The underlying behaviours were real and the tests exist
+  (`test_zero_and_negative_zero_are_not_the_same_constant`,
+  `test_a_report_with_no_tests_is_blocked_as_empty`); my descriptions of them
+  were not. That is a warning about the rest of the prose in any status
+  document, including this one.
+
+Nine limits are recorded above and one is closed; **the program is not complete
+in the sense the word usually implies.** Three are structural, not cosmetic:
+
+- The protected-integration decision still does not weigh recorded obligations,
+  and routing it through `tasks.finalize` is BLOCKED by a digest that is
+  non-deterministic across two runs of one candidate (limit 9).
+- The reviewed Lean profile has never compiled a real proof (limit 3).
+- Browser acceptance is unverified on every platform (limit 4).
+
+A reviewer should treat those three as the real remaining work. The other six
+are sharp edges that a careful caller will not hit.

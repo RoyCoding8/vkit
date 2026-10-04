@@ -1,0 +1,203 @@
+name: Formal verifiers
+
+# The real Lean and TLC cases. Separate from `ci.yml` because this job installs
+# toolchains the suite does not otherwise need, and because a failure here means a
+# verifier failed a formal check, not that the product regressed. Keeping them
+# apart
+# stops a Lean release moving from breaking the matrix from breaking every PR.
+#
+# Lean is pinned to an exact toolchain version. TLC is pinned to a release and the
+# downloaded jar's measured digest; the job verifies that digest before use.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Lean toolchain, pinned exactly. `elan` resolves this through
+  # `lean-toolchain` when a project declares one and falls back to this otherwise;
+  # the adapter's argv is measured against 4.34.1, whose `--json` message shapes
+  # are what `lean_adapter` parses, so a major bump is a measured change and not a
+  # version bump.
+  LEAN_TOOLCHAIN: leanprover/lean4:v4.34.1
+  # The TLA+ tools. Both values below were MEASURED, not copied from a release
+  # page: `v1.7.4` is what the GitHub releases API reported as latest when this
+  # was written, and the digest is sha256 over the 2,274,532 bytes that URL
+  # actually served. The job verifies the digest before the jar is used and fails
+  # loudly if it does not match, which is the same check `tlc_runner` makes, so
+  # the CI environment and the product agree about which checker ran.
+  #
+  # A bump moves BOTH values together, and the digest is what makes the bump
+  # reviewable: a maintainer re-measures the file and states the new value rather
+  # than trusting a tag.
+  TLA2TOOLS_VERSION: 1.7.4
+  TLA2TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+
+jobs:
+  lean:
+    name: Lean (real kernel, reviewed sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # The 3.13 series, NOT the exact patch the suite workflow pins. That
+          # pin exists because the cleanup compiled-equality check is scoped to
+          # one compiler and `TESTED_CPYTHON_VERSIONS` holds 3.13.14. This job
+          # runs no compiled-equality check, so it needs a series rather than a
+          # version: asking setup-python for a patch release it has dropped from
+          # its manifest fails with "not found in the local cache", which is a
+          # configuration error and not a result about anything.
+          python-version: "3.13"
+
+      # Install elan with the exact toolchain named by LEAN_TOOLCHAIN.
+      - name: Install elan and the pinned Lean toolchain
+        run: |
+          set -eu
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain "$LEAN_TOOLCHAIN"
+          # `GITHUB_PATH` applies to LATER steps only, so this step cannot
+          # verify the install through it: the shims are not on this step's
+          # PATH yet and `lean --version` exits 127 here. Export the directory
+          # into this shell as well, which is what makes the version check
+          # below a real check rather than a line that always fails.
+          export PATH="$HOME/.elan/bin:$PATH"
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          lean --version
+          lake --version
+
+      - name: Install the package
+        shell: python
+        run: |
+          import subprocess, sys
+          subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[test]"], check=True)
+
+      # Reviewed-source positive and negative cases go through the real kernel.
+      # Unreviewed checks remain BLOCKED until the isolated comparator path exists.
+      - name: Lean adapter, positive and negative cases
+        shell: python
+        run: |
+          import subprocess, sys
+          result = subprocess.run([
+              sys.executable, "-m", "pytest", "tests/test_lean_verifier.py",
+              "-v", "-ra", "-o", "addopts=", "-p", "no:cacheprovider",
+          ], capture_output=True, text=True)
+          print(result.stdout, end="")
+          print(result.stderr, end="", file=sys.stderr)
+          raise SystemExit(result.returncode)
+
+      # The required real Lean cases may skip on developer machines without Lean.
+      # This CI job installs Lean, so a skip here would otherwise let the job pass
+      # without exercising the reviewed profile.
+      - name: A reviewed theorem was checked by Lean
+        shell: python
+        run: |
+          import subprocess, sys
+          result = subprocess.run([
+              sys.executable, "-m", "pytest", "tests/test_lean_verifier.py",
+              "-k", "real_reviewed", "-v", "-ra", "-o", "addopts=",
+              "-p", "no:cacheprovider",
+          ], capture_output=True, text=True)
+          print(result.stdout, end="")
+          print(result.stderr, end="", file=sys.stderr)
+          if result.returncode:
+              raise SystemExit(result.returncode)
+          if "SKIPPED" in result.stdout:
+              raise SystemExit("a reviewed Lean test was skipped after installing Lean")
+
+  tlc:
+    name: TLC (Java 17, real tla2tools)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # The 3.13 series, NOT the exact patch the suite workflow pins. That
+          # pin exists because the cleanup compiled-equality check is scoped to
+          # one compiler and `TESTED_CPYTHON_VERSIONS` holds 3.13.14. This job
+          # runs no compiled-equality check, so it needs a series rather than a
+          # version: asking setup-python for a patch release it has dropped from
+          # its manifest fails with "not found in the local cache", which is a
+          # configuration error and not a result about anything.
+          python-version: "3.13"
+
+      # A JRE, not a JDK: TLC needs to run, not to compile. This requests the
+      # Java 17 series; the patch/build is supplied by setup-java and is not
+      # recorded by the native TLC receipt.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Download and verify the pinned jar before either real-check test starts.
+      - name: Install the pinned tla2tools.jar
+        shell: python
+        run: |
+          import hashlib, os, shutil, sys, urllib.request
+          from pathlib import Path
+          source = Path("tla2tools.jar")
+          url = (
+              "https://github.com/tlaplus/tlaplus/releases/download/v"
+              + os.environ["TLA2TOOLS_VERSION"] + "/tla2tools.jar"
+          )
+          urllib.request.urlretrieve(url, source)
+          digest = hashlib.sha256(source.read_bytes()).hexdigest()
+          expected = os.environ["TLA2TOOLS_SHA256"]
+          if digest != expected:
+              raise SystemExit(f"tla2tools.jar sha256 mismatch: {digest}")
+          destination = Path.home() / "tla" / "tla2tools.jar"
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          shutil.move(str(source), destination)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"VKIT_TLA2TOOLS_JAR={destination}\n")
+
+      - name: Install the package
+        shell: python
+        run: |
+          import subprocess, sys
+          subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[test]"], check=True)
+
+      # The positive case and the negative case, both through the real checker. The
+      # negative case is the one this job exists for: `test_a_real_violating_model_fails`
+      # defines `NoDoubleCheckout` so that it is false in a reachable state, and
+      # TLC must find it. A job that only ran the positive case would be satisfied
+      # by an adapter that passed everything.
+      - name: TLC adapter, positive and negative cases
+        shell: python
+        run: |
+          import subprocess, sys
+          subprocess.run(["java", "-version"], check=True)
+          result = subprocess.run([
+              sys.executable, "-m", "pytest", "tests/test_tlc_verifier.py",
+              "-v", "-ra", "-o", "addopts=", "-p", "no:cacheprovider",
+          ], capture_output=True, text=True)
+          print(result.stdout, end="")
+          print(result.stderr, end="", file=sys.stderr)
+          raise SystemExit(result.returncode)
+
+      # The real cases skip when prerequisites are absent on developer machines.
+      # This job installs both prerequisites, so a skip is a CI failure.
+      - name: The real checker cases actually ran
+        shell: python
+        run: |
+          import subprocess, sys
+          result = subprocess.run([
+              sys.executable, "-m", "pytest", "tests/test_tlc_verifier.py",
+              "-k", "real", "-v", "-ra", "-o", "addopts=",
+              "-p", "no:cacheprovider",
+          ], capture_output=True, text=True)
+          print(result.stdout, end="")
+          print(result.stderr, end="", file=sys.stderr)
+          if result.returncode:
+              raise SystemExit(result.returncode)
+          if "SKIPPED" in result.stdout:
+              raise SystemExit("a real TLC test was skipped after installing the toolchain")

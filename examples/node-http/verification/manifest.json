@@ -1,0 +1,94 @@
+{
+  "schema_version": 2,
+  "description": "A small HTTP service where creating an item is only observable by reading the list back, verified over real sockets.",
+  "checks": [
+    {
+      "id": "items-api",
+      "description": "Starts the real service twice, on ports the operating system assigns, and drives POST /items then GET /items over HTTP with literal expected responses.",
+      "command": [
+        "node",
+        "verify-items.js",
+        "--app",
+        "src/items-server.js",
+        "--out",
+        "{{run_dir}}/result.json"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 180,
+      "required_scenarios": [
+        "get-on-an-empty-service-returns-an-empty-list",
+        "post-then-get-returns-the-updated-list",
+        "two-posts-accumulate-in-order",
+        "a-post-without-a-name-is-rejected",
+        "an-unknown-route-is-a-404",
+        "two-instances-do-not-share-state"
+      ],
+      "artifact": "result.json",
+      "prerequisites": [
+        {
+          "name": "node",
+          "executable": "node",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "src/items-server.js",
+        "verify-items.js"
+      ],
+      "expectations": [],
+      "kind": "scenario",
+      "subject": {
+        "paths": [
+          "src/items-server.js",
+          "verify-items.js"
+        ],
+        "digest": null
+      },
+      "claim_id": "items-api"
+    },
+    {
+      "id": "items-api-sockets",
+      "description": "Runs the built-in Node test runner over real sockets and requires each named case to run and pass.",
+      "kind": "node_test",
+      "cwd": ".",
+      "timeout_seconds": 180,
+      "artifact": "node-report.tap",
+      "prerequisites": [
+        {
+          "name": "node",
+          "executable": "node",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "src/items-server.js",
+        "test/items-server.test.js"
+      ],
+      "expectations": [],
+      "required_tests": [
+        "test/items-server.test.js::a created item is observable by reading the list back",
+        "test/items-server.test.js::an unknown route is refused rather than served"
+      ],
+      "runner": {
+        "executable": "node",
+        "base_argv": [
+          "--test"
+        ]
+      },
+      "report_format": "node_tap",
+      "expect_report_version": 1,
+      "subject": {
+        "paths": [
+          "src/items-server.js",
+          "test/items-server.test.js"
+        ],
+        "digest": null
+      },
+      "claim_id": "items-state-is-observable-over-http"
+    }
+  ]
+}

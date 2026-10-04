@@ -1,0 +1,54 @@
+name: Console browser acceptance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: console-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installed-wheel-browser:
+    name: Installed wheel in Chromium
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.14"
+
+      - name: Install test and browser dependencies
+        run: >-
+          python -c 'import subprocess,sys; subprocess.run([sys.executable,"-m","pip","install","--upgrade","pip"],check=True,timeout=600); subprocess.run([sys.executable,"-m","pip","install",".[test]","playwright"],check=True,timeout=900)'
+
+      - name: Build the wheel
+        run: >-
+          python -c 'import os,pathlib,subprocess,sys; wheel=pathlib.Path(os.environ["RUNNER_TEMP"])/"vkit-wheel"; wheel.mkdir(parents=True,exist_ok=True); subprocess.run([sys.executable,"-m","pip","wheel","--no-deps","--no-build-isolation","--wheel-dir",str(wheel),"."],check=True,timeout=600)'
+
+      - name: Install the wheel outside the checkout
+        run: >-
+          python -c 'import os,pathlib,subprocess,sys; root=pathlib.Path(os.environ["RUNNER_TEMP"]); wheels=list((root/"vkit-wheel").glob("vkit-*.whl")); assert len(wheels)==1,wheels; install=root/"vkit-install"; install.mkdir(parents=True,exist_ok=True); subprocess.run([sys.executable,"-m","pip","install","--no-deps","--no-cache-dir","--target",str(install),str(wheels[0])],check=True,timeout=600)'
+
+      - name: Install Chromium
+        run: >-
+          python -c 'import subprocess,sys; subprocess.run([sys.executable,"-m","playwright","install","--with-deps","chromium"],check=True,timeout=900)'
+
+      - name: Run the installed-wheel browser flow
+        env:
+          VKIT_INSTALL_ROOT: ${{ runner.temp }}/vkit-install
+          VKIT_SCREENSHOT_DIR: ${{ runner.temp }}/console-browser-screenshots
+        run: python -m pytest tests/test_console_browser_acceptance.py -o addopts= -p no:cacheprovider -q
+
+      - name: Upload browser screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-browser-acceptance
+          path: ${{ runner.temp }}/console-browser-screenshots/*.png
+          if-no-files-found: ignore

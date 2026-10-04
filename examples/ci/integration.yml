@@ -1,0 +1,119 @@
+# Protected integration template. Adapt the approved policy and repository
+# settings before use. This example is not installed as an active workflow.
+# See docs/verification.md for the policy and evidence boundaries.
+#
+# Two properties the design depends on, both enforced by the forge rather than
+# by anything in this file:
+#
+# 1. The policy is named as a ref, `@<ref>`, and a local path is refused for
+#    protected context. That is what stops a candidate from shipping a policy
+#    that grants it the authority it is being judged against.
+# 2. The job that publishes is the job that verified. There is no separate
+#    "integration approved" flag to set from another workflow, because a flag is
+#    a second ledger and the one thing that must not happen is a publish resting
+#    on a decision some other job made.
+
+name: integration
+
+# A pull request and a merge-queue candidate are different things and get
+# different treatment. A pull request is a proposal; a merge group is a commit
+# that the queue has already assembled and intends to land. Both are verified
+# against their real merge base, so neither is verified against a label.
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One verification per ref. The queue would rather queue than run two
+  # candidates against the same checkout.
+  group: integration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-candidate:
+    # The candidate is the merge commit the forge assembled, not the head of a
+    # branch and not a label. `github.event.pull_request.merge_commit_sha` is
+    # the merge GitHub actually built; on a merge_group it is the temporary
+    # merge commit. Either way it is a commit, and it is the one that would land.
+    name: verify the merged candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The candidate commit, and its whole history, so the containment
+          # check has something to walk. A shallow clone makes `merge-base
+          # --is-ancestor` answer from an incomplete graph.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.event.merge_group.head_sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install the verifier from a reviewed revision
+        # The verifier is code too, and it is code the candidate does not get to
+        # choose. Pinning it to the default branch is the coarse form of that; a
+        # repository that wants a stronger statement pins a reviewed tag and
+        # says so here.
+        run: |
+          python -m pip install --upgrade pip
+          git fetch origin "${{ vars.VKIT_VERIFIER_REF || 'main' }}"
+          git -c advice.detachedHead=false checkout "FETCH_HEAD" -- .
+          python -m pip install .
+
+      - name: Verify the candidate against the approved policy
+        id: integration
+        # `--policy @<ref>` is the whole point. A path is local evidence and
+        # this command will say so in its own output.
+        #
+        # The candidate is resolved to a commit by the caller side of this
+        # repository's forge; `github.sha` on a pull_request event is the
+        # synthetic merge commit, which is what would land.
+        run: |
+          vkit integration verify \
+            --project . \
+            --candidate "${{ github.event.pull_request.merge_commit_sha || github.sha }}" \
+            --target "origin/${{ github.base_ref || 'main' }}" \
+            --policy "@${{ vars.VKIT_POLICY_REF || 'main' }}" \
+            --json > integration.json
+          # The record is the artifact. Uploading it means a reviewer can read
+          # the source, policy, verifier and fixture identities without
+          # re-running anything.
+          cat integration.json
+          echo "decision=$(python -c 'import json,sys; print(json.load(open("integration.json"))["decision"])')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-record-${{ github.run_id }}
+          path: integration.json
+
+  # The publish gate. It exists to make the forge refuse a merge the verifier
+  # rejected, and it deliberately re-runs the command rather than trusting the
+  # previous job's conclusion: a job output is a string another workflow could
+  # have written, and a conclusion that can be forged is not a gate.
+  #
+  # What this does NOT do is push, merge or tag. The forge's own branch
+  # protection and merge queue decide what lands; this job's only job is to be
+  # a required check that fails.
+  require-the-decision:
+    name: the candidate was verified
+    runs-on: ubuntu-latest
+    needs: verify-candidate
+    if: always()
+    steps:
+      - name: Refuse anything that was not accepted
+        run: |
+          if [ "${{ needs.verify-candidate.outcome }}" != "success" ]; then
+            echo "the integration verification did not pass: ${{ needs.verify-candidate.outcome }}"
+            exit 1
+          fi
+          if [ "${{ needs.verify-candidate.outputs.decision }}" != "ACCEPTED" ]; then
+            echo "the candidate was not accepted: ${{ needs.verify-candidate.outputs.decision }}"
+            exit 1
+          fi

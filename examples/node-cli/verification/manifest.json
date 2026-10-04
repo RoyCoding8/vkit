@@ -1,0 +1,101 @@
+{
+  "schema_version": 2,
+  "description": "A small real Node CLI that splits a bill owed in cents between people, verified by running it.",
+  "checks": [
+    {
+      "id": "split-bill-behavior",
+      "description": "Runs the real split-bill CLI and compares actual output with literal expected splits.",
+      "command": [
+        "node",
+        "verify-split.js",
+        "--app",
+        "src/split-bill.js",
+        "--out",
+        "{{run_dir}}/result.json"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 120,
+      "required_scenarios": [
+        "even-two-way",
+        "even-three-way-weights",
+        "single-person",
+        "zero-total",
+        "leftover-cent-goes-to-first",
+        "tip-joins-the-split",
+        "three-way-leftover-two-cents",
+        "four-way-leftover-and-tip"
+      ],
+      "artifact": "result.json",
+      "prerequisites": [
+        {
+          "name": "node",
+          "executable": "node",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "src/split-bill.js",
+        "verify-split.js"
+      ],
+      "expectations": [],
+      "kind": "scenario",
+      "subject": {
+        "paths": [
+          "src/split-bill.js",
+          "verify-split.js"
+        ],
+        "digest": null
+      },
+      "claim_id": "split-bill-behavior"
+    },
+    {
+      "id": "split-bill-units",
+      "description": "Runs the built-in Node test runner over the arithmetic core and requires each named case to run and pass.",
+      "kind": "node_test",
+      "cwd": ".",
+      "timeout_seconds": 120,
+      "artifact": "node-report.tap",
+      "prerequisites": [
+        {
+          "name": "node",
+          "executable": "node",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "src/split-bill.js",
+        "test/split-bill.test.js"
+      ],
+      "expectations": [],
+      "required_tests": [
+        "test/split-bill.test.js::an even two-way split divides the total exactly",
+        "test/split-bill.test.js::the shares always sum to the amount owed",
+        "test/split-bill.test.js::a share never exceeds the exact proportion it is owed",
+        "test/split-bill.test.js::a single person receives the whole amount",
+        "test/split-bill.test.js::formatCents renders integer cents as a decimal amount",
+        "test/split-bill.test.js::a negative total is refused rather than split",
+        "test/split-bill.test.js::an empty weight list is refused rather than split"
+      ],
+      "runner": {
+        "executable": "node",
+        "base_argv": [
+          "--test"
+        ]
+      },
+      "report_format": "node_tap",
+      "expect_report_version": 1,
+      "subject": {
+        "paths": [
+          "src/split-bill.js",
+          "test/split-bill.test.js"
+        ],
+        "digest": null
+      },
+      "claim_id": "split-bill-invariants-hold"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "status": "PASS",
+  "tool": "pytest",
+  "target": "src/vkit/tasks.py",
+  "target_sha256": "b90846165a8d4f40c850dca75a5fd5feff24b76c05d8678f8f61bb2e8108a92e",
+  "mutants": [
+    {
+      "name": "MUTANT_STALE_GENERATION",
+      "status": "CAUGHT",
+      "removes": "a superseded attempt publishing an accepted verdict",
+      "test": "tests/test_stale_attempt_traces.py::test_a_superseded_attempt_cannot_publish_ready",
+      "pytest_exit": 1,
+      "counterexample": "E       Failed: DID NOT RAISE ConflictError",
+      "note": "the test failed against the mutated core, as it must"
+    },
+    {
+      "name": "MUTANT_MISSING_CHECK",
+      "status": "CAUGHT",
+      "removes": "acceptance with one required check absent",
+      "test": "tests/test_stale_attempt_traces.py::test_one_missing_required_check_is_never_ready",
+      "pytest_exit": 1,
+      "counterexample": "E       AssertionError: acceptance succeeded with lint absent; absent evidence is never success",
+      "note": "the test failed against the mutated core, as it must"
+    }
+  ],
+  "finished_at": "2026-10-04T12:34:29.315353+00:00",
+  "digest_normalization": "Digests are sha256 over the file's bytes with CRLF folded to LF, which is the form git stores and the form a POSIX checkout reads. A line-ending-only change does not alter the digest.",
+  "scope": "A CAUGHT result means one named guard in tasks.py was removed and one named test failed against the mutated copy, on this host, at the digest above. It does not establish that the guard is the only way to break the rule, and it establishes nothing about any other module."
+}

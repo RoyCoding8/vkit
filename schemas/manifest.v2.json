@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/manifest.v2.json",
+  "title": "vkit manifest, schema version 2",
+  "description": "Every check declares a `kind`, and each kind is validated by its own branch in a `oneOf`. Each branch is a self-contained object with `additionalProperties: false`, so a `scenario` check cannot carry `theorems` and a `lean` check cannot carry `required_scenarios`. The refusal happens here, before a process is launched. There is deliberately no `evidence_kind` property on any branch: the category is a consequence of which interpreter ran, never a field a candidate writes. The branches do not use `allOf`; combining it with `additionalProperties: false` in one object stops `additionalProperties` from seeing the contributed keys, which is the opposite of what these branches are for.",
+  "type": "object",
+  "required": ["schema_version", "checks"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 2 },
+    "description": { "type": "string" },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "oneOf": [{ "$ref": "#/$defs/scenario" }, { "$ref": "#/$defs/pytest" }, { "$ref": "#/$defs/node_test" }, { "$ref": "#/$defs/property" }, { "$ref": "#/$defs/lean" }, { "$ref": "#/$defs/tlc" }] }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "Stable identifier agents select. Never an executable path."
+    },
+    "cwd": { "type": "string" },
+    "timeout": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 86400,
+      "description": "Finite and positive. A missing bound is a rejection, not infinity."
+    },
+    "artifact": { "type": "string", "minLength": 1 },
+    "prerequisites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "executable"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "executable": { "type": "string", "minLength": 1 },
+          "args": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Repository-relative files the check reads. Part of source identity."
+    },
+    "expectations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Explicit subset of inputs that supplies expected observations. [] means the approved driver contains its expectations; omission is unresolved in protected verification."
+    },
+    "subject": {
+      "type": "object",
+      "required": ["paths", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "paths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "digest": {
+          "type": ["string", "null"],
+          "description": "null means the owner has not declared an expected digest yet. vkit measures it and the receipt carries the measurement."
+        }
+      },
+      "description": "What the check is about."
+    },
+    "claim_id": { "type": "string", "minLength": 1 },
+    "runner": {
+      "type": "object",
+      "required": ["executable", "base_argv"],
+      "additionalProperties": false,
+      "properties": {
+        "executable": { "type": "string", "minLength": 1 },
+        "base_argv": { "type": "array", "items": { "type": "string" } }
+      },
+      "description": "How vkit launches the runner. An argument array, never a shell string."
+    },
+    "testIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Test node ids that must appear. At least one: a check that exercises nothing and passes is the failure CONTRACT.md forbids."
+    },
+    "moduleRef": {
+      "type": "object",
+      "required": ["module", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "module": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 }
+      },
+      "description": "A named module and the file it lives in. The name is never inferred from the path."
+    },
+    "toolchain": {
+      "type": "object",
+      "required": ["tool"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": { "enum": ["lean", "tlc"] },
+        "version": { "type": ["string", "null"] },
+        "comparator": { "type": ["string", "null"] },
+        "jar_sha256": { "type": ["string", "null"] }
+      },
+      "description": "The toolchain a formal check is pinned to. No argv is derived from this until checkpoint 10.3 confirms the comparator contract."
+    },
+    "bounds": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "integer", "minimum": 0 },
+      "description": "Named model bounds. Part of the obligation rather than a receipt detail, because a run at different bounds is a different claim."
+    },
+    "scenario": {
+      "type": "object",
+      "required": ["id", "kind", "command", "timeout_seconds", "required_scenarios", "artifact", "subject", "claim_id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "scenario" },
+        "description": { "type": "string" },
+        "cwd": { "$ref": "#/$defs/cwd" },
+        "timeout_seconds": { "$ref": "#/$defs/timeout" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "prerequisites": { "$ref": "#/$defs/prerequisites" },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "expectations": { "$ref": "#/$defs/expectations" },
+        "subject": { "$ref": "#/$defs/subject" },
+        "claim_id": { "$ref": "#/$defs/claim_id" },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Executable followed by arguments. Never a shell string. Only a scenario check carries one; vkit launches every other kind from its own fields."
+        },
+        "required_scenarios": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Scenario ids that must appear. This branch has no field for a theorem, which is what makes a scenario driver claiming theorem_checking structurally impossible rather than merely checked."
+        }
+      }
+    },
+    "pytest": {
+      "type": "object",
+      "required": ["id", "kind", "required_tests", "runner", "report_format", "expect_report_version", "timeout_seconds", "artifact", "subject", "claim_id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "pytest" },
+        "description": { "type": "string" },
+        "cwd": { "$ref": "#/$defs/cwd" },
+        "timeout_seconds": { "$ref": "#/$defs/timeout" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "prerequisites": { "$ref": "#/$defs/prerequisites" },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "expectations": { "$ref": "#/$defs/expectations" },
+        "subject": { "$ref": "#/$defs/subject" },
+        "claim_id": { "$ref": "#/$defs/claim_id" },
+        "required_tests": { "$ref": "#/$defs/testIds" },
+        "runner": { "$ref": "#/$defs/runner" },
+        "report_format": { "enum": ["pytest_json_report"] },
+        "expect_report_version": { "type": "integer", "minimum": 1 },
+        "generator": { "type": "null" }
+      }
+    },
+    "node_test": {
+      "type": "object",
+      "required": ["id", "kind", "required_tests", "runner", "report_format", "expect_report_version", "timeout_seconds", "artifact", "subject", "claim_id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "node_test" },
+        "description": { "type": "string" },
+        "cwd": { "$ref": "#/$defs/cwd" },
+        "timeout_seconds": { "$ref": "#/$defs/timeout" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "prerequisites": { "$ref": "#/$defs/prerequisites" },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "expectations": { "$ref": "#/$defs/expectations" },
+        "subject": { "$ref": "#/$defs/subject" },
+        "claim_id": { "$ref": "#/$defs/claim_id" },
+        "required_tests": { "$ref": "#/$defs/testIds" },
+        "runner": { "$ref": "#/$defs/runner" },
+        "report_format": { "enum": ["node_tap"] },
+        "expect_report_version": { "type": "integer", "minimum": 1 },
+        "generator": { "type": "null" }
+      }
+    },
+    "property": {
+      "type": "object",
+      "required": ["id", "kind", "required_tests", "runner", "report_format", "expect_report_version", "generator", "timeout_seconds", "artifact", "subject", "claim_id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "property" },
+        "description": { "type": "string" },
+        "cwd": { "$ref": "#/$defs/cwd" },
+        "timeout_seconds": { "$ref": "#/$defs/timeout" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "prerequisites": { "$ref": "#/$defs/prerequisites" },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "expectations": { "$ref": "#/$defs/expectations" },
+        "subject": { "$ref": "#/$defs/subject" },
+        "claim_id": { "$ref": "#/$defs/claim_id" },
+        "required_tests": { "$ref": "#/$defs/testIds" },
+        "runner": { "$ref": "#/$defs/runner" },
+        "report_format": { "enum": ["pytest_json_report"] },
+        "expect_report_version": { "type": "integer", "minimum": 1 },
+        "generator": {
+          "type": "object",
+          "required": ["max_examples", "stateful_step_count", "deadline", "suppress_health_check"],
+          "additionalProperties": false,
+          "properties": {
+            "max_examples": { "type": "integer", "minimum": 1 },
+            "stateful_step_count": { "type": "integer", "minimum": 0 },
+            "deadline": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+            "suppress_health_check": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "description": "Required, and the reason this branch is the only route to category `property`. The classification comes from this block in the manifest, cross-checked against the policy, never from hypothesis being importable in the child."
+        },
+        "replay": {
+          "type": "object",
+          "required": ["database", "seed"],
+          "additionalProperties": false,
+          "properties": {
+            "database": { "type": "string", "minLength": 1 },
+            "seed": { "type": ["integer", "null"] }
+          },
+          "description": "Where a failing sequence is retained. A null seed means the generator chooses and the choice is not pinned."
+        }
+      }
+    },
+    "lean": {
+      "type": "object",
+      "required": ["id", "kind", "challenge", "theorems", "profile", "permitted_axioms", "toolchain", "timeout_seconds", "artifact", "subject", "claim_id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "lean" },
+        "description": { "type": "string" },
+        "cwd": { "$ref": "#/$defs/cwd" },
+        "timeout_seconds": { "$ref": "#/$defs/timeout" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "prerequisites": { "$ref": "#/$defs/prerequisites" },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "expectations": { "$ref": "#/$defs/expectations" },
+        "subject": { "$ref": "#/$defs/subject" },
+        "claim_id": { "$ref": "#/$defs/claim_id" },
+        "challenge": { "$ref": "#/$defs/moduleRef" },
+        "theorems": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Named theorems that must hold. At least one: a lean check with no theorem asserts nothing a scenario check could not."
+        },
+        "profile": {
+          "enum": ["unreviewed_agent", "reviewed_proof_sources"],
+          "description": "reviewed_proof_sources trusts reviewed source files and rechecks them with the kernel. unreviewed_agent requires isolated challenge/solution comparison and is BLOCKED until that capability is implemented."
+        },
+        "permitted_axioms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "The audited axiom set. A theorem proved with an axiom outside this list is a mismatch, and mismatches are gaps."
+        },
+        "toolchain": { "$ref": "#/$defs/toolchain" }
+      }
+    },
+    "tlc": {
+      "type": "object",
+      "required": ["id", "kind", "model", "config", "properties", "bounds", "fingerprint", "toolchain", "timeout_seconds", "artifact", "subject", "claim_id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "tlc" },
+        "description": { "type": "string" },
+        "cwd": { "$ref": "#/$defs/cwd" },
+        "timeout_seconds": { "$ref": "#/$defs/timeout" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "prerequisites": { "$ref": "#/$defs/prerequisites" },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "expectations": { "$ref": "#/$defs/expectations" },
+        "subject": { "$ref": "#/$defs/subject" },
+        "claim_id": { "$ref": "#/$defs/claim_id" },
+        "model": { "$ref": "#/$defs/moduleRef" },
+        "config": { "type": "string", "minLength": 1 },
+        "properties": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "bounds": { "$ref": "#/$defs/bounds" },
+        "fingerprint": {
+          "type": "object",
+          "required": ["constants_from_config", "checksum_states", "workers"],
+          "additionalProperties": false,
+          "properties": {
+            "constants_from_config": { "type": "boolean" },
+            "checksum_states": { "type": "boolean" },
+            "workers": { "type": "integer", "minimum": 1 }
+          },
+          "description": "How the state fingerprint is computed. workers: 1 is not arbitrary: with -workers auto each worker prints its own summary and they interleave, so the first match is whichever finished first rather than the run total."
+        },
+        "toolchain": { "$ref": "#/$defs/toolchain" }
+      }
+    }
+  }
+}

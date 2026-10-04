@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vkit"
+version = "0.1.0"
+description = "Run a registered check in a Git repository and keep a durable, trustworthy outcome."
+requires-python = ">=3.11"
+dependencies = [
+    "jsonschema>=4.23,<5",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+
+# `vkit mcp serve` and nothing else. Pinned to the minor line because 2.x
+# rewrote the server API this binding is written against, so a 1.x pin and a
+# 2.x pin are different bindings rather than two builds of one.
+mcp = ["mcp>=2.2,<3"]
+
+# `test` also carries the SDK, because the protocol suite spawns the real
+# server and speaks JSON-RPC to it in this same environment. A test that
+# cannot reach the transport is not testing the transport.
+#
+# hypothesis is here for the same reason, and its absence was a real hole:
+# tests/test_formal_correspondence.py skips the whole module at import time
+# without it, so the property tests that check the core against its reference
+# model -- including the stale-generation guard -- silently did not run on a
+# host that lacked the package, while the suite still read green. Hypothesis
+# stays optional for ordinary USERS, per CONTRACT.md, and mandatory for anyone
+# running the test suite.
+# hatchling is here for the same reason, and its absence is a measured hole.
+# tests/test_plugin_resources.py builds the wheel with `--no-build-isolation`
+# so the gate needs no package index, and that build imports the backend from
+# this environment. pip's isolation installs the backend into an overlay it
+# then discards, so an editable install of this project leaves none behind:
+# without this line the wheel tests fail on a host that has everything except
+# a way to reach an index. `editables` is deliberately absent, because pip
+# needs it only to build an editable and these tests build a wheel.
+test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5", "hypothesis>=6.100", "hatchling"]
+
+# Optional for a user, required to verify. Plan 08's property tests import
+# this at module scope, so a host without it skips them rather than failing.
+formal = ["hypothesis>=6.100"]
+
+[project.scripts]
+vkit = "vkit.cli:main"
+
+# The schemas are the authoritative boundary contract, so they ship inside the
+# wheel. Import-time discovery of a source checkout would stop working the moment
+# a user installs the package, which is exactly when validation still has to work.
+[tool.hatch.build.targets.wheel]
+packages = ["src/vkit"]
+
+# The plugin and its marketplace declaration ship in the wheel for the same
+# reason the schemas do: they are the product's own way of running, and a user
+# who installs `vkit` away from this checkout has no other copy. They are
+# mirrored under one directory that keeps the layout the host expects, because
+# marketplace.json points at `./plugin` and a host that is handed the plugin
+# without its parent cannot resolve that. `pluginres.resolve_plugin_root`
+# reads the packaged form first and the checkout second, so this is the only
+# place the layout is described.
+[tool.hatch.build.targets.wheel.force-include]
+"schemas" = "vkit/_schemas"
+"plugin" = "vkit/_plugin_root/plugin"
+".claude-plugin" = "vkit/_plugin_root/.claude-plugin"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

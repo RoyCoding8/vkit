@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vkit": {
+      "command": "vkit",
+      "args": ["mcp", "serve", "--project", "${user_config.project_root}"]
+    }
+  }
+}

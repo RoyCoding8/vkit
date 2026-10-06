@@ -1,26 +1,5 @@
-"""Read what a repository already says about how to build, test and launch it.
-
-Everything here is a reader. No install script runs, no build is triggered, no
-process is launched, and no configuration is evaluated. A repository can name a
-command that would execute arbitrary code the moment it is registered, so the
-only trustworthy thing to do with it is to *report* it with the line it came
-from and let a human decide.
-
-Three facts travel with every discovered command, and each answers a different
-question a reader has:
-
-* **Provenance** answers "where did this come from". A command with no
-  provenance is a guess, and a guess that reaches a manifest becomes executable
-  policy nobody reviewed.
-* **Ambiguity** answers "was it obvious how to run this". `npm test` is one
-  spelling of one command. `pytest` when the repository also configures tox is
-  a choice between runners, and the choice is not in the file.
-* **Prerequisites** answers "could this run here at all". Reading a config file
-  that names `python3.12` does not mean python3.12 is installed.
-
-The output is bounded on purpose. This report lands in an agent's context
-window, and a repository with four hundred npm scripts would otherwise be the
-thing that fills it.
+"""Reads what a repository declares about building, testing and launching it, with provenance.
+Nothing is executed except `--version` probes.
 """
 from __future__ import annotations
 
@@ -28,6 +7,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,22 +30,12 @@ MAKE_LAUNCH_TARGETS = frozenset({"serve", "start", "run", "dev", "server"})
 
 
 class DiscoveryError(Exception):
-    """A file that would have to be read to answer the question could not be.
-
-    This never stops a report. One unreadable file is one declared gap, and a
-    partial report that names its gap is more useful than a refusal.
-    """
+    """A file could not be read; recorded as a gap rather than stopping the report."""
 
 
 @dataclass(frozen=True)
 class Provenance:
-    """Where a fact was read from, down to the line.
-
-    The line number is not decoration. "package.json has a test script" is not
-    reviewable; "package.json:12" is, because a reader opens the file and sees
-    the same thing. When a line is genuinely unknown, `line` is 0 and `detail`
-    says so, rather than a fabricated number.
-    """
+    """Where a fact was read from; `line` 0 means no single line."""
 
     file: str
     line: int
@@ -73,18 +44,10 @@ class Provenance:
     def to_json(self) -> dict[str, Any]:
         return {"file": self.file, "line": self.line, "detail": self.detail}
 
-    def render(self) -> str:
-        return f"{self.file}:{self.line}" if self.line else self.file
-
 
 @dataclass(frozen=True)
 class Prerequisite:
-    """Something that must exist before the command can run.
-
-    `satisfied` is a fact about this host, measured now, not a promise about
-    another one. A report written on Windows cannot say a POSIX command is
-    available, and it does not try.
-    """
+    """An executable a command needs, with whether this host has it."""
 
     name: str
     executable: str
@@ -102,12 +65,7 @@ class Prerequisite:
 
 @dataclass(frozen=True)
 class DiscoveredCommand:
-    """One command a repository already describes.
-
-    `argv` is a suggestion shaped like the manifest's `command` array, not a
-    promise it can be registered as. Nothing here has been executed, so nothing
-    here has been verified, and `verified` is never set by discovery.
-    """
+    """A command the repository describes. `argv` is a suggestion and has never been run."""
 
     id: str
     kind: str
@@ -147,13 +105,7 @@ class DiscoveredCommand:
 
 @dataclass(frozen=True)
 class ToolVersion:
-    """A declared or measured tool version.
-
-    `source` distinguishes a version the repository *asks for* (a pyproject
-    `requires-python`, a `.nvmrc`) from one measured on this host by running
-    `--version`. The two answer different questions and a report that blurred
-    them would be claiming a compatibility it never checked.
-    """
+    """A version the repository declares, with the one measured on this host when known."""
 
     name: str
     declared: str | None
@@ -173,13 +125,7 @@ class ToolVersion:
 
 @dataclass
 class Inspection:
-    """Everything one repository says about itself, bounded and attributed.
-
-    This is the record `vkit project inspect --json` emits and the record
-    enrollment proposes from. It is deliberately a value with a `gaps` list
-    rather than an exception on failure, because "this repository declares no
-    test command" is a finding a reader needs, not an error.
-    """
+    """Everything found in one repository, with `gaps` for what could not be determined."""
 
     project: Project
     ecosystem: tuple[str, ...]
@@ -239,15 +185,8 @@ class Inspection:
         return "\n".join(lines)
 
 
-
-
 def _read_text(root: Path, relative: str) -> str | None:
-    """Read a repository file as text, or None when it is not there.
-
-    A file larger than a megabyte is treated as not-a-config-file. It is a real
-    file and its absence is recorded as a gap rather than silently skipped,
-    because a 40 MB `package.json` is worth a person knowing about.
-    """
+    """Read a repository file, or None if absent or over 1 MiB."""
     path = root / relative
     if not path.is_file():
         return None
@@ -260,37 +199,16 @@ def _read_text(root: Path, relative: str) -> str | None:
 
 
 def _line_of(text: str, needle: str) -> int:
-    """The 1-based line where `needle` first appears, or 0 when it does not.
-
-    Zero is honest for a fact with no single line: a `[tool.pytest.ini_options]`
-    section header describes a table, not a line.
-    """
+    """The 1-based line where `needle` first appears, or 0."""
     for index, line in enumerate(text.splitlines(), start=1):
         if needle in line:
             return index
     return 0
 
 
-def which_or_none(executable: str) -> str | None:
-    """The absolute path of an executable on PATH, or None.
-
-    Never runs it. `shutil.which` only looks, which is the difference between
-    reporting that `node` exists and discovering what `npm test` does.
-    """
-    return shutil.which(executable)
-
-
 def _probe_version(executable: str, args: tuple[str, ...] = ("--version",)) -> str | None:
-    """Run `<executable> --version` and return its first line, or None.
-
-    The one subprocess discovery is allowed, because a version is the fact
-    being asked for and there is no other honest way to read it. It is bounded
-    by a timeout and the result is treated as untrusted text, truncated, so a
-    tool that prints a megabyte of banner cannot flood the report.
-    """
-    import subprocess
-
-    found = which_or_none(executable)
+    """First line of `<executable> --version`, or None. The only subprocess discovery runs."""
+    found = shutil.which(executable)
     if found is None:
         return None
     try:
@@ -312,12 +230,11 @@ def _executable_prerequisites(names: Iterable[str]) -> tuple[Prerequisite, ...]:
         Prerequisite(
             name=name,
             executable=name,
-            satisfied=which_or_none(name) is not None,
-            detail=which_or_none(name) or f"{name!r} is not on PATH",
+            satisfied=shutil.which(name) is not None,
+            detail=shutil.which(name) or f"{name!r} is not on PATH",
         )
         for name in names
     )
-
 
 
 INSTALL_SCRIPT_NAMES = frozenset(
@@ -443,13 +360,7 @@ def _read_package_json(root: Path, inspection: Inspection) -> None:
 
 
 def _node_range_satisfied(declared: str) -> bool | None:
-    """Whether this host's node satisfies a declared range.
-
-    Only the two constraints that are decidable without a semver library are
-    honoured: a `>=X` floor and an `X` major pin. A range this does not
-    understand returns None, which renders as "not checked" rather than a
-    confident wrong answer.
-    """
+    """Whether this node meets a `>=X` or `X` major range; None for anything else."""
     measured = _probe_version("node")
     if measured is None:
         return None
@@ -467,11 +378,8 @@ def _node_range_satisfied(declared: str) -> bool | None:
 
 
 def _has_test_configuration(root: Path) -> bool:
-    """Whether a Python test-runner configuration file is present.
-
-    Checks the files themselves rather than `inspection.test_configuration`,
-    because this runs while `package.json` is being read and the Python reader
-    has not run yet.
+    """Whether a Python test-runner config file exists (checked directly: the Python reader has not
+    run yet).
     """
     if (root / "pytest.ini").is_file() or (root / "tox.ini").is_file():
         return True
@@ -480,7 +388,6 @@ def _has_test_configuration(root: Path) -> bool:
         if text and _PYTEST_SECTION.search(text):
             return True
     return False
-
 
 
 _PYTEST_SECTION = re.compile(r"^\[(?:tool:pytest|tool\.pytest|pytest)\]", re.MULTILINE)
@@ -506,8 +413,7 @@ def _read_python_config(root: Path, inspection: Inspection) -> None:
                         ToolVersion(
                             name="python",
                             declared=requires,
-                            measured=f"{__import__('sys').version_info.major}."
-                            f"{__import__('sys').version_info.minor}",
+                            measured=f"{sys.version_info.major}.{sys.version_info.minor}",
                             source="pyproject.toml:project.requires-python",
                             satisfied=_python_spec_satisfied(requires),
                         )
@@ -532,10 +438,10 @@ def _read_python_config(root: Path, inspection: Inspection) -> None:
                 if "tox" in tool_table:
                     inspection.test_configuration.append("pyproject.toml [tool.tox]")
 
-    for name, marker, label in (
-        ("pytest.ini", "pytest", "pytest.ini"),
-        ("tox.ini", "tox", "tox.ini"),
-        ("setup.cfg", "pytest", "setup.cfg [tool:pytest]"),
+    for name, label in (
+        ("pytest.ini", "pytest.ini"),
+        ("tox.ini", "tox.ini"),
+        ("setup.cfg", "setup.cfg [tool:pytest]"),
     ):
         text = _read_text(root, name)
         if text is None:
@@ -573,20 +479,13 @@ def _read_python_config(root: Path, inspection: Inspection) -> None:
             )
         )
 
-    make = _read_makefile(root, inspection)
+    make = _read_makefile(root)
     if make is not None:
         _add_make_commands(root, make, inspection)
 
 
 def _python_spec_satisfied(declared: str) -> bool | None:
-    """Whether this interpreter satisfies a `requires-python` specifier.
-
-    A floor and a ceiling are both honoured. Anything more elaborate returns
-    None rather than a guess, because `!=3.11.*` is a real specifier this
-    deliberately does not pretend to evaluate.
-    """
-    import sys
-
+    """Whether this interpreter meets a `>=`/`<` requires-python bound; None for anything else."""
     have = f"{sys.version_info.major}.{sys.version_info.minor}"
     floor = re.search(r">=\s*(\d+)\.(\d+)", declared)
     ceiling = re.search(r"<\s*(\d+)\.(\d+)", declared)
@@ -598,11 +497,10 @@ def _python_spec_satisfied(declared: str) -> bool | None:
     return ceiling is None or current < (int(ceiling.group(1)), int(ceiling.group(2)))
 
 
-
 _MAKE_TARGET = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\s*:(?!=)")
 
 
-def _read_makefile(root: Path, inspection: Inspection) -> str | None:
+def _read_makefile(root: Path) -> str | None:
     for name in ("Makefile", "makefile", "GNUmakefile"):
         path = root / name
         if not path.is_file():
@@ -658,12 +556,7 @@ def _add_make_commands(root: Path, text: str, inspection: Inspection) -> None:
 
 
 def _make_recipe(text: str, target: str) -> str:
-    """The first recipe line under a target, or "" when the target has none.
-
-    The recipe is a summary for a reader, not something to execute. A target
-    that includes another file has no body here, and saying so is better than
-    printing the include line as though it were the command.
-    """
+    """The first recipe line under a target, or ""."""
     lines = text.splitlines()
     for index, line in enumerate(lines):
         if not _MAKE_TARGET.match(line) or _MAKE_TARGET.match(line).group(1) != target:
@@ -676,7 +569,6 @@ def _make_recipe(text: str, target: str) -> str:
                 return stripped
         return ""
     return ""
-
 
 
 _WORKFLOW_RUN = re.compile(r"^\s*(?:-\s*)?run:\s*(?:\|[-+]?\s*)?(.*)$")
@@ -742,30 +634,15 @@ def _ci_kind(command: str) -> str | None:
 
 
 def _tools_named_in(command: str) -> tuple[str, ...]:
-    """Executables a CI line names, from a closed list.
-
-    A closed list is the point. Reading an arbitrary word out of a shell string
-    and reporting it as a prerequisite would claim `PYTHON` in
-    `PYTHON=3.12 npm test` is a program to look for on PATH.
-    """
+    """Executables a CI line names, from a closed list."""
     words = set(re.findall(r"[A-Za-z0-9_.-]+", command))
     known = {"python", "python3", "node", "npm", "npx", "yarn", "pnpm", "go", "cargo",
              "make", "tox", "pytest", "dotnet", "deno", "bun"}
     return tuple(sorted(words & known))
 
 
-
 def _declared_test_runners(root: Path) -> set[str]:
-    """Which test runners this repository configures, beyond npm.
-
-    Read from the files on disk, not from the command list, so the answer is
-    about configuration rather than about what discovery happened to emit. A
-    repository with pytest.ini and tox.ini genuinely has a choice, and hiding it
-    would make `npm test` look unambiguous when it is not. Two *spellings* of
-    one runner are still one runner: pytest.ini and a `[tool:pytest]` table are
-    two files describing the same choice, and counting them twice would invent
-    an ambiguity that does not exist.
-    """
+    """Test runners configured on disk, beyond npm; several spellings of one runner count once."""
     runners: set[str] = set()
     if (root / "pytest.ini").is_file():
         runners.add("pytest")
@@ -781,12 +658,8 @@ def _declared_test_runners(root: Path) -> set[str]:
 
 
 def inspect_repository(project: Project) -> Inspection:
-    """Read every supported project file and report what the repository declares.
-
-    Order matters only for readability of `files_read`. Each reader is
-    independent: a malformed `package.json` adds a gap and the Python and CI
-    readers still run, because a partial answer naming what it could not read
-    is the honest one.
+    """Read every supported project file. Each reader is independent, so one failure adds a gap and
+    the rest still run.
     """
     inspection = Inspection(project=project, ecosystem=[])
 
@@ -823,16 +696,7 @@ _PRIORITY = ("test", "install", "launch", "build", "lint", "format", "ci")
 
 
 def _bound(inspection: Inspection) -> None:
-    """Keep the report inside its bound without dropping what it is for.
-
-    The first cut of this took `commands[:40]` in discovery order, which meant a
-    repository with 40 build helpers declared before its test script reported no
-    test command at all. Silent absence of the one command a reader came for is
-    worse than a long report, so the bound drops the least important kinds
-    first. A `test`, `install` or `launch` command is kept ahead of any helper,
-    so it is dropped only when there are more of those than the whole bound has
-    room for, and the gap then says so by name.
-    """
+    """Cap each command list at MAX_PER_CATEGORY, dropping the lowest-priority kinds first."""
     for label, collection in (("commands", inspection.commands), ("CI commands", inspection.ci_commands)):
         if len(collection) <= MAX_PER_CATEGORY:
             continue

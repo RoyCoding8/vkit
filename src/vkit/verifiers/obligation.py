@@ -1,27 +1,11 @@
-"""What a check is required to establish, as three kinds of name.
-
-docs/verification.md forbids forcing a Lean theorem name into a scenario field, and this
-is the alternative: a sum type rather than a `string`. A scenario id, a theorem
-declaration and a TLA+ property are three different things a receipt has to
-match, and one string field would let a scenario check name a theorem by typing
-it there.
-
-Each variant is frozen, so it is hashable and two obligations compare by value.
-That is what makes the policy's set difference a total order: `compare` needs
-`required - declared` to mean something, and a mutable or unhashable obligation
-would make the subtraction itself the thing that fails.
-
-`bounds` on `PropertyObligation` is sorted at construction. Two declarations of
-the same property at the same bounds written in a different order are one
-obligation, and an unsorted tuple would report them as two.
-
-There is deliberately no `Obligation` base class with an `id` attribute. That
-would put a string back where the union is, and `TheoremObligation("x").id`
-would either raise or lie.
+"""What a check must establish, as a sum of case, theorem and property obligations so a name of one
+kind cannot be typed into another's field.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from ..outcome import ScenarioResult
 
 
 @dataclass(frozen=True, order=True)
@@ -33,12 +17,7 @@ class CaseObligation:
 
 @dataclass(frozen=True, order=True)
 class TheoremObligation:
-    """One named theorem in a named module.
-
-    `module` is required rather than derived from a path. An adapter that
-    guessed the module from a filename could discharge an obligation against
-    the wrong declaration, and the guess would be invisible in the receipt.
-    """
+    """One named theorem in a named module. The module is explicit, never guessed from a path."""
 
     theorem: str
     module: str
@@ -46,12 +25,8 @@ class TheoremObligation:
 
 @dataclass(frozen=True, order=True)
 class PropertyObligation:
-    """One named TLA+ property at one set of bounds.
-
-    The bounds belong to the obligation rather than to the receipt, because a
-    run at different bounds is a different claim. Recording them here means two
-    runs at different bounds produce two obligations rather than one obligation
-    with two observations.
+    """One named TLA+ property at one set of bounds, sorted so declaration order does not
+    distinguish obligations.
     """
 
     property_name: str
@@ -65,13 +40,7 @@ Obligation = CaseObligation | TheoremObligation | PropertyObligation
 
 
 def obligation_from_json(document: dict) -> Obligation:
-    """Read one obligation as vkit's own value, refusing an unknown shape.
-
-    Parse, not cast. A document that names a kind the union does not have is a
-    refusal rather than a `CaseObligation` with a mangled field, because a
-    theorem silently read as a case is exactly the confusion this module exists
-    to prevent.
-    """
+    """Parse one obligation, raising ValueError on an unknown kind."""
     kind = document.get("kind")
     if kind == "case":
         return CaseObligation(document["obligation"])
@@ -89,7 +58,7 @@ def obligation_from_json(document: dict) -> Obligation:
 
 
 def obligation_to_json(obligation: Obligation) -> dict:
-    """The wire form, matching `receipt.v2.json`'s obligation definitions."""
+    """The JSON form recorded in a run."""
     if isinstance(obligation, TheoremObligation):
         return {
             "kind": "theorem",
@@ -106,7 +75,7 @@ def obligation_to_json(obligation: Obligation) -> dict:
 
 
 def describe(obligation: Obligation) -> str:
-    """The sentence a finding quotes when an obligation went missing."""
+    """A sentence naming an obligation, for findings."""
     if isinstance(obligation, TheoremObligation):
         return f"theorem {obligation.theorem!r} in module {obligation.module!r}"
     if isinstance(obligation, PropertyObligation):
@@ -116,10 +85,30 @@ def describe(obligation: Obligation) -> str:
 
 
 def obligations_from_scenarios(scenarios: tuple[str, ...]) -> tuple[Obligation, ...]:
-    """The v1 reading of a scenario list, as the case obligations it always was.
-
-    A v1 `required_scenarios` entry is a case. This is the one place the old
-    spelling is understood, and it lives here rather than in the parser so that
-    every caller converting a v1 list goes through the same conversion.
-    """
+    """A list of scenario ids as case obligations."""
     return tuple(CaseObligation(scenario) for scenario in scenarios)
+
+
+def scenario_results(
+    observations: tuple[tuple[CaseObligation, str], ...],
+    counterexamples: tuple[tuple[CaseObligation, str], ...],
+) -> tuple[ScenarioResult, ...]:
+    """Passing observations followed by failing counterexamples, as scenario results."""
+    return tuple(ScenarioResult(o.test_id, True, text) for o, text in observations) + tuple(
+        ScenarioResult(o.test_id, False, text) for o, text in counterexamples
+    )
+
+
+def case_results(
+    observations: tuple[tuple[CaseObligation, str], ...],
+    counterexamples: tuple[tuple[CaseObligation, str], ...],
+) -> tuple[list[dict], list[dict]]:
+    """Satisfied cases and counterexamples as run-record dicts."""
+    satisfied = [
+        {"kind": "case_satisfied", "obligation": obligation_to_json(o), "observation": text}
+        for o, text in observations
+    ]
+    failed = [
+        {"obligation": obligation_to_json(o), "trace": text} for o, text in counterexamples
+    ]
+    return satisfied, failed

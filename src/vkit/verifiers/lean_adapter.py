@@ -1,51 +1,18 @@
-"""Read one Lean run and decide what it established, or why it established nothing.
-
-An adapter here owes the core two things: the argv that runs the check, and a
-reading of the bytes the check wrote. It does not decide the outcome, build the
-receipt, or read a terminal. This module is the second half for `kind: "lean"`,
-and the half that decides nothing about a verdict: every refusal below is a
-`Blocked` carrying its own reason, and every acceptance is a set of theorem
-obligations with the axioms each one leaned on.
-
-**Two profiles with different trust assumptions.** `docs/verification.md`
-allows reviewed proof sources to be checked by Lean's kernel with a transitive
-axiom audit and a fresh recheck. The unreviewed profile also needs a pinned
-challenge/solution contract, isolated candidate build, and external comparator.
-This adapter has no such contract or comparator, so it refuses every unreviewed
-run. Linux alone is not evidence of isolation. The reviewed profile remains
-available only for sources the owner has reviewed and admitted.
-
-**The refusals, each with one reason.** The leading token is the whole contract of
-that refusal and is covered by a test.
-
-  report_version          the document is not a version this code reads
-  report_truncated        the runner did not finish what it set out to do
-  report_malformed        the document is not the shape this code reads
-  tool_missing            the pinned Lean toolchain is not installed here
-  challenge_absent        the approved challenge module is not where policy says
-  challenge_altered       the challenge's bytes differ from the approved digest
-  challenge_unknown       the check does not say which challenge it compares to
-  comparator_unavailable  the unreviewed profile has no supported comparator path
-  tool_version_mismatch   the report did not use the declared Lean version
-  module_mismatch         the report does not name the declared module and theorems
-  elaborator_failed       the module did not elaborate, so nothing was proved
-  recheck_diverged        the second elaboration did not match the first
-  theorem_absent          a required theorem was not audited
-  theorem_holed           the audited theorem depends on `sorryAx`
-  axiom_unapproved        the audited theorem leans on an axiom outside policy
-  incomplete_proof        the module elaborated with an unsolved goal, an error,
-                          or a `hasSorry` message
+"""Builds the argv for a Lean check and reads the runner's report into theorem obligations with the
+axioms each used. The unreviewed profile is answered only by the comparator report; the reviewed
+profile is kernel-checked twice and axiom-audited.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..outcome import Blocked, BlockedReason
+from ..outcome import Blocked, BlockedReason, ScenarioResult
 from .obligation import TheoremObligation, obligation_to_json
 from .spec import LeanCheck, LeanProfile
 
@@ -57,48 +24,21 @@ SORRY_AXIOM = "sorryAx"
 
 UNSOLVED_KINDS = frozenset({"hasSorry", "hasSorry'"})
 
-STANDARD_AXIOMS = frozenset({"propext", "Quot.sound", "Classical.choice"})
-
 AUDIT_FLAG = "--theorems"
-
-RUNNER_MODULE = "vkit.verifiers.lean_runner"
 
 RUNNER_PATH = Path(__file__).resolve().parent / "lean_runner.py"
 COMPARATOR_RUNNER_PATH = Path(__file__).resolve().parent / "comparator_runner.py"
 
 
 def _refuse(token: str, reason: BlockedReason, detail: str) -> Blocked:
-    """A BLOCKED whose detail leads with a stable, matchable token."""
+    """A BLOCKED whose detail leads with a stable token that callers and tests match on."""
     return Blocked(reason, f"{token}: {detail}")
-
-
-
-
-@dataclass(frozen=True)
-class AuditRecord:
-    """One `#print axioms` result, as the checker printed it.
-
-    `axioms` is the set, and `reported` says whether the audit actually printed
-    anything for this declaration. They are separate because `'x' does not depend
-    on any axioms` is a result and a silent absence is not: a runner that stopped
-    before the third `#print axioms` must not read as a theorem that leans on
-    nothing.
-    """
-
-    theorem: str
-    axioms: frozenset[str]
-    reported: bool
 
 
 @dataclass(frozen=True)
 class LeanRun:
-    """A report whose shape this code has already accepted.
+    """A report that passed every shape check in `_read`."""
 
-    Constructing one is the only way to hold a Lean run, so no caller can hold
-    bytes that failed the refusals above.
-    """
-
-    version: int
     module: str
     source: str
     profile: str
@@ -110,30 +50,14 @@ class LeanRun:
 
 @dataclass(frozen=True)
 class AdapterResult:
-    """What one Lean run established.
-
-    `observations` and `counterexamples` are separate for the reason
-    `pytest_adapter` keeps them separate: a run where one theorem holds and
-    another leans on an unapproved axiom is a FAIL whose receipt must still name
-    what did hold.
-    """
+    """What one Lean run established; a run can hold both satisfied theorems and counterexamples."""
 
     observations: tuple[tuple[TheoremObligation, tuple[str, ...]], ...]
     counterexamples: tuple[tuple[TheoremObligation, str], ...]
-    module: str
-    profile: str
-    tool_version: str
-    challenge_sha256: str
     prose: str = ""
 
-    @property
-    def is_pass(self) -> bool:
-        return not self.counterexamples
-
     def scenarios(self) -> tuple:
-        """The reading in the shape every existing outcome consumer already reads."""
-        from ..outcome import ScenarioResult
-
+        """The reading as outcome `ScenarioResult`s."""
         return tuple(
             ScenarioResult(f"{o.module}.{o.theorem}", True, self.prose or _axiom_prose(axioms))
             for o, axioms in self.observations
@@ -143,12 +67,7 @@ class AdapterResult:
         )
 
     def obligation_results(self) -> tuple[list[dict], list[dict]]:
-        """The satisfied obligations and counterexamples, in the receipt's shapes.
-
-        A satisfied theorem carries the axioms the audit reported. That field is
-        required by `receipt.v2.json` and has no default precisely because a
-        satisfied theorem with no axiom audit is not a theorem result.
-        """
+        """Satisfied theorems (with their axioms) and counterexamples as run-record dicts."""
         satisfied = [
             {
                 "kind": "theorem_satisfied",
@@ -163,43 +82,8 @@ class AdapterResult:
         ]
         return satisfied, counterexamples
 
-    def assumptions(self) -> tuple[str, ...]:
-        """What a reader has to believe for this to mean what it says.
-
-        `claimkind.py` is the authority for the sentence about the Python core, and
-        it is quoted rather than restated so a receipt and the module that defines
-        what THEOREM means cannot drift apart.
-        """
-        from ..claimkind import ClaimCategory
-
-        return (
-            f"the theorems hold for the Lean model in module "
-            f"{self.module!r} and establish "
-            f"{ClaimCategory.THEOREM.establishes}. They do not establish "
-            f"{ClaimCategory.THEOREM.does_not_establish}",
-            f"this run used the {self.profile!r} profile and assumes the owner "
-            "reviewed the proof source and trusts its imported definitions. The "
-            "receipt has no recursive import inventory, so this adapter does not "
-            "establish that every transitive source dependency was pinned. It adds "
-            "a second elaboration by the same Lean kernel; that recheck is not an "
-            "independent kernel or an isolation boundary. It also assumes the run "
-            "report came from vkit's trusted runner; the adapter does not "
-            "authenticate report provenance.",
-            f"the challenge module measured {self.challenge_sha256}, and the "
-            "comparison is against that byte sequence. A digest binds evidence to "
-            "bytes; it does not establish that the challenge states the obligation "
-            "the owner intended.",
-            "an axiom audit records which axioms a declaration's proof actually "
-            "depended on. It cannot see an assumption introduced outside the "
-            "audited declaration, and a Python or JavaScript implementation of the "
-            "same rules needs its own correspondence obligation, which this run did "
-            "not discharge.",
-        )
-
 
 def _comparator_result(raw: bytes, variant: LeanCheck) -> AdapterResult | Blocked:
-    import json
-
     try:
         report = json.loads(raw.decode("utf-8"))
         status = report["status"]
@@ -209,17 +93,15 @@ def _comparator_result(raw: bytes, variant: LeanCheck) -> AdapterResult | Blocke
         return _refuse("challenge_changed", BlockedReason.NOT_APPROVED,
                        f"the challenge now digests to {report.get('challenge_sha256')}, not the accepted "
                        f"{variant.challenge_sha256}; a human must accept the new statements")
-    common = dict(module=variant.challenge.module, profile=str(variant.profile),
-                  tool_version="comparator", challenge_sha256=str(report.get("challenge_sha256")))
     if status == "accepted":
         prose = (f"comparator: same statement as the frozen challenge, axioms within "
                  f"{', '.join(variant.permitted_axioms) or 'none'}, kernel accepted; build sandbox: "
                  f"{report.get('sandbox')}")
-        return AdapterResult(tuple((t, ()) for t in variant.theorems), (), **common, prose=prose)
+        return AdapterResult(tuple((t, ()) for t in variant.theorems), (), prose)
     if status == "rejected":
         lines = [line for line in str(report.get("output", "")).splitlines() if line.strip()]
         trace = lines[-1] if lines else f"comparator exited {report.get('exit_code')}"
-        return AdapterResult((), tuple((t, trace) for t in variant.theorems), **common)
+        return AdapterResult((), tuple((t, trace) for t in variant.theorems))
     return _refuse("report_malformed", BlockedReason.ARTIFACT_MALFORMED, f"unknown comparator status {status!r}")
 
 
@@ -229,18 +111,12 @@ def _axiom_prose(axioms: tuple[str, ...]) -> str:
     return f"the kernel checked it against {', '.join(axioms)}"
 
 
-
-
 def argv_for(check: LeanCheck, run_dir: Path, python: str | None) -> tuple[str, ...]:
-    """The exact argument list a Lean check is executed with.
+    """The argument list a Lean check runs with.
 
-    vkit's own interpreter launches a stdlib-only runner, which launches Lean. Two
-    hops rather than one because `execution.launch` owns process ownership,
-    timeouts and descendant lifetime, and a runner that called Lean itself would
-    be a second process owner. The runner is named by the path beside this module
-    so a candidate cannot redirect the reader by setting an environment variable.
+    The runner is the script beside this module, never a path from the environment.
     """
-    interpreter = python or _this_interpreter()
+    interpreter = python or sys.executable
     variant = getattr(check, "variant", None) or check
     if variant.profile == LeanProfile.UNREVIEWED:
         return (
@@ -270,31 +146,13 @@ def _is_path(value: str) -> bool:
 
 
 def _absolute(relative: str, check: Any) -> str:
-    """A repository-relative declared path, resolved against the check's `cwd`.
-
-    Resolved rather than assumed, because the runner has to `cd` somewhere and a
-    path resolved against the process's working directory would be a different
-    module on a different host.
-    """
+    """A declared repository-relative path resolved against the check's `cwd`."""
     root = Path(check.cwd)
     return str((root / relative).resolve())
 
 
-def _this_interpreter() -> str:
-    import sys
-
-    return sys.executable
-
-
-
-
 def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
-    """What one Lean run established, or the reason it established nothing.
-
-    Unsupported profiles are refused before the runner report is read, so an
-    unreviewed source never reaches Lean. Other checks then require a readable
-    report, the declared tool version, the module and challenge, and the theorem.
-    """
+    """What one Lean run established, or why it established nothing."""
     variant = getattr(check, "variant", None) or check
     profile = variant.profile or DEFAULT_PROFILE
     if profile == LeanProfile.UNREVIEWED:
@@ -374,8 +232,7 @@ def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
             "challenge_altered", BlockedReason.SOURCE_CHANGED,
             f"the challenge module measured {measured} and the run read "
             f"{report.challenge_sha256}. The proof was checked against a different "
-            "statement than the one on disk now, so the altered-challenge meaning "
-            "the plan forbids is not a result.",
+            "statement than the one on disk now, so it is not a result.",
         )
 
     elaborations = [
@@ -447,15 +304,15 @@ def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
     observations: list[tuple[TheoremObligation, tuple[str, ...]]] = []
     counterexamples: list[tuple[TheoremObligation, str]] = []
     for obligation in variant.theorems:
-        record = records.get(obligation.theorem)
-        if record is None or not record.reported:
+        axioms = records.get(obligation.theorem)
+        if axioms is None:
             counterexamples.append((
                 obligation,
                 f"`#print axioms` said nothing about {obligation.theorem!r}, so the "
                 "axioms its proof depends on are unknown",
             ))
             continue
-        if SORRY_AXIOM in record.axioms:
+        if SORRY_AXIOM in axioms:
             counterexamples.append((
                 obligation,
                 f"{obligation.module}.{obligation.theorem} depends on {SORRY_AXIOM}, "
@@ -463,7 +320,7 @@ def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
                 "compiled; nothing was proved.",
             ))
             continue
-        unapproved = sorted(record.axioms - permitted)
+        unapproved = sorted(axioms - permitted)
         if unapproved:
             counterexamples.append((
                 obligation,
@@ -474,26 +331,20 @@ def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
                 "statement.",
             ))
             continue
-        observations.append((obligation, tuple(sorted(record.axioms))))
+        observations.append((obligation, tuple(sorted(axioms))))
 
-    return AdapterResult(
-        tuple(observations), tuple(counterexamples),
-        variant.challenge.module, profile, report.tool_version, measured,
-    )
+    return AdapterResult(tuple(observations), tuple(counterexamples))
 
 
 def _lean_version(text: str) -> str | None:
-    """Read Lean's declared numeric version, independent of host/commit text."""
+    """Lean's numeric version from its `--version` text."""
     match = re.search(r"\bversion\s+([0-9]+\.[0-9]+\.[0-9]+)\b", text)
     return match.group(1) if match else None
 
 
 def _digest(path: Path) -> str:
-    """sha256 over the file's bytes with CRLF folded to LF.
-
-    The same normalization `dispatch._measure` uses, so a receipt comparing the
-    two is comparing like with like, and so a line-ending change alone does not
-    read as an altered challenge.
+    """sha256 of the file with CRLF folded to LF, so a line-ending change does not read as an
+    altered challenge.
     """
     return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
@@ -511,12 +362,7 @@ def _audit_step(report: LeanRun) -> dict | None:
 
 
 def _unresolved(audit: dict, check: LeanCheck) -> tuple[str, ...]:
-    """Which required declarations the audit named but the kernel could not resolve.
-
-    Read off the audit's own error text, because Lean's message for an unknown
-    constant names the constant (`Unknown constant 'X'`, measured on 4.34.1) and
-    that is the one fact a reader needs to act on.
-    """
+    """Required declarations the audit's error text names as unresolved."""
     blob = " ".join(m["data"] for m in audit.get("messages", ()))
     return tuple(
         theorem for theorem in (t.theorem for t in check.theorems)
@@ -524,29 +370,15 @@ def _unresolved(audit: dict, check: LeanCheck) -> tuple[str, ...]:
     )
 
 
-def _audit_records(audit: dict, module: str) -> dict[str, AuditRecord]:
-    """Every `#print axioms` result in the audit, keyed by the short theorem name.
+def _audit_records(audit: dict, module: str) -> dict[str, frozenset[str]]:
+    """Each `#print axioms` result keyed by short theorem name.
 
-    Two spellings and both are real, measured on Lean 4.34.1:
-
-        '<Name>' depends on axioms: [a, b]
-        '<Name>' does not depend on any axioms
-
-    Both quote the FULLY QUALIFIED declaration name, so the key is that name with
-    the module prefix stripped. The theorem obligation carries the short name, and
-    matching on the qualified form rather than the short one would mean every
-    theorem reads as absent.
-
-    The axiom names need the same treatment and for a related measured reason.
-    The audit file opens `namespace <module>` and prints a short theorem name
-    inside it, and Lean then reports axioms relative to that namespace: the same
-    declaration audited as `Case.wanted` yields `[Case.cheat]` when the print sits
-    at module top level and `[cheat]` when it sits inside the namespace. Left
-    unqualified, `Case.cheat` would not match a policy entry naming it
-    qualified, and a check that permitted the axiom would refuse its own proof.
+    Lean quotes the fully qualified declaration name, and reports axioms relative to the audit's
+    `namespace <module>`, so both are stripped of the module prefix to match the obligation and
+    the policy.
     """
     prefix = f"{module}."
-    found: dict[str, AuditRecord] = {}
+    found: dict[str, frozenset[str]] = {}
     for message in audit.get("messages", ()):
         data = message["data"].strip()
         if "depends on axioms: [" in data:
@@ -562,14 +394,12 @@ def _audit_records(audit: dict, module: str) -> dict[str, AuditRecord]:
             continue
         key = name.strip().strip("'\"").removeprefix(prefix)
         if key:
-            found[key] = AuditRecord(key, axioms, True)
+            found[key] = axioms
     return found
 
 
-
-
 def _read(raw: bytes) -> LeanRun | Blocked:
-    """Decode and shape-check the runner's report, refusing each unusable way."""
+    """Decode and shape-check the runner's report, refusing each unusable form."""
     try:
         document = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -649,7 +479,6 @@ def _read(raw: bytes) -> LeanRun | Blocked:
             "the report's source path or profile is missing",
         )
     return LeanRun(
-        version,
         str(document.get("module", "")),
         source,
         profile,

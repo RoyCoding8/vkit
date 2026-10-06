@@ -1,49 +1,6 @@
-"""Run one Lean module, audit it, and write the bytes `lean_adapter` reads.
-
-**Why this file exists and imports nothing from vkit.** It is launched by
-absolute path, as `python <this file> ...`, not as `python -m vkit....`. That is
-not a style choice. `vkit.integration.launcher` sets `VKIT_TRUSTED_LAUNCHER` on
-the process it starts and on everything that process spawns, and
-`vkit/__init__.py` refuses to import under that variable, so a runner reached
-through `-m vkit...` dies before it can read anything. Launching by path puts
-this file's own directory on the child's `sys.path` and nothing else, which is
-what lets one runner serve the ambient launch and the trusted one unchanged.
-
-The consequence is that a relative import here would fail in the child, so this
-module is stdlib-only and says nothing about what a verdict means. It is a
-transducer: it runs the checker, records what the checker emitted, and writes
-that down. Every decision about whether those bytes mean anything is
-`lean_adapter`'s, in the vkit process, where the vkit types exist.
-
-**The three Lean invocations, and why three.** The argv below was measured
-against Lean 4.34.1 (`lean --help`), not read out of a manual:
-
-  1. `lean --version`                       tool identity for the receipt
-  2. `lean -o <dir>/<Module>.olean --json <source>`   kernel checking
-  3. `lean --json <audit.lean>` with `LEAN_PATH` set  the axiom audit
-
-Step 2 runs twice, into two directories, and step 3 reads the first. That is the
-`reviewed_proof_sources` requirement for fresh rechecking, and it is why there
-are two build directories in the report rather than one: a second elaboration of
-the same bytes by the same kernel is a check that the first was not a fluke, and
-a run that reports only one cannot claim it happened.
-
-**Why the audit file is written here and not read from the project.** The audit
-has to `#print axioms` a declaration in a module the candidate controls. A
-project that shipped its own audit file could ship one that prints nothing, or
-prints a different declaration, or prints a theorem the check never required.
-This file writes the audit from the check's own declared theorem list into the
-run directory, so the thing that decides which declarations get audited is this
-code and not the repository.
-
-**`LEAN_PATH`, and the two spellings that were wrong first.** The audit step
-needs the olean from step 2 on its module search path. Measured: `LEAN_PATH`
-must be an absolute directory, and on Windows it must use the platform's own
-separator inside a list (`os.pathsep`), because Lean splits the value on `;` and
-a `/`-only value is not split at all. `formal/run_tlc.py`'s lesson applies here
-too: relative `LEAN_PATH=.` silently resolves against Lean's own library
-directory and the audit reports `unknown module prefix` for every declaration,
-which reads like a missing theorem and is not one.
+"""Runs one Lean module twice, audits axioms, and writes the JSON report `lean_adapter` reads; it
+decides nothing. It is launched by file path (`python lean_runner.py`) and puts the source root
+on `sys.path` for `vkit.nowindow`.
 """
 from __future__ import annotations
 
@@ -65,11 +22,8 @@ from vkit.nowindow import hidden_window  # noqa: E402
 
 
 def _run(argv: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict:
-    """One checker invocation, recorded whole.
-
-    Decoded as utf-8 with replacement rather than through the platform's default
-    codec, because that codec is not utf-8 on a Windows host and a Lean error
-    message quotes the candidate's source verbatim.
+    """One checker invocation, recorded whole. Decoded as UTF-8 with replacement because Lean error
+    messages quote source verbatim.
     """
     done = subprocess.run(
         argv, cwd=str(cwd), capture_output=True, encoding="utf-8", errors="replace",
@@ -85,13 +39,8 @@ def _run(argv: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict:
 
 
 def _lean_messages(stream: str) -> list[dict]:
-    """Every JSON message line `lean --json` wrote, parsed.
-
-    `--json` was measured writing one JSON object per line with `severity`,
-    `data`, `kind`, `fileName` and a `pos` object. A line that does not parse is
-    kept as a raw message with severity `unparsed` rather than dropped: a line
-    this reader cannot read is a fact about the run, and dropping it would let a
-    checker that changed its output format look like one that printed nothing.
+    """Every JSON line `lean --json` wrote; an unparseable line is kept with severity `unparsed` so
+    a changed output format is visible.
     """
     out: list[dict] = []
     for line in (stream or "").splitlines():
@@ -119,13 +68,9 @@ def _lean_messages(stream: str) -> list[dict]:
 
 
 def _audit_text(module: str, theorems: list[str]) -> str:
-    """The audit module, written from the check's own theorem list.
+    """The axiom audit module, written from the check's theorem list.
 
-    Each `#print axioms` sits inside `namespace <module>`, so the short theorem
-    name the obligation carries resolves against the module's own namespace. A
-    theorem declared somewhere else does not resolve and the audit step reports
-    an error, which the reader refuses: guessing the namespace would let a
-    declaration in one module discharge an obligation naming another.
+    Each `#print axioms` sits in `namespace <module>` so short theorem names resolve there.
     """
     lines = [f"import {module}", "", f"namespace {module}", ""]
     for theorem in theorems:
@@ -210,6 +155,7 @@ def main(argv: list[str]) -> int:
     audit_file = run_dir / "vkit-axiom-audit.lean"
     audit_file.write_text(report["audit_text"], encoding="utf-8")
     environment = dict(os.environ)
+    # Absolute, `os.pathsep`-separated: a relative entry resolves against Lean's own library dir.
     search = [str(run_dir / "olean-1"), str(run_dir / "olean-2")]
     environment["LEAN_PATH"] = os.pathsep.join(
         search + ([environment["LEAN_PATH"]] if environment.get("LEAN_PATH") else [])
@@ -223,12 +169,7 @@ def main(argv: list[str]) -> int:
 
 
 def _write(report: dict, target: Path) -> int:
-    """Write the report atomically, whatever state the run reached.
-
-    Written even when the run failed partway, because a reader that finds no
-    report cannot tell an unfinished run from a runner that was never launched,
-    and those are different repairs.
-    """
+    """Write the report atomically, including when the run stopped early."""
     target.parent.mkdir(parents=True, exist_ok=True)
     staged = target.with_suffix(target.suffix + ".partial")
     staged.write_text(

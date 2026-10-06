@@ -1,54 +1,5 @@
-"""What kind of check produced this result, and what that kind can support.
-
-A check that says PASS says something, but not everything. Four kinds of check
-exist in this repository and they do not carry the same weight. Conflating them
-is how a product ends up described as "formally verified" when it has in fact
-been scenario-tested, and that sentence is the failure this module exists to
-prevent.
-
-The categories, and what a green result in each one licenses you to say.
-
-  SCENARIO           A named example was run and its observed output compared
-                     against a literal expected value. Establishes that THIS
-                     sequence of calls produced THIS answer. Says nothing about
-                     any other sequence. Most of tests/ is in this category,
-                     and it is the only category that needs no toolchain.
-
-  PROPERTY           Hypothesis generated operation sequences and no
-                     disagreement was found between the code under test and a
-                     separate reference model. Establishes correspondence over
-                     the sequences tried. Does NOT establish implementation
-                     equivalence: the two differ mechanically, and Hypothesis
-                     samples a bounded family rather than exhausting it.
-
-  FINITE MODEL       TLC explored every reachable state of a finite TLA+ model
-                     and the checked properties held in all of them.
-                     Establishes the stated properties for THAT model at THAT
-                     configuration. Says nothing about a different number of
-                     workers, a different number of revisions, or any
-                     implementation in any language. The configuration is
-                     recorded in the receipt and a run whose configuration
-                     differs is refused rather than reported.
-
-  THEOREM CHECKING   A Lean theorem relating an executable decision to a
-                     logical specification, with an axiom audit. Establishes
-                     the theorem for the Lean model. Says nothing about the
-                     Python core, and the shared example records are a
-                     countercheck of specific decisions rather than a proof
-                     that the two agree.
-
-## Why the category has to survive into the summary
-
-A generic "PASS" is true and useless. The same green tick covers a test that
-proves the product works on one input and a model check that proves a property
-over 207,360 states, and a reader who sees only the tick cannot tell which they
-have. So a result carries its category with it, `ClaimCategory` below, and
-`describe` renders the category and its scope together.
-
-The strongest thing any of these can support, taken together, is "the
-ownership and acceptance rules behaved correctly on every case we ran and on
-every state of one finite model of them". That is a real sentence. "The app is
-formally verified" is a different and unsupported one.
+"""The kind of claim each check category supports: what a green result establishes and what it does
+not, carried with every result.
 """
 from __future__ import annotations
 
@@ -112,13 +63,7 @@ class ClaimCategory(enum.Enum):
 
     @property
     def needs_toolchain(self) -> str | None:
-        """The opt-in tool this category needs, or None for none.
-
-        Formal tooling is opt-in. Nothing in this module downloads anything,
-        and no hook or ordinary MCP check call reaches it, which is what
-        docs/verification.md requires. An absent toolchain is a BLOCKED result for this
-        category and no effect at all on the others.
-        """
+        """The tool this category needs, or None."""
         return {
             ClaimCategory.SCENARIO: None,
             ClaimCategory.PROPERTY: "hypothesis (a Python package)",
@@ -130,7 +75,7 @@ class ClaimCategory(enum.Enum):
 
 @dataclass(frozen=True)
 class Result:
-    """One check result, with the category that decides how to read it."""
+    """A check result and the category that decides how to read it."""
 
     category: ClaimCategory
     status: str

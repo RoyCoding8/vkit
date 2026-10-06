@@ -1,4 +1,6 @@
-"""JSON Schema validation for manifests and check artifacts, using the schemas shipped in the package."""
+"""JSON Schema validation for manifests and check artifacts, using the schemas shipped in the
+package.
+"""
 from __future__ import annotations
 
 import json
@@ -16,8 +18,7 @@ CHECK_ARTIFACT = "check-artifact.v1.json"
 
 
 class SchemaValidationError(Exception):
-    """External data did not match its schema. Carries the human-readable reason
-    so a BLOCKED outcome can quote it rather than asserting 'malformed'."""
+    """External data did not match its schema; `reason` is quotable in a BLOCKED detail."""
 
     def __init__(self, subject: str, message: str):
         self.subject = subject
@@ -27,13 +28,8 @@ class SchemaValidationError(Exception):
 
 @lru_cache(maxsize=None)
 def _schema_dir():
-    """Find the schemas whether vkit came from a wheel or a source checkout.
-
-    A wheel force-includes them as the vkit._schemas package. An editable
-    install has no such package, because the files are not inside the source
-    tree, so fall back to the repository's schemas/ directory. Without the
-    fallback, `vkit doctor` breaks the moment anyone pip-installs -e, which is
-    the normal way a developer runs it.
+    """Locate the schemas: the `vkit._schemas` package in a wheel, else the checkout's `schemas/`
+    (editable installs).
     """
     try:
         packaged = resources.files("vkit._schemas")
@@ -56,25 +52,8 @@ def _validator(name: str) -> Draft202012Validator:
 
 
 def _describe(error: ValidationError, depth: int = 0) -> str:
-    """The most specific message this error can carry.
-
-    A `oneOf` that matches no branch reports only "not valid under any of the
-    given schemas", which tells a reader nothing about what was wrong with their
-    document. That is the message every manifest check is refused through, so a
-    candidate who wrote a `property` check without a generator block would be told
-    only that they were wrong.
-
-    Choosing which branch to quote is the whole problem here, and two naive rules
-    are both wrong. The shallowest branch is the `scenario` one, which requires
-    `command`, so every non-scenario document is refused as if it had misspelled
-    a command. The fewest-context branch is the one with the fewest nested
-    failures, which is no more than a proxy.
-
-    What identifies the right branch is the discriminator the author wrote. A
-    document with `kind: "tlc"` belongs to the tlc branch whatever else it got
-    wrong, so its message is the tlc branch's. A document with no recognised
-    `kind` at all has no branch to speak for it, and the shallowest summary is
-    then the honest answer.
+    """The most specific message for an error. For a failed `oneOf` the branch is chosen by the
+    document's own `kind`, since the generic message names no branch.
     """
     if error.validator in ("oneOf", "anyOf") and depth < 2 and error.context:
         chosen = _branch_for_discriminator(error, error.instance)
@@ -87,17 +66,10 @@ def _describe(error: ValidationError, depth: int = 0) -> str:
 
 
 def _branch_for_discriminator(error: ValidationError, instance: Any) -> ValidationError | None:
-    """The sub-error for the branch whose `kind` const equals the document's.
+    """The sub-error for the branch whose `kind` const equals the document's, else None.
 
-    Matching on `schema` does not work, because jsonschema resolves a `$ref` before
-    the error is built: the sub-error's own schema carries no `properties`, so a
-    branch cannot be identified from it. What survives is `schema_path`, whose
-    leading integers are the index of the branch inside the `oneOf` array. That
-    index is resolved against the same `$defs` list the branches were built from,
-    so the lookup is the same table rather than a second spelling of it.
-
-    Returns None when the document declares no `kind`, or a kind no branch claims,
-    which are the two cases where no branch can speak for the document.
+    `schema_path` leads with the `oneOf` index because jsonschema resolves `$ref` before
+    building the error, so the branch cannot be identified from the sub-error's own schema.
     """
     if not isinstance(instance, dict):
         return None
@@ -112,7 +84,7 @@ def _branch_for_discriminator(error: ValidationError, instance: Any) -> Validati
 
 
 def _branch_at(schema_path: deque) -> dict | None:
-    """The `$defs` entry a sub-error's leading `oneOf` index selects."""
+    """The `$defs` entry selected by a sub-error's leading `oneOf` index."""
     if not schema_path:
         return None
     return _branches()[schema_path[0]] if schema_path[0] < len(_branches()) else None
@@ -120,12 +92,8 @@ def _branch_at(schema_path: deque) -> dict | None:
 
 @lru_cache(maxsize=None)
 def _branches() -> tuple[dict, ...]:
-    """The check branches of the v2 manifest, in `oneOf` order.
-
-    Order matters because a sub-error identifies its branch by index, so this
-    reads the array the schema actually declares rather than sorting a dict of
-    definitions, which would put the branches in a different order than the one
-    the indices refer to.
+    """The check branches of the v2 manifest in `oneOf` order, which is the order `schema_path`
+    indices refer to.
     """
     one_of = _validator(MANIFEST_V2).schema["properties"]["checks"]["items"]["oneOf"]
     defs = _validator(MANIFEST_V2).schema["$defs"]
@@ -150,12 +118,7 @@ def validate(subject: str, schema_name: str, instance: Any) -> None:
 
 
 def parse_artifact(raw: bytes) -> Any:
-    """Decode a check artifact from the process that wrote it.
-
-    Separate from validation because the two failures mean different things to a
-    reader: undecodable bytes are a malformed artifact, a schema mismatch is
-    also a malformed artifact but a different diagnosis.
-    """
+    """Decode a check artifact's UTF-8 JSON bytes."""
     try:
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

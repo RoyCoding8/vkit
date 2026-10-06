@@ -1,44 +1,6 @@
-"""Interpret one approved Hypothesis run, and record what was sampled rather than that it holds.
-
-The evidence kind a run produces is decided before this module reads a byte. A
-`property` check says so in the manifest, by declaring the `property` variant
-with a `generator` block; a `pytest` check over the same file does not, and is
-SCENARIO whatever Hypothesis happens to be importable in the child.
-`docs/verification.md` is explicit that the category comes from the
-declared obligation and never from a package being installed, and this module
-takes no part in deciding it: `spec.evidence_kind` does, before `interpret` is
-called. Requirement 2 is therefore a structural property of the types rather than
-a rule this reader enforces at runtime.
-
-**What is read, and what is not.** This reuses `pytest_adapter`'s report
-verbatim. Hypothesis is a library a test calls; it does not replace the runner
-or change what the runner reports, so there is one report format here rather
-than two readings that would have to agree. The generator settings are measured
-off the test object during the run and travel beside the report in each entry.
-
-**Why the generator settings are measured, not copied from the manifest.** The
-manifest declares what the owner pinned. What ran is what the test object says
-afterwards, and a decorator or a `conftest.py` profile can move it. Recording the
-declaration would make the receipt describe the request rather than the run,
-which is the same overstatement as quoting an example count out of the docs.
-Measured on hypothesis 6.168.3: `test._hypothesis_internal_use_settings` carries
-the effective `max_examples`, `stateful_step_count`, `deadline`, `database` and
-`suppress_health_check` at the end of the call phase.
-
-**What the receipt does not claim.** Hypothesis samples a bounded family of
-inputs and reports no disagreement. It does not exhaust that family, so no
-count here is a proof and `TestedScope.sentence` says so in the words the
-receipt carries. `claimkind.py` draws the same distinction in prose, and the two
-must agree: a receipt whose observation said "holds for all inputs" would
-contradict the category it is filed under.
-
-**The example count is not recorded, because nothing supported reports it.**
-Measured on 6.168.3: `hypothesis.statistics.collector` is a `DynamicVariable`,
-`get_statistics_for` does not exist on it, and `_hypothesis_internal_use_statistics`
-is `None` after a plain pass. The engine's own statistics live on a private
-attribute of a private class. So the tested scope reported here is the pinned
-family and its bound, which is what the evidence actually establishes, rather
-than a number no supported API yields.
+"""Reads an approved Hypothesis run through the pytest report and records the sampled family and
+its bound, never that the property holds. The evidence category comes from the manifest's
+`property` kind (`spec.evidence_kind`), not from Hypothesis being importable.
 """
 from __future__ import annotations
 
@@ -49,28 +11,12 @@ from typing import Any
 
 from ..outcome import Blocked, BlockedReason
 from . import pytest_adapter
-from .obligation import CaseObligation, obligation_to_json
-from .spec import HypothesisSettings, PropertyCheck, ReplaySettings
-
-GENERATOR_TOKEN = "hypothesis generator settings in force"
-
-
-def _assumption(settings: HypothesisSettings) -> str:
-    """One line naming the generator settings this run actually used."""
-    return (
-        f"{GENERATOR_TOKEN}: max_examples={settings.max_examples}, "
-        f"stateful_step_count={settings.stateful_step_count}, "
-        f"deadline={'none' if settings.deadline is None else settings.deadline}, "
-        f"suppress_health_check="
-        f"{','.join(settings.suppress_health_check) if settings.suppress_health_check else 'none'}"
-    )
-
+from .obligation import CaseObligation, case_results, scenario_results
+from .spec import HypothesisSettings, PropertyCheck
 
 def _measured(document: dict) -> HypothesisSettings:
-    """The generator settings a run reported, as vkit's own value.
-
-    Read out of the report rather than out of the manifest on purpose, for the
-    reason the module docstring gives.
+    """The generator settings a run reported; read from the report, not the manifest, because a
+    decorator or profile can move them.
     """
     deadline = document["deadline"]
     return HypothesisSettings(
@@ -85,29 +31,16 @@ def _measured(document: dict) -> HypothesisSettings:
 
 @dataclass(frozen=True)
 class TestedScope:
-    """What was sampled, in the words the receipt and the display both read.
-
-    `family` is the bound, not a count. It is the number of examples the
-    generator was permitted to try, which is a ceiling on the evidence and never
-    a count of what was tried: Hypothesis stops early when it has seen enough,
-    and the two numbers are different facts about a run.
-
-    `family` is None when no generator settings were in force, which is a real
-    state rather than a missing value: a required test that is not a Hypothesis
-    test sampled no family at all, and saying so is the honest sentence. A zero
-    would read as a family of no examples that had been tried.
+    """What was sampled. `family` is the ceiling on examples (Hypothesis may stop early), and None
+    when no generator settings were in force.
     """
 
     family: int | None
     stateful_step_count: int = 0
 
     def sentence(self) -> str:
-        """The scope a reader is shown, and the limit stated in the same breath.
-
-        The second clause is not decoration. `claimkind.py` says the sequences
-        are sampled rather than exhausted, and a scope shown without that reads
-        as "checked everything", which is the sentence this whole category
-        exists to stop anyone writing.
+        """The scope sentence shown with a PASS; it states that the family is sampled, not
+        exhausted.
         """
         if self.family is None:
             return (
@@ -131,43 +64,20 @@ class TestedScope:
 
 @dataclass(frozen=True)
 class PropertyAdapterResult:
-    """What one Hypothesis run established, with the scope it establishes it over.
-
-    Wraps `pytest_adapter.AdapterResult` rather than reimplementing it. The run
-    was a pytest run; what this adds is the two things that make it property
-    evidence rather than scenario evidence, and neither of them changes which
-    cases passed.
-    """
+    """What one Hypothesis run established: the wrapped pytest reading and the scope it covers."""
 
     reading: pytest_adapter.AdapterResult
-    generator: HypothesisSettings
-    replay: ReplaySettings | None
     scope: TestedScope
 
     @property
-    def is_pass(self) -> bool:
-        return self.reading.is_pass
-
-    @property
     def counterexamples(self) -> tuple:
-        """The cases that disagreed, lifted from the reading this wraps.
-
-        Exposed rather than left behind the `reading` member because it is one
-        of the two things `dispatch.outcome_from_reading` asks every adapter for.
-        A caller that had to reach through `reading` to learn whether a run had
-        failed would be coupling itself to this adapter's composition rather than
-        to the contract every adapter owes the core.
-        """
+        """The cases that disagreed, lifted from the wrapped reading."""
         return self.reading.counterexamples
 
     @property
     def observations(self) -> tuple[tuple[CaseObligation, str], ...]:
-        """Each satisfied case, with the scope sentence attached to it.
-
-        The scope rides on every observation rather than sitting beside them,
-        because an observation read alone is the sentence a reader skims, and
-        "the runner reported passed in 4ms" says nothing about what was sampled.
-        One property PASS therefore cannot be read as a bare scenario PASS.
+        """Each satisfied case with the scope sentence attached, so a property PASS is never read
+        as a bare scenario PASS.
         """
         scope = self.scope.sentence()
         return tuple(
@@ -176,94 +86,19 @@ class PropertyAdapterResult:
         )
 
     def scenarios(self) -> tuple:
-        """The reading in the shape every existing outcome consumer already reads."""
-        from ..outcome import ScenarioResult
-
-        scope = self.scope.sentence()
-        return tuple(
-            ScenarioResult(
-                obligation.test_id, True, f"{observation}. Tested scope: {scope}",
-            )
-            for obligation, observation in self.reading.observations
-        ) + tuple(
-            ScenarioResult(obligation.test_id, False, trace)
-            for obligation, trace in self.reading.counterexamples
-        )
+        """The reading as outcome `ScenarioResult`s."""
+        return scenario_results(self.observations, self.counterexamples)
 
     def obligation_results(self) -> tuple[list[dict], list[dict]]:
-        """The satisfied obligations and counterexamples, in the receipt's shapes.
-
-        A counterexample carries the shrunk falsifying input Hypothesis found,
-        which is the thing an engineer has to reproduce, so a counterexample
-        keeps its trace untouched while a satisfied case gains the scope.
-        """
-        satisfied = [
-            {
-                "kind": "case_satisfied",
-                "obligation": obligation_to_json(obligation),
-                "observation": observation,
-            }
-            for obligation, observation in self.observations
-        ]
-        counterexamples = [
-            {
-                "obligation": obligation_to_json(obligation),
-                "trace": trace,
-            }
-            for obligation, trace in self.reading.counterexamples
-        ]
-        return satisfied, counterexamples
-
-    def assumptions(self) -> list[str]:
-        """The named facts a reader has to believe for this receipt to mean what it says.
-
-        Three lines, and each one is a fact about what was sampled that the
-        verdict alone does not carry: the settings in force, where a failing
-        sequence is retained, and the scope the evidence covers.
-        """
-        lines = [_assumption(self.generator)]
-        if self.replay is None:
-            lines.append(
-                "no replay block was declared, so a failing sequence is not "
-                "retained anywhere this receipt names and reproducing it means "
-                "re-running the generator"
-            )
-        else:
-            seed = (
-                "chosen by the generator and not pinned"
-                if self.replay.seed is None
-                else f"seeded at {self.replay.seed}"
-            )
-            lines.append(
-                f"replay: failing sequences are retained in {self.replay.database}, "
-                f"{seed}"
-            )
-        lines.append(self.scope.sentence())
-        return lines
+        """Satisfied cases (with scope) and counterexamples as run-record dicts."""
+        return case_results(self.observations, self.counterexamples)
 
 
 def interpret(raw: bytes, check: PropertyCheck) -> PropertyAdapterResult | Blocked:
-    """What the run established, or why it could not be established.
+    """What the run established, or why it could not.
 
-    The refusals are `pytest_adapter`'s, unchanged and for the same reasons: the
-    report this reads is a pytest report, so a missing document, a truncated
-    session, an empty collection and a required test that never ran mean exactly
-    what they mean there, and a second vocabulary for them would be a second
-    dialect of one language.
-
-    One refusal is added, and it is the one the category depends on. A `property`
-    check whose required tests all passed and reported no generator settings ran
-    no generator this build can read, so the family it sampled is unknown, and a
-    green result under this category says "no disagreement was found over a
-    sampled family". Without the family that sentence has nothing behind it.
-
-    It applies to a pass and not to a failure. A counterexample is a concrete
-    input the runner produced, so a FAIL states its own disagreement without a
-    family, and `TestedScope` says in words that none was in force. Measured on
-    this path: an earlier version refused both, and the refusal named
-    `generator_absent` for a test that had just failed an assertion outright,
-    which replaced a counterexample a reader could reproduce with a BLOCKED they
-    could not.
+    Refusals are the pytest adapter's, plus `generator_absent` when a passing run reported no
+    generator settings: without them the sampled family is unknown. A failure needs no family.
     """
     if check.generator is None:
         return Blocked(
@@ -298,14 +133,11 @@ def interpret(raw: bytes, check: PropertyCheck) -> PropertyAdapterResult | Block
         )
     return PropertyAdapterResult(
         reading=reading,
-        generator=measured or check.generator,
-        replay=check.replay,
         scope=TestedScope(
             None if measured is None else measured.max_examples,
             0 if measured is None else measured.stateful_step_count,
         ),
     )
-
 
 
 VKIT_PROFILE = "vkit-pinned"
@@ -314,12 +146,8 @@ SETTINGS_FLAG = "--vkit-hypothesis-settings"
 
 
 def settings_token(check: PropertyCheck) -> str:
-    """The `--vkit-hypothesis-settings` value for one check, as JSON.
-
-    Built from the declared variant, so the document is vkit's projection of an
-    approved declaration and never something the child wrote. Read back with the
-    refusals below rather than trusted, because a value that crossed a process
-    boundary is untrusted whatever produced it.
+    """The `--vkit-hypothesis-settings` JSON for one check, projected from the approved
+    declaration.
     """
     generator = check.generator
     document: dict = {
@@ -336,20 +164,13 @@ def settings_token(check: PropertyCheck) -> str:
 
 
 class SettingsRefused(Exception):
-    """The pinned generator settings could not be applied, and why.
-
-    A raise rather than a refusal value because `pytest_configure` has no return
-    channel and that process does not decide anything. Raised rather than
-    swallowed because a property run that quietly fell back to the library
-    default is exactly the overstatement this category forbids: it would report a
-    sampled family the owner never approved. Measured: the raise becomes pytest's
-    INTERNAL_ERROR and exit 3, which `execution` already treats as a run the
-    runner could not finish rather than as a verdict.
+    """The pinned generator settings could not be applied. Raised, never swallowed: falling back to
+    library defaults would report a family nobody approved.
     """
 
 
 def pytest_addoption(parser: Any) -> None:  # noqa: D103 - a pytest plugin hook
-    """Teach the runner the one flag vkit needs it to accept."""
+    """Register the settings flag."""
     group = parser.getgroup("vkit", "vkit evidence contract")
     group.addoption(
         SETTINGS_FLAG, action="store", default=None, metavar="JSON",
@@ -358,13 +179,8 @@ def pytest_addoption(parser: Any) -> None:  # noqa: D103 - a pytest plugin hook
 
 
 def pytest_configure(config: Any) -> None:  # noqa: D103 - a pytest plugin hook
-    """Activate the generator settings the run was launched with.
-
-    Applied here rather than at import because the settings arrive on the command
-    line and the profile has to be in force before any test module is collected.
-    Measured: `@given` captures the settings in force at decoration time, which
-    happens during collection, so a profile loaded after collection would never
-    reach the test.
+    """Activate the pinned generator profile before collection, since `@given` captures settings at
+    decoration time.
     """
     from hypothesis import HealthCheck, settings
 

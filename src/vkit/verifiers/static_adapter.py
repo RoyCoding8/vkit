@@ -72,7 +72,7 @@ def judge(reading: StaticReading, accepted: dict[str, int] | None) -> Outcome:
     if not new:
         return Passed((ScenarioResult("no-new-findings", True,
                                       f"{len(reading.findings)} finding(s), all in the accepted baseline"),))
-    return Failed(tuple(ScenarioResult(f"new:{f.rule}", False, f"{f.path}:{f.line}: {f.message}") for f in new))
+    return Failed(tuple(ScenarioResult(f"new:{f.rule}", False, f"{f.path}{f':{f.line}' if f.line else ''}: {f.message}") for f in new))
 
 
 def counts(reading: StaticReading) -> dict[str, int]:

@@ -10,6 +10,7 @@ from .features import FeatureError, load_features
 from .inputs import Snapshot, matches
 from .manifest import Manifest, ManifestError, parse_manifest
 from .paths import Project, open_project
+from .proposals import pending
 from .state import CheckState, Freshness, check_states, gate, needs_run
 from .store import Store
 
@@ -84,6 +85,10 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
         "features": features,
         "feature_error": feature_error,
         "needs_run": [s.check.id for s in all_states if needs_run(s)],
+        "proposals": [{"digest": p.digest, "rationale": p.body["rationale"],
+                       "checks": [c["id"] for c in p.body["checks"]],
+                       "features": [f["id"] for f in p.body["features"]], "files": sorted(p.body["files"]),
+                       "accept": f"vkit accept --proposal {p.digest[:12]}"} for p in pending(ctx.store)],
     }
 
 

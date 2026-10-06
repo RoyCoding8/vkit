@@ -133,8 +133,57 @@ def cmd_run_cancel(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _confirm(args: argparse.Namespace, description: str, question: str) -> bool:
+    if args.yes:
+        return True
+    if args.json or not sys.stdin.isatty():
+        raise Refused("review this and pass --yes to accept it:\n" + description, EXIT_INVALID)
+    print(description)
+    return input(f"{question} [y/N] ").strip().lower() == "y"
+
+
+def cmd_proposals(args: argparse.Namespace) -> int:
+    from .proposals import pending
+
+    found = pending(_context(args).store)
+    _emit({"proposals": [{"digest": p.digest, **p.body} for p in found]}, args.json,
+          "\n\n".join(p.describe() for p in found) or "no pending proposals")
+    return EXIT_OK
+
+
+def cmd_reject(args: argparse.Namespace) -> int:
+    from .proposals import ProposalError, find, reject
+
+    ctx = _context(args)
+    try:
+        proposal = find(ctx.store, args.proposal)
+    except ProposalError as exc:
+        raise Refused(str(exc), EXIT_INVALID) from exc
+    reject(ctx.store, proposal)
+    _emit({"rejected": proposal.digest}, args.json, f"rejected proposal {proposal.digest[:12]}")
+    return EXIT_OK
+
+
+def _accept_proposal(args: argparse.Namespace, ctx: query.Context) -> int:
+    from .proposals import ProposalError, apply, find
+
+    try:
+        proposal = find(ctx.store, args.proposal)
+        if not _confirm(args, proposal.describe(), "apply this proposal to the working tree?"):
+            print("nothing accepted")
+            return EXIT_BLOCKED
+        accepted = apply(ctx.project, ctx.store, proposal)
+    except ProposalError as exc:
+        raise Refused(str(exc), EXIT_INVALID) from exc
+    _emit({"proposal": proposal.digest, "accepted_checks": accepted}, args.json,
+          f"applied proposal {proposal.digest[:12]}; accepted checks: {', '.join(accepted) or 'none'}")
+    return EXIT_OK
+
+
 def cmd_accept(args: argparse.Namespace) -> int:
     ctx = _context(args)
+    if args.proposal:
+        return _accept_proposal(args, ctx)
     try:
         manifest = ctx.require_manifest()
         wanted = args.check or sorted(manifest.checks)
@@ -151,13 +200,9 @@ def cmd_accept(args: argparse.Namespace) -> int:
     if not pending:
         _emit({"accepted": [], "pending": []}, args.json, "every named check is already accepted")
         return EXIT_OK
-    if not args.yes:
-        if args.json or not sys.stdin.isatty():
-            raise Refused("review the definitions and pass --yes to accept them:\n" + "\n".join(lines), EXIT_INVALID)
-        print("\n".join(lines))
-        if input(f"accept {len(pending)} check definition(s)? [y/N] ").strip().lower() != "y":
-            print("nothing accepted")
-            return EXIT_BLOCKED
+    if not _confirm(args, "\n".join(lines), f"accept {len(pending)} check definition(s)?"):
+        print("nothing accepted")
+        return EXIT_BLOCKED
     ctx.store.approve({manifest.digest(c): {"check_id": c, "accepted_at": now()} for c in pending})
     _emit({"accepted": pending}, args.json, f"accepted: {', '.join(pending)}")
     return EXIT_OK
@@ -208,19 +253,6 @@ def cmd_project_inspect(args: argparse.Namespace) -> int:
     return EXIT_OK if found else EXIT_BLOCKED
 
 
-def cmd_project_enroll(args: argparse.Namespace) -> int:
-    from .discover import inspect_repository
-    from .enroll import EnrollmentError, enroll
-
-    project = _context(args).project
-    try:
-        proposal, path = enroll(project, inspection=inspect_repository(project))
-    except EnrollmentError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-    _emit({**proposal.to_json(), "path": str(path)}, args.json, proposal.render())
-    return EXIT_OK if proposal.entries else EXIT_BLOCKED
-
-
 def cmd_mcp_serve(args: argparse.Namespace) -> int:
     from .mcp import MCPUnavailable, serve_stdio, tool_definitions
 
@@ -259,7 +291,11 @@ def build_parser() -> argparse.ArgumentParser:
     command(sub, "features", "show the feature map and which features are verified now")
     accept = command(sub, "accept", "review and accept check definitions so they may run")
     accept.add_argument("--check", action="append", help="a check id (repeatable); default every check")
+    accept.add_argument("--proposal", help="apply a pending proposal by digest prefix instead")
     accept.add_argument("--yes", action="store_true", help="accept without the interactive prompt")
+    command(sub, "proposals", "list changes agents proposed and nobody has accepted or rejected")
+    reject = command(sub, "reject", "discard a pending proposal")
+    reject.add_argument("--proposal", required=True)
 
     baseline = command(sub, "baseline", "pin a run's measurements as the baseline budgets compare against")
     baseline.add_argument("--check", required=True)
@@ -282,7 +318,6 @@ def build_parser() -> argparse.ArgumentParser:
     project = sub.add_parser("project", help="onboard a repository").add_subparsers(
         dest="project_command", required=True)
     command(project, "inspect", "report what this repository declares about building and testing")
-    command(project, "enroll", "propose a manifest; nothing runs until accepted")
 
     mcp = sub.add_parser("mcp", help="serve an agent over MCP").add_subparsers(dest="mcp_command", required=True)
     command(mcp, "serve", "serve stdio for one project root; --json prints the tool catalogue")
@@ -297,7 +332,8 @@ _DISPATCH = {
     ("doctor", None): cmd_doctor, ("status", None): cmd_status, ("gate", None): cmd_gate,
     ("features", None): cmd_features, ("accept", None): cmd_accept, ("baseline", None): cmd_baseline, ("check", "run"): cmd_check_run,
     ("run", "show"): cmd_run_show, ("run", "cancel"): cmd_run_cancel,
-    ("project", "inspect"): cmd_project_inspect, ("project", "enroll"): cmd_project_enroll,
+    ("project", "inspect"): cmd_project_inspect,
+    ("proposals", None): cmd_proposals, ("reject", None): cmd_reject,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
 }
 

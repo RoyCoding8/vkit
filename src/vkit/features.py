@@ -40,36 +40,46 @@ class Feature:
                 "entry_points": list(self.entry_points), "covered_by": list(self.covered_by), "gaps": list(self.gaps)}
 
 
-def _strings(entry: dict, key: str, path: Path) -> tuple[str, ...]:
+def _strings(entry: dict, key: str, origin: str) -> tuple[str, ...]:
     value = entry.get(key, [])
     if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
-        raise FeatureError(f"{path}: feature {entry.get('id')!r} field {key!r} must be a list of nonempty strings")
+        raise FeatureError(f"{origin}: feature {entry.get('id')!r} field {key!r} must be a list of nonempty strings")
     return tuple(value)
 
 
-def load_features(root: Path) -> list[Feature]:
+def parse_feature(entry: Any, origin: str) -> Feature:
+    if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]:
+        raise FeatureError(f"{origin}: every feature needs a nonempty string id")
+    unknown = sorted(set(entry) - _FIELDS)
+    if unknown:
+        raise FeatureError(f"{origin}: feature {entry['id']!r} has unknown field(s) {', '.join(unknown)}")
+    if not isinstance(entry.get("behavior"), str) or not entry["behavior"]:
+        raise FeatureError(f"{origin}: feature {entry['id']!r} needs a behavior")
+    return Feature(entry["id"], entry["behavior"], _strings(entry, "how_to_reach", origin),
+                   _strings(entry, "entry_points", origin), _strings(entry, "covered_by", origin),
+                   _strings(entry, "gaps", origin))
+
+
+def read_document(root: Path) -> dict[str, Any]:
     path = root / FEATURES_RELATIVE
     if not path.is_file():
-        return []
+        return {"schema_version": SCHEMA_VERSION, "features": []}
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise FeatureError(f"{path} is not readable JSON: {exc}") from exc
     if not isinstance(document, dict) or document.get("schema_version") != SCHEMA_VERSION:
         raise FeatureError(f"{path} must be an object with schema_version {SCHEMA_VERSION}")
+    return document
+
+
+def load_features(root: Path) -> list[Feature]:
+    origin = str(root / FEATURES_RELATIVE)
     features, seen = [], set()
-    for entry in document.get("features", []):
-        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]:
-            raise FeatureError(f"{path}: every feature needs a nonempty string id")
-        unknown = sorted(set(entry) - _FIELDS)
-        if unknown:
-            raise FeatureError(f"{path}: feature {entry['id']!r} has unknown field(s) {', '.join(unknown)}")
-        if entry["id"] in seen:
-            raise FeatureError(f"{path}: duplicate feature id {entry['id']!r}")
-        seen.add(entry["id"])
-        if not isinstance(entry.get("behavior"), str) or not entry["behavior"]:
-            raise FeatureError(f"{path}: feature {entry['id']!r} needs a behavior")
-        features.append(Feature(entry["id"], entry["behavior"], _strings(entry, "how_to_reach", path),
-                                _strings(entry, "entry_points", path), _strings(entry, "covered_by", path),
-                                _strings(entry, "gaps", path)))
+    for entry in read_document(root).get("features", []):
+        feature = parse_feature(entry, origin)
+        if feature.id in seen:
+            raise FeatureError(f"{origin}: duplicate feature id {feature.id!r}")
+        seen.add(feature.id)
+        features.append(feature)
     return features

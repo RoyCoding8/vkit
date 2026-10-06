@@ -50,11 +50,14 @@ def _check(arguments: dict[str, Any], properties: dict[str, Any]) -> None:
         raise Refusal(f"unknown argument(s): {', '.join(unknown)}")
     for name, value in arguments.items():
         expected = properties[name]["type"]
+        items = properties[name].get("items", {}).get("type", "string")
         ok = {"string": isinstance(value, str), "boolean": isinstance(value, bool),
               "integer": isinstance(value, int) and not isinstance(value, bool),
-              "array": isinstance(value, list) and all(isinstance(v, str) for v in value)}[expected]
+              "object": isinstance(value, dict),
+              "array": isinstance(value, list) and all(isinstance(v, dict if items == "object" else str)
+                                                       for v in value)}[expected]
         if not ok:
-            raise Refusal(f"{name} must be {'a list of strings' if expected == 'array' else 'a ' + expected}")
+            raise Refusal(f"{name} must be {'a list of ' + items + 's' if expected == 'array' else 'a ' + expected}")
 
 
 @dataclass
@@ -145,6 +148,18 @@ def _run_get(server: Server, args: dict[str, Any]) -> Any:
     return view
 
 
+def _propose(server: Server, args: dict[str, Any]) -> Any:
+    from ..proposals import ProposalError, submit
+
+    ctx = server.context()
+    try:
+        proposal = submit(ctx.project, ctx.store, args)
+    except ProposalError as exc:
+        raise Refusal(str(exc)) from exc
+    return {"proposal": proposal.digest, "next": f"a human reviews it with `vkit proposals` and applies it with "
+                                                  f"`vkit accept --proposal {proposal.digest[:12]}`"}
+
+
 def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
     if "run_id" not in args:
         raise Refusal("run_id is required")
@@ -176,6 +191,12 @@ TOOLS = (
           "log_offset": {"type": "integer", "description": "negative counts from the end"}, "log_limit": {"type": "integer"}}, _run_get),
     Tool("run_cancel", "Stop a running check and everything it started.", {"run_id": _STR}, _run_cancel,
          read_only=False),
+    Tool("propose", "Suggest new or changed checks (manifest v2 entries), feature map entries, and new files they "
+         "need, with a rationale. Nothing runs or changes until a human accepts it. Use it to move a lesson up "
+         "the trust ladder: a recurring mistake becomes a static rule or a scenario check.",
+         {"checks": {"type": "array", "items": {"type": "object"}}, "features": {"type": "array",
+          "items": {"type": "object"}}, "files": {"type": "object", "description": "new path -> text"},
+          "rationale": _STR}, _propose, read_only=False),
     Tool("gate", "READY only when every registered check passed against the current inputs; REJECTED when one "
          "failed; otherwise BLOCKED with the checks that lack fresh evidence.", {}, _gate),
 )

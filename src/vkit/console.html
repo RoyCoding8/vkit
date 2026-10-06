@@ -35,6 +35,8 @@
   <table aria-label="runs"><thead><tr><th scope="col">Run</th><th scope="col">Check</th><th scope="col">State</th><th scope="col">Result</th><th scope="col">Started</th><th scope="col">Worktree</th></tr></thead><tbody id="runs"></tbody></table>
   <section id="run" hidden aria-label="selected run"><h2 id="run-title"></h2><div id="run-outcome"></div>
     <p><label>Log <select id="run-log"><option>stdout</option><option>stderr</option></select></label></p><pre id="run-text"></pre></section>
+  <h2>Proposals</h2>
+  <div id="proposals"></div>
   <h2>Features</h2>
   <div id="features"></div>
 </main>
@@ -67,6 +69,15 @@ async function refresh() {
       for (const p of f.problems) ul.append(el("li", `problem: ${p}`, "fresh_fail"));
       d.append(ul); return d;
     }) : [el("p", s.feature_error || "No feature map.", "muted")]));
+    $("proposals").replaceChildren(...(s.proposals.length ? s.proposals.map(p => {
+      const d = el("div"); d.append(el("p", p.rationale));
+      const ul = el("ul");
+      if (p.checks.length) ul.append(el("li", `checks: ${p.checks.join(", ")}`));
+      if (p.features.length) ul.append(el("li", `features: ${p.features.join(", ")}`));
+      if (p.files.length) ul.append(el("li", `new files: ${p.files.join(", ")}`));
+      const cmd = el("li"); cmd.append(el("span", "review and apply: "), el("code", p.accept)); ul.append(cmd);
+      d.append(ul); return d;
+    }) : [el("p", "None pending.", "muted")]));
     const runs = await get("/api/runs?limit=30");
     $("runs").replaceChildren(...runs.map(r => row([runLink(r.run_id), r.check_id, el("span", r.state, r.state),
       el("span", r.result ? r.result + (r.reason ? ` (${r.reason})` : "") : "", r.result || ""), r.started_at, r.worktree])));

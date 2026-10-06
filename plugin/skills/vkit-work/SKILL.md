@@ -31,5 +31,7 @@ content of each check's inputs, so an edit makes the evidence for that check sta
 
 - A check that has not run has not passed. Never report a run you have not read.
 - You cannot add or change what a check runs. A changed definition is BLOCKED until a human accepts it. If a
-  check is wrong, say so and propose the change; do not edit the manifest to make it pass.
+  check is wrong, say so and use `propose`; do not edit the manifest to make it pass.
+- When you fix a mistake that could recur, propose the check that would have caught it: a static rule for a
+  banned pattern, or a scenario for the behavior. A rule the machine enforces outlasts a note in a prompt.
 - Do not commit, push, or merge because the gate is READY. READY is evidence, not permission.

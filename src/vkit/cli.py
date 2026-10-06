@@ -188,8 +188,9 @@ def cmd_features(args: argparse.Namespace) -> int:
     lines = []
     for feature in report["features"]:
         lines.append(f"[{'verified ' if feature['verified'] else 'UNVERIFIED'}] {feature['id']}: {feature['behavior']}")
-        for gap in feature["coverage_gaps"]:
-            lines.append(f"    gap: {gap}")
+        lines += [f"    reach: {step}" for step in feature["how_to_reach"]]
+        lines += [f"    gap: {gap}" for gap in feature["gaps"]]
+        lines += [f"    problem: {problem}" for problem in feature["problems"]]
     _emit({"features": report["features"]}, args.json, "\n".join(lines) or "no feature map")
     return EXIT_OK if report["features"] and all(f["verified"] for f in report["features"]) else EXIT_BLOCKED
 

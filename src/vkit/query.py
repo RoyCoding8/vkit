@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from .features import FeatureError, FeatureMap, load_features
-from .inputs import Snapshot
+from .features import FeatureError, load_features
+from .inputs import Snapshot, matches
 from .manifest import Manifest, ManifestError, parse_manifest
 from .paths import Project, open_project
 from .state import CheckState, Freshness, check_states, gate, needs_run
@@ -46,16 +46,17 @@ def states(ctx: Context) -> list[CheckState]:
 
 def _features(ctx: Context, by_id: dict[str, CheckState]) -> tuple[list[dict[str, Any]], str | None]:
     try:
-        feature_map: FeatureMap = load_features(ctx.project.root)
+        features = load_features(ctx.project.root)
     except FeatureError as exc:
         return [], str(exc)
     rows = []
-    for feature in feature_map.features:
+    for feature in features:
         check_rows = [{"id": c, "state": by_id[c].freshness.value if c in by_id else "unregistered"}
                       for c in feature.covered_by]
-        verified = bool(check_rows) and not feature.coverage_gaps and all(
+        problems = feature.audit(ctx.project.root, by_id)
+        verified = not problems and not feature.gaps and all(
             r["state"] == Freshness.FRESH_PASS.value for r in check_rows)
-        rows.append({**feature.to_json(), "checks": check_rows, "verified": verified})
+        rows.append({**feature.to_json(), "checks": check_rows, "problems": problems, "verified": verified})
     return rows, None
 
 
@@ -68,7 +69,8 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
     features, feature_error = _features(ctx, by_id)
     if wanted:
         ids = {s.check.id for s in shown}
-        features = [f for f in features if ids & set(f["covered_by"])]
+        features = [f for f in features if ids & set(f["covered_by"])
+                    or any(matches(p, e) for p in wanted for e in f["entry_points"])]
     return {
         "project": str(ctx.project.root),
         "manifest_error": ctx.manifest_error,
@@ -77,6 +79,8 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
         "paths": wanted,
         "checks": [s.to_json() for s in shown],
         "unmapped_paths": [p for p in wanted if not any(s.inputs.covers(p) for s in all_states)],
+        "feature_paths_unmapped": [p for p in wanted if not any(matches(p, e) for f in features
+                                                                for e in f["entry_points"])],
         "features": features,
         "feature_error": feature_error,
         "needs_run": [s.check.id for s in all_states if needs_run(s)],

@@ -99,6 +99,10 @@ def rows(example: Example, scratch: Path) -> list[tuple[str, bool, str]]:
     states = {c["id"]: c["state"] for c in body.get("checks", [])}
     out.append((f"{example.name} an edit to {example.bug_file} makes {example.failing_check} stale",
                 states.get(example.failing_check) == "stale", f"states={states}"))
+    if (EXAMPLES / example.name / "verification" / "features.json").is_file():
+        reached = [f["id"] for f in body.get("features", [])]
+        out.append((f"{example.name} status for {example.bug_file} names the features it implements",
+                    bool(reached) and body.get("feature_paths_unmapped") == [], f"features={reached}"))
     code, body = vkit(clean, "gate")
     out.append((f"{example.name} gate is BLOCKED while a check is stale", code == 3 and body.get("verdict") == "BLOCKED",
                 f"exit={code} verdict={body.get('verdict')}"))

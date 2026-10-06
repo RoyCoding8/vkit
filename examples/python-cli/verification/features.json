@@ -1,64 +1,87 @@
 {
-  "schema_version": 1,
-  "notes": [
-    "This map states what a user can observe. The expected totals live in verify_totals.py, because a document that recorded them would be a second place for a behaviour regression to edit."
-  ],
+  "schema_version": 2,
   "features": [
     {
       "id": "totals-empty-cart",
       "behavior": "A cart with nothing in it totals to zero rather than erroring or printing nothing.",
-      "entry_point": "examples/python-cli/src/totals.py",
-      "setup": ["run the CLI with no amounts"],
-      "covered_by": ["totals-behavior"],
-      "expected_outcome": "",
-      "coverage_gaps": []
+      "how_to_reach": [
+        "run the CLI with no amounts"
+      ],
+      "entry_points": [
+        "src/totals.py"
+      ],
+      "covered_by": [
+        "totals-behavior"
+      ],
+      "gaps": []
     },
     {
       "id": "totals-single-amount",
       "behavior": "A cart with one amount totals to that amount.",
-      "entry_point": "examples/python-cli/src/totals.py",
-      "setup": ["run the CLI with a single positive amount"],
-      "covered_by": ["totals-behavior"],
-      "expected_outcome": "",
-      "coverage_gaps": []
+      "how_to_reach": [
+        "run the CLI with a single positive amount"
+      ],
+      "entry_points": [
+        "src/totals.py"
+      ],
+      "covered_by": [
+        "totals-behavior"
+      ],
+      "gaps": []
     },
     {
       "id": "totals-negative-amounts",
       "behavior": "Amounts that are all negative total to a negative number, so a credit is not silently treated as a charge.",
-      "entry_point": "examples/python-cli/src/totals.py",
-      "setup": ["run the CLI with only negative amounts"],
-      "covered_by": ["totals-behavior"],
-      "expected_outcome": "",
-      "coverage_gaps": []
+      "how_to_reach": [
+        "run the CLI with only negative amounts"
+      ],
+      "entry_points": [
+        "src/totals.py"
+      ],
+      "covered_by": [
+        "totals-behavior"
+      ],
+      "gaps": []
     },
     {
       "id": "totals-cancellation",
       "behavior": "Amounts that cancel to nothing total to zero, which is the case an off-by-one in the accumulator gets wrong.",
-      "entry_point": "examples/python-cli/src/totals.py",
-      "setup": ["run the CLI with two amounts that cancel"],
-      "covered_by": ["totals-behavior"],
-      "expected_outcome": "",
-      "coverage_gaps": []
+      "how_to_reach": [
+        "run the CLI with two amounts that cancel"
+      ],
+      "entry_points": [
+        "src/totals.py"
+      ],
+      "covered_by": [
+        "totals-behavior"
+      ],
+      "gaps": []
     },
     {
       "id": "totals-non-integer-input",
       "behavior": "An amount that is not a whole number is handled deliberately rather than by whatever the interpreter does with it.",
-      "entry_point": "examples/python-cli/src/totals.py",
-      "setup": ["run the CLI with a non-integer amount"],
+      "how_to_reach": [
+        "run the CLI with a non-integer amount"
+      ],
+      "entry_points": [
+        "src/totals.py"
+      ],
       "covered_by": [],
-      "expected_outcome": "",
-      "coverage_gaps": [
+      "gaps": [
         "no check exercises non-integer input; the CLI's behaviour there has not been decided and therefore has not been verified"
       ]
     },
     {
       "id": "totals-very-large-amounts",
       "behavior": "An amount larger than a machine word totals without wrapping or losing precision.",
-      "entry_point": "examples/python-cli/src/totals.py",
-      "setup": ["run the CLI with an amount beyond 64-bit range"],
+      "how_to_reach": [
+        "run the CLI with an amount beyond 64-bit range"
+      ],
+      "entry_points": [
+        "src/totals.py"
+      ],
       "covered_by": [],
-      "expected_outcome": "",
-      "coverage_gaps": [
+      "gaps": [
         "no check exercises amounts beyond 64-bit range; Python integers do not wrap, so this is unverified rather than known-broken"
       ]
     }

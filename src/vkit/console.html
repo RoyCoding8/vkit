@@ -62,7 +62,9 @@ async function refresh() {
     $("features").replaceChildren(...(s.features.length ? s.features.map(f => {
       const d = el("div"); d.append(el("strong", f.verified ? "verified " : "unverified ", f.verified ? "verified" : "unverified"), el("span", `${f.id}: ${f.behavior}`));
       const ul = el("ul"); for (const c of f.checks) ul.append(el("li", `${c.id}: ${c.state}`, c.state));
-      for (const g of f.coverage_gaps) ul.append(el("li", `gap: ${g}`, "stale"));
+      for (const r of f.how_to_reach) ul.append(el("li", `reach: ${r}`));
+      for (const g of f.gaps) ul.append(el("li", `gap: ${g}`, "stale"));
+      for (const p of f.problems) ul.append(el("li", `problem: ${p}`, "fresh_fail"));
       d.append(ul); return d;
     }) : [el("p", s.feature_error || "No feature map.", "muted")]));
     const runs = await get("/api/runs?limit=30");

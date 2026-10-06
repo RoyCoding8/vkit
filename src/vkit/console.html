@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vkit</title>
+<style>
+  :root { color-scheme: light dark; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700; --muted: #6e7781; }
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 0 auto; max-width: 1100px; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 24px 0 8px; }
+  .muted { color: var(--muted); }
+  #gate { padding: 10px 12px; border-radius: 6px; font-weight: 600; border: 2px solid currentColor; }
+  .READY, .fresh_pass, .PASS, .verified { color: var(--ok); }
+  .REJECTED, .fresh_fail, .FAIL { color: var(--bad); }
+  .BLOCKED, .fresh_blocked, .stale, .missing, .not_approved, .interrupted, .unverified { color: var(--warn); }
+  .running { color: #0969da; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #d0d7de55; vertical-align: top; }
+  th { font-weight: 600; }
+  button.link { background: none; border: 0; padding: 0; color: #0969da; cursor: pointer; font: inherit; text-decoration: underline; }
+  pre { background: #8881; padding: 8px; overflow: auto; max-height: 420px; white-space: pre-wrap; }
+  ul { margin: 4px 0; padding-left: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>vkit <span class="muted" id="project"></span></h1>
+  <p class="muted">Read-only. Refreshes every 2 seconds. Accept definitions with <code>vkit accept</code>; run checks with <code>vkit check run --needed</code>.</p>
+  <div id="gate" role="status" aria-live="polite">loading</div>
+</header>
+<main>
+  <h2>Checks</h2>
+  <table aria-label="checks"><thead><tr><th scope="col">Check</th><th scope="col">State</th><th scope="col">Evidence kind</th><th scope="col">Inputs</th><th scope="col">Last run</th></tr></thead><tbody id="checks"></tbody></table>
+  <h2>Runs</h2>
+  <table aria-label="runs"><thead><tr><th scope="col">Run</th><th scope="col">Check</th><th scope="col">State</th><th scope="col">Result</th><th scope="col">Started</th><th scope="col">Worktree</th></tr></thead><tbody id="runs"></tbody></table>
+  <section id="run" hidden aria-label="selected run"><h2 id="run-title"></h2><div id="run-outcome"></div>
+    <p><label>Log <select id="run-log"><option>stdout</option><option>stderr</option></select></label></p><pre id="run-text"></pre></section>
+  <h2>Features</h2>
+  <div id="features"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let selected = null;
+function el(tag, text, cls) { const e = document.createElement(tag); if (text !== undefined && text !== null) e.textContent = text; if (cls) e.className = cls; return e; }
+function row(cells) { const tr = el("tr"); for (const c of cells) { const td = el("td"); if (c instanceof Node) td.append(c); else td.textContent = c ?? ""; tr.append(td); } return tr; }
+function runLink(id) { if (!id) return ""; const b = el("button", id, "link"); b.onclick = () => { selected = id; refreshRun(); }; return b; }
+async function get(path) { const r = await fetch(path); return r.json(); }
+
+async function refresh() {
+  try {
+    const s = await get("/api/status");
+    $("project").textContent = s.project;
+    $("gate").textContent = `${s.gate.verdict}: ${s.gate.reason}` + (s.manifest_error ? ` (${s.manifest_error})` : "");
+    $("gate").className = s.gate.verdict;
+    $("checks").replaceChildren(...s.checks.map(c => {
+      const state = el("span", c.running.length ? "running" : c.state, c.running.length ? "running" : c.state);
+      const kind = el("span", c.category); kind.title = `Establishes: ${c.establishes}. Does not establish: ${c.does_not_establish}.`;
+      const last = c.last ? el("span") : "never";
+      if (c.last) { last.append(runLink(c.last.run_id), el("span", ` ${c.last.result}`, c.last.result)); }
+      return row([c.id, state, kind, c.inputs.scope, last]);
+    }));
+    $("features").replaceChildren(...(s.features.length ? s.features.map(f => {
+      const d = el("div"); d.append(el("strong", f.verified ? "verified " : "unverified ", f.verified ? "verified" : "unverified"), el("span", `${f.id}: ${f.behavior}`));
+      const ul = el("ul"); for (const c of f.checks) ul.append(el("li", `${c.id}: ${c.state}`, c.state));
+      for (const g of f.coverage_gaps) ul.append(el("li", `gap: ${g}`, "stale"));
+      d.append(ul); return d;
+    }) : [el("p", s.feature_error || "No feature map.", "muted")]));
+    const runs = await get("/api/runs?limit=30");
+    $("runs").replaceChildren(...runs.map(r => row([runLink(r.run_id), r.check_id, el("span", r.state, r.state),
+      el("span", r.result ? r.result + (r.reason ? ` (${r.reason})` : "") : "", r.result || ""), r.started_at, r.worktree])));
+    if (selected) await refreshRun();
+  } catch (e) { $("gate").textContent = `console lost the server: ${e}`; $("gate").className = "BLOCKED"; }
+}
+
+async function refreshRun() {
+  const v = await get(`/api/run?id=${encodeURIComponent(selected)}&log=${$("run-log").value}&offset=-16000`);
+  $("run").hidden = false;
+  $("run-title").textContent = `Run ${selected} (${v.check_id || ""})`;
+  const box = $("run-outcome"); box.replaceChildren();
+  if (v.outcome) {
+    box.append(el("p", `${v.outcome.result}${v.outcome.reason ? " (" + v.outcome.reason + ")" : ""} ${v.outcome.detail || ""}`, v.outcome.result));
+    const ul = el("ul"); for (const sc of v.outcome.scenarios || []) ul.append(el("li", `[${sc.result}] ${sc.id}: ${sc.observation}`, sc.result));
+    box.append(ul);
+  } else { box.append(el("p", v.state || v.error, v.state)); }
+  $("run-text").textContent = v.log ? v.log.text : "";
+}
+$("run-log").onchange = refreshRun;
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>

@@ -4,15 +4,15 @@
     "name": "Shashwata Roy"
   },
   "metadata": {
-    "description": "Run registered repository checks and keep a durable, trustworthy outcome.",
-    "version": "0.1.0"
+    "description": "Machine-checked evidence for agents: which registered checks are fresh, stale or failing for the code as it is now, and a gate that is READY only when all of them passed.",
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "vkit",
       "source": "./plugin",
-      "description": "Run registered repository checks and keep a durable, trustworthy outcome. Skills and hooks over the vkit core; the selected model stays a host choice.",
-      "version": "0.1.0",
+      "description": "Machine-checked evidence for agents: which registered checks are fresh, stale or failing for the code as it is now, and a gate that is READY only when all of them passed.",
+      "version": "0.2.0",
       "author": {
         "name": "Shashwata Roy"
       },

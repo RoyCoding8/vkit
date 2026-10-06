@@ -29,6 +29,22 @@ from vkit.paths import Project
 
 ProjectBuilder = Callable[..., Project]
 
+
+@pytest.fixture
+def repo(tmp_path: Path) -> ProjectBuilder:
+    from helpers import git
+    from vkit.paths import open_project
+
+    def build(files: dict[str, str]) -> Project:
+        root = tmp_path / "repo"
+        for relative, text in files.items():
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            (root / relative).write_text(text, encoding="utf-8")
+        root.mkdir(exist_ok=True)
+        git(root, "init", "-q")
+        return open_project(root)
+    return build
+
 #: A package.json whose install hooks would be destructive if anything ran them.
 #: The sentinel is a path, not a command effect, so the assertion is a fact
 #: about the filesystem rather than about a side effect that might be cleaned up.

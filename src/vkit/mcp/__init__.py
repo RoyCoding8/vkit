@@ -1,178 +1,220 @@
-"""The MCP tool surface for one project root.
-
-`vkit mcp serve --project <root>` binds a `Server` to that root for the life of
-the process. Nothing in this package can be asked for a different root.
-
-## What the transport is pinned to
-
-`mcp` is an optional dependency, installed by `pip install 'vkit[mcp]'`, and the
-binding below is written against the 2.x server API. That line is a rewrite, not
-an increment: handlers are constructor arguments rather than decorators, `run`
-takes an `InitializationOptions` the SDK builds from the registered handlers, and
-a tool call returns a `CallToolResult` carrying `isError`. A bump inside 2.x has
-not been verified here, so
-`tests/test_mcp_stdio.py` drives the real subprocess over real JSON-RPC frames,
-which puts a contract change where a test fails rather than at a user's host.
-
-Two requirements the binding encodes, both protocol rather than preference. stdout
-carries protocol frames only, so every diagnostic goes to stderr. And a refused
-request is answered with content plus `isError` rather than an exception, because
-a refusal is a legitimate protocol answer. An *unexpected* exception is the
-opposite case and is deliberately not caught: the SDK reports it as a protocol
-error, keeps serving, and writes the traceback to stderr, so an internal fault can
-never come back wearing the shape of a verdict.
-"""
+"""MCP tools for one project root. Agents ask what is known, run registered checks, and read the gate."""
 from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from .. import __version__
-from ._tools import (
-    BY_NAME,
-    DEFAULT_LOG_BYTES,
-    DEFAULT_PAGE,
-    MAX_LOG_BYTES,
-    MAX_PAGE,
-    OPS,
-    TOOLS,
-    TOOL_NAMES,
-    Server,
-    ToolResult,
-    ToolSpec,
-    ToolSurface,
-    tool_definitions,
-)
+from .. import __version__, query
+from ..manifest import ManifestError
+from ..store import new_run_id
 
-__all__ = [
-    "BY_NAME",
-    "DEFAULT_LOG_BYTES",
-    "DEFAULT_PAGE",
-    "MAX_LOG_BYTES",
-    "MAX_PAGE",
-    "INSTRUCTIONS",
-    "MCPUnavailable",
-    "OPS",
-    "TOOLS",
-    "TOOL_NAMES",
-    "Server",
-    "ToolResult",
-    "ToolSpec",
-    "ToolSurface",
-    "protocol_tools",
-    "serve_stdio",
-    "tool_definitions",
-]
-
+MAX_WAIT_SECONDS = 60
 INSTRUCTIONS = (
-    "Verification evidence for one Git repository, already bound to this process. "
-    "Start with project_inspect to learn which checks are registered and runnable, "
-    "then task_begin to open an attempt, check_start to run registered checks, "
-    "run_get for a run's recorded outcome, and task_finalize for the verdict. "
-    "Check ids are manifest ids; there is no way to pass a command."
+    "Verification evidence for one Git repository. Call status (optionally with the paths you changed) to see "
+    "which registered checks are fresh, stale or missing; check_run with needed=true runs exactly the stale ones; "
+    "run_get reads a run's outcome and log; gate says READY only when every check passed against the current "
+    "inputs. features describes what the application does and how a user reaches each feature. Check ids come "
+    "from the manifest; no tool accepts a command, and only a human can accept a check definition."
 )
 
 
 class MCPUnavailable(Exception):
-    """The `mcp` SDK is not installed in this environment.
-
-    A missing optional dependency, not a broken project. It is raised rather than
-    printed because stdout is the protocol channel and there is no client to read
-    it, so the caller owns the exit code.
-    """
+    """The `mcp` SDK is not installed."""
 
 
-def _sdk() -> Any:
-    """The SDK's pieces, or a refusal naming the fix.
+class Refusal(Exception):
+    """A request this server will not honour; returned to the client as an error result."""
 
-    Imported at call time rather than at module scope so every other vkit command
-    keeps working in an environment that never installed the transport. A missing
-    optional dependency must not take down the CLI, the console or the hook.
-    """
+
+@dataclass(frozen=True)
+class Tool:
+    name: str
+    description: str
+    properties: dict[str, Any]
+    handler: Callable[["Server", dict[str, Any]], Any]
+    read_only: bool = True
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": self.properties, "additionalProperties": False}
+
+
+def _check(arguments: dict[str, Any], properties: dict[str, Any]) -> None:
+    unknown = sorted(set(arguments) - set(properties))
+    if unknown:
+        raise Refusal(f"unknown argument(s): {', '.join(unknown)}")
+    for name, value in arguments.items():
+        expected = properties[name]["type"]
+        ok = {"string": isinstance(value, str), "boolean": isinstance(value, bool),
+              "integer": isinstance(value, int) and not isinstance(value, bool),
+              "array": isinstance(value, list) and all(isinstance(v, str) for v in value)}[expected]
+        if not ok:
+            raise Refusal(f"{name} must be {'a list of strings' if expected == 'array' else 'a ' + expected}")
+
+
+@dataclass
+class Server:
+    root: Path
+    threads: dict[str, threading.Thread] = field(default_factory=dict)
+
+    def context(self) -> query.Context:
+        return query.open_context(self.root)
+
+    def call(self, name: str, arguments: dict[str, Any] | None) -> tuple[Any, bool]:
+        tool = BY_NAME.get(name)
+        if tool is None:
+            return {"error": f"unknown tool {name!r}"}, True
+        arguments = arguments or {}
+        try:
+            _check(arguments, tool.properties)
+            return tool.handler(self, arguments), False
+        except (Refusal, ManifestError, ValueError) as exc:
+            return {"error": str(exc)}, True
+
+    def start(self, ctx: query.Context, check_id: str) -> str:
+        from ..runner import run_check
+
+        run_id = new_run_id()
+        thread = threading.Thread(target=run_check, args=(ctx.project, ctx.require_manifest(), check_id),
+                                  kwargs={"store": ctx.store, "run_id": run_id}, daemon=True)
+        thread.start()
+        self.threads[run_id] = thread
+        return run_id
+
+
+def _status(server: Server, args: dict[str, Any]) -> Any:
+    return query.status(server.context(), args.get("paths", ()))
+
+
+def _gate(server: Server, args: dict[str, Any]) -> Any:
+    return query.status(server.context())["gate"]
+
+
+def _features(server: Server, args: dict[str, Any]) -> Any:
+    report = query.status(server.context())
+    if report["feature_error"]:
+        raise Refusal(report["feature_error"])
+    words = str(args.get("query", "")).lower().split()
+    return {"features": [f for f in report["features"]
+                         if all(w in json.dumps(f).lower() for w in words)]}
+
+
+def _summary(ctx: query.Context, run_id: str) -> dict[str, Any]:
+    record = ctx.store.record(run_id)
+    if record is None:
+        return {"run_id": run_id, "state": "starting"}
+    return {"run_id": run_id, "check_id": record["check_id"], "state": record["state"],
+            "outcome": record["outcome"]}
+
+
+def _check_run(server: Server, args: dict[str, Any]) -> Any:
+    ctx = server.context()
+    manifest = ctx.require_manifest()
+    report = query.status(ctx)
+    running = {c["id"]: c["running"][0] for c in report["checks"] if c["running"]}
+    if args.get("needed"):
+        wanted = report["needs_run"]
+    else:
+        wanted = args.get("check_ids") or []
+        if not wanted:
+            raise Refusal("pass check_ids, or needed=true to run every stale or missing check")
+        for check_id in wanted:
+            manifest.require(check_id)
+    run_ids = [running.get(c) or server.start(ctx, c) for c in wanted]
+    deadline = time.monotonic() + min(max(int(args.get("wait_seconds", 20)), 0), MAX_WAIT_SECONDS)
+    while time.monotonic() < deadline and any(
+            server.threads.get(r) is not None and server.threads[r].is_alive() for r in run_ids):
+        time.sleep(0.2)
+    return {"runs": [_summary(ctx, r) for r in run_ids],
+            "note": "poll run_get for runs still running" if any(
+                _summary(ctx, r)["state"] in ("running", "starting") for r in run_ids) else ""}
+
+
+def _run_get(server: Server, args: dict[str, Any]) -> Any:
+    if "run_id" not in args:
+        raise Refusal("run_id is required")
+    view = query.run_view(server.context(), args["run_id"], log=args.get("log", "stdout"),
+                          offset=args.get("log_offset", 0), limit=min(args.get("log_limit", 16_000), 64_000))
+    if view is None:
+        raise Refusal(f"no run {args['run_id']!r}")
+    return view
+
+
+def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
+    if "run_id" not in args:
+        raise Refusal("run_id is required")
+    ctx = server.context()
+    record = ctx.store.record(args["run_id"])
+    if record is None:
+        raise Refusal(f"no run {args['run_id']!r}")
+    if record["state"] != "running":
+        return {"run_id": args["run_id"], "cancelled": False, "state": record["state"]}
+    ctx.store.request_cancel(args["run_id"])
+    return {"run_id": args["run_id"], "cancelled": True}
+
+
+_STR = {"type": "string"}
+_PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
+TOOLS = (
+    Tool("status", "Freshness of every registered check (fresh_pass, fresh_fail, fresh_blocked, stale, missing, "
+         "not_approved), what each kind of evidence establishes and does not, the gate, and the features. Pass "
+         "paths to see only the checks and features that read them, and which paths no check reads.",
+         {"paths": _PATHS}, _status),
+    Tool("features", "The feature map: what users can do, how they reach it, which checks cover it, and known "
+         "gaps. Filter with a free-text query.", {"query": _STR}, _features),
+    Tool("check_run", "Run registered checks by id, or needed=true for every stale or missing one. Waits up to "
+         "wait_seconds (max 60) and returns each run's state and outcome.",
+         {"check_ids": {"type": "array", "items": _STR}, "needed": {"type": "boolean"},
+          "wait_seconds": {"type": "integer"}}, _check_run, read_only=False),
+    Tool("run_get", "One run: state, outcome, obligations, inputs, and a window of its stdout or stderr.",
+         {"run_id": _STR, "log": {"type": "string", "enum": ["stdout", "stderr"]},
+          "log_offset": {"type": "integer", "description": "negative counts from the end"}, "log_limit": {"type": "integer"}}, _run_get),
+    Tool("run_cancel", "Stop a running check and everything it started.", {"run_id": _STR}, _run_cancel,
+         read_only=False),
+    Tool("gate", "READY only when every registered check passed against the current inputs; REJECTED when one "
+         "failed; otherwise BLOCKED with the checks that lack fresh evidence.", {}, _gate),
+)
+BY_NAME = {tool.name: tool for tool in TOOLS}
+
+
+def tool_definitions() -> list[dict[str, Any]]:
+    return [{"name": t.name, "description": t.description, "inputSchema": t.input_schema,
+             "annotations": {"readOnlyHint": t.read_only}} for t in TOOLS]
+
+
+def serve_stdio(root: str | Path) -> int:
     try:
+        import anyio
         import mcp.types as types
         from mcp.server.lowlevel import Server as SdkServer
         from mcp.server.stdio import stdio_server
     except ImportError as exc:
-        raise MCPUnavailable(
-            f"the MCP SDK is not available in this environment ({exc}); "
-            "install it with: pip install 'vkit[mcp]'"
-        ) from exc
-    return types, SdkServer, stdio_server
+        raise MCPUnavailable(f"the MCP SDK is not installed ({exc}); install vkit[mcp]") from exc
+    server = Server(Path(root))
 
+    async def list_tools(_ctx: Any, _params: Any) -> Any:
+        return types.ListToolsResult(tools=[
+            types.Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"],
+                       annotations=types.ToolAnnotations(readOnlyHint=t["annotations"]["readOnlyHint"]))
+            for t in tool_definitions()])
 
-def protocol_tools(tools: Server) -> list[Any]:
-    """The six tool specs as the protocol's `Tool` models.
+    async def call_tool(_ctx: Any, params: Any) -> Any:
+        body, is_error = await anyio.to_thread.run_sync(server.call, params.name, params.arguments)
+        return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(body, indent=2))],
+                                    isError=is_error)
 
-    Built from the same table `Server.list_tools` publishes, so a tool cannot be
-    callable without being listed. The annotations go through the SDK's model
-    rather than being passed as a dict, because the wire names are camelCase and
-    the field names are not, and a dict lands as extra unvalidated fields.
-    """
-    types, _SdkServer, _stdio_server = _sdk()
-    return [
-        types.Tool(
-            name=spec.name,
-            description=spec.description,
-            inputSchema=spec.input_schema,
-            annotations=types.ToolAnnotations.model_validate(spec.annotations()),
-        )
-        for spec in tools.list_tools()
-    ]
+    sdk = SdkServer(name=Path(root).name, version=__version__, instructions=INSTRUCTIONS,
+                    on_list_tools=list_tools, on_call_tool=call_tool)
 
-
-def _as_call_result(types: Any, result: ToolResult) -> Any:
-    """One `ToolResult` as the protocol's answer to a tool call.
-
-    `is_error` becomes `isError`, and that mapping is the load-bearing part. A
-    check that FAILED is a recorded verdict, so it arrives with `isError` false
-    and `"result": "FAIL"` in the body; a refused request arrives with `isError`
-    true. Collapsing the two would let a stored FAIL read as a failed call, and
-    neither verdict is recomputed here.
-    """
-    body = json.dumps(result.content, indent=2, ensure_ascii=False)
-    return types.CallToolResult(
-        content=[types.TextContent(type="text", text=body)],
-        isError=result.is_error,
-    )
-
-
-def serve_stdio(root: str | Path) -> int:
-    """Serve the six tools over stdio using the official `mcp` SDK.
-
-    Returns 0 once the client has disconnected. Raises `MCPUnavailable` when the
-    SDK is not installed, so the caller owns the exit code.
-    """
-    import anyio
-
-    types, SdkServer, stdio_server = _sdk()
-    tools = Server(root)
-
-    async def _list_tools(_ctx: Any, _params: Any) -> Any:
-        return types.ListToolsResult(tools=protocol_tools(tools))
-
-    async def _call_tool(_ctx: Any, params: Any) -> Any:
-        return _as_call_result(types, tools.call_tool(params.name, params.arguments))
-
-    sdk = SdkServer(
-        name=tools.project.root.name,
-        version=__version__,
-        instructions=INSTRUCTIONS,
-        on_list_tools=_list_tools,
-        on_call_tool=_call_tool,
-    )
-
-    async def _main() -> None:
-        print(f"vkit mcp serving {tools.project.root}", file=sys.stderr, flush=True)
+    async def main() -> None:
+        print(f"vkit mcp serving {root}", file=sys.stderr, flush=True)
         async with stdio_server() as (read_stream, write_stream):
             await sdk.run(read_stream, write_stream, sdk.create_initialization_options())
 
-    anyio.run(_main)
+    anyio.run(main)
     return 0
-
-
-def schemas() -> dict[str, dict[str, Any]]:
-    """The frozen input schemas, keyed by tool name. Tests assert on this."""
-    return {spec.name: spec.input_schema for spec in TOOLS}

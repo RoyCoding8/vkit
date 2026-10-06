@@ -53,3 +53,42 @@ DRIVER = textwrap.dedent('''
             json.dump({"schema_version": 1, "scenarios": [
                 {"id": i, "result": "PASS" if ok else "FAIL", "observation": o} for i, ok, o in results]}, handle)
 ''')
+
+
+
+class McpClient:
+    """Newline-delimited JSON-RPC over the real `vkit mcp serve` subprocess."""
+
+    def __init__(self, project: Path) -> None:
+        self.proc = subprocess.Popen([sys.executable, "-m", "vkit.cli", "mcp", "serve", "--project", str(project)],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     text=True, encoding="utf-8", **NO_WINDOW)
+        self.next_id = 0
+        self.initialize = self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                                      "clientInfo": {"name": "vkit-tests", "version": "0"}})
+        self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def send(self, message: dict[str, Any]) -> None:
+        self.proc.stdin.write(json.dumps(message) + "\n")
+        self.proc.stdin.flush()
+
+    def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.next_id += 1
+        self.send({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise AssertionError("server closed stdout: " + self.proc.stderr.read())
+            message = json.loads(line)
+            if message.get("id") == self.next_id:
+                if "error" in message:
+                    raise AssertionError(message["error"])
+                return message["result"]
+
+    def call(self, name: str, **arguments: Any) -> tuple[Any, bool]:
+        result = self.request("tools/call", {"name": name, "arguments": arguments})
+        return json.loads(result["content"][0]["text"]), result.get("isError", False)
+
+    def close(self) -> None:
+        self.proc.stdin.close()
+        self.proc.wait(timeout=30)

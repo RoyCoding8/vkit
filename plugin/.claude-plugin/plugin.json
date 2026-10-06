@@ -1,12 +1,16 @@
 {
   "name": "vkit",
   "displayName": "Verification Kit",
-  "version": "0.1.0",
-  "description": "Run registered repository checks and keep a durable, trustworthy outcome. Skills and hooks over the vkit core; the selected model stays a host choice.",
+  "version": "0.2.0",
+  "description": "Machine-checked evidence for agents: which registered checks are fresh, stale or failing for the code as it is now, and a gate that is READY only when all of them passed.",
   "author": {
     "name": "Shashwata Roy"
   },
-  "keywords": ["verification", "evidence", "checks"],
+  "keywords": [
+    "verification",
+    "evidence",
+    "checks"
+  ],
   "mcpServers": "./.mcp.json",
   "hooks": "./hooks/hooks.json",
   "userConfig": {
@@ -18,7 +22,7 @@
     "python": {
       "type": "string",
       "title": "Python interpreter",
-      "description": "Interpreter that has vkit installed. The hooks read the store through it.",
+      "description": "Interpreter that has vkit installed. The hooks read the gate through it.",
       "default": "python"
     }
   }

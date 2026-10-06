@@ -92,8 +92,9 @@ def run_view(ctx: Context, run_id: str, *, log: str = "stdout", offset: int = 0,
         raise ValueError("log must be stdout or stderr")
     path = ctx.store.run_dir(run_id) / f"{log}.log"
     data = path.read_bytes() if path.is_file() else b""
-    window = data[max(0, offset):max(0, offset) + max(0, limit)]
-    return {**record, "log": {"stream": log, "offset": offset, "size": len(data),
+    start = max(0, len(data) + offset) if offset < 0 else offset
+    window = data[start:start + max(0, limit)]
+    return {**record, "log": {"stream": log, "offset": start, "size": len(data),
                               "text": window.decode("utf-8", "replace")}}
 
 

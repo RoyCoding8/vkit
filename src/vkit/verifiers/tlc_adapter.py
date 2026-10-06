@@ -1,75 +1,24 @@
-"""Read one TLC run and decide what it established, or why it established nothing.
-
-The half of `kind: "tlc"` that decides nothing about a verdict: every refusal is a
-`Blocked` carrying its own reason, and every acceptance is a set of model-property
-obligations at the bounds the check pinned, with the state counts TLC reported.
-
-**Why the exit code alone decides nothing.** `docs/verification.md`
-requires successful exhaustive exploration, and TLC's own source is why that has to
-be read from the output rather than the status. `tlc2/TLC.java` ends with
-`System.exit(EC.ExitStatus.errorConstantToExitStatus(errorCode))`, and
-`tlc2/output/EC.java` maps that constant onto a small vocabulary: 0 success, 11
-safety violation, 12 liveness violation, 13 deadlock, 151 spec parse error, 152
-config parse error, 255 anything unmapped. So a violation, a config typo and an
-unmapped crash are three different exit statuses and a caller that read only
-"non-zero" could not tell a model that failed from a run that never started. This
-reader reads BOTH: the mapped exit status says which class of answer arrived, and
-the completion markers say whether the exploration was exhaustive. Both are
-required, and neither substitutes for the other.
-
-**The completion markers, measured rather than remembered.** `tlc2/output/MP.java`
-is the authority for every string below:
-
-    EC.TLC_STATS         "%1% states generated, %2% distinct states found,
-                          %3% states left on queue."
-    EC.TLC_SUCCESS       "Model checking completed. No error has been found.\\n..."
-    EC.TLC_SEARCH_DEPTH  "The depth of the complete state graph search is %1%."
-    EC.TLC_STATS_SIMU    "The number of states generated: %1%\\nSimulation using
-                          seed %2% and aril %3%"
-
-`formal/run_tlc.py` already reasoned about the first three against a real TLC 2.19
-run. Two of its findings are carried here and one is corrected. It takes the LAST
-match of the summary pattern, because TLC prints a `Progress(n)` line every minute
-whose counts are a snapshot rather than a result; the pattern below is anchored on
-the trailing "states left on queue." so a progress line cannot satisfy it. And it
-treats "0 states left on queue" as the completion signal rather than the absence of
-the word "error". Its `_read_domain` parses cardinality out of the `.cfg` text,
-which is right in direction and wrong in one respect that is corrected here: it
-silently produced an empty domain for a constant spelled differently, and this
-reader refuses rather than reporting a model as bounded by nothing.
-
-**The refusals, each with one reason.** The leading token is the whole contract of
-that refusal and is covered by a test.
-
-  report_version          the document is not a version this code reads
-  report_truncated        the runner did not finish what it set out to do
-  report_malformed        the document is not the shape this code reads
-  tool_missing            the pinned jar or the JRE is not installed here
-  jar_unpinned            no jar digest was pinned, so the operators are unaudited
-  jar_mismatched          the jar measures a different digest than the check pinned
-  simulation_only         TLC sampled states rather than exploring them
-  results_absent          TLC printed no completion summary at all
-  incomplete_exploration  the run stopped with states still on the queue
-  properties_absent       the config TLC read checked fewer properties than required
-  bounds_unresolved       a pinned bound was not a constant the config assigns
-  property_violated       a reachable state or execution violated a checked property
+"""Builds the argv for a TLC check and reads the runner's report into property obligations with the
+state counts TLC reported. A pass needs both the mapped exit status and TLC's completion markers
+in its output; neither alone decides.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..outcome import Blocked, BlockedReason
+from ..outcome import Blocked, BlockedReason, ScenarioResult
 from .obligation import PropertyObligation, obligation_to_json
 from .spec import TlcCheck
 
 REPORT_VERSION = 2
 
-# BLOCKED until their execution and receipt semantics are implemented.
+# The only fingerprint settings the runner supports.
 SUPPORTED_FINGERPRINT = (True, False, 1)
 
 SUCCESS = 0
@@ -114,17 +63,14 @@ TRACE_LIMIT = 6000
 
 
 def _refuse(token: str, reason: BlockedReason, detail: str) -> Blocked:
-    """A BLOCKED whose detail leads with a stable, matchable token."""
+    """A BLOCKED whose detail leads with a stable token that callers and tests match on."""
     return Blocked(reason, f"{token}: {detail}")
-
-
 
 
 @dataclass(frozen=True)
 class TlcRun:
-    """A report whose shape this code has already accepted."""
+    """A report that passed every shape check in `_read`."""
 
-    version: int
     model: str
     model_path: str
     config: str
@@ -138,11 +84,8 @@ class TlcRun:
 
 @dataclass(frozen=True)
 class Exploration:
-    """What the run's own output says about how far it got.
-
-    `exhaustive` is a single derived fact rather than three booleans kept in step,
-    because the three conditions are not independent and a caller that could set
-    them separately could read a partial exploration as a complete one.
+    """How far the run got, per its own output. `exhaustive` is derived so partial exploration
+    cannot be set as complete.
     """
 
     generated: int
@@ -154,13 +97,9 @@ class Exploration:
 
     @property
     def exhaustive(self) -> bool:
-        """Whether every reachable state was explored and no property broke.
+        """Every reachable state explored and no property broken.
 
-        All three conditions, and the reason is measured: TLC prints
-        `EC.TLC_SUCCESS` after the safety phase and again after the liveness
-        checks, so a run that violated a property prints it once, after the
-        violation. The banner alone is therefore not a pass signal, and neither is
-        a zero queue count on a run that already failed.
+        TLC prints its success banner even after a violation, so the banner alone is not a pass.
         """
         return (
             self.left_on_queue == 0
@@ -171,52 +110,33 @@ class Exploration:
 
 @dataclass(frozen=True)
 class AdapterResult:
-    """What one TLC run established.
-
-    `observations` and `counterexamples` are separate for the reason
-    `pytest_adapter` keeps them separate. TLC stops at the first failing state, so
-    only the property it names is a counterexample; the others remain unresolved.
+    """What one TLC run established. TLC stops at the first failing state, so only the property it
+    names is a counterexample.
     """
 
-    observations: tuple[tuple[PropertyObligation, dict], ...]
+    observations: tuple[PropertyObligation, ...]
     counterexamples: tuple[tuple[PropertyObligation, str], ...]
     model: str
     tool_version: str
-    jar_sha256: str
     exploration: Exploration
-    fingerprint: tuple[bool, bool, int]
-    checked_properties: tuple[str, ...]
-    config_digest: str
-
-    @property
-    def is_pass(self) -> bool:
-        return not self.counterexamples
 
     def scenarios(self) -> tuple:
-        """The reading in the shape every existing outcome consumer already reads."""
-        from ..outcome import ScenarioResult
-
+        """The reading as outcome `ScenarioResult`s."""
         observation = (
             f"TLC explored all {self.exploration.distinct} distinct states of "
             f"{self.model} exhaustively and {self.tool_version} reported no "
             "violation"
         )
         return tuple(
-            ScenarioResult(f"{o.property_name}", True, observation)
-            for o, _ in self.observations
+            ScenarioResult(o.property_name, True, observation)
+            for o in self.observations
         ) + tuple(
-            ScenarioResult(f"{o.property_name}", False, trace)
+            ScenarioResult(o.property_name, False, trace)
             for o, trace in self.counterexamples
         )
 
     def obligation_results(self) -> tuple[list[dict], list[dict]]:
-        """The satisfied obligations and counterexamples, in the receipt's shapes.
-
-        A satisfied property carries the state counts, which `receipt.v2.json`
-        requires. A receipt that recorded a property as satisfied without the
-        exploration that satisfied it would be the overstatement
-        `claimkind.py` exists to prevent.
-        """
+        """Satisfied properties (with state counts) and counterexamples as run-record dicts."""
         satisfied = [
             {
                 "kind": "property_satisfied",
@@ -227,7 +147,7 @@ class AdapterResult:
                     "generated": self.exploration.generated,
                 },
             }
-            for obligation, _ in self.observations
+            for obligation in self.observations
         ]
         counterexamples = [
             {"obligation": obligation_to_json(obligation), "trace": trace}
@@ -235,59 +155,14 @@ class AdapterResult:
         ]
         return satisfied, counterexamples
 
-    def assumptions(self) -> tuple[str, ...]:
-        """What a reader has to believe for this to mean what it says.
-
-        `claimkind.py` owns the sentence about what a finite-model result does and
-        does not establish, and it is quoted rather than restated so the receipt
-        and the module that defines FINITE_MODEL cannot drift apart.
-        """
-        from ..claimkind import ClaimCategory
-
-        return (
-            f"the checked properties hold in every reachable state of one finite "
-            f"model ({self.model}) at one recorded configuration, which establishes "
-            f"{ClaimCategory.FINITE_MODEL.establishes}. It does not establish "
-            f"{ClaimCategory.FINITE_MODEL.does_not_establish}",
-            f"the properties checked were exactly {', '.join(self.checked_properties) or 'none'}, "
-            "read out of the config file TLC itself read rather than out of a "
-            "manifest declaration",
-            f"the run explored {self.exploration.distinct} distinct states "
-            f"({self.exploration.generated} generated, "
-            f"{self.exploration.left_on_queue} left on the queue) to depth "
-            f"{self.exploration.depth}. A different number of workers, revisions or "
-            "resources is a different claim and needs its own run.",
-            "the recorded fingerprint settings were "
-            f"constants_from_config={self.fingerprint[0]}, "
-            f"checksum_states={self.fingerprint[1]}, workers={self.fingerprint[2]}",
-            f"TLC {self.tool_version} was run from a jar measuring {self.jar_sha256}. "
-            "That digest pins the TLC jar, but this receipt has no recursive TLA+ "
-            "import inventory and does not establish that every transitive model "
-            "dependency was pinned. It also does not establish that the model "
-            "faithfully represents any implementation. It assumes the run report "
-            "came from vkit's trusted runner; the adapter does not authenticate "
-            "report provenance.",
-            "a model checking result is a statement about the TLA+ specification. An "
-            "implementation of the same rules needs its own correspondence "
-            "obligation, which this run did not discharge.",
-        )
-
-
-
 
 def argv_for(check: TlcCheck, run_dir: Path, python: str | None) -> tuple[str, ...]:
-    """The exact argument list a TLC check is executed with.
+    """The argument list a TLC check runs with.
 
-    vkit's interpreter launches the stdlib-only runner, which launches `java`. Two
-    hops for the reason `lean_adapter.argv_for` gives: `execution.launch` owns
-    process ownership and descendant lifetime, and a runner that forked TLC itself
-    would be a second process owner.
-
-    The jar path and its digest both come from the check's `toolchain`, and the
-    runner verifies the digest before a `java` process exists. Nothing here is
-    derived from a manifest-supplied shell string.
+    The runner is the script beside this module, and it verifies the jar digest before any
+    `java` process exists.
     """
-    interpreter = python or _this_interpreter()
+    interpreter = python or sys.executable
     variant = getattr(check, "variant", None) or check
     root = Path(check.cwd)
     tool = variant.toolchain.tool
@@ -312,19 +187,10 @@ def argv_for(check: TlcCheck, run_dir: Path, python: str | None) -> tuple[str, .
 
 
 def _tool_paths(tool: str) -> tuple[str, str]:
-    """The JRE and the jar, from the toolchain declaration and the environment.
+    """The JRE and the jar for a toolchain declaration.
 
-    `toolchain.tool` names the TOOL, and `manifest.v2.json` constrains it to
-    `"lean"` or `"tlc"`. So a bare `"tlc"` is a name rather than a path, and the
-    jar has to come from somewhere else: `VKIT_TLA2TOOLS_JAR`, the same variable
-    `formal/run_tlc.py` reads, so an operator who installed the toolchain for that
-    script has it for this one.
-
-    The first version treated a non-path `tool` as though it were the jar path and
-    handed the runner `--jar tlc`, which it refused as a file that does not exist.
-    Measured: with a real JDK and a real jar on PATH, the run failed on the tool
-    NAME rather than on anything about the model. A tool name is never a file, so
-    the two cases are told apart by looking at what the value names.
+    `toolchain.tool` is a name (`"tlc"`), not a path, so the jar comes from `VKIT_TLA2TOOLS_JAR`
+    unless the value already looks like a path.
     """
     looks_like_a_path = tool.endswith(".jar") or "/" in tool or "\\" in tool
     if looks_like_a_path:
@@ -333,30 +199,12 @@ def _tool_paths(tool: str) -> tuple[str, str]:
 
 
 def _runner_path() -> Path:
-    """The runner beside this module.
-
-    Resolved from `__file__` rather than from an environment variable, because an
-    environment variable is a thing a candidate can set and a path beside the
-    shipped adapter is not.
-    """
+    """The runner beside this module, never a path from the environment."""
     return Path(__file__).resolve().parent / "tlc_runner.py"
 
 
-def _this_interpreter() -> str:
-    import sys
-
-    return sys.executable
-
-
-
-
 def interpret(raw: bytes, check: TlcCheck) -> AdapterResult | Blocked:
-    """What one TLC run established, or the reason it established nothing.
-
-    Refuse unsupported settings and missing tool pins before inspecting any run
-    result. Then bind the report to the declared model, paths, fingerprint,
-    checker jar, and version before reading the exploration or its properties.
-    """
+    """What one TLC run established, or why it established nothing."""
     variant = getattr(check, "variant", None) or check
     expected_fingerprint = (
         variant.fingerprint.constants_from_config,
@@ -475,10 +323,9 @@ def interpret(raw: bytes, check: TlcCheck) -> AdapterResult | Blocked:
             "rather than being cut off between the two.",
         )
 
-    config = _config_text(check, variant)
-    if isinstance(config, Blocked):
-        return config
-    text, digest = config
+    text = _config_text(check, variant)
+    if isinstance(text, Blocked):
+        return text
 
     checked = _checked_properties(text)
     required = {obligation.property_name for obligation in variant.properties}
@@ -496,26 +343,16 @@ def interpret(raw: bytes, check: TlcCheck) -> AdapterResult | Blocked:
         return bounds
 
     if violated:
-        return _failed_property(
-            variant, _violation_trace(report.stdout), report, exploration,
-            checked, digest,
-        )
+        return _failed_property(variant, _violation_trace(report.stdout), report, exploration)
 
-    observations = tuple(
-        (obligation, {"distinct": exploration.distinct})
-        for obligation in variant.properties
-    )
     return AdapterResult(
-        observations, (),
-        variant.model.module, report.tool_version, report.jar_sha256,
-        exploration, expected_fingerprint, tuple(checked), digest,
+        tuple(variant.properties), (), variant.model.module, report.tool_version, exploration,
     )
 
 
 def _failed_property(variant: TlcCheck, trace: str, report: TlcRun,
-                     exploration: Exploration, checked: tuple[str, ...], digest: str
-                     ) -> AdapterResult | Blocked:
-    """Name the property TLC actually refuted; do not label untouched ones."""
+                     exploration: Exploration) -> AdapterResult | Blocked:
+    """Attribute a violation to the one required property TLC named, or refuse."""
     match = re.search(
         r"Error: (?:Invariant|Temporal property|Action property) "
         r"([A-Za-z_][A-Za-z0-9_]*) is violated\.", report.stdout,
@@ -537,22 +374,13 @@ def _failed_property(variant: TlcCheck, trace: str, report: TlcRun,
             "exactly one required obligation",
         )
     return AdapterResult(
-        (),
-        ((failures[0], trace),),
-        variant.model.module, report.tool_version, report.jar_sha256,
-        exploration,
-        (variant.fingerprint.constants_from_config,
-         variant.fingerprint.checksum_states, variant.fingerprint.workers),
-        checked, digest,
+        (), ((failures[0], trace),), variant.model.module, report.tool_version, exploration,
     )
 
 
 def _exploration(report: TlcRun) -> Exploration | None:
-    """The run's own totals, from its LAST summary line.
-
-    `formal/run_tlc.py` measured why the LAST one and not the first: TLC prints a
-    `Progress(n)` line every minute carrying the counts so far, and taking the
-    first match recorded a snapshot as though it were the result.
+    """The run's totals from the LAST summary line, since periodic `Progress(n)` lines carry
+    snapshots.
     """
     found = list(_SUMMARY.finditer(report.stdout))
     if not found:
@@ -578,12 +406,7 @@ _VIOLATION = re.compile(
 
 
 def _violation_trace(stdout: str) -> str:
-    """The state sequence TLC printed, which is the counterexample.
-
-    Taken from the first line TLC marks as a state so the trace starts at the
-    violation rather than at the run's banner, and bounded because an
-    unbounded one would carry a whole state graph into durable evidence.
-    """
+    """The state sequence TLC printed, from the first state or violation line, bounded."""
     lines = stdout.splitlines()
     start = next(
         (index for index, line in enumerate(lines)
@@ -596,21 +419,13 @@ def _violation_trace(stdout: str) -> str:
 
 
 def _tail(blob: str) -> str:
-    """The last few lines of TLC's output, for a refusal that needs to show why."""
+    """The last non-empty lines of TLC's output, for refusals that need to show why."""
     return "\n".join([line for line in blob.splitlines() if line.strip()][-15:])[:2000]
 
 
-def _config_text(check: Any, variant: TlcCheck) -> tuple[str, str] | Blocked:
-    """The config TLC was pointed at, and its digest.
-
-    Read from the file rather than from the check's declaration, because the
-    declaration says what the owner intended and the file says what TLC read, and
-    a receipt reporting the first as though it were the second would be the
-    overstatement `formal/run_tlc.py` refuses when its parsed domain disagrees
-    with its recorded one.
+def _config_text(check: Any, variant: TlcCheck) -> str | Blocked:
+    """The config file TLC was pointed at, read from disk rather than from the check's declaration.
     """
-    import hashlib
-
     path = Path(check.cwd) / variant.config
     if not path.is_file():
         return _refuse(
@@ -618,17 +433,11 @@ def _config_text(check: Any, variant: TlcCheck) -> tuple[str, str] | Blocked:
             f"the config {path} does not exist, so there is no recorded "
             "configuration for this model result",
         )
-    raw = path.read_bytes().replace(b"\r\n", b"\n")
-    return raw.decode("utf-8", "replace"), hashlib.sha256(raw).hexdigest()
+    return path.read_bytes().replace(b"\r\n", b"\n").decode("utf-8", "replace")
 
 
 def _checked_properties(config_text: str) -> tuple[str, ...]:
-    """The property names the config's INVARIANTS and PROPERTIES sections name.
-
-    Both sections, because a property checked as an action or temporal property
-    is as checked as one checked as an invariant. Read from the config text with
-    the same shape `formal/run_tlc.py` used, which is the shape TLC itself reads.
-    """
+    """Property names in the config's INVARIANTS and PROPERTIES sections."""
     names: list[str] = []
     for section in ("INVARIANTS", "PROPERTIES"):
         block = re.search(rf"^{section}\n((?:[ \t]+\S+[ \t]*\n)+)", config_text, re.MULTILINE)
@@ -640,14 +449,8 @@ def _checked_properties(config_text: str) -> tuple[str, ...]:
 
 
 def _bounds(config_text: str, variant: TlcCheck) -> dict | Blocked:
-    """Each pinned bound, measured against the config that set it.
-
-    A run at different bounds is a different claim, so a bound the config does not
-    assign is refused rather than reported from the manifest. This is
-    `formal/run_tlc.py`'s `_read_domain` with the silent-empty case turned into a
-    refusal: that version produced `{}` for a config whose constants were spelled
-    differently, and an empty domain reads as "bounded by nothing", which is a
-    claim nobody checked.
+    """Each pinned bound checked against the config that set it; a bound the config does not
+    assign, or contradicts, is refused.
     """
     assigned = _constants(config_text)
     unresolved = sorted(name for name, _ in variant.bounds.as_pairs if name not in assigned)
@@ -676,13 +479,8 @@ def _bounds(config_text: str, variant: TlcCheck) -> dict | Blocked:
 
 
 def _constants(config_text: str) -> dict[str, int]:
-    """Every constant the config assigns, with its cardinality.
-
-    The cardinality rules are TLC's own, taken from the shapes a TLA+ config
-    permits: a `..` range is inclusive at both ends, a set literal is its own
-    size, and a bare integer is 1. `formal/run_tlc.py` implemented the first two
-    and left a bare integer at 0, which understated a model rather than refusing
-    it.
+    """Every constant the config assigns, with its cardinality (`..` ranges are inclusive, a bare
+    integer is 1).
     """
     block = re.search(r"^CONSTANTS\n((?:[ \t]+\S+.*\n)+)", config_text, re.MULTILINE)
     if not block:
@@ -696,7 +494,7 @@ def _constants(config_text: str) -> dict[str, int]:
 
 
 def _cardinality(value: str) -> int:
-    """How many values TLC will take for one constant assignment."""
+    """How many values one constant assignment takes."""
     text = value.strip()
     if ".." in text:
         low, _, high = text.partition("..")
@@ -712,10 +510,8 @@ def _cardinality(value: str) -> int:
     return len([part for part in inner.split(",") if part.strip()])
 
 
-
-
 def _read(raw: bytes) -> TlcRun | Blocked:
-    """Decode and shape-check the runner's report, refusing each unusable way."""
+    """Decode and shape-check the runner's report, refusing each unusable form."""
     try:
         document = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -786,7 +582,6 @@ def _read(raw: bytes) -> TlcRun | Blocked:
             "the report does not record valid fingerprint settings",
         )
     return TlcRun(
-        version,
         str(document.get("model", "")),
         str(document.get("model_path", "")),
         str(document.get("config", "")),
@@ -801,7 +596,7 @@ def _read(raw: bytes) -> TlcRun | Blocked:
 
 
 def _tlc_version(text: str) -> str | None:
-    """Read TLC's checker version, not the release tag used to download its jar."""
+    """TLC's checker version, not the release tag used to download its jar."""
     match = re.search(r"\bVersion\s+([0-9]+\.[0-9]+)\b", text, re.IGNORECASE)
     if not match:
         match = re.search(r"\bTLC\s+([0-9]+\.[0-9]+)\b", text, re.IGNORECASE)

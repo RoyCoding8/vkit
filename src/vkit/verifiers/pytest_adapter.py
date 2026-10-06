@@ -1,66 +1,6 @@
-"""Interpret one pytest run from a structured report, and refuse everything else.
-
-This module is two halves of one contract. The first is a pytest plugin: it is
-loaded into the pinned runner by the argv `dispatch` builds, and it writes a
-versioned document naming every test the runner actually executed. The second
-reads that document back and decides what the run established.
-
-Each entry carries the generator settings the test ran under, which are null
-for every test that is not a Hypothesis one. That is the only field here that
-depends on a library rather than on the runner, and it is recorded on every
-entry rather than only on the ones that need it so that a report's shape does
-not depend on which tests happened to be property tests. `property_adapter`
-reads them; `interpret` below does not, because a `pytest` check over a
-Hypothesis file is SCENARIO evidence and the settings do not change that.
-
-**Why vkit produces the report rather than importing a plugin that does.** A
-third-party report plugin is the obvious source of a structured pytest report,
-and this build has no way to depend on one: `pyproject.toml` is not this
-package's to change, and a report format named by a version this package did not
-choose is a format whose meaning is a fact about somebody else's release. The
-contract says a verdict must come from actual checker output the adapter alone
-interprets, and the strongest reading of that is that vkit owns both ends of the
-document it reads. It also removes a failure mode with no equivalent in the rest
-of the system: a report plugin that changes its schema between two runs of the
-same check, which would make a stored receipt describe a document that is no
-longer the one this code parses.
-
-**Why the report is the only evidence.** `docs/verification.md` requires the core
-to interpret structured output rather than scrape success prose, and prose is
-what a runner writes to a terminal. Nothing here reads stdout or stderr. A
-runner that exits zero having printed the word "passed" and executed nothing has
-written no report, and `report_absent` is the answer.
-
-**What each test's outcome means.** A failed assertion is FAIL and an
-infrastructure error is BLOCKED, and they are different answers to different
-questions: one says the code under test disagreed with its expectation, the other
-says the runner could not deliver an answer at all. The runner's own vocabulary
-distinguishes them, and collapsing the two is what turns a broken environment
-into a red test that a reader is invited to go and fix.
-
-**The refusals, each with one reason.** Six ways a report can fail to answer the
-question are refused separately rather than as one "malformed", because each has
-a different repair and a reader who is told only "malformed" has to rediscover
-which. `BlockedReason` is frozen in `vkit.outcome` and enumerated again by
-`schemas/run-report.v1.json`, so the distinction is carried in the detail's
-leading token. Each token below is the whole contract of that refusal; a caller
-may match on it and the string is covered by a test.
-
-  report_version         the document is not a version this code reads
-  report_truncated       the document's own completeness marker says it stopped early
-  report_malformed       the document is not the shape this code reads
-  report_empty           the runner collected no tests at all
-  report_contradiction   one test id carries two different results
-  required_test_absent   a required test id never appears in the report
-  required_test_skipped  a required test id appears, but was not run
-  infrastructure_error   a test errored before it could assert anything
-
-**A report that was never written is not in that list**, and the omission is
-deliberate rather than an oversight. This adapter only reads bytes it was given,
-so a runner that wrote nothing is caught one layer up: `execution._derive` sees
-no artifact and returns `BlockedReason.ARTIFACT_MISSING` naming the file. An
-earlier draft of this docstring listed a `report_absent` token here; nothing
-produced it, and the refusal that actually happens names the artifact instead.
+"""A pytest plugin that writes a versioned report of every test the runner executed, and the reader
+that decides what the report establishes. The report is the only evidence: stdout and stderr are
+never read.
 """
 from __future__ import annotations
 
@@ -70,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..outcome import Blocked, BlockedReason
-from .obligation import CaseObligation, obligation_to_json
+from .obligation import CaseObligation, case_results, scenario_results
 from .spec import PytestCheck
 
 REPORT_VERSION = 1
@@ -88,20 +28,10 @@ OUTCOMES = frozenset({PASSED, FAILED, SKIPPED, ERRORED})
 MESSAGE_LIMIT = 2000
 
 
-
-
 @dataclass(frozen=True)
 class TestOutcome:
-    """One test id, as the runner reported it.
-
-    `outcome` is the runner's own word and is not translated here. Translating
-    it at this layer would put a second vocabulary beside the first, and the two
-    would drift the first time the runner added a word.
-
-    `generator` is the Hypothesis settings this test ran under, or None when it
-    is not a Hypothesis test. It is carried rather than acted on: a pytest check
-    that happens to run a property test is still SCENARIO evidence, and it is
-    `property_adapter` that reads the field.
+    """One test id with the runner's own outcome word; `generator` holds Hypothesis settings, or
+    None for other tests.
     """
 
     nodeid: str
@@ -110,41 +40,24 @@ class TestOutcome:
     message: str
     generator: dict | None = None
 
-    @property
-    def passed(self) -> bool:
-        return self.outcome == PASSED
-
 
 @dataclass(frozen=True)
 class RunnerReport:
-    """A report whose shape this code has already accepted.
+    """A report that passed every shape check in `_read`."""
 
-    Constructing one is the only way to hold a report, so a caller cannot hold a
-    document that failed the refusals above: the shape is the constructor's
-    argument and the refusals are its callers.
-    """
-
-    version: int
-    complete: bool
     tests: tuple[TestOutcome, ...]
 
     def by_id(self) -> dict[str, TestOutcome]:
-        """Every result keyed by test id. A duplicate cannot appear: `_read`
-        refuses a contradictory one, and two identical entries are one result."""
+        """Results keyed by test id; `_read` has already refused contradictory duplicates."""
         return {test.nodeid: test for test in self.tests}
 
 
 @dataclass(frozen=True)
 class AdapterResult:
-    """What one pytest run's structured report established.
-
-    `observations` and `counterexamples` are separate rather than one list with a
-    flag, because a run with both is a FAIL whose receipt must still name what
-    did pass. A single list would force the receipt to either drop the passing
-    cases or present the failing ones as successes.
+    """What one pytest run established. Passing and failing cases are kept apart so a FAIL still
+    names what passed.
     """
 
-    passed: tuple[CaseObligation, ...]
     observations: tuple[tuple[CaseObligation, str], ...]
     counterexamples: tuple[tuple[CaseObligation, str], ...]
     generator_settings: dict[str, dict] | None = None
@@ -154,52 +67,16 @@ class AdapterResult:
         return not self.counterexamples
 
     def scenarios(self) -> tuple:
-        """The reading in the shape every existing outcome consumer already reads.
-
-        Built here rather than by the caller, so a report, a receipt and a
-        console view all describe a pytest run through one projection rather than
-        each translating the runner's vocabulary for itself.
-        """
-        from ..outcome import ScenarioResult
-
-        return tuple(
-            ScenarioResult(o.test_id, True, observation)
-            for o, observation in self.observations
-        ) + tuple(
-            ScenarioResult(o.test_id, False, trace) for o, trace in self.counterexamples
-        )
+        """The reading as outcome `ScenarioResult`s."""
+        return scenario_results(self.observations, self.counterexamples)
 
     def obligation_results(self) -> tuple[list[dict], list[dict]]:
-        """The satisfied obligations and counterexamples, in the receipt's shapes.
-
-        A satisfied case carries the observation the runner produced and a
-        counterexample carries the failure message. Nothing else is emitted: a
-        theorem satisfied record needs an axiom audit and a property one needs
-        state counts, and neither is derivable from a pytest report, so a pytest
-        receipt has no way to claim either.
-        """
-        satisfied = [
-            {
-                "kind": "case_satisfied",
-                "obligation": obligation_to_json(obligation),
-                "observation": observation,
-            }
-            for obligation, observation in self.observations
-        ]
-        counterexamples = [
-            {
-                "obligation": obligation_to_json(obligation),
-                "trace": trace,
-            }
-            for obligation, trace in self.counterexamples
-        ]
-        return satisfied, counterexamples
-
-
+        """Satisfied cases and counterexamples as run-record dicts."""
+        return case_results(self.observations, self.counterexamples)
 
 
 def pytest_addoption(parser: Any) -> None:
-    """Teach the runner the one flag vkit needs it to accept."""
+    """Register the report-path flag."""
     group = parser.getgroup("vkit", "vkit evidence contract")
     group.addoption(
         REPORT_FLAG, action="store", default=None, metavar="PATH",
@@ -208,31 +85,16 @@ def pytest_addoption(parser: Any) -> None:
 
 
 def pytest_configure(config: Any) -> None:
-    """Install the collector before any test runs.
-
-    The report is accumulated on the config object rather than in a module-level
-    list, because a module-level list survives across runs in the same
-    interpreter. A process that ran pytest twice would otherwise report the first
-    run's tests as the second's, which is precisely the duplicate a run of the
-    same test id must be refused for.
+    """Install the collector on the config, so a second run in one interpreter cannot inherit the
+    first's tests.
     """
     config._vkit_reported = []
 
 
 def pytest_runtest_makereport(item: Any, call: Any) -> None:
-    """Record one phase of one test, from the hook that receives the config.
+    """Record one test's `call` phase, or any phase that raised.
 
-    `pytest_runtest_logreport` is the more obvious hook and cannot be used: the
-    `TestReport` it is handed carries no config, and reaching for one raises
-    `AttributeError` on every test and turns the whole run into pytest's
-    INTERNAL_ERROR. Measured, and the failure is a true BLOCKED whose detail then
-    names the wrong cause. This hook receives the `item`, and the item carries
-    both the config and the phase.
-
-    Only the phases that carry a decision are recorded, and a test's verdict is
-    its `call` phase. A test that fails and then passes in its teardown has two
-    phases saying different things, and the call phase is the one that says
-    whether the code under test met its expectation.
+    Uses this hook because `pytest_runtest_logreport` has no config on its report.
     """
     if not (call.when == "call" or call.excinfo is not None):
         return
@@ -257,19 +119,8 @@ def pytest_runtest_makereport(item: Any, call: Any) -> None:
 
 
 def _generator_settings(item: Any) -> dict | None:
-    """The Hypothesis settings this test actually ran under, or None.
-
-    Read off the test object rather than out of the manifest, and only when the
-    test really is a Hypothesis one: `getattr` rather than a membership test, so
-    a runner that drops or renames the attribute leaves a null here instead of
-    an `AttributeError` on every test in the suite.
-
-    Measured on hypothesis 6.168.3: a `@given` test carries
-    `_hypothesis_internal_use_settings` on its function, and at the end of the
-    call phase it reflects the profile in force rather than the library default.
-    `deadline` is read off the object because a settings object whose deadline is
-    unset reports it as `None` rather than as a number, and a null here means the
-    check declared none.
+    """The Hypothesis settings this test ran under, or None. Read with `getattr` so a runner that
+    drops the attribute yields null, not an error.
     """
     settings = getattr(
         getattr(item, "function", None), "_hypothesis_internal_use_settings", None,
@@ -290,20 +141,10 @@ def _generator_settings(item: Any) -> dict | None:
 
 
 def _is_assertion(excinfo: Any) -> bool:
-    """Whether this exception is a failed assertion rather than a crash.
+    """Whether the exception is a failed assertion rather than a crash.
 
-    Two types, because the runner raises two. `pytest.fail(msg)` raises
-    `Failed`, which is not a subclass of `AssertionError` -- it descends from
-    `OutcomeException` instead -- while a bare `assert` statement raises
-    `AssertionError` directly and never goes through `Failed` at all. Measured on
-    this host, and testing for `Failed` alone recorded every passing test as an
-    error: a passing test raises nothing, so the check ran against a `None` path
-    and reported the phase it was in.
-
-    Read off the exception's own type rather than its text, because the runner's
-    own judgement is what this adapter is recording. A `RuntimeError` from a
-    fixture is neither of these, and treating it alike is how a broken
-    environment becomes a red test that a reader is invited to go and fix.
+    `pytest.fail` raises `Failed`, which is not an `AssertionError`; a bare `assert` raises
+    `AssertionError`.
     """
     import pytest as _pytest
 
@@ -311,7 +152,7 @@ def _is_assertion(excinfo: Any) -> bool:
 
 
 def _skip(call: Any) -> str | None:
-    """The runner's skip reason for this phase, or None when it was not skipped."""
+    """The skip reason for this phase, or None."""
     import pytest as _pytest
 
     excinfo = getattr(call, "excinfo", None)
@@ -323,29 +164,15 @@ def _skip(call: Any) -> str | None:
 
 
 def _message(excinfo: Any) -> str:
-    """Whatever the runner recorded about a failure, bounded.
-
-    `str(excinfo.value)` is the assertion's own message and is what a reader
-    needs; the traceback is what pytest already wrote to the run's stderr log.
-    Duplicating the whole traceback into durable evidence would grow a receipt
-    without adding anything a reader could act on. Measured: a bare `assert`
-    raises `AssertionError` whose `str` carries both the author's message and
-    the comparison, so one string is enough to act on.
-    """
+    """The failure's own message, bounded; the traceback is already in the run's stderr log."""
     if excinfo is None:
         return "the runner reported a failure with no message"
     return str(excinfo.value)[:MESSAGE_LIMIT] or type(excinfo.value).__name__
 
 
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
-    """Write the report, whether or not the session succeeded.
-
-    The hook is deliberately not wrapped in a try. A writer that swallowed its
-    own failure would leave a run with no report and no explanation, and the
-    refusal that reaches the reader would be `artifact_missing`, naming a
-    missing file rather than the error that stopped it being written. Letting it
-    raise puts the traceback in the run's stderr log, which is where a reader
-    looks.
+    """Write the report, even when the session failed. A failing writer is left to raise so its
+    traceback reaches the run's stderr log.
     """
     path = session.config.getoption(REPORT_FLAG, None)
     if not path:
@@ -369,15 +196,13 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
 _INTERRUPTED_EXITSTATUSES = frozenset({2, 3, 4})
 
 
-
-
 def _refuse(token: str, reason: BlockedReason, detail: str) -> Blocked:
-    """A BLOCKED whose detail leads with a stable, matchable token."""
+    """A BLOCKED whose detail leads with a stable token that callers and tests match on."""
     return Blocked(reason, f"{token}: {detail}")
 
 
 def _read(raw: bytes) -> RunnerReport | Blocked:
-    """Decode and shape-check a report, refusing each way it can be unusable."""
+    """Decode and shape-check a report, refusing each unusable form with its own token."""
     try:
         document = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -472,7 +297,7 @@ def _read(raw: bytes) -> RunnerReport | Blocked:
             f"({contradiction[1]} and {contradiction[2]}), so the report does not "
             "describe one execution",
         )
-    return RunnerReport(version, True, tuple(parsed))
+    return RunnerReport(tuple(parsed))
 
 
 _GENERATOR_KEYS = frozenset({
@@ -482,12 +307,7 @@ _GENERATOR_KEYS = frozenset({
 
 
 def _is_generator(document: Any) -> bool:
-    """Whether a `generator` block is the shape this code reads.
-
-    Parsed, not cast. A report is written by a plugin inside the pinned runner
-    process and read by the core, so it is as much an external document as the
-    check's own artifact is, and it gets the same refusals.
-    """
+    """Whether a `generator` block has the shape this code reads."""
     if not isinstance(document, dict) or not _GENERATOR_KEYS <= set(document):
         return False
     if not isinstance(document["max_examples"], int):
@@ -501,13 +321,7 @@ def _is_generator(document: Any) -> bool:
 
 
 def _contradiction(tests: list[TestOutcome]) -> tuple[str, str, str] | None:
-    """One id reported twice with different outcomes, or None.
-
-    A report carrying the same id twice with the same result is one result: the
-    runner is allowed to report a test's setup and its call and the plugin
-    collapses those already, so two identical entries mean a runner that
-    repeated itself, which is not evidence against the check.
-    """
+    """One id reported twice with different outcomes, or None. Identical repeats are one result."""
     seen: dict[str, str] = {}
     for test in tests:
         first = seen.setdefault(test.nodeid, test.outcome)
@@ -516,16 +330,9 @@ def _contradiction(tests: list[TestOutcome]) -> tuple[str, str, str] | None:
     return None
 
 
-
-
 def interpret(raw: bytes, check: PytestCheck) -> AdapterResult | Blocked:
-    """What the run established, or why it could not be established.
-
-    The required test ids are compared by exact match against what the report
-    names. Exact is the only defensible match: pytest node ids carry the
-    parameterisation, and two ids differing only in a parameter are two tests,
-    so a prefix or substring comparison would let a required parameterisation be
-    discharged by a different one.
+    """What the run established, or why it could not. Required test ids match exactly, since node
+    ids carry the parameterisation.
     """
     report = _read(raw)
     if isinstance(report, Blocked):
@@ -556,7 +363,6 @@ def interpret(raw: bytes, check: PytestCheck) -> AdapterResult | Blocked:
             "disagreeing with its expectation",
         )
 
-    passed: list[CaseObligation] = []
     counterexamples: list[tuple[CaseObligation, str]] = []
     observations: list[tuple[CaseObligation, str]] = []
     generator_settings: dict[str, dict] = {}
@@ -568,12 +374,10 @@ def interpret(raw: bytes, check: PytestCheck) -> AdapterResult | Blocked:
         if result.outcome == FAILED:
             counterexamples.append((obligation, result.message or "the assertion failed"))
             continue
-        passed.append(obligation)
         observations.append((
             obligation,
             f"the runner reported {result.outcome} in {result.duration:g}s",
         ))
     return AdapterResult(
-        tuple(passed), tuple(observations), tuple(counterexamples),
-        generator_settings or None,
+        tuple(observations), tuple(counterexamples), generator_settings or None,
     )

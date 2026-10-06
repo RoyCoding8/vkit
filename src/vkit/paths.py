@@ -1,11 +1,5 @@
-"""Where everything lives, resolved from a repository root.
-
-The evidence location is the one decision that shapes the rest of the system.
-State goes under the Git common directory rather than the working tree so that
-two clones of one repository share evidence, and so that deleting a worker's
-checkout cannot delete the record of what ran in it. Plan 01 acceptance has a
-row for exactly that: retire the copied test checkout and the evidence must
-survive.
+"""Resolves a repository root and its Git common directory, which is shared by worktrees and so
+outlives any one checkout.
 """
 from __future__ import annotations
 
@@ -16,10 +10,7 @@ from pathlib import Path
 
 from .nowindow import hidden_window
 
-STATE_DIR_NAME = "verification-kit"
 MANIFEST_RELATIVE = Path("verification") / "manifest.json"
-DB_NAME = "state.sqlite3"
-RUNS_DIR_NAME = "runs"
 
 
 class ProjectError(Exception):
@@ -27,12 +18,8 @@ class ProjectError(Exception):
 
 
 def _git(args: list[str], cwd: Path) -> str:
-    """Run git and return its output as text.
-
-    The decode is pinned to UTF-8 rather than inherited from the locale. A path
-    read back with the wrong encoding is a *different* string, not an error, and
-    the mismatch then surfaces much later as WinError 267 from an unrelated
-    process launch. See tests/test_encoding.py.
+    """Run git and return stdout. Decoding is pinned to UTF-8 because a mis-decoded path is a
+    different string, not an error.
     """
     try:
         done = subprocess.run(
@@ -53,22 +40,10 @@ def _git(args: list[str], cwd: Path) -> str:
 
 @dataclass(frozen=True)
 class Project:
-    """A resolved repository. Paths are absolute; nothing here re-reads the disk."""
+    """A resolved repository with absolute paths."""
 
     root: Path
     git_common_dir: Path
-
-    @property
-    def state_root(self) -> Path:
-        return self.git_common_dir / STATE_DIR_NAME
-
-    @property
-    def runs_root(self) -> Path:
-        return self.state_root / RUNS_DIR_NAME
-
-    @property
-    def db_path(self) -> Path:
-        return self.state_root / DB_NAME
 
     @property
     def manifest_path(self) -> Path:
@@ -76,11 +51,7 @@ class Project:
 
 
 def open_project(path: str | os.PathLike[str]) -> Project:
-    """Resolve a project root and its shared Git directory.
-
-    Accepts a subdirectory of the repository. Raises ProjectError rather than
-    returning a half-resolved project, because every caller needs both paths.
-    """
+    """Resolve the repository containing `path`, which may be a subdirectory."""
     start = Path(path).expanduser()
     if not start.is_absolute():
         start = Path.cwd() / start

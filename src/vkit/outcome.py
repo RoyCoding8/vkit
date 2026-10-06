@@ -1,17 +1,5 @@
-"""The three things a check run can conclude, and why it concluded them.
-
-Outcome is a sum type on purpose. A `result` string plus an optional `reason`
-would admit PASS-with-a-reason and BLOCKED-with-no-reason, and docs/verification.md
-requires that a terminal run has exactly one outcome and that every BLOCKED
-names its reason. Constructing the variants makes those states unrepresentable
-rather than merely discouraged.
-
-The non-empty scenario list is a different call. A check artifact that lists
-zero scenarios cannot pass, and this module does not enforce that: `parse_artifact`
-only decodes bytes, and the schema allows an empty `scenarios` array on purpose so
-an empty report reads as ARTIFACT_EMPTY rather than as a malformed artifact.
-`execution._scenarios_from_artifact` turns the empty list into that reason. The
-rule lives there because only it knows the check's required scenarios.
+"""A run concludes Passed, Failed, or Blocked; Blocked always carries a reason, so PASS-with-reason
+and BLOCKED-without-one cannot be built.
 """
 from __future__ import annotations
 
@@ -21,18 +9,12 @@ from typing import Any
 
 
 class BlockedReason(str, enum.Enum):
-    """Why execution or evidence was insufficient to decide.
-
-    Every value here is a reason a run could not answer the question. Adding a
-    value is the normal way to extend this; the derivation code is where each
-    one is produced.
-    """
+    """Why a run could not decide."""
 
     PREREQUISITE_MISSING = "prerequisite_missing"
     TOOL_MISSING = "tool_missing"
     TIMEOUT = "timeout"
     CANCELLED = "cancelled"
-    INTERRUPTED = "interrupted"
     ARTIFACT_MISSING = "artifact_missing"
     ARTIFACT_MALFORMED = "artifact_malformed"
     ARTIFACT_EMPTY = "artifact_empty"
@@ -46,8 +28,7 @@ class BlockedReason(str, enum.Enum):
 
 @dataclass(frozen=True)
 class ScenarioResult:
-    """One observed behavior. `observation` is what a human would need to believe
-    it, and is the difference between a FAIL and a shrug."""
+    """One observed behavior and the evidence a reader needs to believe it."""
 
     scenario_id: str
     passed: bool
@@ -63,7 +44,7 @@ class ScenarioResult:
 
 @dataclass(frozen=True)
 class Passed:
-    """Required observations succeeded under the recorded contract."""
+    """Every required observation succeeded."""
 
     scenarios: tuple[ScenarioResult, ...]
 
@@ -73,7 +54,7 @@ class Passed:
 
 @dataclass(frozen=True)
 class Failed:
-    """A valid check observed a product or required-policy failure."""
+    """A valid check observed a failure."""
 
     scenarios: tuple[ScenarioResult, ...]
 
@@ -83,11 +64,7 @@ class Failed:
 
 @dataclass(frozen=True)
 class Blocked:
-    """Execution or evidence was insufficient to decide.
-
-    `reason` is required, not optional. That is the whole point of this variant.
-    `detail` is optional and human-facing; it never carries machine meaning.
-    """
+    """Execution or evidence was insufficient. `detail` is for humans only."""
 
     reason: BlockedReason
     detail: str = ""

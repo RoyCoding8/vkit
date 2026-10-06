@@ -41,6 +41,7 @@ class _Tree:
             ctypes.windll.ntdll.NtResumeProcess(int(proc._handle))
 
     def kill(self) -> None:
+        """Kill every process in the tree. macOS answers EPERM, not ESRCH, when the group holds only zombies."""
         if is_windows:
             import win32job
 
@@ -48,7 +49,7 @@ class _Tree:
         else:
             try:
                 os.killpg(self.proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
 
     def close(self) -> None:

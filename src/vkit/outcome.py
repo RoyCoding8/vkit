@@ -38,8 +38,8 @@ class BlockedReason(str, enum.Enum):
     ARTIFACT_EMPTY = "artifact_empty"
     SCENARIO_UNKNOWN = "scenario_unknown"
     SOURCE_CHANGED = "source_changed"
-    OWNERSHIP_LOST = "ownership_lost"
-    CLEANUP_REQUIRED = "cleanup_required"
+    NOT_APPROVED = "not_approved"
+    INPUT_MISSING = "input_missing"
     LAUNCH_FAILED = "launch_failed"
     INTERNAL_ERROR = "internal_error"
 

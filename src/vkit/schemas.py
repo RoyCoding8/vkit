@@ -1,17 +1,4 @@
-"""Load and validate the boundary schemas.
-
-Validation lives at the boundary so nothing downstream re-checks it. The schemas
-ship inside the installed package, because a user who installs `vkit` outside
-this source checkout still has to get a real rejection rather than an import
-error.
-
-There is more than one version in force, and that is a fact about the product
-rather than an accident of the migration. The v1 files stay readable beside the
-v2 ones: an artifact recorded under the old shape is still evidence, and
-`SCHEMA_VERSIONS` is what says which file describes what. Resolution follows the
-same rule for a wheel and a source checkout, because a user who pip-installs
-`vkit` away from this tree has no other copy.
-"""
+"""JSON Schema validation for manifests and check artifacts, using the schemas shipped in the package."""
 from __future__ import annotations
 
 import json
@@ -24,26 +11,8 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-MANIFEST = "manifest.v1.json"
 MANIFEST_V2 = "manifest.v2.json"
 CHECK_ARTIFACT = "check-artifact.v1.json"
-RUN_REPORT = "run-report.v1.json"
-RECEIPT = "receipt.v2.json"
-
-SCHEMA_VERSIONS: dict[str, int] = {
-    MANIFEST: 1, MANIFEST_V2: 2, CHECK_ARTIFACT: 1, RUN_REPORT: 1, RECEIPT: 2,
-}
-
-
-def schema_version(name: str) -> int:
-    """The version one schema is read at, refusing a name that is not in the map."""
-    try:
-        return SCHEMA_VERSIONS[name]
-    except KeyError:
-        known = ", ".join(sorted(SCHEMA_VERSIONS))
-        raise KeyError(
-            f"no schema version is declared for {name!r}; known schemas: {known}"
-        ) from None
 
 
 class SchemaValidationError(Exception):

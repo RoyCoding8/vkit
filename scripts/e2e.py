@@ -49,18 +49,26 @@ def fresh_copy(example: Example, scratch: Path) -> Path:
     git(target, "init", "-q")
     git(target, "add", ".")
     git(target, "commit", "-qm", "init")
+    code, body = vkit(target, "accept", "--yes")
+    if code != 0:
+        raise SystemExit(f"e2e setup: accept failed in {target}: {body}")
     return target
 
 
-def check_run(project: Path, check_id: str) -> tuple[int, dict]:
-    done = subprocess.run([sys.executable, "-m", "vkit.cli", "check", "run", "--project", str(project),
-                           "--check", check_id, "--json"],
+def vkit(project: Path, *args: str) -> tuple[int, dict]:
+    done = subprocess.run([sys.executable, "-m", "vkit.cli", *args, "--project", str(project), "--json"],
                           capture_output=True, text=True, timeout=600, **NO_WINDOW)
     try:
         body = json.loads(done.stdout)
     except json.JSONDecodeError:
         body = {"unparsed_stdout": done.stdout[-500:], "stderr": done.stderr[-500:]}
     return done.returncode, body
+
+
+def check_run(project: Path, check_id: str) -> tuple[int, dict]:
+    code, body = vkit(project, "check", "run", "--check", check_id)
+    runs = body.get("runs") or [{}]
+    return code, {**body, "outcome": runs[0].get("outcome") or {}}
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -79,6 +87,26 @@ def rows(example: Example, scratch: Path) -> list[tuple[str, bool, str]]:
         out.append((f"{example.name}/{check_id} passes on clean source", code == 0 and result == "PASS",
                     f"exit={code} result={result}"))
 
+    code, body = vkit(clean, "gate")
+    out.append((f"{example.name} gate is READY after every check passed", code == 0 and body.get("verdict") == "READY",
+                f"exit={code} verdict={body.get('verdict')}"))
+    with open(clean / example.bug_file, "a", encoding="utf-8") as handle:
+        handle.write("\n")
+    code, body = vkit(clean, "status", "--path", example.bug_file)
+    states = {c["id"]: c["state"] for c in body.get("checks", [])}
+    out.append((f"{example.name} an edit to {example.bug_file} makes {example.failing_check} stale",
+                states.get(example.failing_check) == "stale", f"states={states}"))
+    code, body = vkit(clean, "gate")
+    out.append((f"{example.name} gate is BLOCKED while a check is stale", code == 3 and body.get("verdict") == "BLOCKED",
+                f"exit={code} verdict={body.get('verdict')}"))
+    code, body = vkit(clean, "check", "run", "--needed")
+    ran = sorted(r["check_id"] for r in body.get("runs", []))
+    out.append((f"{example.name} check run --needed reruns exactly the stale checks",
+                code == 0 and ran == sorted(states), f"exit={code} ran={ran} stale={sorted(states)}"))
+    code, body = vkit(clean, "gate")
+    out.append((f"{example.name} gate is READY again", code == 0 and body.get("verdict") == "READY",
+                f"exit={code} verdict={body.get('verdict')}"))
+
     buggy = fresh_copy(example, scratch / "buggy")
     replace_once(buggy / example.bug_file, example.bug_from, example.bug_to)
     code, body = check_run(buggy, example.failing_check)
@@ -95,6 +123,12 @@ def rows(example: Example, scratch: Path) -> list[tuple[str, bool, str]]:
         for prerequisite in check.get("prerequisites", []):
             prerequisite["executable"] = MISSING_TOOL
     manifest.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    code, body = check_run(blocked, example.checks[0])
+    outcome = body.get("outcome", {})
+    out.append((f"{example.name}/{example.checks[0]} is BLOCKED after its definition changed without acceptance",
+                code == 3 and outcome.get("result") == "BLOCKED" and outcome.get("reason") == "not_approved",
+                f"exit={code} result={outcome.get('result')} reason={outcome.get('reason')}"))
+    vkit(blocked, "accept", "--yes")
     code, body = check_run(blocked, example.checks[0])
     outcome = body.get("outcome", {})
     out.append((f"{example.name}/{example.checks[0]} is BLOCKED when its tool is missing",

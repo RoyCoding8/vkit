@@ -1,955 +1,294 @@
-"""The vkit command line.
+"""vkit: run the checks a repository registered and report what the evidence establishes.
 
-`check run` is a thin shell around `execution.run_check`, and Plan 02's
-supervisor calls that function directly, so the two paths must not drift. The
-same holds for every command below: it parses arguments, calls one core
-function, and maps what came back to an exit code. When a command needs a
-decision that is not "what does the core say", that decision belongs in a core
-module, not here.
-
-Exit codes come from one table, because docs/verification.md makes them part of the
-public interface and a scattered `return 3` is how they drift apart.
+Exit codes: 0 ok/PASS/READY, 1 FAIL/REJECTED, 2 invalid request, 3 BLOCKED, 4 internal error, 5 unavailable.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from pathlib import Path
 from typing import Any, Sequence
 
-from . import idempotency, recover, supervisor, tasks
-from .execution import ExecutionError, run_check
-from .identity import compute_source_identity
-from .manifest import Manifest, ManifestError, parse_manifest
-from .outcome import Blocked, BlockedReason, Failed, Outcome, Passed
-from .paths import Project, ProjectError, open_project
-from .storage import ConflictError, Store, StoreError, probe_state
+from . import query
+from .manifest import ManifestError
+from .outcome import BlockedReason
+from .paths import ProjectError
+from .store import now
 
 EXIT_OK = 0
-EXIT_CHECK_FAILED = 1
+EXIT_FAILED = 1
 EXIT_INVALID = 2
 EXIT_BLOCKED = 3
 EXIT_INTERNAL = 4
 EXIT_UNAVAILABLE = 5
 
-OP_TASK_BEGIN = "task.begin"
-OP_CHECK_START = "check.start"
-OP_RUN_CANCEL = "run.cancel"
+_RESULT_EXIT = {"PASS": EXIT_OK, "FAIL": EXIT_FAILED, "BLOCKED": EXIT_BLOCKED}
+_VERDICT_EXIT = {"READY": EXIT_OK, "REJECTED": EXIT_FAILED, "BLOCKED": EXIT_BLOCKED}
 
 
 class Refused(Exception):
-    """A command that cannot proceed, carrying the exit code that means.
-
-    One exception type so the mapping from a refusal to a shell exit sits in
-    `main` next to the table, instead of being repeated as a try/except pair in
-    every command.
-    """
-
     def __init__(self, message: str, code: int) -> None:
         super().__init__(message)
         self.code = code
 
 
-def exit_code_for(outcome: Outcome) -> int:
-    """One place that knows what an outcome means to a shell.
-
-    0 PASS, 1 a completed FAIL, 3 BLOCKED. Exit 2 is invalid invocation and 4 is
-    an internal error, neither of which is an outcome, so neither appears here.
-    """
-    if isinstance(outcome, Passed):
-        return EXIT_OK
-    if isinstance(outcome, Failed):
-        return EXIT_CHECK_FAILED
-    return EXIT_BLOCKED
-
-
-def exit_code_for_readiness(readiness: str) -> int:
-    """What a finalization verdict means to a shell.
-
-    READY 0, REJECTED 1, BLOCKED 3. REJECTED shares exit 1 with a completed
-    failing check because to a script they are the same answer: this was
-    decided, and the answer was no.
-    """
-    if readiness == "READY":
-        return EXIT_OK
-    if readiness == "REJECTED":
-        return EXIT_CHECK_FAILED
-    return EXIT_BLOCKED
-
-
 def _emit(payload: dict[str, Any], as_json: bool, human: str) -> None:
-    """JSON mode writes one structured response to stdout; diagnostics go to stderr.
-
-    Both modes describe the same result. Nothing is printed to stdout twice, so
-    `vkit ... --json | jq` always works.
-    """
-    if as_json:
-        json.dump(payload, sys.stdout, indent=2)
-        sys.stdout.write("\n")
-    else:
-        print(human)
+    print(json.dumps(payload, indent=2) if as_json else human)
 
 
-def _fail(message: str, as_json: bool, code: int) -> int:
-    if as_json:
-        json.dump({"error": message, "exit_code": code}, sys.stdout, indent=2)
-        sys.stdout.write("\n")
-    else:
-        print(f"error: {message}", file=sys.stderr)
-    return code
-
-
-
-
-def _project(args: argparse.Namespace) -> Project:
+def _context(args: argparse.Namespace) -> query.Context:
     try:
-        return open_project(args.project)
+        return query.open_context(args.project)
     except ProjectError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
 
 
-def _open_store(project: Project) -> Store:
-    try:
-        return Store(project.db_path)
-    except (StoreError, OSError) as exc:
-        raise Refused(str(exc), EXIT_INTERNAL) from exc
-
-
-def _read_policy(project: Project) -> Manifest:
-    """The registered policy, or the `ManifestError` that says why there is none.
-
-    `tasks.acceptance_context` decides what a missing or malformed policy means,
-    so the error has to reach it rather than be turned into an exit code here.
-    A command that only *reports* on the policy wraps this in `Refused` at its
-    own boundary, which is the one place a code has to be chosen.
-    """
-    return parse_manifest(project, project.runs_root)
-
-
-def _task(store: Store, task_id: str) -> tasks.TaskRecord:
-    try:
-        return tasks.get_task(store, task_id)
-    except tasks.TaskError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-
-
-def _read_contract(path: str) -> dict[str, Any]:
-    """Read the contract file named on the command line into a request.
-
-    This is the boundary, so the file is read and shape-checked here and nowhere
-    else. What the contract *means* is not decided here: `tasks.admit` derives
-    the mandatory floor from the approved policy, so the `required_checks` this
-    returns is the caller's selection — it can add to the floor and never
-    subtract from it. Validating check ids against the manifest is `admit`'s
-    refusal, because the manifest is part of the context admission reads.
-    """
-    optional = ("required_checks", "additional_checks", "description", "scope",
-                "required_resources")
-
-    file = Path(path).expanduser()
-    if not file.is_absolute():
-        file = Path.cwd() / file
-    try:
-        raw = json.loads(file.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise Refused(f"cannot read contract {file}: {exc}", EXIT_INVALID) from exc
-    except json.JSONDecodeError as exc:
-        raise Refused(f"{file} is not valid JSON: {exc}", EXIT_INVALID) from exc
-
-    if not isinstance(raw, dict):
-        raise Refused(f"{file} must contain a JSON object", EXIT_INVALID)
-    unknown = sorted(set(raw) - set(optional))
-    if unknown:
-        raise Refused(
-            f"{file} has unsupported key(s) {', '.join(unknown)}; a contract declares "
-            f"{', '.join(optional)}",
-            EXIT_INVALID,
-        )
-    selected = raw.get("required_checks", [])
-    extra = raw.get("additional_checks", [])
-    for key, value in (("required_checks", selected), ("additional_checks", extra)):
-        if not isinstance(value, list) or any(not isinstance(i, str) or not i for i in value):
-            raise Refused(f"{file}: {key} must be a list of check id strings", EXIT_INVALID)
-    scope = raw.get("description", raw.get("scope", ""))
-    if not isinstance(scope, str):
-        raise Refused(f"{file}: description must be a string", EXIT_INVALID)
-    return {
-        "selected": list(dict.fromkeys(selected + extra)),
-        "scope": scope,
-        "resources": raw.get("required_resources"),
-    }
-
-
-def _subject(
-    store: Store,
-    args: argparse.Namespace,
-    operation: str,
-    payload: dict[str, Any],
-    subject_id: str | None = None,
-) -> str:
-    """The id this request names, or the one already recorded for it.
-
-    Same request id with the same payload returns the recorded subject, so a
-    retry attaches to the task or run that already exists. A conflicting
-    payload is a client error, not a store failure, so it is exit 2.
-
-    `subject_id` is for an operation the client already named, such as a
-    cancellation of a run it holds. Without it the subject is minted here, and a
-    minted subject is a new task or a new run, which is the right default for
-    beginning one and the wrong answer for stopping one.
-    """
-    try:
-        return idempotency.begin(
-            store, request_id=args.request_id, operation=operation,
-            payload=payload, subject_id=subject_id,
-        )
-    except ConflictError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-    except StoreError as exc:
-        raise Refused(str(exc), EXIT_INTERNAL) from exc
-
-
-def _outcome_lines(outcome: dict[str, Any]) -> list[str]:
-    if outcome["result"] in ("PASS", "FAIL"):
-        return [f"  {s['result']:4} {s['id']}: {s['observation']}" for s in outcome["scenarios"]]
-    return [f"  BLOCKED {outcome['reason']}: {outcome.get('detail', '')}"]
+def _outcome_line(record: dict[str, Any]) -> str:
+    outcome = record.get("outcome") or {}
+    line = f"{record['check_id']}: {outcome.get('result', record['state'].upper())}"
+    if outcome.get("reason"):
+        line += f" ({outcome['reason']}) {outcome.get('detail', '')}".rstrip()
+    for scenario in outcome.get("scenarios", []):
+        line += f"\n  [{scenario['result']}] {scenario['id']}: {scenario['observation']}"
+    return line + f"\n  run {record['run_id']}"
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    """Report whether this project could run its checks. Launches nothing and
-    installs nothing; a doctor that fixes your environment is not a doctor."""
-    try:
-        project = open_project(args.project)
-    except ProjectError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
+    report = query.doctor(_context(args))
+    lines = [f"project : {report['project']}", f"state   : {report['state_root']}"]
+    for f in report["findings"]:
+        lines.append(f"  [{'ok  ' if f['ok'] else 'FAIL'}] {f.get('prerequisite', f['check'])}: {f['detail']}")
+    lines.append("ready" if report["ok"] else "not ready")
+    _emit(report, args.json, "\n".join(lines))
+    return EXIT_OK if report["ok"] else EXIT_BLOCKED
 
-    findings: list[dict[str, Any]] = []
-    manifest: Manifest | None = None
-    try:
-        manifest = parse_manifest(project, project.runs_root / "doctor-probe")
-    except ManifestError as exc:
-        findings.append({"check": "<manifest>", "ok": False, "detail": str(exc)})
 
-    if manifest is not None:
-        for check in manifest.checks.values():
-            for need in check.prerequisites:
-                import shutil
+def cmd_status(args: argparse.Namespace) -> int:
+    report = query.status(_context(args), args.path or ())
+    lines = [f"gate: {report['gate']['verdict']} - {report['gate']['reason']}"]
+    for check in report["checks"]:
+        lines.append(f"  {check['state']:<14} {check['id']}  [{check['category']}] {check['inputs']['scope']}")
+    for path in report["unmapped_paths"]:
+        lines.append(f"  no check reads {path}")
+    if report["needs_run"]:
+        lines.append("run: vkit check run --needed")
+    _emit(report, args.json, "\n".join(lines))
+    return EXIT_OK
 
-                found = shutil.which(need.executable)
-                findings.append({
-                    "check": check.id,
-                    "prerequisite": need.name,
-                    "ok": found is not None,
-                    "detail": found or f"{need.executable!r} is not on PATH",
-                })
 
-    state_writable, detail = probe_state(project.state_root, project.db_path)
-
-    source = None
-    try:
-        source = compute_source_identity(project)
-    except Exception as exc:  # noqa: BLE001 - doctor reports, it does not raise
-        findings.append({"check": "<source>", "ok": False, "detail": str(exc)})
-
-    ok = state_writable and all(f.get("ok", True) for f in findings)
-    payload = {
-        "command": "doctor",
-        "project": str(project.root),
-        "ok": ok,
-        "state_root": str(project.state_root),
-        "state_writable": state_writable,
-        "state_detail": detail,
-        "checks": sorted(manifest.checks) if manifest else [],
-        "findings": findings,
-        "source": None if source is None else source.to_json(),
-    }
-    lines = [
-        f"project : {project.root}",
-        f"state   : {project.state_root} ({'writable' if state_writable else 'NOT writable'})",
-    ]
-    if source is not None:
-        lines.append(f"head    : {source.head[:12]}  dirty={source.dirty}")
-    lines.append(f"checks  : {', '.join(payload['checks']) or '<none>'}")
-    for finding in findings:
-        mark = "ok  " if finding.get("ok", True) else "FAIL"
-        label = finding.get("prerequisite", finding["check"])
-        lines.append(f"  [{mark}] {label}: {finding['detail']}")
-    lines.append("ready" if ok else "not ready")
-    _emit(payload, args.json, "\n".join(lines))
-    return EXIT_OK if ok else EXIT_BLOCKED
+def cmd_gate(args: argparse.Namespace) -> int:
+    report = query.status(_context(args))["gate"]
+    lines = [f"{report['verdict']}: {report['reason']}"]
+    lines += [f"  {c['state']:<14} {c['id']}" for c in report["checks"]]
+    _emit(report, args.json, "\n".join(lines))
+    return _VERDICT_EXIT[report["verdict"]]
 
 
 def cmd_check_run(args: argparse.Namespace) -> int:
-    try:
-        project = open_project(args.project)
-    except ProjectError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
+    from .runner import run_check
 
-    run_dir = project.runs_root / "probe"
+    ctx = _context(args)
     try:
-        manifest = parse_manifest(project, run_dir)
+        manifest = ctx.require_manifest()
+        if args.needed:
+            check_ids = query.status(ctx)["needs_run"]
+        else:
+            check_ids = args.check or []
+            for check_id in check_ids:
+                manifest.require(check_id)
     except ManifestError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
-
-    try:
-        manifest.require(args.check)
-    except ManifestError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
-
-    try:
-        source = compute_source_identity(project)
-        store = Store(project.db_path)
-    except (StoreError, OSError) as exc:
-        return _fail(str(exc), args.json, EXIT_INTERNAL)
-
-    try:
-        result = run_check(manifest, args.check, store=store, source=source)
-    except ExecutionError as exc:
-        return _fail(str(exc), args.json, EXIT_INTERNAL)
-
-    report = result.report
-    payload = {
-        "command": "check run",
-        "run_id": report["run_id"],
-        "check_id": report["check_id"],
-        "outcome": report["outcome"],
-        "report_path": str(store.run_dir(report["run_id"]) / "report.json"),
-    }
-    lines = [f"run {report['run_id']}  check {report['check_id']}"]
-    body = report["outcome"]
-    if body["result"] in ("PASS", "FAIL"):
-        for scenario in body["scenarios"]:
-            lines.append(f"  {scenario['result']:4} {scenario['id']}: {scenario['observation']}")
-    else:
-        lines.append(f"  BLOCKED {body['reason']}: {body.get('detail', '')}")
-    lines.append(body["result"])
-    _emit(payload, args.json, "\n".join(lines))
-    return exit_code_for(result.outcome)
+        raise Refused(str(exc), EXIT_INVALID) from exc
+    if not check_ids and not args.needed:
+        raise Refused("name a check with --check, or pass --needed", EXIT_INVALID)
+    records = [run_check(ctx.project, manifest, check_id, store=ctx.store) for check_id in check_ids]
+    results = {r["outcome"]["result"] for r in records}
+    _emit({"command": "check run", "runs": records}, args.json,
+          "\n".join(_outcome_line(r) for r in records) or "every check is fresh; nothing to run")
+    for result in ("FAIL", "BLOCKED"):
+        if result in results:
+            return _RESULT_EXIT[result]
+    return EXIT_OK
 
 
 def cmd_run_show(args: argparse.Namespace) -> int:
-    """Read a run's outcome, or report that it has not reached one yet.
-
-    Every in-flight run is report-less by design, so asking about one is a valid
-    request with a valid answer. This used to turn `store.load`'s "no published
-    report" into `EXIT_INVALID`, which reported a working run as a malformed
-    request -- the same class of error as a run id that does not exist at all,
-    for a state that is the ordinary condition of a started check. The error is
-    now reserved for a run id this project has never heard of.
-
-    The exit code still reflects the verdict where there is one, so a script
-    polling a finished run behaves as before.
-    """
-    project = _project(args)
-    try:
-        store = Store(project.db_path)
-    except StoreError as exc:
-        return _fail(str(exc), args.json, EXIT_INTERNAL)
-
-    status = store.run_status(args.run)
-    if status is None:
-        return _fail(f"no run is recorded under {args.run!r}", args.json, EXIT_INVALID)
-
-    try:
-        report = store.load(args.run)
-    except StoreError:
-        report = None
-
-    if report is None:
-        process = status.get("process") or {}
-        owner = (
-            f"pid {process.get('pid')}" if process.get("ownership_known")
-            else "no verified owner yet"
-        )
-        payload = {"command": "run show", "outcome": None, **status}
-        _emit(
-            payload, args.json,
-            f"run {status['run_id']}  {status['lifecycle']}\n"
-            f"  check {status['check_id']}, {owner}\n"
-            "  no outcome yet; read it again once the run is terminal",
-        )
-        return EXIT_OK
-
-    body = report["outcome"]
-    if body["result"] in ("PASS", "FAIL"):
-        human = "\n".join(
-            f"  {s['result']:4} {s['id']}: {s['observation']}" for s in body["scenarios"]
-        )
-    else:
-        human = f"  BLOCKED {body['reason']}: {body.get('detail', '')}"
-    _emit(report, args.json, f"run {report['run_id']}  {body['result']}\n{human}")
-    result = body["result"]
-    outcome = (
-        Passed(()) if result == "PASS"
-        else Failed(()) if result == "FAIL"
-        else Blocked(BlockedReason.INTERNAL_ERROR)
-    )
-    return exit_code_for(outcome)
-
-
-
-
-def cmd_task_begin(args: argparse.Namespace) -> int:
-    """Open a task through the core admission decision, at generation 1.
-
-    The contract's own list is the caller's selection and nothing more. What the
-    task must actually prove is derived inside `tasks.admit` from the policy in
-    force, and a claim it cannot take refuses the admission rather than being
-    reported beside an admitted task.
-    """
-    project = _project(args)
-    contract = _read_contract(args.contract)
-    store = _open_store(project)
-    task_id = _subject(store, args, OP_TASK_BEGIN, {"contract": contract})
-    try:
-        task = tasks.get_task(store, task_id)
-    except tasks.TaskError:
-        context = tasks.acceptance_context(project, lambda: _read_policy(project))
-        try:
-            admitted = tasks.admit(
-                store, task_id, context=context,
-                required_checks=contract["selected"],
-                scope=contract["scope"],
-                resources=contract["resources"],
-            )
-        except ConflictError as exc:
-            raise Refused(str(exc), EXIT_BLOCKED) from exc
-        except tasks.TaskError as exc:
-            raise Refused(str(exc), EXIT_INVALID) from exc
-        task = admitted.task
-        selected = set(contract["selected"])
-        required = list(admitted.contract.required_checks)
-        extra = [c for c in required if c not in selected]
-    else:
-        required = list(task.pinned().required_checks)
-        extra = []
-
-    payload = {
-        "command": "task begin",
-        "task_id": task.task_id,
-        "status": task.status,
-        "generation": task.generation,
-        "contract": task.contract,
-        "required_checks": list(required),
-        "policy_digest": task.policy_digest,
-    }
-    lines = [
-        f"task {task.task_id}  generation {task.generation}  {task.status}",
-        f"requires : {', '.join(required)}",
-    ]
-    if extra:
-        lines.append(f"also required by the approved policy: {', '.join(extra)}")
-    _emit(payload, args.json, "\n".join(lines))
-    return EXIT_OK
-
-
-def cmd_check_start(args: argparse.Namespace) -> int:
-    """Record a run and start it, returning the run id while it is still in flight.
-
-    The run id is claimed before anything executes and handed to the supervisor as
-    the run's own id, so a retry of the same request id returns the run that
-    already exists rather than starting a second one.
-
-    **This command no longer returns the check's verdict**, and it exits 0 when
-    the run starts. The supervisor runs the check in its own process and this
-    returns as soon as the launch is durably recorded, so there is no outcome to
-    report yet. An exit code is about whether the *command* did what was asked,
-    and the command asked for a run to start. A caller that wants the verdict
-    reads it afterwards with `vkit run show <run_id>`, which is where the answer
-    lives from the moment it exists. A script that used to read this command's
-    exit code to learn the result must now make a second call; that is a real
-    change in the surface and it is stated rather than papered over with a wait
-    that would defeat the point.
-    """
-    project = _project(args)
-    store = _open_store(project)
-    task = _task(store, args.task)
-    if task.status == "closed":
-        raise Refused(f"task {task.task_id} is closed; its result is final", EXIT_INVALID)
-    try:
-        manifest = _read_policy(project)
-        manifest.require(args.check)
-    except ManifestError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-
-    try:
-        tasks.verify_ownership(store, task.task_id, task.generation, project=project)
-    except ConflictError as exc:
-        raise Refused(str(exc), EXIT_BLOCKED) from exc
-    except tasks.TaskError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-
-    run_id = _subject(
-        store, args, OP_CHECK_START, {"task_id": task.task_id, "check_id": args.check}
-    )
-    try:
-        handoff = supervisor.start_run(
-            project, store, args.check,
-            task_id=task.task_id, generation=task.generation,
-            manifest=manifest, run_id=run_id,
-        )
-    except supervisor.SupervisorError as exc:
-        raise Refused(str(exc), EXIT_BLOCKED) from exc
-    except (StoreError, ExecutionError) as exc:
-        raise Refused(str(exc), EXIT_INTERNAL) from exc
-
-    payload = {
-        "command": "check start",
-        "run_id": handoff.run_id,
-        "task_id": task.task_id,
-        "attempt": task.generation,
-        "check_id": handoff.check_id,
-        "lifecycle": handoff.lifecycle,
-        "replayed": handoff.replayed,
-        "report_path": str(store.run_dir(handoff.run_id) / "report.json"),
-    }
-    _emit(
-        payload, args.json,
-        f"run {handoff.run_id}  task {task.task_id}  check {handoff.check_id}\n"
-        f"  {handoff.lifecycle}"
-        + ("  (replayed an existing run)" if handoff.replayed else "")
-        + "\nread the outcome with: vkit run show " + handoff.run_id,
-    )
-    return EXIT_OK
+    view = query.run_view(_context(args), args.run, log=args.log, offset=args.offset, limit=args.limit)
+    if view is None:
+        raise Refused(f"no run {args.run!r}", EXIT_INVALID)
+    _emit(view, args.json, _outcome_line(view) + "\n\n" + view["log"]["text"])
+    if view["state"] == "done":
+        return _RESULT_EXIT[view["outcome"]["result"]]
+    return EXIT_BLOCKED if view["state"] == "interrupted" else EXIT_OK
 
 
 def cmd_run_cancel(args: argparse.Namespace) -> int:
-    """Ask a run to stop, by the identity the run itself recorded.
-
-    The identity is read from the run, not taken from the client: a bare pid is
-    recycled, and a cancellation aimed at a recycled pid kills a stranger. The
-    core reads it, because the core is where the knowledge of what a run recorded
-    lives. This command passes the run id and nothing else -- a client-supplied
-    identity is a client-supplied identity, and one used to be accepted here and
-    then checked against the record, which taught the caller nothing it could not
-    read and let a caller name a pid it was told was wrong.
-
-    A run that already finished is not cancelled at all. It returns the outcome it
-    actually reached. A run whose owner is not published yet is recorded and
-    reported as pending, which is a different answer from a refusal.
-    """
-    store = _open_store(_project(args))
-    if store.run_status(args.run) is None:
-        raise Refused(f"no run is recorded under {args.run!r}", EXIT_INVALID)
-
-    run_id = _subject(
-        store, args, OP_RUN_CANCEL, {"run_id": args.run}, subject_id=args.run
-    )
-    if run_id != args.run:
-        raise Refused(
-            f"request id {args.request_id!r} was already used for run {run_id!r}, not "
-            f"{args.run!r}; one request id names one run",
-            EXIT_INVALID,
-        )
-
-    try:
-        outcome, report = supervisor.cancel_run(store, args.run, requested_by="cli")
-    except supervisor.SupervisorError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-    except StoreError as exc:
-        raise Refused(str(exc), EXIT_INTERNAL) from exc
-
-    body = report["outcome"]
-    cancelled = bool(report.get("cancelled"))
-    payload = {
-        "command": "run cancel",
-        "run_id": report["run_id"],
-        "cancelled": cancelled,
-        "pending": bool(report.get("pending")),
-        "lifecycle": report.get("lifecycle", "terminal"),
-        "outcome": body,
-        "report_path": str(store.run_dir(report["run_id"]) / "report.json"),
-    }
-    lines = [f"run {report['run_id']}  {body['result']}"]
-    if report.get("pending"):
-        lines.append(f"  cancellation pending: {body.get('detail', '')}")
-    else:
-        lines.extend(_outcome_lines(body))
-    _emit(payload, args.json, "\n".join(lines))
-    if report.get("pending"):
-        return EXIT_BLOCKED
-    return exit_code_for(outcome)
-
-
-def cmd_task_finalize(args: argparse.Namespace) -> int:
-    """Decide readiness through the core acceptance decision, and record it.
-
-    There is no verdict argument. docs/verification.md forbids a client-supplied verdict,
-    so the answer is whatever `tasks.finalize` makes of this attempt's runs
-    under the contract it was admitted with and the identities in force now, and
-    the gaps it reports are what the caller has to read.
-    """
-    project = _project(args)
-    store = _open_store(project)
-    task = _task(store, args.task)
-    if task.status == "closed":
-        raise Refused(f"task {task.task_id} is closed; its result is final", EXIT_INVALID)
-
-    try:
-        decision = tasks.finalize(
-            store, task.task_id,
-            context=tasks.acceptance_context(project, lambda: _read_policy(project)),
-        )
-    except ConflictError as exc:
-        raise Refused(str(exc), EXIT_BLOCKED) from exc
-    except tasks.AdmissionRefused as exc:
-        raise Refused(str(exc), EXIT_BLOCKED) from exc
-    except tasks.TaskError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-
-    payload = {
-        "command": "task finalize",
-        "task_id": task.task_id,
-        "status": task.status,
-        "readiness": decision.readiness,
-        "gaps": list(decision.gaps),
-        "history": list(decision.history),
-        "required_checks": decision.context.get("required_checks", []),
-        "context": decision.context,
-    }
-    lines = [f"task {task.task_id}  {decision.readiness}"]
-    for gap in decision.gaps:
-        lines.append(f"  gap: {gap}")
-    for entry in decision.history:
-        lines.append(f"  earlier attempt: {entry}")
-    if decision.readiness == "READY":
-        lines.append("local requirements are satisfied; this is not merge permission")
-    _emit(payload, args.json, "\n".join(lines))
-    return exit_code_for_readiness(decision.readiness)
-
-
-def cmd_recover(args: argparse.Namespace) -> int:
-    """Inspect, and change nothing, unless an action is named with its evidence.
-
-    `recover.apply_action` requires a target and non-empty evidence and refuses
-    without them, so the pairing check is one condition here. Without any action
-    this command only inspects; it opens no write transaction and moves no state.
-    """
-    store = _open_store(_project(args))
-    if args.action is None:
-        if args.target or args.evidence:
-            raise Refused(
-                "--target and --evidence describe an action; name one with --apply, or "
-                "drop both and inspect",
-                EXIT_INVALID,
-            )
-        report = recover.inspect(store)
-        payload = {"command": "recover", "inspected": True, **report.to_json()}
-        lines = [f"{len(report.findings)} finding(s); nothing was changed"]
-        for finding in report.findings:
-            lines.append(f"  [{finding.kind.value}] {finding.target}: {finding.detail}")
-        _emit(payload, args.json, "\n".join(lines))
+    ctx = _context(args)
+    record = ctx.store.record(args.run)
+    if record is None:
+        raise Refused(f"no run {args.run!r}", EXIT_INVALID)
+    if record["state"] != "running":
+        _emit({"run_id": args.run, "cancelled": False, "state": record["state"]}, args.json,
+              f"run {args.run} is {record['state']}; nothing to cancel")
         return EXIT_OK
-
-    if not args.target or not args.evidence.strip():
-        missing = [name for name, value in (("--target", args.target), ("--evidence", args.evidence))
-                   if not (value or "").strip()]
-        raise Refused(
-            f"refusing to apply {args.action}: {' and '.join(missing)} required; a recovery "
-            "action must name what it affects and the evidence permitting it",
-            EXIT_INVALID,
-        )
-    try:
-        report = recover.apply_action(
-            store, recover.Action(args.action), target=args.target, evidence=args.evidence
-        )
-    except recover.RecoveryRefused as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-    except ValueError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-
-    payload = {
-        "command": "recover",
-        "inspected": False,
-        "applied": {"action": args.action, "target": args.target, "evidence": args.evidence},
-        **report.to_json(),
-    }
-    lines = [f"applied {args.action} to {args.target}"]
-    for finding in report.findings:
-        lines.append(f"  [{finding.kind.value}] {finding.target}: {finding.detail}")
-    if not report.findings:
-        lines.append("no findings remain")
-    _emit(payload, args.json, "\n".join(lines))
+    ctx.store.request_cancel(args.run)
+    _emit({"run_id": args.run, "cancelled": True}, args.json, f"asked run {args.run} to stop")
     return EXIT_OK
 
 
-def cmd_mcp_serve(args: argparse.Namespace) -> int:
-    """Serve this project to an agent over MCP, bound to one root.
-
-    The root is fixed at startup and no tool accepts another, so an agent cannot
-    steer the server at a different repository.
-    """
-    from .mcp import MCPUnavailable, Server, serve_stdio, tool_definitions
-
+def cmd_accept(args: argparse.Namespace) -> int:
+    ctx = _context(args)
     try:
-        project = open_project(args.project)
-    except ProjectError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
-
-    try:
-        server = Server(project.root)
-    except ProjectError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
-
-    if args.json:
-        catalogue = tool_definitions()
-        _emit(
-            {"command": "mcp serve", "project": str(project.root), "tools": catalogue},
-            True,
-            "\n".join(t["name"] for t in catalogue),
-        )
+        manifest = ctx.require_manifest()
+        wanted = args.check or sorted(manifest.checks)
+        for check_id in wanted:
+            manifest.require(check_id)
+    except ManifestError as exc:
+        raise Refused(str(exc), EXIT_INVALID) from exc
+    approved = ctx.store.approved()
+    pending = [c for c in wanted if manifest.digest(c) not in approved]
+    lines = []
+    for check_id in pending:
+        lines.append(f"{check_id} ({manifest.digest(check_id)[:12]})")
+        lines.append(json.dumps(manifest.entries[check_id], indent=2))
+    if not pending:
+        _emit({"accepted": [], "pending": []}, args.json, "every named check is already accepted")
         return EXIT_OK
-
-    try:
-        return serve_stdio(project.root)
-    except MCPUnavailable as exc:
-        return _fail(str(exc), False, EXIT_UNAVAILABLE)
-
-
-def cmd_project_inspect(args: argparse.Namespace) -> int:
-    """Report what a repository declares about itself. Launches nothing.
-
-    The exit code is the interesting part. A repository that declares no test
-    command is not a broken repository, and it is not a successful inspection
-    either: there is nothing here to verify yet. That is exit 3, the same code a
-    BLOCKED check uses, because it is the same answer to the same question.
-    """
-    from .discover import inspect_repository
-
-    try:
-        project = open_project(args.project)
-    except ProjectError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
-
-    inspection = inspect_repository(project)
-    has_actionable = bool(inspection.by_kind("test"))
-    if has_actionable:
-        lines = [inspection.render(), "", "run `vkit project enroll` to propose policy for these"]
-    else:
-        lines = [inspection.render(), "", "nothing here can be registered as a check yet"]
-    _emit(inspection.to_json(), args.json, "\n".join(lines))
-    return EXIT_OK if has_actionable else EXIT_BLOCKED
-
-
-def cmd_project_enroll(args: argparse.Namespace) -> int:
-    """Propose, accept, or decline. Never overwrites, never runs anything.
-
-    The three modes are separate subcommands of one verb because they are
-    separate decisions. Proposing is reading; accepting is a person agreeing to
-    specific bytes, which is why it takes the digest that was read; declining is
-    doing nothing and saying so.
-    """
-    from .discover import inspect_repository
-    from .enroll import (
-        EnrollmentError,
-        State,
-        accept,
-        decline,
-        diff_summary,
-        enroll,
-        read_enrollment,
-    )
-
-    try:
-        project = open_project(args.project)
-    except ProjectError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
-
-    if args.accept and args.decline:
-        return _fail("--accept and --decline are opposite answers; pick one", args.json, EXIT_INVALID)
-
-    try:
-        if args.decline:
-            record = decline(project)
-            _emit(record.to_json(), args.json, record.render())
-            return EXIT_OK
-
-        if args.accept:
-            record = accept(project, expected_digest=args.accept_digest or None)
-            _emit(record.to_json(), args.json, record.render())
-            return EXIT_OK
-
-        proposal, path = enroll(project, inspection=inspect_repository(project))
-    except EnrollmentError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
-
-    payload = proposal.to_json()
-    lines = [proposal.render()]
-    existing = project.manifest_path
-    if existing.is_file():
-        difference = diff_summary(existing, path)
-        if difference:
-            lines.extend(["", "this repository already has a hand-maintained policy, and it "
-                          "was not touched. The difference enrolling would make:"])
-            lines.extend(difference)
-        payload["existing_policy"] = str(existing)
-        payload["difference"] = difference
-    _emit(payload, args.json, "\n".join(lines))
-
-    return EXIT_BLOCKED if not proposal.entries else EXIT_OK
+    if not args.yes:
+        if args.json or not sys.stdin.isatty():
+            raise Refused("review the definitions and pass --yes to accept them:\n" + "\n".join(lines), EXIT_INVALID)
+        print("\n".join(lines))
+        if input(f"accept {len(pending)} check definition(s)? [y/N] ").strip().lower() != "y":
+            print("nothing accepted")
+            return EXIT_BLOCKED
+    ctx.store.approve({manifest.digest(c): {"check_id": c, "accepted_at": now()} for c in pending})
+    _emit({"accepted": pending}, args.json, f"accepted: {', '.join(pending)}")
+    return EXIT_OK
 
 
 def cmd_features(args: argparse.Namespace) -> int:
-    """Show the feature map, and name what is not covered.
+    report = query.status(_context(args))
+    if report["feature_error"]:
+        raise Refused(report["feature_error"], EXIT_INVALID)
+    lines = []
+    for feature in report["features"]:
+        lines.append(f"[{'verified ' if feature['verified'] else 'UNVERIFIED'}] {feature['id']}: {feature['behavior']}")
+        for gap in feature["coverage_gaps"]:
+            lines.append(f"    gap: {gap}")
+    _emit({"features": report["features"]}, args.json, "\n".join(lines) or "no feature map")
+    return EXIT_OK if report["features"] and all(f["verified"] for f in report["features"]) else EXIT_BLOCKED
 
-    Exit 0 when every feature is verified, exit 3 when any is not. A feature map
-    with gaps is not a failure of the application; it is an honest account of
-    what nobody has checked, and the exit code is what stops a caller from
-    reading "the map loaded" as "everything passes".
-    """
-    from .features import FeatureError, load_features
 
+def cmd_project_inspect(args: argparse.Namespace) -> int:
+    from .discover import inspect_repository
+
+    inspection = inspect_repository(_context(args).project)
+    found = bool(inspection.by_kind("test"))
+    _emit(inspection.to_json(), args.json, inspection.render())
+    return EXIT_OK if found else EXIT_BLOCKED
+
+
+def cmd_project_enroll(args: argparse.Namespace) -> int:
+    from .discover import inspect_repository
+    from .enroll import EnrollmentError, enroll
+
+    project = _context(args).project
     try:
-        project = open_project(args.project)
-    except ProjectError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
+        proposal, path = enroll(project, inspection=inspect_repository(project))
+    except EnrollmentError as exc:
+        raise Refused(str(exc), EXIT_INVALID) from exc
+    _emit({**proposal.to_json(), "path": str(path)}, args.json, proposal.render())
+    return EXIT_OK if proposal.entries else EXIT_BLOCKED
 
+
+def cmd_mcp_serve(args: argparse.Namespace) -> int:
+    from .mcp import MCPUnavailable, serve_stdio, tool_definitions
+
+    project = _context(args).project
+    if args.json:
+        catalogue = tool_definitions()
+        _emit({"project": str(project.root), "tools": catalogue}, True, "")
+        return EXIT_OK
     try:
-        feature_map = load_features(project.root)
-    except FeatureError as exc:
-        return _fail(str(exc), args.json, EXIT_INVALID)
+        return serve_stdio(project.root)
+    except MCPUnavailable as exc:
+        raise Refused(str(exc), EXIT_UNAVAILABLE) from exc
 
-    try:
-        manifest = parse_manifest(project, project.runs_root / "probe")
-        known = sorted(manifest.checks)
-    except ManifestError:
-        known = []
 
-    uncovered = feature_map.uncovered(known) if known else []
-    payload = feature_map.to_json(known)
-    payload["command"] = "features"
-    lines = [feature_map.render(known)]
-    if not known:
-        lines.extend([
-            "",
-            f"no usable manifest at {project.manifest_path}, so no feature can be "
-            "verified against a registered check",
-        ])
-    elif uncovered:
-        lines.extend(["", f"{len(uncovered)} feature(s) are not verified:"])
-        lines.extend(f"  {row['feature']}: {row['reason']}" for row in uncovered)
-    _emit(payload, args.json, "\n".join(lines))
-    return EXIT_OK if known and not uncovered else EXIT_BLOCKED
+def cmd_console(args: argparse.Namespace) -> int:
+    from .console import serve
+
+    return serve(_context(args).project, port=args.port, open_browser=not args.no_browser)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="vkit", description=__doc__)
+    parser = argparse.ArgumentParser(prog="vkit", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def common(target: argparse.ArgumentParser) -> argparse.ArgumentParser:
-        target.add_argument("--project", required=True, help="repository root, or a directory inside it")
+    def command(container, name: str, help_text: str) -> argparse.ArgumentParser:
+        target = container.add_parser(name, help=help_text)
+        target.add_argument("--project", default=".", help="repository root, or a directory inside it")
         target.add_argument("--json", action="store_true", help="write one JSON object to stdout")
         return target
 
-    common(sub.add_parser("doctor", help="report whether this project's checks could run"))
+    command(sub, "doctor", "report whether this project's checks could run")
+    status = command(sub, "status", "show every check's freshness and the gate")
+    status.add_argument("--path", action="append", help="only checks that read this path (repeatable)")
+    command(sub, "gate", "READY only if every check passed against the current inputs")
+    command(sub, "features", "show the feature map and which features are verified now")
+    accept = command(sub, "accept", "review and accept check definitions so they may run")
+    accept.add_argument("--check", action="append", help="a check id (repeatable); default every check")
+    accept.add_argument("--yes", action="store_true", help="accept without the interactive prompt")
 
-    project = sub.add_parser("project", help="inspect and enroll a repository")
-    project_sub = project.add_subparsers(dest="project_command", required=True)
-    inspect = project_sub.add_parser(
-        "inspect", help="report what this repository says about how to build, test and launch it"
-    )
-    common(inspect)
-    enroll_parser = project_sub.add_parser(
-        "enroll", help="propose a manifest for this repository; nothing runs until it is accepted"
-    )
-    common(enroll_parser)
-    enroll_parser.add_argument(
-        "--accept", action="store_true",
-        help="promote an existing proposal to policy, after showing what it would run",
-    )
-    enroll_parser.add_argument(
-        "--decline", action="store_true",
-        help="discard a proposal, leaving every existing file unchanged",
-    )
-    enroll_parser.add_argument(
-        "--accept-digest", default="",
-        help="the policy digest that was reviewed; acceptance is refused if the proposal changed since",
-    )
+    check = sub.add_parser("check", help="run registered checks").add_subparsers(dest="check_command", required=True)
+    run_check = command(check, "run", "run checks in the foreground")
+    run_check.add_argument("--check", action="append", help="a registered check id (repeatable)")
+    run_check.add_argument("--needed", action="store_true", help="run every check that is stale or missing")
 
-    common(sub.add_parser("features", help="show the feature map and what is not covered"))
+    run = sub.add_parser("run", help="read or stop a run").add_subparsers(dest="run_command", required=True)
+    show = command(run, "show", "show a run, its outcome and a window of its log")
+    show.add_argument("--run", required=True)
+    show.add_argument("--log", choices=("stdout", "stderr"), default="stdout")
+    show.add_argument("--offset", type=int, default=0)
+    show.add_argument("--limit", type=int, default=query.DEFAULT_LOG_LIMIT)
+    cancel = command(run, "cancel", "stop a running check and everything it started")
+    cancel.add_argument("--run", required=True)
 
-    check = sub.add_parser("check", help="run registered checks")
-    check_sub = check.add_subparsers(dest="check_command", required=True)
-    run_check_parser = check_sub.add_parser("run", help="run one registered check in the foreground")
-    common(run_check_parser)
-    run_check_parser.add_argument("--check", required=True, help="a registered check id, never a command")
-    start = check_sub.add_parser("start", help="run one registered check under a task")
-    common(start)
-    start.add_argument("--task", required=True, help="task id returned by task begin")
-    start.add_argument("--check", required=True, help="a registered check id, never a command")
-    start.add_argument("--request-id", required=True, help="retry this exact request to get the same run")
+    project = sub.add_parser("project", help="onboard a repository").add_subparsers(
+        dest="project_command", required=True)
+    command(project, "inspect", "report what this repository declares about building and testing")
+    command(project, "enroll", "propose a manifest; nothing runs until accepted")
 
-    serve = sub.add_parser("mcp", help="serve the project to an agent over MCP")
-    serve_sub = serve.add_subparsers(dest="mcp_command", required=True)
-    serve_stdio = serve_sub.add_parser("serve", help="serve stdio, bound to one project root")
-    serve_stdio.add_argument("--project", required=True,
-                             help="the one project root this server answers for")
-    serve_stdio.add_argument("--json", action="store_true",
-                             help="print the tool catalogue and exit, without serving")
+    mcp = sub.add_parser("mcp", help="serve an agent over MCP").add_subparsers(dest="mcp_command", required=True)
+    command(mcp, "serve", "serve stdio for one project root; --json prints the tool catalogue")
 
-    run = sub.add_parser("run", help="inspect a run")
-    run_sub = run.add_subparsers(dest="run_command", required=True)
-    show = run_sub.add_parser("show", help="display a completed run by id")
-    common(show)
-    show.add_argument("--run", required=True, help="run id to display")
-    cancel = run_sub.add_parser("cancel", help="stop a run by the identity it recorded")
-    common(cancel)
-    cancel.add_argument("--run", required=True, help="run id to stop")
-    cancel.add_argument("--request-id", required=True, help="retry this exact request to get the same answer")
-
-    task = sub.add_parser("task", help="own a check contract and its evidence")
-    task_sub = task.add_subparsers(dest="task_command", required=True)
-    begin = task_sub.add_parser("begin", help="open a task against a contract file")
-    common(begin)
-    begin.add_argument("--contract", required=True, help="JSON file naming the required check ids")
-    begin.add_argument("--request-id", required=True, help="retry this exact request to get the same task")
-    finalize = task_sub.add_parser("finalize", help="compute readiness from recorded evidence")
-    common(finalize)
-    finalize.add_argument("--task", required=True, help="task id to finalize")
-
-    recovery = sub.add_parser("recover", help="inspect runs, claims and processes; act only with evidence")
-    common(recovery)
-    recovery.add_argument(
-        "--apply", dest="action", metavar="ACTION", default=None,
-        choices=[a.value for a in recover.Action],
-        help=f"apply one action instead of only inspecting; one of {', '.join(a.value for a in recover.Action)}",
-    )
-    recovery.add_argument("--target", default="", help="the run id or resource key the action affects")
-    recovery.add_argument("--evidence", default="", help="why the change is permitted; may not be empty")
-
+    console = command(sub, "console", "serve a read-only console on 127.0.0.1")
+    console.add_argument("--port", type=int, default=8765, help="0 lets the OS pick a free port")
+    console.add_argument("--no-browser", action="store_true")
     return parser
 
 
 _DISPATCH = {
-    ("doctor", None): cmd_doctor,
-    ("project", "inspect"): cmd_project_inspect,
-    ("project", "enroll"): cmd_project_enroll,
-    ("features", None): cmd_features,
-    ("check", "run"): cmd_check_run,
-    ("check", "start"): cmd_check_start,
-    ("run", "show"): cmd_run_show,
-    ("run", "cancel"): cmd_run_cancel,
-    ("task", "begin"): cmd_task_begin,
-    ("task", "finalize"): cmd_task_finalize,
-    ("recover", None): cmd_recover,
-    ("mcp", "serve"): cmd_mcp_serve,
+    ("doctor", None): cmd_doctor, ("status", None): cmd_status, ("gate", None): cmd_gate,
+    ("features", None): cmd_features, ("accept", None): cmd_accept, ("check", "run"): cmd_check_run,
+    ("run", "show"): cmd_run_show, ("run", "cancel"): cmd_run_cancel,
+    ("project", "inspect"): cmd_project_inspect, ("project", "enroll"): cmd_project_enroll,
+    ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
 }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    handler = _DISPATCH.get((args.command, getattr(args, f"{args.command}_command", None)))
-    if handler is None:
-        parser.print_help(file=sys.stderr)
-        return EXIT_INVALID
+    args = build_parser().parse_args(argv)
+    handler = _DISPATCH[(args.command, getattr(args, f"{args.command}_command", None))]
     try:
         return handler(args)
     except Refused as exc:
-        return _fail(str(exc), args.json, exc.code)
-    except Exception as exc:  # noqa: BLE001 - the shell must not traceback at a user
-        print(f"internal error: {exc}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"error": str(exc), "exit_code": exc.code}))
+        else:
+            print(str(exc), file=sys.stderr)
+        return exc.code
+    except Exception as exc:  # noqa: BLE001
+        print(f"internal error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_INTERNAL
 
 

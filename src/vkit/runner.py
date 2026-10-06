@@ -17,6 +17,7 @@ from .paths import Project
 from .state import evidence_key
 from .store import Store, new_run_id, now
 from .verifiers import dispatch
+from .verifiers import static_adapter
 from .verifiers.dispatch import ScenarioReading
 from .verifiers.spec import CheckSpec
 
@@ -35,7 +36,7 @@ def _child_env() -> dict[str, str]:
     return {**os.environ, "PYTHONPATH": _VKIT_SRC if not previous else os.pathsep.join([_VKIT_SRC, previous])}
 
 
-def _derive(check: CheckSpec, exit: proc.Exit, artifact: Path) -> tuple[Outcome, Any]:
+def _derive(check: CheckSpec, exit: proc.Exit, artifact: Path, baseline: dict[str, Any] | None) -> tuple[Outcome, Any]:
     if exit.launch_error is not None:
         return Blocked(BlockedReason.LAUNCH_FAILED, exit.launch_error), None
     if exit.cancelled:
@@ -45,7 +46,7 @@ def _derive(check: CheckSpec, exit: proc.Exit, artifact: Path) -> tuple[Outcome,
     if not artifact.is_file():
         return Blocked(BlockedReason.ARTIFACT_MISSING, f"{check.artifact_name} was not written"), None
     reading = dispatch.interpret(check, artifact.read_bytes())
-    outcome = dispatch.outcome_from_reading(reading)
+    outcome = dispatch.outcome_from_reading(reading, baseline)
     if isinstance(outcome, Blocked):
         return outcome, None
     if isinstance(outcome, Failed):
@@ -73,6 +74,10 @@ def _measurements(reading: Any, baseline: dict[str, Any] | None) -> list[dict[st
         return []
     pinned = (baseline or {}).get("measurements", {})
     return [{**m.to_json(), "baseline": pinned.get(m.name)} for m in reading.measurements]
+
+
+def _findings(reading: Any) -> list[dict[str, Any]]:
+    return [f.to_json() for f in reading.findings] if isinstance(reading, static_adapter.StaticReading) else []
 
 
 def _obligations(reading: Any) -> dict[str, Any] | None:
@@ -108,6 +113,7 @@ def run_check(project: Project, manifest: Manifest, check_id: str, *,
         record.update({
             "state": "done", "ended_at": now(), "outcome": outcome.to_json(),
             "measurements": _measurements(reading, baseline), "unchecked_budgets": list(unchecked),
+            "findings": _findings(reading),
             "obligations": _obligations(reading),
             "exit_code": None if exit is None else exit.code,
             "argv": None if exit is None else list(dispatch.argv_for(check, run_dir, None)),
@@ -134,7 +140,7 @@ def _execute(project: Project, manifest: Manifest, check: CheckSpec, store: Stor
         timeout_seconds=check.timeout_seconds,
         should_cancel=lambda: store.cancel_requested(run_id),
     )
-    outcome, reading = _derive(check, exit, run_dir / check.artifact_name)
+    outcome, reading = _derive(check, exit, run_dir / check.artifact_name, store.baselines().get(check.id))
     after = Snapshot(project).inputs(check.inputs)
     if after.digest != before.digest:
         changed = sorted({p for p, _ in set(before.files) ^ set(after.files)})

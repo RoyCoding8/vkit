@@ -13,7 +13,7 @@ from .schemas import MANIFEST_V2, SchemaValidationError, validate
 from .verifiers.obligation import CaseObligation, PropertyObligation, TheoremObligation
 from .verifiers.spec import (CheckKind, CheckSpec, DomainBounds, FingerprintSpec, HypothesisSettings, LeanCheck,
                              LeanProfile, ModuleRef, NodeTestCheck, PinnedRunner, Prerequisite, PropertyCheck,
-                             PytestCheck, ReplaySettings, ScenarioCheck, SubjectRef, TlcCheck, ToolchainRef)
+                             PytestCheck, ReplaySettings, ScenarioCheck, StaticCheck, SubjectRef, TlcCheck, ToolchainRef)
 
 MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 
@@ -136,6 +136,8 @@ def _build_check(entry: dict, project: Project) -> CheckSpec:
         budgets = tuple(Budget(b["name"], b.get("limit"), b.get("max_regression_pct")) for b in entry.get("budgets", ()))
         return ScenarioCheck(**common, command=_command(check_id, entry["command"]),
                              required_scenarios=tuple(CaseObligation(n) for n in names), budgets=budgets)
+    if kind is CheckKind.STATIC:
+        return StaticCheck(**common, command=_command(check_id, entry["command"]))
     if kind in (CheckKind.PYTEST, CheckKind.PROPERTY, CheckKind.NODE_TEST):
         runner = dict(
             required_tests=_distinct_nonempty(check_id, "test", tuple(entry["required_tests"])),

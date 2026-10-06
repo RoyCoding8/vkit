@@ -17,6 +17,7 @@ class CheckKind(enum.StrEnum):
     PROPERTY = "property"
     LEAN = "lean"
     TLC = "tlc"
+    STATIC = "static"
 
 
 class LeanProfile(enum.StrEnum):
@@ -191,11 +192,28 @@ class TlcCheck(NativeCheckSpec):
         return self.properties
 
 
-CheckSpec = ScenarioCheck | PytestCheck | NodeTestCheck | PropertyCheck | LeanCheck | TlcCheck
+@dataclass(frozen=True, kw_only=True)
+class StaticCheck(NativeCheckSpec):
+    """An analyzer that writes SARIF; a finding outside the accepted baseline fails the check."""
+
+    command: tuple[str, ...]
+    kind: CheckKind = field(default=CheckKind.STATIC, init=False)
+
+    @property
+    def argv(self) -> tuple[str, ...]:
+        return self.command
+
+    @property
+    def obligations(self) -> tuple[Obligation, ...]:
+        return ()
+
+
+CheckSpec = StaticCheck | ScenarioCheck | PytestCheck | NodeTestCheck | PropertyCheck | LeanCheck | TlcCheck
 
 VARIANTS: dict[CheckKind, type] = {
     CheckKind.SCENARIO: ScenarioCheck, CheckKind.PYTEST: PytestCheck, CheckKind.NODE_TEST: NodeTestCheck,
     CheckKind.PROPERTY: PropertyCheck, CheckKind.LEAN: LeanCheck, CheckKind.TLC: TlcCheck,
+    CheckKind.STATIC: StaticCheck,
 }
 
 
@@ -207,6 +225,8 @@ def evidence_kind(check: NativeCheckSpec) -> ClaimCategory:
         return ClaimCategory.THEOREM
     if isinstance(check, TlcCheck):
         return ClaimCategory.FINITE_MODEL
+    if isinstance(check, StaticCheck):
+        return ClaimCategory.STATIC
     if isinstance(check, (ScenarioCheck, PytestCheck, NodeTestCheck)):
         return ClaimCategory.SCENARIO
     raise TypeError(f"{type(check).__name__} is not a check variant")

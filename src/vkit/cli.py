@@ -171,13 +171,17 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         raise Refused(str(exc), EXIT_INVALID) from exc
     run_id = args.run or (ctx.store.latest(args.check) or {}).get("run_id")
     record = ctx.store.record(run_id) if run_id else None
-    if record is None or record["check_id"] != args.check or not record.get("measurements"):
-        raise Refused(f"no finished run of {args.check} with measurements to pin", EXIT_INVALID)
+    if record is None or record["check_id"] != args.check or record["state"] != "done":
+        raise Refused(f"no finished run of {args.check} to pin", EXIT_INVALID)
+    findings: dict[str, int] = {}
+    for finding in record.get("findings", []):
+        findings[finding["fingerprint"]] = findings.get(finding["fingerprint"], 0) + 1
     baseline = {"run_id": record["run_id"], "pinned_at": now(),
-                "measurements": {m["name"]: m["value"] for m in record["measurements"]}}
+                "measurements": {m["name"]: m["value"] for m in record.get("measurements", [])},
+                "findings": findings}
     ctx.store.pin_baseline(args.check, baseline)
     _emit(baseline, args.json, f"baseline for {args.check} pinned from run {record['run_id']}: "
-          + ", ".join(f"{k}={v:g}" for k, v in baseline["measurements"].items()))
+          f"{len(baseline['measurements'])} measurement(s), {sum(findings.values())} accepted finding(s)")
     return EXIT_OK
 
 

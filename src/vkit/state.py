@@ -36,7 +36,8 @@ def check_digests(manifest: Manifest) -> dict[str, str]:
 
 def evidence_key(check_digest: str, inputs: InputSet, baseline: dict[str, Any] | None = None) -> str:
     return canonical_digest({"vkit": __version__, "check": check_digest, "inputs": inputs.digest,
-                             "baseline": None if baseline is None else baseline["measurements"]})
+                             "baseline": None if baseline is None else
+                             {k: v for k, v in baseline.items() if k in ("measurements", "findings")}})
 
 
 @dataclass(frozen=True)

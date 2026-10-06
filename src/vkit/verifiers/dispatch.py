@@ -9,7 +9,7 @@ from typing import Any, Callable
 from ..budgets import Measurement
 from ..outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
 from ..schemas import CHECK_ARTIFACT, SchemaValidationError, parse_artifact, validate
-from . import lean_adapter, node_adapter, property_adapter, pytest_adapter, tlc_adapter
+from . import lean_adapter, node_adapter, property_adapter, pytest_adapter, static_adapter, tlc_adapter
 from .obligation import CaseObligation, obligation_to_json
 from .spec import CheckKind
 
@@ -117,6 +117,8 @@ ADAPTERS: dict[CheckKind, Adapter] = {
                             lambda check, raw: lean_adapter.interpret(raw, _variant(check))),
     CheckKind.TLC: Adapter(CheckKind.TLC, tlc_adapter.argv_for,
                            lambda check, raw: tlc_adapter.interpret(raw, _variant(check))),
+    CheckKind.STATIC: Adapter(CheckKind.STATIC, _scenario_argv,
+                              lambda check, raw: static_adapter.read(raw, check.cwd.as_posix().rstrip("/") + "/")),
 }
 
 
@@ -128,9 +130,11 @@ def interpret(check: Any, raw: bytes) -> Any:
     return ADAPTERS[check.kind].read(check, raw)
 
 
-def outcome_from_reading(reading: Any) -> Outcome:
+def outcome_from_reading(reading: Any, baseline: dict[str, Any] | None = None) -> Outcome:
     if isinstance(reading, Blocked):
         return reading
+    if isinstance(reading, static_adapter.StaticReading):
+        return static_adapter.judge(reading, (baseline or {}).get("findings"))
     if isinstance(reading, ScenarioReading):
         if reading.problem is not None:
             return reading.problem

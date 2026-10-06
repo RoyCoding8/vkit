@@ -61,6 +61,7 @@ class ClaimCategory(enum.Enum):
 
     SCENARIO = "scenario"
     PROPERTY = "property"
+    STATIC = "static_analysis"
     FINITE_MODEL = "finite_model_checking"
     THEOREM = "theorem_checking"
 
@@ -73,6 +74,9 @@ class ClaimCategory(enum.Enum):
             ClaimCategory.PROPERTY: (
                 "no disagreement was found between the code and a separate "
                 "reference model over the generated sequences"
+            ),
+            ClaimCategory.STATIC: (
+                "the analyzer reported no finding outside the baseline a human accepted"
             ),
             ClaimCategory.FINITE_MODEL: (
                 "the checked properties hold in every reachable state of one "
@@ -93,6 +97,9 @@ class ClaimCategory(enum.Enum):
             ClaimCategory.PROPERTY: (
                 "implementation equivalence; the models differ mechanically and "
                 "the sequences are sampled, not exhausted"
+            ),
+            ClaimCategory.STATIC: (
+                "the absence of defects the analyzer's rules cannot see"
             ),
             ClaimCategory.FINITE_MODEL: (
                 "any other number of workers, revisions or resources, and any "
@@ -115,6 +122,7 @@ class ClaimCategory(enum.Enum):
         return {
             ClaimCategory.SCENARIO: None,
             ClaimCategory.PROPERTY: "hypothesis (a Python package)",
+            ClaimCategory.STATIC: "the analyzer the check runs",
             ClaimCategory.FINITE_MODEL: "a JRE and tla2tools.jar",
             ClaimCategory.THEOREM: "the Lean toolchain",
         }[self]

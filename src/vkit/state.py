@@ -34,8 +34,9 @@ def check_digests(manifest: Manifest) -> dict[str, str]:
     return {check_id: manifest.digest(check_id) for check_id in manifest.checks}
 
 
-def evidence_key(check_digest: str, inputs: InputSet) -> str:
-    return canonical_digest({"vkit": __version__, "check": check_digest, "inputs": inputs.digest})
+def evidence_key(check_digest: str, inputs: InputSet, baseline: dict[str, Any] | None = None) -> str:
+    return canonical_digest({"vkit": __version__, "check": check_digest, "inputs": inputs.digest,
+                             "baseline": None if baseline is None else baseline["measurements"]})
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class CheckState:
 def check_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[CheckState]:
     digests = check_digests(manifest)
     approved = store.approved()
+    baselines = store.baselines()
     running: dict[str, list[str]] = {}
     for record in store.runs(limit=200):
         if record["state"] == "running":
@@ -79,7 +81,7 @@ def check_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[C
     for check_id in sorted(manifest.checks):
         check = manifest.checks[check_id]
         inputs = snapshot.inputs(check.inputs)
-        key = evidence_key(digests[check_id], inputs)
+        key = evidence_key(digests[check_id], inputs, baselines.get(check_id))
         current = store.evidence(check_id, key)
         last = store.latest(check_id)
         if digests[check_id] not in approved:

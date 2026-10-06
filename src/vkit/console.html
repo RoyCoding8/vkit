@@ -81,6 +81,11 @@ async function refreshRun() {
     box.append(el("p", `${v.outcome.result}${v.outcome.reason ? " (" + v.outcome.reason + ")" : ""} ${v.outcome.detail || ""}`, v.outcome.result));
     const ul = el("ul"); for (const sc of v.outcome.scenarios || []) ul.append(el("li", `[${sc.result}] ${sc.id}: ${sc.observation}`, sc.result));
     box.append(ul);
+    if ((v.measurements || []).length) {
+      const mt = el("ul"); for (const m of v.measurements) mt.append(el("li", `${m.name}: ${m.value} ${m.unit} (${m.better} is better)` + (m.baseline != null ? `, baseline ${m.baseline}` : "")));
+      for (const n of v.unchecked_budgets || []) mt.append(el("li", n, "stale"));
+      box.append(el("p", "Measurements"), mt);
+    }
   } else { box.append(el("p", v.state || v.error, v.state)); }
   $("run-text").textContent = v.log ? v.log.text : "";
 }

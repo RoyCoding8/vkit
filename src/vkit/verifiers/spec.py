@@ -5,6 +5,7 @@ import enum
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..budgets import Budget
 from ..claimkind import ClaimCategory
 from .obligation import CaseObligation, Obligation, PropertyObligation, TheoremObligation
 
@@ -118,6 +119,7 @@ class ScenarioCheck(NativeCheckSpec):
 
     command: tuple[str, ...]
     required_scenarios: tuple[CaseObligation, ...]
+    budgets: tuple[Budget, ...] = ()
     kind: CheckKind = field(default=CheckKind.SCENARIO, init=False)
 
     @property

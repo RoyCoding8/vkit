@@ -161,6 +161,12 @@ class Store:
     def cancel_requested(self, run_id: str) -> bool:
         return (self.run_dir(run_id) / "cancel").exists()
 
+    def baselines(self) -> dict[str, Any]:
+        return read_json(self.root / "baselines.json") or {}
+
+    def pin_baseline(self, check_id: str, baseline: dict[str, Any]) -> None:
+        write_json(self.root / "baselines.json", {**self.baselines(), check_id: baseline})
+
     def approved(self) -> dict[str, Any]:
         return read_json(self.root / "approved.json") or {}
 

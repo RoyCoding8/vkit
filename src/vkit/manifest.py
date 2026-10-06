@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .budgets import Budget
 from .inputs import canonical_digest
 from .paths import Project
 from .schemas import MANIFEST_V2, SchemaValidationError, validate
@@ -132,8 +133,9 @@ def _build_check(entry: dict, project: Project) -> CheckSpec:
     )
     if kind is CheckKind.SCENARIO:
         names = _distinct_nonempty(check_id, "scenario", tuple(entry["required_scenarios"]))
+        budgets = tuple(Budget(b["name"], b.get("limit"), b.get("max_regression_pct")) for b in entry.get("budgets", ()))
         return ScenarioCheck(**common, command=_command(check_id, entry["command"]),
-                             required_scenarios=tuple(CaseObligation(n) for n in names))
+                             required_scenarios=tuple(CaseObligation(n) for n in names), budgets=budgets)
     if kind in (CheckKind.PYTEST, CheckKind.PROPERTY, CheckKind.NODE_TEST):
         runner = dict(
             required_tests=_distinct_nonempty(check_id, "test", tuple(entry["required_tests"])),

@@ -46,7 +46,17 @@
         ],
         "digest": null
       },
-      "claim_id": "items-api"
+      "claim_id": "items-api",
+      "budgets": [
+        {
+          "name": "get_items_p95_ms",
+          "limit": 40
+        },
+        {
+          "name": "get_items_p50_ms",
+          "max_regression_pct": 1000
+        }
+      ]
     },
     {
       "id": "items-api-sockets",

@@ -9,13 +9,15 @@ from pathlib import Path
 from typing import Any
 
 from . import proc
+from .budgets import evaluate
 from .inputs import Snapshot
 from .manifest import Manifest
-from .outcome import Blocked, BlockedReason, Failed, Outcome
+from .outcome import Blocked, BlockedReason, Failed, Outcome, Passed
 from .paths import Project
 from .state import evidence_key
 from .store import Store, new_run_id, now
 from .verifiers import dispatch
+from .verifiers.dispatch import ScenarioReading
 from .verifiers.spec import CheckSpec
 
 _VKIT_SRC = str(Path(__file__).resolve().parents[1])
@@ -54,6 +56,25 @@ def _derive(check: CheckSpec, exit: proc.Exit, artifact: Path) -> tuple[Outcome,
     return outcome, reading
 
 
+def _apply_budgets(check: CheckSpec, outcome: Outcome, reading: Any,
+                   baseline: dict[str, Any] | None) -> tuple[Outcome, tuple[str, ...]]:
+    if not isinstance(reading, ScenarioReading) or isinstance(outcome, Blocked):
+        return outcome, ()
+    results, unchecked = evaluate(getattr(check, "budgets", ()), reading.measurements,
+                                  (baseline or {}).get("measurements"))
+    if not results:
+        return outcome, unchecked
+    scenarios = outcome.scenarios + results
+    return (Failed(scenarios) if any(not r.passed for r in scenarios) else Passed(scenarios)), unchecked
+
+
+def _measurements(reading: Any, baseline: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(reading, ScenarioReading):
+        return []
+    pinned = (baseline or {}).get("measurements", {})
+    return [{**m.to_json(), "baseline": pinned.get(m.name)} for m in reading.measurements]
+
+
 def _obligations(reading: Any) -> dict[str, Any] | None:
     if reading is None or not hasattr(reading, "obligation_results"):
         return None
@@ -70,10 +91,11 @@ def run_check(project: Project, manifest: Manifest, check_id: str, *,
     run_dir = store.run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     digest = manifest.digest(check_id)
+    baseline = store.baselines().get(check_id)
     before = Snapshot(project).inputs(check.inputs)
     record: dict[str, Any] = {
         "run_id": run_id, "check_id": check_id, "check_digest": digest,
-        "key": evidence_key(digest, before), "inputs": before.to_json(),
+        "key": evidence_key(digest, before, baseline), "inputs": before.to_json(),
         "category": check.evidence_kind().value, "worktree": str(project.root),
         "state": "running", "started_at": now(), "ended_at": None,
         "outcome": None, "obligations": None, "measurements": [], "argv": None, "exit_code": None,
@@ -82,8 +104,10 @@ def run_check(project: Project, manifest: Manifest, check_id: str, *,
     with store.hold(run_id):
         store.save(record)
         outcome, reading, exit = _execute(project, manifest, check, store, run_id, digest, before)
+        outcome, unchecked = _apply_budgets(check, outcome, reading, baseline)
         record.update({
             "state": "done", "ended_at": now(), "outcome": outcome.to_json(),
+            "measurements": _measurements(reading, baseline), "unchecked_budgets": list(unchecked),
             "obligations": _obligations(reading),
             "exit_code": None if exit is None else exit.code,
             "argv": None if exit is None else list(dispatch.argv_for(check, run_dir, None)),

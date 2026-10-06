@@ -11,7 +11,6 @@ from typing import Any, Sequence
 
 from . import query
 from .manifest import ManifestError
-from .outcome import BlockedReason
 from .paths import ProjectError
 from .store import now
 
@@ -164,6 +163,24 @@ def cmd_accept(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_baseline(args: argparse.Namespace) -> int:
+    ctx = _context(args)
+    try:
+        ctx.require_manifest().require(args.check)
+    except ManifestError as exc:
+        raise Refused(str(exc), EXIT_INVALID) from exc
+    run_id = args.run or (ctx.store.latest(args.check) or {}).get("run_id")
+    record = ctx.store.record(run_id) if run_id else None
+    if record is None or record["check_id"] != args.check or not record.get("measurements"):
+        raise Refused(f"no finished run of {args.check} with measurements to pin", EXIT_INVALID)
+    baseline = {"run_id": record["run_id"], "pinned_at": now(),
+                "measurements": {m["name"]: m["value"] for m in record["measurements"]}}
+    ctx.store.pin_baseline(args.check, baseline)
+    _emit(baseline, args.json, f"baseline for {args.check} pinned from run {record['run_id']}: "
+          + ", ".join(f"{k}={v:g}" for k, v in baseline["measurements"].items()))
+    return EXIT_OK
+
+
 def cmd_features(args: argparse.Namespace) -> int:
     report = query.status(_context(args))
     if report["feature_error"]:
@@ -239,6 +256,10 @@ def build_parser() -> argparse.ArgumentParser:
     accept.add_argument("--check", action="append", help="a check id (repeatable); default every check")
     accept.add_argument("--yes", action="store_true", help="accept without the interactive prompt")
 
+    baseline = command(sub, "baseline", "pin a run's measurements as the baseline budgets compare against")
+    baseline.add_argument("--check", required=True)
+    baseline.add_argument("--run", help="default: the latest finished run of the check")
+
     check = sub.add_parser("check", help="run registered checks").add_subparsers(dest="check_command", required=True)
     run_check = command(check, "run", "run checks in the foreground")
     run_check.add_argument("--check", action="append", help="a registered check id (repeatable)")
@@ -269,7 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 _DISPATCH = {
     ("doctor", None): cmd_doctor, ("status", None): cmd_status, ("gate", None): cmd_gate,
-    ("features", None): cmd_features, ("accept", None): cmd_accept, ("check", "run"): cmd_check_run,
+    ("features", None): cmd_features, ("accept", None): cmd_accept, ("baseline", None): cmd_baseline, ("check", "run"): cmd_check_run,
     ("run", "show"): cmd_run_show, ("run", "cancel"): cmd_run_cancel,
     ("project", "inspect"): cmd_project_inspect, ("project", "enroll"): cmd_project_enroll,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,

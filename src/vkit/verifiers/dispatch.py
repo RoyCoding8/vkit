@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ..budgets import Measurement
 from ..outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
 from ..schemas import CHECK_ARTIFACT, SchemaValidationError, parse_artifact, validate
 from . import lean_adapter, node_adapter, property_adapter, pytest_adapter, tlc_adapter
@@ -26,6 +27,7 @@ class Adapter:
 class ScenarioReading:
     scenarios: tuple[ScenarioResult, ...]
     problem: Blocked | None = None
+    measurements: tuple[Measurement, ...] = ()
 
     @property
     def failing(self) -> tuple[ScenarioResult, ...]:
@@ -56,7 +58,9 @@ def read_scenarios(raw: bytes, required: tuple[str, ...]) -> ScenarioReading:
     if missing:
         return ScenarioReading(scenarios, Blocked(
             BlockedReason.SCENARIO_UNKNOWN, f"the artifact never reported required scenario(s): {', '.join(missing)}"))
-    return ScenarioReading(scenarios)
+    measurements = tuple(Measurement(m["name"], float(m["value"]), m["unit"], m["better"])
+                         for m in document.get("measurements", ()))
+    return ScenarioReading(scenarios, measurements=measurements)
 
 
 def _variant(check: Any) -> Any:

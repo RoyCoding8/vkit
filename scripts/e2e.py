@@ -26,6 +26,8 @@ class Example:
     bug_from: str
     bug_to: str
     failing_check: str
+    slow_from: str = ""
+    slow_to: str = ""
 
 
 EXAMPLE_TABLE = (
@@ -34,7 +36,8 @@ EXAMPLE_TABLE = (
     Example("node-cli", ("split-bill-behavior", "split-bill-units"), "src/split-bill.js",
             "handed < leftover;", "handed < leftover - 1;", "split-bill-behavior"),
     Example("node-http", ("items-api", "items-api-sockets"), "src/items-server.js",
-            "items.push({ name: parsed.name });", "items.push({ name: parsed.name + '!' });", "items-api"),
+            "items.push({ name: parsed.name });", "items.push({ name: parsed.name + '!' });", "items-api",
+            "      send(200, { items });", "      const until = Date.now() + 60; while (Date.now() < until) {}\n      send(200, { items });"),
 )
 
 
@@ -106,6 +109,22 @@ def rows(example: Example, scratch: Path) -> list[tuple[str, bool, str]]:
     code, body = vkit(clean, "gate")
     out.append((f"{example.name} gate is READY again", code == 0 and body.get("verdict") == "READY",
                 f"exit={code} verdict={body.get('verdict')}"))
+
+    if example.slow_from:
+        code, body = vkit(clean, "baseline", "--check", example.failing_check)
+        out.append((f"{example.name}/{example.failing_check} baseline pinned from a passing run",
+                    code == 0 and bool(body.get("measurements")), f"exit={code} baseline={body.get('measurements')}"))
+        slow = fresh_copy(example, scratch / "slow")
+        vkit(slow, "check", "run", "--check", example.failing_check)
+        vkit(slow, "baseline", "--check", example.failing_check)
+        replace_once(slow / example.bug_file, example.slow_from, example.slow_to)
+        code, body = check_run(slow, example.failing_check)
+        outcome = body.get("outcome", {})
+        budget = [s for s in outcome.get("scenarios", []) if s["id"].startswith("budget:") and s["result"] == "FAIL"]
+        behavior = [s for s in outcome.get("scenarios", []) if not s["id"].startswith("budget:")]
+        out.append((f"{example.name}/{example.failing_check} fails its latency budget after a seeded slowdown",
+                    code == 1 and bool(budget) and all(s["result"] == "PASS" for s in behavior),
+                    f"exit={code} " + "; ".join(f"{s['id']}: {s['observation']}" for s in budget)))
 
     buggy = fresh_copy(example, scratch / "buggy")
     replace_once(buggy / example.bug_file, example.bug_from, example.bug_to)

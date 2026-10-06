@@ -205,6 +205,7 @@ async function main(argv) {
   const options = parseArgs(argv);
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vkit-items-'));
   const scenarios = [];
+  const measurements = [];
   const started = [];
 
   try {
@@ -262,6 +263,16 @@ async function main(argv) {
       return 'GET /nothing returned 404';
     }));
 
+    const samples = [];
+    for (let i = 0; i < 40; i += 1) {
+      const begun = process.hrtime.bigint();
+      await request(main1.port, 'GET', '/items', null);
+      samples.push(Number(process.hrtime.bigint() - begun) / 1e6);
+    }
+    samples.sort((a, b) => a - b);
+    measurements.push({ name: 'get_items_p50_ms', value: samples[19], unit: 'ms', better: 'lower' });
+    measurements.push({ name: 'get_items_p95_ms', value: samples[37], unit: 'ms', better: 'lower' });
+
     // A second instance, started alongside the first, on its own port and its
     // own state file. The assertion is that it can see none of the first
     // instance's items, which is the property that lets two instances run
@@ -299,6 +310,7 @@ async function main(argv) {
     schema_version: 1,
     description: 'items service behaviour observed over real HTTP',
     scenarios,
+    measurements,
   };
 
   fs.mkdirSync(path.dirname(options.out), { recursive: true });

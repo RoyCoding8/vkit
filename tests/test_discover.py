@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -153,7 +152,6 @@ def test_inspect_does_not_execute_an_install_script(repo: ProjectBuilder) -> Non
     for sentinel in ("SENTINEL", "SENTINEL2", "SENTINEL3"):
         assert not (project.root / sentinel).exists(), f"{sentinel} exists; a hook ran"
 
-    summaries = " ".join(c.summary for c in report.commands)
     assert "preinstall" in json.dumps(report.to_json()), "the hostile script is not visible to a reviewer"
 
 

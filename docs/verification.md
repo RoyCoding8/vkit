@@ -1,155 +1,90 @@
 # Verification reference
 
-## Registered checks and evidence
+## Model
 
-`verification/manifest.json` defines available checks. Version 1 supports
-scenario drivers. Version 2 supports scenario, pytest, Node test, property,
-Lean, and TLC checks. The [schemas](../schemas/manifest.v2.json) define each
-variant and its required fields.
+A check is an entry in `verification/manifest.json` (schema version 2, [schema](../schemas/manifest.v2.json)).
+It runs only after a human accepts its exact definition with `vkit accept`. Any change to the entry changes its
+digest, and the changed check is BLOCKED with `not_approved` until it is accepted again.
 
-Commands are argument arrays. An agent selects a registered check ID.
-It cannot supply an arbitrary command through the run API. Registered commands
-still execute repository code and need owner review.
-The supported command placeholders are `{{run_dir}}` and `{{python}}`.
-Substitution inserts the run directory or resolved interpreter without shell
-evaluation. The core reads structured artifacts instead of treating printed
-prose as proof. It determines the evidence category from the registered check
-and obligations.
+Each run records evidence under a key made of three digests:
+
+- the check's definition,
+- the content of its inputs (CRLF folded to LF),
+- the pinned baseline, when the check has one.
+
+`inputs` lists files, directories or globs. An empty list means every tracked and untracked-but-not-ignored file,
+which is always safe. Files that look like secrets (`.env*`, private keys, credential files) are never read.
+
+A check's state is computed from the store and the files on disk:
+
+| State | Meaning |
+| --- | --- |
+| `fresh_pass`, `fresh_fail`, `fresh_blocked` | The latest run for the current key had this result |
+| `stale` | The check has run, but not against the current inputs |
+| `missing` | The check has never run |
+| `not_approved` | The current definition has not been accepted |
+
+The gate is READY when every check is `fresh_pass`, REJECTED when any is `fresh_fail`, and BLOCKED otherwise.
+
+## Outcomes
 
 | Outcome | Meaning |
 | --- | --- |
-| PASS | The checker completed successfully and its validated evidence satisfies the required obligations. |
-| FAIL | Valid evidence reports a required obligation failed. |
-| BLOCKED | Missing tools or evidence, malformed output, timeout, cancellation, changed inputs, or a refused capability prevents a decision. |
+| PASS | The check's own report satisfied every required obligation |
+| FAIL | The report shows a required obligation failed, or a budget was exceeded |
+| BLOCKED | No decision. The reason is one of `not_approved`, `input_missing`, `prerequisite_missing`, `tool_missing`, `timeout`, `cancelled`, `launch_failed`, `artifact_missing`, `artifact_malformed`, `artifact_empty`, `scenario_unknown`, `source_changed` |
 
-An exit code alone does not establish PASS. Scenario drivers must publish their
-versioned artifact. Native adapters interpret their own checker output and
-produce typed receipts. Reports record their source identity and check scope.
+An exit code alone never establishes PASS. Each kind writes a structured report that its adapter reads. A run
+whose inputs change while it executes is BLOCKED with `source_changed`.
 
-Scenario and test results cover named observations. Property results cover
-the recorded generator settings and samples. TLC results cover the model and
-finite configuration. Lean results cover the admitted theorem and assumptions.
-These categories are not interchangeable. Model and theorem results require
-separate evidence to establish correspondence with application code.
-The core computes verdicts. Clients cannot supply an accepted verdict.
-Terminal records are immutable, and report publication is atomic. SQLite
-stores durable task and run identities. Source identity uses measurements
-before and after a run and can miss an edit made and reverted between them.
+## Kinds
 
-## Managed tasks
+| Kind | Report | Obligations |
+| --- | --- | --- |
+| `scenario` | [check-artifact.v1.json](../schemas/check-artifact.v1.json): each scenario's id, PASS or FAIL, observation, and optional measurements | `required_scenarios`, `budgets` |
+| `pytest`, `property` | JSON from vkit's pytest plugin | `required_tests`; `property` also pins Hypothesis settings |
+| `node_test` | TAP from vkit's Node reporter | `required_tests` |
+| `static` | SARIF 2.1 | no finding outside the pinned baseline |
+| `lean` | the Lean runner or comparator report | `theorems`, `permitted_axioms` |
+| `tlc` | TLC output | `properties` at the declared `bounds` |
 
-Create a contract file with registered IDs, for example:
+Commands are argument arrays with two placeholders, `{{run_dir}}` and `{{python}}`, and are never passed to a
+shell. A check runs with vkit's source on `PYTHONPATH`, inside a Windows Job Object or a POSIX process group, so
+timeout and cancel stop everything it started.
 
-```json
-{
-  "description": "Verify the totals change",
-  "required_checks": ["totals-behavior"]
-}
-```
+### Budgets and baselines
 
-Then use the returned IDs in this sequence:
+A scenario artifact may report `measurements` (`name`, `value`, `unit`, `better`). A `budgets` entry fails the
+run when a measurement passes its `limit` in the worse direction, or regresses more than `max_regression_pct`
+from the pinned baseline. A regression budget with no baseline is reported in `unchecked_budgets`, not failed.
+`vkit baseline --check ID` pins the measurements and static findings of a finished run.
 
-```powershell
-vkit task begin --project <repo> --contract <contract.json> --request-id <begin-id>
-vkit check start --project <repo> --task <task-id> --check totals-behavior --request-id <start-id>
-vkit run show --project <repo> --run <run-id>
-vkit task finalize --project <repo> --task <task-id>
-```
+### Lean
 
-`check start` returns before completion. Read the run until it is terminal.
-Use the same request ID to retry the same operation. Use a new ID for a new
-operation. The approved policy's mandatory checks remain required even when
-the caller requests fewer checks.
+The `reviewed_proof_sources` profile rechecks human-reviewed sources with the kernel and audits axioms. The
+`unreviewed_agent` profile checks an agent's `solution` module against the `challenge` with
+[comparator](https://github.com/leanprover/comparator). It also requires `challenge_sha256`, so editing the
+statements blocks the check until a human accepts the new digest. See [examples/lean-proof](../examples/lean-proof/README.md).
 
-The managed lifecycle pins contracts and policy identities, records resource
-ownership, and rejects stale attempt generations. Evidence must satisfy the
-current task's requirements. An old PASS cannot automatically make a new task
-ready. Parallel workers must declare overlapping resources and use this
-lifecycle for its ownership guarantees to apply.
+## Proposals
 
-The agent host chooses models and dispatches workers. vkit manages declared
-verification and resource ownership. It does not call models or provide a
-second worker scheduler.
+Agents call the MCP `propose` tool with manifest entries, feature entries and new files. A proposal may only add
+files. `vkit proposals` lists pending ones. `vkit accept --proposal <digest>` writes them into the working tree
+and accepts their check definitions. `vkit reject` discards one.
 
-Cancel a run with `vkit run cancel --project <repo> --run <run-id>
---request-id <cancel-id>`. `vkit recover --project <repo>` inspects interrupted
-state. Run `vkit recover --help` for supported actions and their evidence
-arguments.
+## Feature map
 
-## Cleanup
+`verification/features.json`, schema version 2. Each feature has an `id`, a `behavior`, `how_to_reach` steps,
+`entry_points`, the checks that cover it (`covered_by`), and known `gaps`. A feature is verified when it has no
+gaps, its entry points exist, and every covering check is `fresh_pass`. The map holds no expected results;
+those live in the checks.
 
-Configure `verification/cleanup.json` before admitting a task:
+## Storage
 
-```json
-{
-  "mode": "preview",
-  "enabled_rules": [
-    "ORDINARY_TRAILING_COMMENT",
-    "LOGIC-EMPTY-ELSE-PASS",
-    "LOGIC-REDUNDANT-PASS"
-  ],
-  "excluded_paths": [],
-  "python_version": "3.13.14",
-  "optimize_levels": [0, 1, 2]
-}
-```
+Everything lives under `<git common dir>/vkit/`, so every worktree of a repository shares it. That covers run
+records and logs, evidence pointers, accepted digests, baselines and proposals. A run holds an OS file lock while
+it lives. A run that reads as `running` but whose lock is free is reported as `interrupted`.
 
-`off` disables cleanup. `preview` inspects supported changes without writing.
-`apply_verified` permits guarded writes after preservation checks and task
-ownership checks. An absent policy defaults to off. Editing the policy after
-admission invalidates its pinned identity.
+## Exit codes
 
-The comment rule removes eligible ordinary trailing comments. It preserves
-directives and protected comments. Logic rules remove supported empty else
-branches and redundant pass statements. Logic checks compare compiled output
-at optimization levels 0, 1, and 2 on the approved CPython version.
-The guarantees cover the registered transformations and exclude source-text
-observations such as line-number changes.
-
-Claude edit hooks inspect supported tool events. Shared pre-verification also
-inspects changed files, including edits made through shell tools. The dashboard
-shows cleanup records, preservation receipts, and refusals. JavaScript and
-TypeScript cleanup are unsupported.
-
-## Agent hosts and hooks
-
-The MCP server uses the optional `mcp` SDK and can serve a client independently
-of Claude Code. A successful protocol exchange establishes that client and
-server connection, not that another host has installed the plugin.
-
-Claude session hooks use explicit registered session and agent bindings. They
-do not infer ownership from timestamps, recent files, or the latest task.
-Completion hooks read local records without launching checks or models.
-An unbound session has no managed task completion gate. Cleanup hooks use the
-registered binding and approved policy before considering an edit.
-
-## Integration
-
-```powershell
-vkit integration verify --project <repo> --candidate <commit> --target <base-commit> --policy @<approved-ref>
-```
-
-Integration checks one exact candidate against the target and approved policy.
-A local policy path produces local evidence and cannot authorize protected
-integration. The [CI example](../examples/ci/integration.yml) illustrates how
-to connect this to a repository's GitHub workflow. It is a template, not evidence
-that protected integration is enabled for your repository.
-
-Native adapters are not yet supported in protected integration. Unreviewed
-Lean proofs require an isolated comparator this beta does not provide.
-The dashboard's saved verification proposals do not yet change the effective
-manifest used by admission and execution.
-
-## CLI output and exit codes
-
-Add `--json` to supported commands for machine-readable output. Diagnostics go
-to stderr. Use each command's `--help` for its arguments.
-
-| Code | Meaning |
-| --- | --- |
-| 0 | The requested operation succeeded. A foreground check passed; starting a background run does not establish its outcome. |
-| 1 | A completed check failed. |
-| 2 | Invalid request or configuration. |
-| 3 | BLOCKED verification. |
-| 4 | Internal error. |
-| 5 | Unsupported or unavailable capability. |
+0 PASS or READY, 1 FAIL or REJECTED, 2 invalid request, 3 BLOCKED, 4 internal error, 5 unavailable.

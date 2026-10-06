@@ -1,6 +1,6 @@
 ---
 name: vkit-work
-description: Make a change in a vkit-enrolled repository and prove it with recorded evidence. Use when implementing, fixing, or reviewing code in a repository that has verification/manifest.json, or when the vkit Stop hook says checks are stale.
+description: Make a change in a repository vkit verifies and prove it with recorded evidence. Use when implementing, fixing, or reviewing code in a repository that has verification/manifest.json, or when the vkit Stop hook says checks are stale.
 ---
 
 # Work under vkit

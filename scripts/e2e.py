@@ -203,7 +203,13 @@ def lean_rows(scratch: Path) -> list[tuple[str, bool, str]]:
 
 
 def main() -> int:
-    only = set(sys.argv[1:])
+    argv = sys.argv[1:]
+    artifact = None
+    if "--artifact" in argv:
+        index = argv.index("--artifact")
+        artifact = Path(argv[index + 1])
+        del argv[index:index + 2]
+    only = set(argv)
     results = []
     skipped = []
     with tempfile.TemporaryDirectory(prefix="vkit-e2e-") as raw:
@@ -222,6 +228,10 @@ def main() -> int:
         print(f"{'PASS' if ok else 'FAIL'}  {name}  ({detail})")
     for reason in skipped:
         print(f"SKIP  {reason}")
+    if artifact is not None:
+        scenarios = [{"id": name, "result": "PASS" if ok else "FAIL", "observation": detail or name}
+                     for name, ok, detail in results]
+        artifact.write_text(json.dumps({"schema_version": 1, "scenarios": scenarios}, indent=2), encoding="utf-8")
     failures = sum(1 for _, ok, _ in results if not ok)
     print(f"{len(results) - failures}/{len(results)} rows matched" + (f", {len(skipped)} group(s) skipped" if skipped else ""))
     return 1 if failures else 0

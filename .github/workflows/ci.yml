@@ -18,54 +18,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    defaults:
-      run:
-        shell: python
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
         with:
-          # The exact patch release, not the 3.13 series. The cleanup
-          # compiled-equality check compares bytecode, constants and exception
-          # tables, and its receipt is scoped to one compiler: src/vkit/cleanup/
-          # logic.py TESTED_CPYTHON_VERSIONS holds only 3.13.14, so a runner
-          # resolving 3.13.15 refuses the cleanup checks with runtime_not_approved
-          # and 23 tests fail behind one correct refusal. Bumping this pin is how
-          # a new patch release gets MEASURED, not how a failing suite gets
-          # silenced: run the comparison on the new version, record the result,
-          # then move the pin and the constant together.
-          python-version: "3.13.14"
-
-      # The build backend and the test extra. `hatchling` is named in
-      # pyproject.toml as build-backend, so pip builds the editable install
-      # through it; `.[test]` carries pytest, hypothesis, jsonschema and the
-      # rest. Installing the test extra is not optional: without it
-      # tests/test_formal_correspondence.py skips its whole body and the
-      # suite still reads green.
-      - name: Install
-        run: |
-          import subprocess, sys
-          subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"], check=True)
-          subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[test]"], check=True)
-
-      - name: Regenerate mutation evidence for this source
-        run: |
-          import subprocess, sys
-          subprocess.run([sys.executable, "formal/run_python_mutants.py"], check=True)
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mutation-evidence-${{ matrix.os }}
-          path: formal/results/python-core-mutants-receipt.json
-
-      # Collect independently of execution so a failed suite still has a count.
-      - name: Collect
-        run: |
-          import subprocess, sys
-          subprocess.run([sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q", "-o", "addopts=", "-p", "no:cacheprovider"], check=True)
-
-      - name: Test
-        run: |
-          import subprocess, sys
-          subprocess.run([sys.executable, "-m", "pytest", "tests/", "-o", "addopts=", "-p", "no:cacheprovider", "-ra", "--durations=25"], check=True)
+          node-version: "22"
+      - run: uv sync --extra test
+      - run: uv run pytest -ra
+      - run: uv run python scripts/e2e.py

@@ -3,170 +3,130 @@
 </p>
 <h2 align="center">VKit</h2>
 
-
 [![CI](https://github.com/RoyCoding8/vkit/actions/workflows/ci.yml/badge.svg)](https://github.com/RoyCoding8/vkit/actions/workflows/ci.yml)
-[![Formal verifiers](https://github.com/RoyCoding8/vkit/actions/workflows/formal-verifiers.yml/badge.svg)](https://github.com/RoyCoding8/vkit/actions/workflows/formal-verifiers.yml)
-[![Browser acceptance](https://github.com/RoyCoding8/vkit/actions/workflows/browser-acceptance.yml/badge.svg)](https://github.com/RoyCoding8/vkit/actions/workflows/browser-acceptance.yml)
-[![PyPI](https://img.shields.io/pypi/v/vkit.svg)](https://pypi.org/project/vkit/)
-[![Python](https://img.shields.io/pypi/pyversions/vkit.svg)](https://pypi.org/project/vkit/)
 
-Run a registered check in a Git repository and keep the evidence for the result.
+Machine-checked evidence for coding agents, and for the people who review their work.
 
-vkit runs a check you defined, records what passed and what failed, and keeps
-each run on disk so you can read it later. Agents drive it over MCP. You read it
-in a local web console.
+You register checks for a repository and accept them. vkit runs them and records what each one established
+about the files as they are now. An agent asks vkit what is known. It might hear that `checkout-flow` passed
+for these exact files, that `latency` is stale because `server.js` changed, or that a Lean theorem holds. The
+agent cannot supply a command, and it cannot accept a check. The gate is READY only when every check passed
+against the current inputs.
 
-This is a 0.1 beta.
+This is a 0.2 beta.
 
 ## Install
 
-Python 3.11 or later. Python 3.13.14 is required for the logic cleanup checks.
+Python 3.11 or later, and [uv](https://docs.astral.sh/uv/).
 
 ```powershell
 git clone https://github.com/RoyCoding8/vkit.git
 Set-Location vkit
-py -3.13 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install ".[mcp]"
+uv sync --extra mcp
 ```
 
-The `mcp` extra installs the MCP server SDK. Use `python -m pip install .` if you
-only need the CLI and the console. Each check has its own external tool, such as
-pytest, Node, Lean, or TLC. vkit reports which ones are missing.
+Each check brings its own tool, such as Node, pytest, Lean or ruff. `vkit doctor` reports which ones are
+missing.
 
-## Run the first check
-
-Every example ships with a registered check, so copy one out and run it against
-a real Git repository.
+## Try it
 
 ```powershell
-Copy-Item -Recurse examples/python-cli C:\work\totals
-Set-Location C:\work\totals
-git init
-git add .
-git commit -m "Add the totals CLI and its check"
+Copy-Item -Recurse examples/node-http C:\work\items
+Set-Location C:\work\items
+git init; git add .; git commit -m "items service"
+vkit accept --project .                     # review what each check runs, then accept
+vkit check run --project . --needed         # run every check without fresh evidence
+vkit gate --project .                       # READY, REJECTED or BLOCKED
 ```
 
-```powershell
-vkit doctor --project .
-vkit check run --project . --check totals-behavior
-vkit features --project .
-```
+Edit `src/items-server.js` and `vkit status --project . --path src/items-server.js` reports both checks
+`stale`. It also lists the features that file implements. `vkit check run --needed` reruns exactly those two
+checks.
 
-`doctor` reports whether the tools this project's checks need are installed.
-`check run` starts a run. `features` reports which declared features have
-coverage and which do not.
+## What a check can be
 
-Start here for the other two examples: [Node CLI](examples/node-cli/README.md)
-and [Node HTTP](examples/node-http/README.md).
+| Kind | Evidence category | What a PASS establishes |
+| --- | --- | --- |
+| `scenario` | scenario | A driver you wrote ran these named cases and saw these results |
+| `pytest`, `node_test` | scenario | These named tests ran and passed |
+| `property` | property | Hypothesis found no counterexample under the pinned settings |
+| `static` | static analysis | The analyzer's SARIF report has no finding outside the pinned baseline |
+| `lean` | theorem | The kernel accepted proofs of the frozen statements, within the permitted axioms |
+| `tlc` | finite model | Every reachable state of one finite TLA+ model satisfies the properties |
 
-## Open the console
+Each result says what it does not establish as well. A scenario PASS says nothing about inputs that were
+not run.
+
+A scenario check can report measurements, such as `p95_ms`, and declare budgets on them. Budgets fail a run
+that exceeds a limit or regresses past a baseline that a human pinned with `vkit baseline`. A static check
+fails only on findings outside its pinned baseline, so existing debt does not block work and new debt does.
+
+## Connect an agent
+
+Configure a stdio MCP server with command `vkit` and arguments `mcp serve --project <repository>`. The tools
+are:
+
+- `status`: freshness of every check, or only the checks that read the paths you pass.
+- `features`: the feature map, including what users can do, how they reach it, and the known gaps.
+- `check_run`: runs checks by id, or with `needed: true` runs every stale or missing one.
+- `run_get`: reads one run's outcome and log.
+- `run_cancel`: stops a run.
+- `gate`: returns READY, REJECTED or BLOCKED.
+- `propose`: suggests a check, a feature entry, or a new file. Nothing changes until a human runs
+  `vkit accept --proposal <digest>`.
+
+For Claude Code, `plugin/` holds two skills and two hooks. The session-start hook reports the gate. The stop
+hook holds the session while a check the agent can rerun is stale or failing.
+
+## Watch it
 
 ```powershell
 vkit console --project .
 ```
 
-The console listens on `127.0.0.1:8765` and opens a browser. Pass `--port 0` to
-let the operating system pick a free port, or `--no-browser` to print the URL
-without opening it. Stop it with Ctrl+C.
-
-The console has views for the project identity, its checks, the runs and their
-logs, the evidence each run published, tasks, cleanup records, recovery, and
-settings. It reads the store on disk. Everything it can change is on the
-Operations view.
-
-## Register a check in your own repository
-
-```powershell
-vkit project inspect --project .
-vkit project enroll --project .
-```
-
-Enrollment writes `verification/proposed-manifest.json`. Its commands and
-expected scenarios are placeholders. Replace them with a driver that exercises
-your application and describe the behavior it must observe, then accept the
-digest the proposal displays:
-
-```powershell
-vkit project enroll --project . --accept --accept-digest <digest>
-```
-
-Registered checks live in `verification/manifest.json`.
-
-## Connect an agent
-
-Configure a stdio MCP server with command `vkit` and these arguments:
-
-```text
-serve --project D:/path/to/your/repository
-```
-
-The host has to find the `vkit` executable. An absolute path to the virtual
-environment's executable works when it cannot. To read the tool catalogue:
-
-```powershell
-vkit mcp serve --project . --json
-```
-
-The six tools are `project_inspect`, `task_begin`, `check_start`, `run_get`,
-`run_cancel`, and `task_finalize`. MCP does not pick a model and does not spawn
-workers.
-
-For Claude Code, install the plugin from the console's Settings view. The plugin
-ships four skills, `vkit-onboard`, `vkit-work`, `vkit-verify`, and
-`vkit-status`, plus hooks that bind a session, inspect edits, and check task
-completion.
+This opens a read-only page on `127.0.0.1:8765` with the gate, checks, live runs and their logs, pending
+proposals, and features. It has no login and changes nothing. Pass `--port 0` to pick a free port.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `vkit doctor` | Report whether this project's checks could run |
-| `vkit project inspect` | Show the repository and what vkit found in it |
-| `vkit project enroll` | Propose a manifest, then accept it against its digest |
-| `vkit check run` | Start a registered check and record the run |
-| `vkit check start` | Start a check and keep the receipt for later |
-| `vkit features` | Report declared feature coverage and the gaps |
-| `vkit console` | Serve the console on loopback |
-| `vkit mcp serve` | Serve the project to an agent over MCP |
-| `vkit run show` | Read one run and its evidence |
-| `vkit task` | Own a check contract, its evidence, and readiness |
-| `vkit recover` | Inspect interrupted runs, claims, and processes |
-| `vkit integration` | Decide whether a candidate commit meets the policy |
+| `vkit status [--path P]` | Show each check's freshness and the gate |
+| `vkit check run --check ID \| --needed` | Run checks in the foreground |
+| `vkit gate` | Exit 0 READY, 1 REJECTED, 3 BLOCKED |
+| `vkit accept [--check ID] [--proposal D]` | Review and accept check definitions or a proposal |
+| `vkit proposals`, `vkit reject --proposal D` | Review what agents proposed |
+| `vkit baseline --check ID` | Pin a run's measurements and findings as the baseline |
+| `vkit run show --run R`, `vkit run cancel --run R` | Read or stop a run |
+| `vkit features` | Show the feature map and audit it |
+| `vkit doctor` | Report missing tools |
+| `vkit project inspect` | Find the test commands a repository already declares |
+| `vkit console` | Serve the read-only console |
+| `vkit mcp serve` | Serve MCP over stdio |
 
-Every command takes `--project`, and most take `--json`. `vkit <command> --help`
-lists the flags.
+Every command takes `--project` (default `.`) and `--json`.
 
-## Beta limits
+## Limits
 
-- Check logs are not redacted, so a check that prints a secret writes the secret
-  to disk.
-- Protected integration does not cover the native verifier adapters.
-- Lean solutions are BLOCKED unless you reviewed them. vkit does not verify an
-  unreviewed proof.
-- Automatic cleanup handles Python and the registered rules only. Logic cleanup
-  needs CPython 3.13.14.
-- POSIX process groups do not contain a descendant that detaches into another
-  session.
-- Console settings record proposals. They do not change task admission or check
-  execution. `verification/manifest.json` is still the check authority.
+- Acceptance binds MCP clients. An agent with a shell can run `vkit accept` itself.
+- Evidence is keyed by the content of a check's declared inputs. A check that reads an undeclared file can be
+  reported fresh after that file changes. Leave `inputs` empty to key on the whole tree.
+- Check logs are not redacted.
+- On Windows, agent-written Lean proofs build without a sandbox. See [examples/lean-proof](examples/lean-proof/README.md).
+- TLC checks have no automated coverage in this release.
+
+[docs/verification.md](docs/verification.md) is the reference.
 
 ## Development
 
 ```powershell
-python -m pip install -e ".[test]"
+uv sync --extra test
+uv run pytest
+uv run python scripts/e2e.py
 ```
 
-Heavy suites, the formal tools, and browser acceptance run in GitHub Actions.
-
-- [Cross-platform suite](https://github.com/RoyCoding8/vkit/actions/workflows/ci.yml)
-- [Formal verifier checks](https://github.com/RoyCoding8/vkit/actions/workflows/formal-verifiers.yml)
-- [Installed-wheel browser acceptance](https://github.com/RoyCoding8/vkit/actions/workflows/browser-acceptance.yml)
-
-[docs/verification.md](docs/verification.md) is the reference for outcomes,
-tasks, cleanup policy, integration, and the current limits.
-[formal/RESULTS.md](formal/RESULTS.md) states the bounds on each committed model
-receipt.
+vkit verifies itself. `verification/manifest.json` registers its end-to-end runs, its tests, ruff, and a
+no-comments ratchet.
 
 ## License
 Apache 2.0

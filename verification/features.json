@@ -1,0 +1,177 @@
+{
+  "schema_version": 2,
+  "features": [
+    {
+      "id": "status",
+      "behavior": "Shows each check's freshness against the current files, what its evidence establishes, and which checks read a path.",
+      "how_to_reach": [
+        "vkit status --project <repo> [--path <file>]",
+        "MCP tool status"
+      ],
+      "entry_points": [
+        "src/vkit/query.py",
+        "src/vkit/state.py",
+        "src/vkit/inputs.py"
+      ],
+      "covered_by": [
+        "vkit-e2e",
+        "vkit-tests"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "check-run",
+      "behavior": "Runs accepted checks in the foreground or from the MCP server, contained in a Job Object or process group, with timeout and cancel.",
+      "how_to_reach": [
+        "vkit check run --check <id> | --needed",
+        "MCP tool check_run"
+      ],
+      "entry_points": [
+        "src/vkit/runner.py",
+        "src/vkit/proc.py"
+      ],
+      "covered_by": [
+        "vkit-e2e",
+        "vkit-tests"
+      ],
+      "gaps": [
+        "Linux process-group containment is untested locally; CI covers it"
+      ]
+    },
+    {
+      "id": "gate",
+      "behavior": "READY only when every registered check passed against the current inputs.",
+      "how_to_reach": [
+        "vkit gate",
+        "MCP tool gate",
+        "plugin Stop hook"
+      ],
+      "entry_points": [
+        "src/vkit/state.py",
+        "plugin/scripts/vkit_hook.py"
+      ],
+      "covered_by": [
+        "vkit-e2e",
+        "vkit-tests"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "acceptance",
+      "behavior": "Only a human-accepted check definition runs; agents can only propose.",
+      "how_to_reach": [
+        "vkit accept",
+        "vkit proposals",
+        "MCP tool propose"
+      ],
+      "entry_points": [
+        "src/vkit/proposals.py",
+        "src/vkit/cli.py"
+      ],
+      "covered_by": [
+        "vkit-e2e",
+        "vkit-tests"
+      ],
+      "gaps": [
+        "an agent with a shell can run `vkit accept` itself; acceptance binds MCP clients, not shells"
+      ]
+    },
+    {
+      "id": "budgets",
+      "behavior": "Fails a check whose measurements exceed a limit or regress past a pinned baseline.",
+      "how_to_reach": [
+        "add budgets to a scenario check",
+        "vkit baseline --check <id>"
+      ],
+      "entry_points": [
+        "src/vkit/budgets.py"
+      ],
+      "covered_by": [
+        "vkit-e2e",
+        "vkit-tests"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "static-ratchet",
+      "behavior": "Fails a static check only on SARIF findings outside the pinned baseline.",
+      "how_to_reach": [
+        "a static check",
+        "vkit baseline --check <id>"
+      ],
+      "entry_points": [
+        "src/vkit/verifiers/static_adapter.py"
+      ],
+      "covered_by": [
+        "vkit-tests",
+        "no-comments"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "lean-proofs",
+      "behavior": "Checks agent-written Lean proofs against statements a human froze, with comparator.",
+      "how_to_reach": [
+        "a lean check with profile unreviewed_agent"
+      ],
+      "entry_points": [
+        "src/vkit/verifiers/lean_adapter.py",
+        "src/vkit/verifiers/comparator_runner.py"
+      ],
+      "covered_by": [
+        "vkit-e2e-lean"
+      ],
+      "gaps": [
+        "on Windows the solution builds without a sandbox"
+      ]
+    },
+    {
+      "id": "console",
+      "behavior": "A read-only page on 127.0.0.1 with the gate, checks, runs and their logs, proposals and features.",
+      "how_to_reach": [
+        "vkit console --project <repo>"
+      ],
+      "entry_points": [
+        "src/vkit/console.py",
+        "src/vkit/console.html"
+      ],
+      "covered_by": [
+        "vkit-tests"
+      ],
+      "gaps": [
+        "the page's JavaScript rendering has no automated test"
+      ]
+    },
+    {
+      "id": "feature-map",
+      "behavior": "Records what users can do and how they reach it, and audits entry points and coverage.",
+      "how_to_reach": [
+        "vkit features",
+        "MCP tool features"
+      ],
+      "entry_points": [
+        "src/vkit/features.py"
+      ],
+      "covered_by": [
+        "vkit-e2e",
+        "vkit-tests"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "tlc",
+      "behavior": "Runs TLC on a finite TLA+ model.",
+      "how_to_reach": [
+        "a tlc check"
+      ],
+      "entry_points": [
+        "src/vkit/verifiers/tlc_adapter.py",
+        "src/vkit/verifiers/tlc_runner.py"
+      ],
+      "covered_by": [],
+      "gaps": [
+        "no check exercises TLC: Java is not installed here and the old self-verification model was deleted with the design it described"
+      ]
+    }
+  ]
+}

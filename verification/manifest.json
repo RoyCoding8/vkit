@@ -1,0 +1,314 @@
+{
+  "schema_version": 2,
+  "description": "vkit verifies itself.",
+  "checks": [
+    {
+      "id": "vkit-e2e",
+      "kind": "scenario",
+      "description": "Drives the python-cli, node-cli and node-http examples through the real vkit CLI: PASS on clean source, FAIL on seeded bugs and a seeded slowdown, BLOCKED on unaccepted definitions and missing tools, and staleness after edits.",
+      "command": [
+        "{{python}}",
+        "scripts/e2e.py",
+        "python-cli",
+        "node-cli",
+        "node-http",
+        "--artifact",
+        "{{run_dir}}/e2e.json"
+      ],
+      "timeout_seconds": 1800,
+      "artifact": "e2e.json",
+      "required_scenarios": [
+        "python-cli/totals-behavior passes on clean source",
+        "python-cli gate is READY after every check passed",
+        "python-cli an edit to src/totals.py makes totals-behavior stale",
+        "python-cli status for src/totals.py names the features it implements",
+        "python-cli gate is BLOCKED while a check is stale",
+        "python-cli check run --needed reruns exactly the stale checks",
+        "python-cli gate is READY again",
+        "python-cli/totals-behavior fails on seeded bug with an observation",
+        "python-cli/totals-behavior is BLOCKED after its definition changed without acceptance",
+        "python-cli/totals-behavior is BLOCKED when its tool is missing",
+        "node-cli/split-bill-behavior passes on clean source",
+        "node-cli/split-bill-units passes on clean source",
+        "node-cli gate is READY after every check passed",
+        "node-cli an edit to src/split-bill.js makes split-bill-behavior stale",
+        "node-cli gate is BLOCKED while a check is stale",
+        "node-cli check run --needed reruns exactly the stale checks",
+        "node-cli gate is READY again",
+        "node-cli/split-bill-behavior fails on seeded bug with an observation",
+        "node-cli/split-bill-behavior is BLOCKED after its definition changed without acceptance",
+        "node-cli/split-bill-behavior is BLOCKED when its tool is missing",
+        "node-http/items-api passes on clean source",
+        "node-http/items-api-sockets passes on clean source",
+        "node-http gate is READY after every check passed",
+        "node-http an edit to src/items-server.js makes items-api stale",
+        "node-http status for src/items-server.js names the features it implements",
+        "node-http gate is BLOCKED while a check is stale",
+        "node-http check run --needed reruns exactly the stale checks",
+        "node-http gate is READY again",
+        "node-http/items-api baseline pinned from a passing run",
+        "node-http/items-api fails its latency budget after a seeded slowdown",
+        "node-http/items-api fails on seeded bug with an observation",
+        "node-http/items-api is BLOCKED after its definition changed without acceptance",
+        "node-http/items-api is BLOCKED when its tool is missing"
+      ],
+      "prerequisites": [
+        {
+          "name": "git",
+          "executable": "git",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "node",
+          "executable": "node",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "src",
+        "schemas",
+        "scripts/e2e.py",
+        "examples/python-cli",
+        "examples/node-cli",
+        "examples/node-http",
+        "pyproject.toml"
+      ],
+      "subject": {
+        "paths": [
+          "src",
+          "examples"
+        ],
+        "digest": null
+      },
+      "claim_id": "vkit-e2e"
+    },
+    {
+      "id": "vkit-e2e-lean",
+      "kind": "scenario",
+      "description": "Agent-written Lean proofs: comparator accepts a correct proof and rejects an edited statement, sorry, and a foreign axiom; an edited challenge is blocked.",
+      "command": [
+        "{{python}}",
+        "scripts/e2e.py",
+        "lean-proof",
+        "--artifact",
+        "{{run_dir}}/e2e-lean.json"
+      ],
+      "timeout_seconds": 3600,
+      "artifact": "e2e-lean.json",
+      "required_scenarios": [
+        "lean-proof a correct proof passes",
+        "lean-proof a solution that edits a statement fails",
+        "lean-proof a sorry fails",
+        "lean-proof a non-permitted axiom fails",
+        "lean-proof an edited challenge is BLOCKED until a human accepts it"
+      ],
+      "prerequisites": [
+        {
+          "name": "git",
+          "executable": "git",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "lake",
+          "executable": "lake",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "comparator",
+          "executable": "comparator",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "lean4export",
+          "executable": "lean4export",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "landrun",
+          "executable": "landrun",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "src",
+        "schemas",
+        "scripts/e2e.py",
+        "examples/lean-proof",
+        "tools/comparator-windows"
+      ],
+      "subject": {
+        "paths": [
+          "src/vkit/verifiers",
+          "examples/lean-proof"
+        ],
+        "digest": null
+      },
+      "claim_id": "vkit-e2e-lean"
+    },
+    {
+      "id": "vkit-tests",
+      "kind": "pytest",
+      "description": "vkit's own behavior tests, which drive the CLI, the MCP server, the console and the plugin hooks.",
+      "required_tests": [
+        "tests/test_budgets.py::test_limits_respect_the_direction_of_better",
+        "tests/test_budgets.py::test_regression_is_judged_against_the_pinned_baseline_only",
+        "tests/test_budgets.py::test_a_budget_on_a_measurement_the_check_did_not_report_fails",
+        "tests/test_claimkind.py::test_a_result_must_name_one_of_the_three_statuses",
+        "tests/test_claimkind.py::test_a_blocked_result_is_a_status_and_not_a_pass",
+        "tests/test_claimkind.py::test_every_category_says_what_it_does_not_establish",
+        "tests/test_claimkind.py::test_a_finite_model_pass_does_not_survive_as_a_general_claim",
+        "tests/test_claimkind.py::test_scenario_checks_need_no_toolchain_and_the_others_say_theirs",
+        "tests/test_claimkind.py::test_the_json_form_carries_the_category_and_both_limits",
+        "tests/test_cli.py::test_a_pytest_check_passes_and_records_each_required_test",
+        "tests/test_cli.py::test_a_broken_function_fails_and_the_gate_rejects",
+        "tests/test_cli.py::test_a_required_test_that_does_not_exist_is_blocked_not_passed",
+        "tests/test_cli.py::test_a_timeout_stops_the_check_and_everything_it_started",
+        "tests/test_cli.py::test_run_cancel_stops_a_running_check",
+        "tests/test_cli.py::test_a_run_whose_runner_died_reads_as_interrupted",
+        "tests/test_cli.py::test_an_input_edited_during_the_run_blocks_the_result",
+        "tests/test_cli.py::test_accept_without_yes_is_refused_when_not_interactive",
+        "tests/test_cli.py::test_status_names_paths_no_check_reads",
+        "tests/test_cli.py::test_a_check_with_no_declared_inputs_goes_stale_on_any_edit",
+        "tests/test_console.py::test_the_console_shows_the_gate_checks_and_a_run_log",
+        "tests/test_discover.py::test_inspect_reports_a_npm_test_script_with_the_line_it_came_from",
+        "tests/test_discover.py::test_inspect_names_the_ambiguity_when_two_test_runners_are_configured",
+        "tests/test_discover.py::test_inspect_reports_ambiguity_is_absent_when_only_one_runner_exists",
+        "tests/test_discover.py::test_inspect_measures_prerequisites_against_this_host",
+        "tests/test_discover.py::test_inspect_does_not_execute_an_install_script",
+        "tests/test_discover.py::test_inspect_survives_a_malformed_package_json_and_still_reads_the_rest",
+        "tests/test_discover.py::test_inspect_reports_a_gap_when_the_repository_declares_no_command",
+        "tests/test_discover.py::test_inspect_reads_make_targets_and_ci_workflow_commands",
+        "tests/test_discover.py::test_inspect_reports_a_declared_node_engine_separately_from_a_measured_one",
+        "tests/test_discover.py::test_inspect_json_and_text_describe_the_same_commands",
+        "tests/test_discover.py::test_inspect_bounds_a_report_without_dropping_the_test_command",
+        "tests/test_features.py::test_features_report_reach_steps_freshness_and_audit_problems",
+        "tests/test_features.py::test_a_feature_map_with_an_unknown_field_is_refused",
+        "tests/test_mcp.py::test_an_agent_sees_staleness_runs_what_is_needed_and_reaches_ready",
+        "tests/test_mcp.py::test_a_request_with_a_command_or_unknown_field_is_refused",
+        "tests/test_plugin.py::test_stop_is_held_while_a_check_is_stale_and_released_when_ready",
+        "tests/test_plugin.py::test_stop_is_not_held_for_evidence_the_agent_cannot_produce",
+        "tests/test_proposals.py::test_an_agent_proposes_a_rule_and_only_acceptance_makes_it_run",
+        "tests/test_static.py::test_only_findings_outside_the_pinned_baseline_fail",
+        "tests/test_source_hygiene.py::test_source_describes_what_the_code_does_now_not_how_it_got_here"
+      ],
+      "runner": {
+        "executable": "{{python}}",
+        "base_argv": [
+          "-m",
+          "pytest",
+          "-q",
+          "-p",
+          "no:cacheprovider"
+        ]
+      },
+      "report_format": "pytest_json_report",
+      "expect_report_version": 1,
+      "timeout_seconds": 1800,
+      "artifact": "pytest.json",
+      "prerequisites": [
+        {
+          "name": "git",
+          "executable": "git",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "src",
+        "schemas",
+        "tests",
+        "plugin",
+        "pyproject.toml"
+      ],
+      "subject": {
+        "paths": [
+          "src",
+          "tests"
+        ],
+        "digest": null
+      },
+      "claim_id": "vkit-tests"
+    },
+    {
+      "id": "no-comments",
+      "kind": "static",
+      "description": "Comments in src/vkit; only the ones in the pinned baseline are allowed.",
+      "command": [
+        "{{python}}",
+        "scripts/comment_lint.py",
+        "src/vkit",
+        "{{run_dir}}/comments.sarif"
+      ],
+      "timeout_seconds": 120,
+      "artifact": "comments.sarif",
+      "inputs": [
+        "src/vkit",
+        "scripts/comment_lint.py"
+      ],
+      "subject": {
+        "paths": [
+          "src/vkit"
+        ],
+        "digest": null
+      },
+      "claim_id": "no-comments"
+    },
+    {
+      "id": "ruff",
+      "kind": "static",
+      "description": "ruff's default rules over the Python sources.",
+      "command": [
+        "uvx",
+        "ruff@0.14.0",
+        "check",
+        "--output-format",
+        "sarif",
+        "--output-file",
+        "{{run_dir}}/ruff.sarif",
+        "src",
+        "tests",
+        "scripts"
+      ],
+      "timeout_seconds": 300,
+      "artifact": "ruff.sarif",
+      "prerequisites": [
+        {
+          "name": "uvx",
+          "executable": "uvx",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "src",
+        "tests",
+        "scripts"
+      ],
+      "subject": {
+        "paths": [
+          "src",
+          "tests",
+          "scripts"
+        ],
+        "digest": null
+      },
+      "claim_id": "ruff"
+    }
+  ]
+}

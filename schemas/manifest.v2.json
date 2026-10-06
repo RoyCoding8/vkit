@@ -631,7 +631,7 @@
             "unreviewed_agent",
             "reviewed_proof_sources"
           ],
-          "description": "reviewed_proof_sources trusts reviewed source files and rechecks them with the kernel. unreviewed_agent requires isolated challenge/solution comparison and is BLOCKED until that capability is implemented."
+          "description": "reviewed_proof_sources rechecks human-reviewed sources with the kernel. unreviewed_agent checks an agent's solution module against the frozen challenge with leanprover/comparator."
         },
         "permitted_axioms": {
           "type": "array",
@@ -644,6 +644,15 @@
         },
         "toolchain": {
           "$ref": "#/$defs/toolchain"
+        },
+        "solution": {
+          "$ref": "#/$defs/moduleRef",
+          "description": "The module an agent writes its proof in. Required for the unreviewed_agent profile."
+        },
+        "challenge_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 of the challenge file with CRLF folded to LF. Freezes the statements; required for the unreviewed_agent profile."
         }
       }
     },

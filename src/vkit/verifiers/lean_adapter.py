@@ -64,6 +64,7 @@ AUDIT_FLAG = "--theorems"
 RUNNER_MODULE = "vkit.verifiers.lean_runner"
 
 RUNNER_PATH = Path(__file__).resolve().parent / "lean_runner.py"
+COMPARATOR_RUNNER_PATH = Path(__file__).resolve().parent / "comparator_runner.py"
 
 
 def _refuse(token: str, reason: BlockedReason, detail: str) -> Blocked:
@@ -123,6 +124,7 @@ class AdapterResult:
     profile: str
     tool_version: str
     challenge_sha256: str
+    prose: str = ""
 
     @property
     def is_pass(self) -> bool:
@@ -133,7 +135,7 @@ class AdapterResult:
         from ..outcome import ScenarioResult
 
         return tuple(
-            ScenarioResult(f"{o.module}.{o.theorem}", True, _axiom_prose(axioms))
+            ScenarioResult(f"{o.module}.{o.theorem}", True, self.prose or _axiom_prose(axioms))
             for o, axioms in self.observations
         ) + tuple(
             ScenarioResult(f"{o.module}.{o.theorem}", False, trace)
@@ -195,6 +197,32 @@ class AdapterResult:
         )
 
 
+def _comparator_result(raw: bytes, variant: LeanCheck) -> AdapterResult | Blocked:
+    import json
+
+    try:
+        report = json.loads(raw.decode("utf-8"))
+        status = report["status"]
+    except (UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+        return _refuse("report_malformed", BlockedReason.ARTIFACT_MALFORMED, f"comparator report unreadable: {exc}")
+    if status == "challenge_changed":
+        return _refuse("challenge_changed", BlockedReason.NOT_APPROVED,
+                       f"the challenge now digests to {report.get('challenge_sha256')}, not the accepted "
+                       f"{variant.challenge_sha256}; a human must accept the new statements")
+    common = dict(module=variant.challenge.module, profile=str(variant.profile),
+                  tool_version="comparator", challenge_sha256=str(report.get("challenge_sha256")))
+    if status == "accepted":
+        prose = (f"comparator: same statement as the frozen challenge, axioms within "
+                 f"{', '.join(variant.permitted_axioms) or 'none'}, kernel accepted; build sandbox: "
+                 f"{report.get('sandbox')}")
+        return AdapterResult(tuple((t, ()) for t in variant.theorems), (), **common, prose=prose)
+    if status == "rejected":
+        lines = [line for line in str(report.get("output", "")).splitlines() if line.strip()]
+        trace = lines[-1] if lines else f"comparator exited {report.get('exit_code')}"
+        return AdapterResult((), tuple((t, trace) for t in variant.theorems), **common)
+    return _refuse("report_malformed", BlockedReason.ARTIFACT_MALFORMED, f"unknown comparator status {status!r}")
+
+
 def _axiom_prose(axioms: tuple[str, ...]) -> str:
     if not axioms:
         return "the kernel checked it and `#print axioms` reported no axioms"
@@ -214,6 +242,17 @@ def argv_for(check: LeanCheck, run_dir: Path, python: str | None) -> tuple[str, 
     """
     interpreter = python or _this_interpreter()
     variant = getattr(check, "variant", None) or check
+    if variant.profile == LeanProfile.UNREVIEWED:
+        return (
+            interpreter, str(COMPARATOR_RUNNER_PATH),
+            "--comparator", variant.toolchain.comparator or "comparator",
+            "--project-dir", str(Path(check.cwd)),
+            "--challenge-path", variant.challenge.path, "--challenge-sha256", variant.challenge_sha256,
+            "--challenge-module", variant.challenge.module, "--solution-module", variant.solution.module,
+            "--theorems", ",".join(t.theorem for t in variant.theorems),
+            "--axioms", ",".join(variant.permitted_axioms),
+            "--run-dir", str(run_dir), "--report", str(run_dir / check.artifact_name),
+        )
     return (
         interpreter, str(RUNNER_PATH),
         "--lean", variant.toolchain.tool if _is_path(variant.toolchain.tool) else "lean",
@@ -259,14 +298,7 @@ def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
     variant = getattr(check, "variant", None) or check
     profile = variant.profile or DEFAULT_PROFILE
     if profile == LeanProfile.UNREVIEWED:
-        return _refuse(
-            "comparator_unavailable", BlockedReason.PREREQUISITE_MISSING,
-            "the unreviewed profile needs an approved challenge/solution contract, "
-            "an isolated candidate build, and the pinned external comparator. This "
-            "adapter implements none of those, so the report cannot discharge the "
-            "obligation. A Linux platform check or a second ordinary Lean build is "
-            "not isolation or independent comparison.",
-        )
+        return _comparator_result(raw, variant)
     if profile != LeanProfile.REVIEWED:
         return _refuse(
             "profile_unsupported", BlockedReason.ARTIFACT_MALFORMED,

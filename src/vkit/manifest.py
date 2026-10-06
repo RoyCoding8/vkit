@@ -109,7 +109,8 @@ def _build_check(entry: dict, project: Project) -> CheckSpec:
     for path in inputs:
         _inside(project.root, path, "input", check_id)
     kind = CheckKind(entry["kind"])
-    native = {CheckKind.LEAN: lambda: (entry["challenge"]["path"],),
+    native = {CheckKind.LEAN: lambda: (entry["challenge"]["path"],
+                                       *((entry["solution"]["path"],) if "solution" in entry else ())),
               CheckKind.TLC: lambda: (entry["model"]["path"], entry["config"])}.get(kind, lambda: ())()
     for path in native:
         relative = _inside(project.root, str(cwd / path), "native input", check_id).relative_to(
@@ -158,11 +159,18 @@ def _build_check(entry: dict, project: Project) -> CheckSpec:
         )
     if kind is CheckKind.LEAN:
         module = entry["challenge"]["module"]
+        profile = LeanProfile(entry["profile"])
+        solution = entry.get("solution")
+        if profile is LeanProfile.UNREVIEWED and (solution is None or "challenge_sha256" not in entry):
+            raise ManifestError(f"check {check_id!r}: the unreviewed_agent profile needs a solution module and "
+                                "the challenge_sha256 that freezes the statements")
         return LeanCheck(
+            solution=None if solution is None else ModuleRef(solution["module"], solution["path"]),
+            challenge_sha256=entry.get("challenge_sha256"),
             **common, challenge=ModuleRef(module, entry["challenge"]["path"]),
             theorems=_distinct_nonempty(check_id, "theorem",
                                         tuple(TheoremObligation(n, module) for n in entry["theorems"])),
-            profile=LeanProfile(entry["profile"]), permitted_axioms=tuple(entry["permitted_axioms"]),
+            profile=profile, permitted_axioms=tuple(entry["permitted_axioms"]),
             toolchain=_toolchain(entry["toolchain"]),
         )
     bounds = tuple(entry["bounds"].items())

@@ -160,19 +160,70 @@ def rows(example: Example, scratch: Path) -> list[tuple[str, bool, str]]:
     return out
 
 
+def lean_rows(scratch: Path) -> list[tuple[str, bool, str]]:
+    example = EXAMPLES / "lean-proof"
+    solution = (example / "Solution.lean").read_text(encoding="utf-8")
+    cases = (
+        ("a correct proof passes", solution, None, 0, "PASS", None),
+        ("a solution that edits a statement fails", solution.replace(
+            "total (xs ++ ys) = total (ys ++ xs) := by", "total (xs ++ ys) = total (xs ++ ys) := by"
+        ).replace("rw [total_append, total_append, Int.add_comm]", "rfl"), "do not match", 1, "FAIL", None),
+        ("a sorry fails", solution.replace("rw [total_append, total_append, Int.add_comm]", "sorry"),
+         "sorryAx", 1, "FAIL", None),
+        ("a non-permitted axiom fails", "axiom cheat : False\n" + solution.replace(
+            "rw [total_append, total_append, Int.add_comm]", "exact cheat.elim"), "cheat", 1, "FAIL", None),
+    )
+    out = []
+    for index, (label, text, expected, exit_code, result, _) in enumerate(cases):
+        target = scratch / f"lean-{index}"
+        shutil.copytree(example, target)
+        (target / "Solution.lean").write_text(text, encoding="utf-8")
+        git(target, "init", "-q")
+        git(target, "add", ".")
+        git(target, "commit", "-qm", "init")
+        vkit(target, "accept", "--yes")
+        code, body = check_run(target, "cart-theorems")
+        outcome = body.get("outcome", {})
+        observations = " ".join(s["observation"] for s in outcome.get("scenarios", []))
+        ok = code == exit_code and outcome.get("result") == result and (expected is None or expected in observations)
+        out.append((f"lean-proof {label}", ok, f"exit={code} result={outcome.get('result')} {observations[:160]}"))
+    target = scratch / "lean-challenge"
+    shutil.copytree(example, target)
+    git(target, "init", "-q")
+    git(target, "add", ".")
+    git(target, "commit", "-qm", "init")
+    vkit(target, "accept", "--yes")
+    with open(target / "Challenge.lean", "a", encoding="utf-8") as handle:
+        handle.write("\ntheorem extra : True := trivial\n")
+    code, body = check_run(target, "cart-theorems")
+    outcome = body.get("outcome", {})
+    out.append(("lean-proof an edited challenge is BLOCKED until a human accepts it",
+                code == 3 and outcome.get("reason") == "not_approved", f"exit={code} {outcome.get('detail', '')[:120]}"))
+    return out
+
+
 def main() -> int:
     only = set(sys.argv[1:])
     results = []
+    skipped = []
     with tempfile.TemporaryDirectory(prefix="vkit-e2e-") as raw:
         scratch = Path(raw)
         for example in EXAMPLE_TABLE:
             if only and example.name not in only:
                 continue
             results.extend(rows(example, scratch))
+        if not only or "lean-proof" in only:
+            missing = [t for t in ("lake", "comparator", "lean4export", "landrun") if shutil.which(t) is None]
+            if missing:
+                skipped.append(f"lean-proof rows: {', '.join(missing)} not on PATH")
+            else:
+                results.extend(lean_rows(scratch))
     for name, ok, detail in results:
         print(f"{'PASS' if ok else 'FAIL'}  {name}  ({detail})")
+    for reason in skipped:
+        print(f"SKIP  {reason}")
     failures = sum(1 for _, ok, _ in results if not ok)
-    print(f"{len(results) - failures}/{len(results)} rows matched")
+    print(f"{len(results) - failures}/{len(results)} rows matched" + (f", {len(skipped)} group(s) skipped" if skipped else ""))
     return 1 if failures else 0
 
 

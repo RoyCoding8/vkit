@@ -170,6 +170,8 @@ class LeanCheck(NativeCheckSpec):
     profile: LeanProfile
     permitted_axioms: tuple[str, ...]
     toolchain: ToolchainRef
+    solution: ModuleRef | None = None
+    challenge_sha256: str | None = None
     kind: CheckKind = field(default=CheckKind.LEAN, init=False)
 
     @property

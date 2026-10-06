@@ -27,7 +27,7 @@ MANIFEST = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
 HOOK_SCRIPT = PLUGIN_ROOT / "scripts" / "vkit_hook.py"
 
 DECLARED_EVENTS = (
-    "SessionStart", "SubagentStart", "PreToolUse", "PostToolUse",
+    "SessionStart", "SubagentStart", "PreToolUse",
     "Stop", "SubagentStop", "TaskCompleted",
 )
 

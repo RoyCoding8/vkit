@@ -105,13 +105,7 @@ def prepare_source(
     *, read_only: bool = False, manifest: Manifest | None = None,
     generation: int | None = None,
 ) -> tuple[SourceIdentity, Blocked | None]:
-    """Apply authorized cleanup before measuring the source a check will attest."""
-    from .cleanup import hooks
-
-    problem = hooks.policy_problem(project)
-    if problem:
-        return source, Blocked(BlockedReason.CLEANUP_REQUIRED, problem)
-    policy = hooks.load_policy(project)
+    """Refuse a run whose task no longer holds its admission."""
     if task_id is not None:
         from .tasks import TaskError, get_task, verify_ownership
         from .storage import ConflictError
@@ -128,28 +122,6 @@ def prepare_source(
             if formal is None or formal.digest != contract.fixture_digest:
                 return source, Blocked(BlockedReason.SOURCE_CHANGED,
                                        "formal verifier inputs changed since admission; admit a new reviewed task")
-        pinned = contract.cleanup_digest
-        if pinned is not None and pinned != policy.digest:
-            return source, Blocked(BlockedReason.CLEANUP_REQUIRED,
-                                   "cleanup policy changed since admission; admit a new reviewed task")
-    if not policy.may_write():
-        return source, None
-    if read_only or task_id is None:
-        try:
-            gaps = hooks.freshness(project, policy=policy)
-        except hooks.CleanupUnavailable as exc:
-            return source, Blocked(BlockedReason.CLEANUP_REQUIRED, str(exc))
-        if gaps:
-            return source, Blocked(BlockedReason.CLEANUP_REQUIRED, ", ".join(gaps))
-        return source, None
-    try:
-        verdict = hooks.cleanup_paths(project, store, task_id, policy=policy)
-    except hooks.CleanupUnavailable as exc:
-        return source, Blocked(BlockedReason.CLEANUP_REQUIRED, str(exc))
-    if isinstance(verdict, hooks.Blocked):
-        return source, Blocked(BlockedReason.CLEANUP_REQUIRED, verdict.detail)
-    if isinstance(verdict, hooks.Cleaned):
-        return verdict.after, None
     return source, None
 
 
@@ -402,27 +374,17 @@ def run_check(
         argv = tuple(part.replace("{{run_dir}}", str(run_dir)).replace("{{python}}", interpreter)
                      for part in argv)
     with _this_package_importable():
-        if env.plugin_root is None:
-            lease = launch(
-                argv, cwd=check.cwd, stdout_path=stdout_path, stderr_path=stderr_path,
-                timeout_seconds=check.timeout_seconds,
-            )
-            try:
-                if lease.pid is not None:
-                    store.publish_identity(run_id, lease.identity())
-                result = await_exit(lease)
-            finally:
-                lease.close()
-        else:
-            result = _launch(argv, check, stdout_path, stderr_path, env)
-            if result.pid is not None:
-                store.publish_identity(run_id, {
-                    "pid": result.pid,
-                    "creation_time": result.creation_time,
-                    **({"boot_id": result.boot_id} if result.boot_id else {}),
-                    "ownership": result.ownership,
-                })
-    
+        lease = launch(
+            argv, cwd=check.cwd, stdout_path=stdout_path, stderr_path=stderr_path,
+            timeout_seconds=check.timeout_seconds,
+        )
+        try:
+            if lease.pid is not None:
+                store.publish_identity(run_id, lease.identity())
+            result = await_exit(lease)
+        finally:
+            lease.close()
+
     process = ProcessResult(
         pid=result.pid,
         ownership=result.ownership,
@@ -435,11 +397,6 @@ def run_check(
 
     artifact = store.resolve_artifact(run_id, check.artifact_name)
     outcome, reading = _derive(check, process, artifact if artifact.is_file() else None)
-
-    if env.revalidate:
-        problem = _revalidate(run_dir, check, manifest, env)
-        if problem is not None:
-            outcome, reading = problem, None
 
     after = compute_source_identity(manifest.project)
     if not source_unchanged(source, after):
@@ -528,60 +485,6 @@ def _write_receipt(
     name = RECEIPT_NAME
     dispatch.persist(receipt, run_dir / name)
     return name
-
-
-def _launch(
-    argv: list[str],
-    check: CheckSpec,
-    stdout_path: Path,
-    stderr_path: Path,
-    env: RunEnvironment,
-):
-    """Run the check, with the check's own code isolated when the caller asked.
-
-    Without a plugin root this is the ordinary launch, so a development run is
-    unchanged. With one, the candidate's driver runs as a grandchild of this
-    process, with its own `import vkit` refused, and its artifact copied out by
-    the launcher. `vkit/integration/sandbox.py` and `launcher.py` hold that
-    contract; they are the counterpart of this branch and change with it.
-    """
-    if env.plugin_root is None:
-        return run_command(
-            argv, cwd=check.cwd, stdout_path=stdout_path,
-            stderr_path=stderr_path, timeout_seconds=check.timeout_seconds,
-        )
-    from .integration.sandbox import run_in_plugin_subprocess
-
-    return run_in_plugin_subprocess(
-        argv, cwd=check.cwd, stdout_path=stdout_path, stderr_path=stderr_path,
-        timeout_seconds=check.timeout_seconds, plugin_root=env.plugin_root,
-        capture_artifacts=(check.artifact_name,),
-    )
-
-
-def _revalidate(run_dir: Path, check: CheckSpec, manifest: Manifest, env: RunEnvironment) -> Blocked | None:
-    """Validate the bytes the trusted launcher captured, and compare the copies.
-
-    The captured copy is authoritative: it was taken after the last process to
-    write the artifact had exited, by a process the candidate does not control.
-    It is then validated against this package's own schemas, and finally
-    compared with what the candidate left behind. A candidate that edited its own
-    artifact in place after producing it has left a disagreement, and that is a
-    BLOCKED reason rather than a pass.
-    """
-    from .integration.sandbox import disagreement, read_artifacts, validate_artifact_bytes
-
-    try:
-        captured, submitted = read_artifacts(run_dir, check.artifact_name)
-    except FileNotFoundError as exc:
-        return Blocked(BlockedReason.ARTIFACT_MISSING, str(exc))
-
-    problem = validate_artifact_bytes(
-        captured, check=check, manifest=manifest, env=env
-    )
-    if problem is not None:
-        return problem
-    return disagreement(captured, submitted)
 
 
 def _terminal_report(

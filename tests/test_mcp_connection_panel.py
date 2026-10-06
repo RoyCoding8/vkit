@@ -212,7 +212,6 @@ def test_an_unenrolled_project_has_no_usable_ids(tmp_path: Path) -> None:
 
     assert body["usable_check_ids"] == []
     assert body["capabilities"], "the early return carries no capabilities"
-    assert "cleanup" in body, "the early return carries no cleanup support"
 
 
 
@@ -320,63 +319,6 @@ def test_a_present_prerequisite_is_listed_as_present(tmp_path: Path) -> None:
         if g["check_id"] == CHECK_ID and g["executable"] == "python"
     )
     assert entry["present"] is True
-
-
-
-
-def test_cleanup_support_reports_the_policy_and_whether_it_may_write(tools: Server) -> None:
-    """Cleanup support is a fact about this project's policy, not a constant.
-
-    The example registers no cleanup policy, so `load_policy` yields the default
-    and `may_write()` is False. Reporting "cleanup is supported" without the mode
-    would let an agent believe edits will be cleaned up when the policy is off.
-    """
-    cleanup = inspect(tools)["cleanup"]
-
-    assert cleanup["available"] is True
-    assert cleanup["policy_path"] == "verification/cleanup.json"
-    assert cleanup["may_write"] is False, (
-        "the example has no cleanup policy, so nothing may be written"
-    )
-    assert cleanup["mode"] == "off"
-    assert cleanup["outstanding"] == []
-    assert cleanup["registered_rules"], "no cleanup rules are named"
-
-
-def test_cleanup_support_names_a_policy_that_will_not_parse(tmp_path: Path) -> None:
-    """A broken policy is reported, not swallowed into "unavailable".
-
-    `policy_problem` exists precisely to keep "cleanup is off" and "your policy
-    file is broken" as two different answers. A field that reported only a
-    boolean would make them one, and an operator would go looking for a
-    toolchain that was never the problem.
-    """
-    project = make_repo(tmp_path, "bad-policy")
-    (project / "verification" / "cleanup.json").write_text(
-        json.dumps({"mode": "apply_everything", "enabled_rules": ["NOPE"]}) + "\n",
-        encoding="utf-8",
-    )
-    cleanup = inspect(Server(project))["cleanup"]
-
-    assert cleanup["available"] is False
-    assert cleanup["problem"], "an unusable policy names no problem"
-    assert "cleanup.json" in cleanup["problem"]
-
-
-def test_cleanup_support_names_the_panels_this_build_cannot_fill(tools: Server) -> None:
-    """The absent panels are named rather than rendered as an empty list.
-
-    The cleanup package returns a preservation receipt on the value it hands its
-    caller and persists only the original bytes, so there is no applied-patch
-    list or receipt collection to read. An empty list would be indistinguishable
-    from a project that has never cleaned anything, which is a different and
-    false claim.
-    """
-    cleanup = inspect(tools)["cleanup"]
-
-    assert cleanup["unavailable"], "the panels this build cannot fill are not named"
-    for entry in cleanup["unavailable"]:
-        assert entry["panel"] and entry["missing"], f"an unnamed gap: {entry}"
 
 
 

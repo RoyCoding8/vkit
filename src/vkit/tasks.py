@@ -538,10 +538,6 @@ def acceptance_context(project: Project, manifest_loader) -> AcceptanceContext:
             f"the policy at {project.manifest_path} declares an input that cannot be "
             "read, so the fixture identity it would test against is unresolved",
         )
-    from .cleanup import hooks as cleanup
-    problem = cleanup.policy_problem(project)
-    if problem:
-        return blocked(policy_digest, source.inventory_digest, problem)
     formal = manifest.fixture_identity(formal_only=True)
     if formal is None:
         return blocked(policy_digest, source.inventory_digest, "formal verifier inputs are unreadable")
@@ -551,7 +547,7 @@ def acceptance_context(project: Project, manifest_loader) -> AcceptanceContext:
             c.evidence_kind() in (ClaimCategory.THEOREM, ClaimCategory.FINITE_MODEL)
             for c in manifest.checks.values()
         ) else None,
-        cleanup_digest=cleanup.load_policy(project).digest,
+        cleanup_digest=None,
         requirements=tuple(Requirement(c.id, c.obligations(), c.evidence_kind())
                            for c in sorted(manifest.checks.values(), key=lambda c: c.id)),
     )
@@ -840,12 +836,6 @@ def finalize(
         # there is nothing here that could be compared and no verdict to reach.
         return _blocked_result(record, context.refusal or "the acceptance context is unusable")
 
-    from .cleanup import hooks as cleanup
-    cleanup_problem = cleanup.policy_problem(context.project)
-    try:
-        cleanup_gaps = cleanup.freshness(context.project) if cleanup_problem is None else ()
-    except cleanup.CleanupUnavailable as exc:
-        cleanup_problem, cleanup_gaps = str(exc), ()
     with store.transaction() as conn:
         record = _row_to_task(conn, task_id)
         if record.status == "closed":
@@ -860,10 +850,6 @@ def finalize(
             verdict = _decide(
                 store, record, required, expected_identities(record, context), conn=conn
             )
-            if verdict.readiness != "REJECTED" and (cleanup_problem or cleanup_gaps):
-                verdict = _blocked_result(
-                    record, cleanup_problem or "required cleanup remains: " + ", ".join(cleanup_gaps)
-                )
         record_readiness_in(conn, task_id, verdict)
         return verdict
 

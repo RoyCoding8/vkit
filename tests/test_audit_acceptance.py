@@ -100,35 +100,3 @@ def test_run_lookup_selects_the_requested_identity(tmp_path):
     assert store.list_runs(run_id="older", task_id="second") == []
 
 
-def test_unusable_cleanup_policy_is_a_published_blocked_run(project):
-    check = a_check(id="test", kind="pytest", required_tests=["test_app.py::test_first"],
-                    runner=RUNNER, report_format="pytest_json_report", expect_report_version=1)
-    manifest = parse(project, [check])
-    (project.root / "verification/cleanup.json").write_text("not JSON", encoding="utf-8")
-    store = Store(project.state_root / "audit.sqlite3")
-    result = run_check(manifest, "test", store=store, source=compute_source_identity(project))
-    assert result.report["outcome"]["result"] == "BLOCKED"
-    assert result.report["outcome"]["reason"] == "cleanup_required"
-    assert store.run_status(result.report["run_id"])["lifecycle"] == "terminal"
-
-
-def test_cleanup_policy_cannot_be_disabled_after_admission(project):
-    from vkit.tasks import acceptance_context, admit, finalize
-    check = a_check(id="proof", kind="lean", challenge={"module": "Case", "path": "Case.lean"},
-                    theorems=["claimed"], profile="reviewed_proof_sources",
-                    permitted_axioms=[], toolchain={"tool": "lean"})
-    (project.root / "Case.lean").write_text("theorem claimed : True := by trivial", encoding="utf-8")
-    manifest = parse(project, [check])
-    policy_path = project.root / "verification/cleanup.json"
-    policy_path.write_text(json.dumps({"mode": "apply_verified", "enabled_rules": ["ORDINARY_TRAILING_COMMENT"]}), encoding="utf-8")
-    store = Store(project.db_path)
-    original = acceptance_context(project, lambda: manifest)
-    admitted = admit(store, "cleanup-policy", context=original)
-    policy_path.write_text(json.dumps({"mode": "off"}), encoding="utf-8")
-    outcome = run_check(manifest, "proof", store=store, source=compute_source_identity(project),
-                        task_id=admitted.task_id, attempt=admitted.generation)
-    assert outcome.report["outcome"]["reason"] == "cleanup_required"
-    assert "changed since admission" in outcome.report["outcome"]["detail"]
-    result = finalize(store, admitted.task_id, context=acceptance_context(project, lambda: manifest))
-    assert result.readiness == "BLOCKED"
-    assert any("cleanup policy changed since admission" in gap for gap in result.gaps)

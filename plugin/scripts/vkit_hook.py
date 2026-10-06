@@ -53,12 +53,12 @@ VKIT_TOOLS = frozenset({
 })
 
 EVENTS = (
-    "SessionStart", "SubagentStart", "PreToolUse", "PostToolUse",
+    "SessionStart", "SubagentStart", "PreToolUse",
     "Stop", "SubagentStop", "TaskCompleted",
 )
 
 CONTEXT_EVENTS = frozenset({
-    "SessionStart", "SubagentStart", "PreToolUse", "PostToolUse", "Stop", "SubagentStop",
+    "SessionStart", "SubagentStart", "PreToolUse", "Stop", "SubagentStop",
 })
 
 EDIT_TOOLS: dict[str, str] = {
@@ -371,115 +371,6 @@ def _on_pre_tool_use(store, payload: dict[str, Any], project: Any) -> dict[str, 
     )
 
 
-def _edited_path(payload: dict[str, Any]) -> str | None:
-    """The absolute path this editing call touched, or None.
-
-    A payload that names no editing tool, or an editing tool whose documented
-    path field is absent, yields None. Neither is an error: the host matched
-    this event more broadly than this function acts on, and acting on a tool
-    whose path field this build cannot read would mean guessing which field
-    holds the path.
-    """
-    field = EDIT_TOOLS.get(str(payload.get("tool_name") or ""))
-    if field is None:
-        return None
-    tool_input = payload.get("tool_input")
-    if not isinstance(tool_input, dict):
-        return None
-    value = tool_input.get(field)
-    return value if isinstance(value, str) and value.strip() else None
-
-
-def _on_post_tool_use(store, payload: dict[str, Any], project: Any) -> dict[str, Any]:
-    """Fast verified cleanup of the one file this editing call touched.
-
-    An accelerator, never the authority. Claude Code's hook reference states
-    that a `PostToolUse` hook matching `Edit|Write` does not run when a `Bash`
-    command or a process outside Claude Code rewrites the same file, so a
-    cleanup that only ever ran here would miss exactly the edits nobody
-    attributes. The shared pre-verification path reads the checkout's own
-    changed set when a check starts and covers those, and this function exists
-    to make the common case cheap rather than to be the gate.
-
-    Three refusals are load-bearing and all leave the file byte-identical:
-
-    * no tool, or a tool this build does not read a path from -- nothing ran;
-    * no registered host binding -- the edit cannot be attributed to a task, and
-      docs/verification.md forbids resolving a task from recency, so the answer is a
-      bounded explanation rather than a guess at an owner;
-    * a policy that is absent, off, or refuses to write -- the file is left
-      exactly as the editing tool left it.
-
-    A refusal that says why is not a failure of the session. It is reported as
-    context, because a hook that blocked every unregistered edit would wedge
-    every project that never opted in.
-    """
-    raw_path = _edited_path(payload)
-    if raw_path is None:
-        return {}
-
-    task_id = _bound_task_id(store, payload)
-    if task_id is None:
-        return _note_response(
-            "PostToolUse",
-            _cleanup_note(
-                "This edit is not from a session registered against a managed task, so "
-                "cleanup did not run and the file is unchanged. It would need the "
-                f"path {raw_path!r} to belong to a task, and CONTRACT.md forbids "
-                "resolving a task from recency, recent files, or the last active task. "
-                "task_begin with a 'host' binding naming this session is what registers one."
-            ),
-        )
-
-    try:
-        from vkit.cleanup import Blocked, Cleaned, accelerate, resolve_repository_path
-    except Exception as exc:  # noqa: BLE001 - a hook reports, it does not traceback
-        return degraded("PostToolUse", f"the cleanup package is not importable here: {exc}")
-
-    relative_path = resolve_repository_path(project, raw_path)
-    if relative_path is None:
-        return _note_response(
-            "PostToolUse",
-            _cleanup_note(
-                f"{raw_path!r} does not name a file inside {project.root}, so cleanup "
-                "left it unchanged."
-            ),
-        )
-
-    try:
-        verdict = accelerate(project, store, task_id, relative_path)
-    except Exception as exc:  # noqa: BLE001 - a hook reports, it does not traceback
-        return degraded("PostToolUse", f"cleanup could not run on {relative_path}: {exc}")
-
-    if isinstance(verdict, Blocked):
-        return _note_response("PostToolUse", _cleanup_note(verdict.detail))
-    if isinstance(verdict, Cleaned):
-        removed = ", ".join(item.rule_id for item in verdict.applied)
-        return _note_response(
-            "PostToolUse",
-            _cleanup_note(
-                f"verified cleanup rewrote {relative_path} ({removed}). The source "
-                "identity moved, so any evidence captured before this point no longer "
-                "describes the file. Re-read the file; the check_start path re-measures."
-            ),
-        )
-    if verdict.suggestions:
-        named = ", ".join(item.rule_id for item in verdict.suggestions)
-        return _note_response(
-            "PostToolUse",
-            _cleanup_note(
-                f"{relative_path} still offers {named}, which the approved policy does "
-                "not enable. It is a suggestion and not a failure; the file is unchanged."
-            ),
-        )
-    return {}
-
-
-def _cleanup_note(text: str) -> str:
-    """Prefixed so a reader can tell this note from the acceptance gate's."""
-    return f"vkit cleanup: {text}"
-
-
 def _completion_response(
     event: str, store, payload: dict[str, Any], tasks_mod: Any,
     project: Any, task_id: str
@@ -576,7 +467,6 @@ _HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "SessionStart": _on_session_start,
     "SubagentStart": _on_subagent_start,
     "PreToolUse": _on_pre_tool_use,
-    "PostToolUse": _on_post_tool_use,
 }
 
 _COMPLETION_EVENTS = ("Stop", "SubagentStop", "TaskCompleted")

@@ -382,80 +382,6 @@ def _toolchain_present(kind: Any) -> bool:
 
 
 
-_CLEANUP_WITHOUT_BACKEND: tuple[dict[str, str], ...] = (
-    {
-        "panel": "applied patches",
-        "missing": (
-            "cleanup.apply returns an Applied record to its caller and persists "
-            "only the original bytes; nothing stores the patch list"
-        ),
-    },
-    {
-        "panel": "preservation receipts",
-        "missing": (
-            "the receipt travels on the Applied value and is never written to "
-            "storage, so there is no receipt to read back"
-        ),
-    },
-    {
-        "panel": "proposals",
-        "missing": (
-            "a proposal is a frozen value a preview returns; no collection of "
-            "them is stored"
-        ),
-    },
-)
-
-
-def _cleanup_support(project: Project) -> dict[str, Any]:
-    """Whether cleanup can act on this project, and under what policy.
-
-    Read-only by construction rather than by promise: `cleanup.freshness`
-    forces the policy to preview mode on a copy, so calling it cannot apply a
-    change. The policy file lives under `verification/`, and no MCP tool writes
-    there.
-
-    **Imported inside the function rather than at module scope.** `cleanup
-    .comments` imports `console.plan` for `under_protected_path`, so a
-    module-level import closes a cycle through this package. The console's
-    `cleanup_section` already documents this and does the same thing.
-    """
-    from ..cleanup import hooks as cleanup_hooks
-
-    problem = cleanup_hooks.policy_problem(project)
-    if problem is not None:
-        return {
-            "available": False,
-            "problem": problem,
-            "policy_path": cleanup_hooks.POLICY_RELATIVE,
-            "may_write": False,
-            "mode": None,
-            "outstanding": [],
-            "registered_rules": list(cleanup_hooks.RULE_ORDER),
-            "unavailable": list(_CLEANUP_WITHOUT_BACKEND),
-        }
-
-    policy = cleanup_hooks.load_policy(project)
-    try:
-        owed = [
-            {"path": entry.partition(":")[0], "rule": entry.partition(":")[2]}
-            for entry in cleanup_hooks.freshness(project, policy=policy)
-        ]
-        error: str | None = None
-    except Exception as exc:  # noqa: BLE001 - inspection reports, it does not raise
-        owed, error = [], str(exc)
-
-    return {
-        "available": error is None,
-        "problem": None,
-        "policy_path": cleanup_hooks.POLICY_RELATIVE,
-        "may_write": policy.may_write(),
-        "mode": policy.mode.value,
-        "outstanding": owed,
-        "registered_rules": list(cleanup_hooks.RULE_ORDER),
-        "error": error,
-        "unavailable": list(_CLEANUP_WITHOUT_BACKEND),
-    }
 
 
 
@@ -550,7 +476,6 @@ def _project_inspect(server: Server, args: dict[str, Any]) -> ToolResult:
         "capabilities": _backend_capabilities(),
         "usable_check_ids": [],
         "prerequisite_gaps": [],
-        "cleanup": _cleanup_support(server.project),
     }
 
     manifest_present = server.project.manifest_path.is_file()

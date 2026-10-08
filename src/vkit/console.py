@@ -11,12 +11,20 @@ from importlib import resources
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from . import query
+from . import __version__, query
 from .paths import Project
 
 
-def _page() -> bytes:
-    return resources.files("vkit").joinpath("console.html").read_bytes()
+_ASSETS = {
+    "/": ("console.html", "text/html; charset=utf-8"),
+    "/console.css": ("console.css", "text/css; charset=utf-8"),
+    "/console.js": ("console.js", "text/javascript; charset=utf-8"),
+    "/assets/material.js": ("console-assets/material.js", "text/javascript; charset=utf-8"),
+    "/assets/theme.css": ("console-assets/theme.css", "text/css; charset=utf-8"),
+    "/assets/icons.svg": ("console-assets/icons.svg", "image/svg+xml"),
+    "/assets/logo.svg": ("console-assets/logo.svg", "image/svg+xml"),
+    "/assets/roboto.woff2": ("console-assets/roboto.woff2", "font/woff2"),
+}
 
 
 def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestHandler]:
@@ -30,8 +38,8 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; "
-                                                        "script-src 'unsafe-inline'")
+            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                                                        "script-src 'self'; object-src 'none'; base-uri 'none'")
             self.end_headers()
             self.wfile.write(body)
 
@@ -45,8 +53,9 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
             url = urlparse(self.path)
             params = {k: v[0] for k, v in parse_qs(url.query).items()}
             try:
-                if url.path == "/":
-                    self._send(HTTPStatus.OK, _page(), "text/html; charset=utf-8")
+                if url.path in _ASSETS:
+                    name, content_type = _ASSETS[url.path]
+                    self._send(HTTPStatus.OK, resources.files("vkit").joinpath(name).read_bytes(), content_type)
                 elif url.path == "/api/status":
                     self._json(query.status(query.open_context(project.root)))
                 elif url.path == "/api/runs":
@@ -56,6 +65,11 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                                           log=params.get("log", "stdout"), offset=int(params.get("offset", 0)))
                     self._json(view if view is not None else {"error": "no such run"},
                                HTTPStatus.OK if view is not None else HTTPStatus.NOT_FOUND)
+                elif url.path == "/api/config":
+                    ctx = query.open_context(project.root)
+                    self._json({"version": __version__, "doctor": query.doctor(ctx),
+                                "description": ctx.manifest.description if ctx.manifest else "",
+                                "definitions": ctx.manifest.entries if ctx.manifest else {}})
                 else:
                     self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             except ValueError as exc:

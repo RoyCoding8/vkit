@@ -29,6 +29,16 @@ def test_the_console_shows_the_gate_checks_and_a_run_log(make_project):
     try:
         status, page = _get(port, "/")
         assert status == 200 and b"<title>vkit</title>" in page
+        # The installed console serves every asset locally, including its components and font.
+        for path in ("/console.js", "/console.css", "/assets/material.js", "/assets/theme.css",
+                     "/assets/icons.svg", "/assets/logo.svg", "/assets/roboto.woff2"):
+            status, asset = _get(port, path)
+            assert status == 200 and asset, path
+        status, raw = _get(port, "/api/config")
+        config = json.loads(raw)
+        assert status == 200 and config["definitions"]["ok"]["id"] == "ok"
+        assert config["doctor"]["project"] == str(project)
+        assert _get(port, "/assets/../../manifest.json")[0] == 404
         status, raw = _get(port, "/api/status")
         report = json.loads(raw)
         assert (status, report["gate"]["verdict"], [c["state"] for c in report["checks"]]) == (200, "READY", ["fresh_pass"])
@@ -36,6 +46,7 @@ def test_the_console_shows_the_gate_checks_and_a_run_log(make_project):
         assert status == 200 and "hello from the driver" in json.loads(raw)["log"]["text"]
         status, _ = _get(port, "/api/status", host="evil.example:80")
         assert status == 403
+        assert _get(port, "/assets/material.js", host="evil.example:80")[0] == 403
     finally:
         server.shutdown()
         server.server_close()

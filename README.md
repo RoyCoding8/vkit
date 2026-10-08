@@ -84,8 +84,12 @@ hook holds the session while a check the agent can rerun is stale or failing.
 vkit console --project .
 ```
 
-This opens a read-only page on `127.0.0.1:8765` with the gate, checks, live runs and their logs, pending
-proposals, and features. It has no login and changes nothing. Pass `--port 0` to pick a free port.
+This opens a read-only workspace on `127.0.0.1:8765`. The collapsible sidebar provides an overview,
+check definitions and their limits, run outcomes and logs, verification methods, feature coverage,
+pending proposals, and project setup. It follows the system's light or dark theme; you can change
+the theme in the top bar. Assets ship locally. Pass `--port 0` to pick a free port.
+
+Frontend development and asset rebuild instructions are in [tools/console](tools/console/README.md).
 
 ## Commands
 

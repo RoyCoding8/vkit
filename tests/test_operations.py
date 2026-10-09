@@ -120,8 +120,8 @@ def test_real_pytest_failure_reduction_through_cli(make_project, tmp_path):
     source = "VALUE = 0\n\ndef unused():\n    return 42\n"
     test = "from pkg.subject import VALUE\n\ndef test_value():\n    assert VALUE == 1\n"
     test_id = "test_subject.py::test_value"
-    project = make_project({"pkg/subject.py": source, "test_subject.py": test},
-                           [pytest_kind_check("failure", [test_id], ["pkg/subject.py", "test_subject.py"])])
+    project = make_project({"pkg/subject.py": source, "test_subject.py": test, "pytest.ini": "[pytest]\n"},
+                           [pytest_kind_check("failure", [test_id], ["pkg/subject.py", "test_subject.py", "pytest.ini"])])
     code, run = vkit(project, "check", "run", "--check", "failure")
     assert code == 1
     record = run["runs"][0]

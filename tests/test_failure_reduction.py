@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from helpers import scenario_check, vkit
+from helpers import DRIVER, pytest_kind_check, scenario_check, vkit
 from vkit.manifest import parse_manifest
 from vkit.operations.reduction import ReductionRefused, reduce_failure
 from vkit.paths import open_project
@@ -55,6 +55,37 @@ def test_reduction_refuses_inputs_that_changed(make_project):
 
     with pytest.raises(ReductionRefused, match="inputs changed"):
         reduce_failure(open_project(project), run_id, "subject.py")
+
+
+@pytest.mark.parametrize("implicit_file, contents", [
+    ("conftest.py", "def pytest_collection_modifyitems(items):\n    items.reverse()\n"),
+    ("pytest.ini", "[pytest]\naddopts = -q\n"),
+    ("pyproject.toml", "[tool.pytest.ini_options]\naddopts = '-q'\n"),
+])
+def test_reduction_refuses_implicit_pytest_files_outside_snapshot(make_project, implicit_file, contents):
+    project = make_project({"subject.py": "VALUE = 0\n", implicit_file: contents,
+                            "test_subject.py": "from subject import VALUE\n\ndef test_value():\n    assert VALUE == 1\n"},
+                           [pytest_kind_check("failed", ["test_subject.py::test_value"],
+                                              ["subject.py", "test_subject.py"])])
+    opened = open_project(project)
+    record = run_check(opened, parse_manifest(opened), "failed")
+    assert record["outcome"]["result"] == "FAIL"
+
+    with pytest.raises(ReductionRefused, match="pytest discovery file"):
+        reduce_failure(opened, record["run_id"], "subject.py")
+
+
+def test_reduction_refuses_external_driver_source(make_project, tmp_path):
+    external = tmp_path / "external.py"
+    external.write_text(DRIVER + 'report([("bug", False, "observed")])\n', encoding="utf-8")
+    project = make_project({"subject.py": "VALUE = 0\n"},
+                           [scenario_check("failed", str(external), scenarios=["bug"], inputs=["subject.py"])])
+    opened = open_project(project)
+    record = run_check(opened, parse_manifest(opened), "failed")
+    assert record["outcome"]["result"] == "FAIL"
+
+    with pytest.raises(ReductionRefused, match="external check file"):
+        reduce_failure(opened, record["run_id"], "subject.py")
 
 
 def test_reduction_refuses_changed_check_definition(make_project):

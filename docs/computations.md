@@ -91,7 +91,9 @@ that a smaller reproducer is impossible. `UNAVAILABLE` means the configured runt
 `timeout_seconds` limits the Perses process; version detection and independent replays take additional time.
 The operation returns source text, original and reduced hashes, failure identity, and engine identity.
 It does not prove the failure's root cause or that the result is minimal. Approved drivers and tests remain
-part of the trusted predicate. Inputs must include every file needed by the replay.
+part of the trusted predicate. Inputs must include every file needed by the replay. Known pytest discovery
+files, including `conftest.py` and pytest configuration, must be recorded. External driver file operands
+are refused; the service's runtime executables remain trusted dependencies.
 
 Perses requires a POSIX environment, Java 17, and the pinned release JAR. Run vkit inside Linux, macOS, or WSL;
 the native Windows process reports `UNAVAILABLE`. Configure these variables in the service environment.

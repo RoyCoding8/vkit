@@ -28,6 +28,10 @@ _PERSES_ENV = "VKIT_PERSES_JAR"
 _PERSES_SHA_ENV = "VKIT_PERSES_SHA256"
 _PERSES_SOURCE = str(Path(__file__).resolve().parents[2])
 _SUPPORTED_SUFFIXES = frozenset({".py", ".py3"})
+_PYTEST_DISCOVERY_FILES = (
+    "conftest.py", "pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini",
+    "pyproject.toml", "tox.ini", "setup.cfg", "setup.py",
+)
 
 
 class ReductionRefused(ValueError):
@@ -142,7 +146,8 @@ def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck,
     else:
         command = (check.runner.executable, *check.runner.base_argv,
                    *(test.split("::", 1)[0] for test in check.required_tests))
-    for token in command:
+    search_roots = {cwd}
+    for index, token in enumerate(command):
         if not isinstance(token, str) or "{{run_dir}}" in token or "{{python}}" in token:
             continue
         candidate = Path(token)
@@ -150,12 +155,16 @@ def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck,
             try:
                 candidate.resolve(strict=False).relative_to(root)
             except ValueError:
-                continue
+                if index == 0:
+                    continue
+                raise ReductionRefused("external check file operands cannot be frozen") from None
             raise ReductionRefused("check command names the original checkout by absolute path")
         else:
             try:
                 relative = (cwd / candidate).resolve(strict=False).relative_to(root).as_posix()
             except ValueError:
+                if index != 0 and (cwd / candidate).is_file():
+                    raise ReductionRefused("external check file operands cannot be frozen") from None
                 continue
         source = root.joinpath(*PurePosixPath(relative).parts)
         if relative == target_path:
@@ -176,6 +185,20 @@ def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck,
             raise ReductionRefused("required test file is outside the recorded inputs")
         if relative == target_path:
             raise ReductionRefused("the check driver or required test file cannot be reduced")
+        search_roots.add(candidate.resolve().parent)
+    if isinstance(check, PytestCheck):
+        directories = {directory for origin in search_roots for directory in (origin, *origin.parents)}
+        for directory in sorted(directories):
+            for name in _PYTEST_DISCOVERY_FILES:
+                dependency = directory / name
+                if not dependency.is_file():
+                    continue
+                try:
+                    relative = dependency.relative_to(root).as_posix()
+                except ValueError:
+                    raise ReductionRefused("pytest discovery files outside the repository cannot be frozen") from None
+                if relative not in copied:
+                    raise ReductionRefused(f"pytest discovery file {relative!r} is outside the recorded inputs")
 
 
 def _prepare(project: Project, run_id: str, raw_path: str, store: Store) -> _Request:

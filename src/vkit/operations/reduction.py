@@ -146,8 +146,10 @@ def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck,
     else:
         command = (check.runner.executable, *check.runner.base_argv,
                    *(test.split("::", 1)[0] for test in check.required_tests))
+    if command[0] != "{{python}}" and Path(command[0]).resolve() != Path(sys.executable).resolve():
+        raise ReductionRefused("reduction requires the service Python interpreter as the check executable")
     search_roots = {cwd}
-    for index, token in enumerate(command):
+    for token in command[1:]:
         if not isinstance(token, str) or "{{run_dir}}" in token or "{{python}}" in token:
             continue
         candidate = Path(token)
@@ -155,15 +157,13 @@ def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck,
             try:
                 candidate.resolve(strict=False).relative_to(root)
             except ValueError:
-                if index == 0:
-                    continue
                 raise ReductionRefused("external check file operands cannot be frozen") from None
             raise ReductionRefused("check command names the original checkout by absolute path")
         else:
             try:
                 relative = (cwd / candidate).resolve(strict=False).relative_to(root).as_posix()
             except ValueError:
-                if index != 0 and (cwd / candidate).is_file():
+                if (cwd / candidate).is_file():
                     raise ReductionRefused("external check file operands cannot be frozen") from None
                 continue
         source = root.joinpath(*PurePosixPath(relative).parts)

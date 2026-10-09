@@ -88,6 +88,22 @@ def test_reduction_refuses_external_driver_source(make_project, tmp_path):
         reduce_failure(opened, record["run_id"], "subject.py")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="executable shebang fixture requires POSIX")
+def test_reduction_refuses_external_executable_driver(make_project, tmp_path):
+    external = tmp_path / "external.py"
+    external.write_text(f"#!{sys.executable}\n" + DRIVER + 'report([("bug", False, "observed")])\n', encoding="utf-8")
+    external.chmod(0o700)
+    check = scenario_check("failed", str(external), scenarios=["bug"], inputs=["subject.py"])
+    check["command"] = check["command"][1:]
+    project = make_project({"subject.py": "VALUE = 0\n"}, [check])
+    opened = open_project(project)
+    record = run_check(opened, parse_manifest(opened), "failed")
+    assert record["outcome"]["result"] == "FAIL"
+
+    with pytest.raises(ReductionRefused, match="service Python interpreter"):
+        reduce_failure(opened, record["run_id"], "subject.py")
+
+
 def test_reduction_refuses_changed_check_definition(make_project):
     project, run_id = failed_run(make_project)
     manifest = project / "verification" / "manifest.json"

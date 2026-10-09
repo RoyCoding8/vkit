@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -63,6 +64,55 @@ def test_matchsets_worker_ignores_candidate_imports(tmp_path, monkeypatch):
     result = compare_matchsets("a|b", "[ab]", "ab")
     assert result.status == "EQUIVALENT"
     assert not (tmp_path / "candidate-loaded").exists()
+
+
+def test_history_cli_and_mcp_replay_without_changing_gate(make_project):
+    if not os.environ.get("VKIT_HISTORY_BIN") and not os.environ.get("VKIT_HISTORY_SHA256"):
+        pytest.skip("a pinned Porcupine helper is not configured")
+    assert os.environ.get("VKIT_HISTORY_BIN") and os.environ.get("VKIT_HISTORY_SHA256")
+    project = example_project(make_project)
+    trace = {"schema_version": 1, "operations": [
+        {"id": "write", "client_id": 0, "call": 1, "return": 2,
+         "input": {"op": "write", "value": 7}, "output": None},
+        {"id": "read", "client_id": 1, "call": 3, "return": 4,
+         "input": {"op": "read"}, "output": 7},
+    ]}
+    path = project / "history.json"
+    path.write_text(json.dumps(trace), encoding="utf-8")
+    original = path.read_bytes()
+    code, body = vkit(project, "compute", "check-history", "--path", path.name, "--model", "register")
+    assert (code, body["status"], body["linearization"]) == (0, "LINEARIZABLE", ["write", "read"])
+    client = McpClient(project)
+    try:
+        before, _ = client.call("gate")
+        result, error = client.call("check_history", path=path.name, model="register")
+        assert not error and result["linearization"] == ["write", "read"]
+        after, _ = client.call("gate")
+        assert after == before
+    finally:
+        client.close()
+    assert path.read_bytes() == original
+    trace["operations"][1]["output"] = 0
+    path.write_text(json.dumps(trace), encoding="utf-8")
+    code, body = vkit(project, "compute", "check-history", "--path", path.name, "--model", "register")
+    assert (code, body["status"], body["linearization"]) == (1, "NOT_LINEARIZABLE", None)
+    assert (project / "maths.py").read_text() == SOURCE
+
+
+def test_history_mcp_refuses_model_code_and_path_escape(make_project):
+    project = example_project(make_project)
+    client = McpClient(project)
+    try:
+        for args in ({"path": "history.json"},
+                     {"path": "history.json", "model": "custom"},
+                     {"path": "history.json", "model": "register", "timeout_seconds": 0},
+                     {"path": "history.json", "model": "register", "command": "custom"},
+                     {"path": "history.json", "model": "register", "model_code": "custom"},
+                     {"path": "../history.json", "model": "register"}):
+            result, error = client.call("check_history", **args)
+            assert error and "error" in result
+    finally:
+        client.close()
 
 
 def test_rewrite_cli_proves_or_returns_a_concrete_counterexample(make_project, tmp_path):

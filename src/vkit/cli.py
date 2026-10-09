@@ -294,7 +294,8 @@ def cmd_compute(args: argparse.Namespace) -> int:
     _emit(body, args.json, json.dumps(body, indent=2))
     if error:
         return EXIT_INVALID
-    return {"PROVED": EXIT_OK, "REDUCED": EXIT_OK, "EQUIVALENT": EXIT_OK, "COUNTEREXAMPLE": EXIT_FAILED,
+    return {"PROVED": EXIT_OK, "REDUCED": EXIT_OK, "EQUIVALENT": EXIT_OK, "LINEARIZABLE": EXIT_OK,
+            "COUNTEREXAMPLE": EXIT_FAILED, "NOT_LINEARIZABLE": EXIT_FAILED,
             "UNSUPPORTED": EXIT_INVALID, "UNAVAILABLE": EXIT_UNAVAILABLE}.get(body["status"], EXIT_BLOCKED)
 
 
@@ -367,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     matchsets.add_argument("--alphabet", required=True, help="unique characters that may occur in matched strings")
     matchsets.add_argument("--timeout-ms", type=int, default=2_000)
 
+    history = command(compute, "check-history", "check a completed concurrent history against a built-in model")
+    history.add_argument("--path", required=True, help="repository-relative JSON trace")
+    history.add_argument("--model", required=True, help="register or queue")
+    history.add_argument("--timeout-seconds", type=int, default=10)
+
     console = command(sub, "console", "serve a read-only console on 127.0.0.1")
     console.add_argument("--port", type=int, default=8765, help="0 lets the OS pick a free port")
     console.add_argument("--no-browser", action="store_true")
@@ -383,6 +389,7 @@ _DISPATCH = {
     ("compute", "check-rewrite"): cmd_compute, ("compute", "simplify-function"): cmd_compute,
     ("compute", "reduce-failure"): cmd_compute,
     ("compute", "compare-matchsets"): cmd_compute,
+    ("compute", "check-history"): cmd_compute,
 }
 
 

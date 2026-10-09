@@ -24,6 +24,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+          cache-dependency-path: tools/history/go.sum
+      - name: Build pinned history helper
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import subprocess
+          directory = pathlib.Path("tools/history")
+          binary = pathlib.Path(os.environ["RUNNER_TEMP"]) / ("vkit-history.exe" if os.name == "nt" else "vkit-history")
+          environment = dict(os.environ, GOTOOLCHAIN="local")
+          subprocess.run(["go", "test", "-mod=readonly", "./..."], cwd=directory, env=environment, check=True)
+          subprocess.run(["go", "build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-o", str(binary), "."],
+                         cwd=directory, env=environment, check=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_HISTORY_BIN={binary}\n")
+              output.write(f"VKIT_HISTORY_SHA256={hashlib.sha256(binary.read_bytes()).hexdigest()}\n")
       - uses: actions/setup-java@v4
         if: runner.os == 'Linux'
         with:

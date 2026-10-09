@@ -78,10 +78,11 @@ are:
 - `simplify_function`: derive a replacement with egglog and independently verify it with cvc5.
 - `reduce_failure`: use Perses to shrink a source file while preserving a recorded failure.
 - `compare_matchsets`: compare complete regex languages and return shortest distinguishing strings.
+- `check_history`: check a recorded concurrent history against a built-in register or FIFO queue model.
 
 The computation tools use fixed algorithms and do not change the gate. Install their Python
 engines with `uv sync --extra mcp --extra engines`. See [built-in computations](docs/computations.md)
-for the supported language, CLI commands, Perses setup, and deployment boundary.
+for supported inputs, CLI commands, backend setup, and the deployment boundary.
 
 For Claude Code, `plugin/` holds two skills and two hooks. The session-start hook reports the gate. The stop
 hook holds the session while a check the agent can rerun is stale or failing.
@@ -119,6 +120,7 @@ Frontend development and asset rebuild instructions are in [tools/console](tools
 | `vkit compute simplify-function` | Suggest a replacement and prove its equivalence |
 | `vkit compute reduce-failure` | Reduce a recorded failure with its approved predicate |
 | `vkit compute compare-matchsets` | Compare complete regex languages over a supplied alphabet |
+| `vkit compute check-history` | Check linearizability of a completed concurrent history |
 
 Every command takes `--project` (default `.`) and `--json`.
 

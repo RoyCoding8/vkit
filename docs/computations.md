@@ -10,8 +10,9 @@ Install the optional Python engines in the environment that runs vkit.
 uv sync --extra mcp --extra engines
 ```
 
-The Python engines are pinned to cvc5 1.4.2, egglog 13.2.0, and greenery 4.2.2.
-Perses is configured separately.
+The Python engines are pinned to [cvc5 1.4.2](https://cvc5.github.io/docs/cvc5-1.4.2/),
+[egglog 13.2.0](https://egglog-python.readthedocs.io/stable/), and greenery 4.2.2.
+Perses and the compiled Porcupine helper are configured separately.
 
 ## Check a replacement
 
@@ -135,18 +136,77 @@ echo "$VKIT_PERSES_SHA256  $VKIT_PERSES_JAR" | sha256sum --check
 
 Set `JAVA_HOME` or put Java on `PATH`. vkit checks the configured JAR hash and requires version 2.7.
 
+## Check a concurrent history
+
+`check_history` decides whether a completed operation history has a sequential ordering consistent with
+its recorded timing and one fixed built-in model. [Porcupine 1.3.1](https://pkg.go.dev/github.com/anishathalye/porcupine@v1.3.1)
+performs the search. The Python adapter independently checks and replays a successful ordering.
+
+```powershell
+vkit compute check-history --project . --path traces/register.json --model register --json
+```
+
+The MCP request uses `check_history` with `path` and `model`. `path` identifies a JSON file inside the
+repository. `timeout_seconds` defaults to 10 and ranges from 1 to 60. No request accepts a custom model,
+executable, or helper path. These are the supported models.
+
+| Model | Initial state | Operations |
+| --- | --- | --- |
+| `register` | Integer zero | `write` takes integer `value` and returns `null`; `read` takes no value and returns the current integer |
+| `queue` | Empty FIFO queue | `enqueue` takes integer `value` and returns `null`; `dequeue` takes no value and returns the oldest integer, or `null` when empty |
+
+A trace contains exactly `schema_version` and `operations`. This completed register trace is linearizable.
+
+```json
+{
+  "schema_version": 1,
+  "operations": [
+    {"id": "write-7", "client_id": 0, "call": 1, "return": 2,
+     "input": {"op": "write", "value": 7}, "output": null},
+    {"id": "read-7", "client_id": 1, "call": 3, "return": 4,
+     "input": {"op": "read"}, "output": 7}
+  ]
+}
+```
+
+Every operation requires all six fields shown above. IDs are unique nonempty Unicode scalar strings of
+at most 128 characters. Client IDs range from 0 to 2147483647. Values and timestamps are signed 64-bit
+integers, with `call < return`. Times share one ordering scale. Intervals are closed, so an operation
+must precede another only when its return is strictly less than the other's call. Equal endpoints overlap.
+The file limit is 1 MiB, with at most 1000 operations. Unknown fields, duplicate keys, pending operations,
+and malformed records are rejected before the helper runs.
+
+`LINEARIZABLE` includes every operation ID in a complete ordering. The service checks the permutation,
+real-time precedence, and sequential model outputs independently. `NOT_LINEARIZABLE` means no such
+ordering exists for this supplied trace and model. It does not establish correctness across other runs.
+`UNKNOWN` preserves timeouts and invalid backend responses. `UNAVAILABLE` means the configured helper
+is missing, fails its SHA-256 check, or cannot start. No result edits the trace or changes gate evidence.
+
+Build the helper once from this repository with Go 1.26.9, then configure it in the protected service's
+environment. Go is not required when invoking the compiled helper.
+
+```powershell
+Push-Location tools/history
+go build -mod=readonly -trimpath -buildvcs=false -o C:/vkit-runtime/vkit-history.exe .
+Pop-Location
+$env:VKIT_HISTORY_BIN = 'C:/vkit-runtime/vkit-history.exe'
+$env:VKIT_HISTORY_SHA256 = (Get-FileHash -LiteralPath $env:VKIT_HISTORY_BIN -Algorithm SHA256).Hash.ToLowerInvariant()
+```
+
+The parent process enforces the helper's wall-clock deadline. File parsing, binary hashing, and final
+witness replay occur outside that search deadline. CI builds and exercises the pinned helper on Linux,
+Windows, and macOS.
+
 ## Protect the service
 
 These APIs expose fixed operations. They contain no method for changing the parser, solver translation,
 rewrite rules, or failure predicate. To enforce that boundary against an agent with a shell, install vkit,
-its dependencies, and the Perses JAR under a separate owner or in a service container the agent cannot write.
+its dependencies, the Perses JAR, and the history helper under a separate owner or in a service container
+the agent cannot write.
 Give the service access to candidate repository files. Keep its interpreter, working directory, import path, and environment
 under the service owner's control. Running an editable vkit checkout as the same operating-system user as
 the agent does not enforce immutability. This release does not provision that deployment isolation.
 
-The engines are [cvc5](https://cvc5.github.io/docs/cvc5-1.4.2/),
-[egglog](https://egglog-python.readthedocs.io/stable/), and
-[Perses](https://github.com/uw-pluverse/perses). Their answers depend on the fixed translation and stated model.
-
-CLI exit codes are 0 for `PROVED`, `REDUCED`, or `EQUIVALENT`, 1 for `COUNTEREXAMPLE`, 2 for invalid or unsupported requests,
+CLI exit codes are 0 for `PROVED`, `REDUCED`, `EQUIVALENT`, or `LINEARIZABLE`, 1 for `COUNTEREXAMPLE` or
+`NOT_LINEARIZABLE`, 2 for invalid or unsupported requests,
 3 for `UNKNOWN` or `UNRESOLVED`, and 5 for `UNAVAILABLE`.

@@ -24,7 +24,8 @@ INSTRUCTIONS = (
     "from the manifest; no tool accepts a command, and only a human can accept a check definition. "
     "check_rewrite and simplify_function compute over a restricted Python integer/boolean model; "
     "reduce_failure shrinks a recorded failure using its approved check; compare_matchsets compares complete "
-    "regex languages over a stated finite alphabet. Computation results do not change the gate."
+    "regex languages over a stated finite alphabet; check_history checks a completed concurrent trace against "
+    "a built-in sequential model. Computation results do not change the gate."
 )
 
 
@@ -200,12 +201,26 @@ def _compare_matchsets(server: Server, args: dict[str, Any]) -> Any:
     return compare_matchsets(**args).to_json()
 
 
+def _check_history(server: Server, args: dict[str, Any]) -> Any:
+    from ..operations.history import check_history
+
+    return check_history(server.root, **args)
+
+
 _STR = {"type": "string"}
 _PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
 _EXPRESSION = {"path": {"type": "string", "description": "repository-relative Python source file"},
                "function": {"type": "string", "minLength": 1},
                "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60_000}}
 TOOLS = (
+    Tool("check_history", "Decide whether a completed concurrent history can be ordered under the built-in "
+         "register-zero or initially-empty FIFO queue model. LINEARIZABLE includes an independently replayed "
+         "ordering; NOT_LINEARIZABLE concerns this trace only. UNKNOWN preserves timeouts; UNAVAILABLE "
+         "means the configured pinned helper cannot run. Does not change gate evidence.",
+         {"path": {"type": "string", "minLength": 1, "description": "repository-relative JSON history file"},
+          "model": {"type": "string", "enum": ["register", "queue"]},
+          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60}},
+         _check_history, required=("path", "model")),
     Tool("compare_matchsets", "Compare full-match acceptance sets in the fixed greenery regex dialect over the "
          "supplied alphabet. Returns EQUIVALENT or COUNTEREXAMPLE with shortest directional witnesses; "
          "UNKNOWN on timeout, UNSUPPORTED for unsupported inputs, or UNAVAILABLE without the backend.",

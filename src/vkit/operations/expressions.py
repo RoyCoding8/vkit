@@ -113,8 +113,11 @@ class _TopLevelBindings(ast.NodeVisitor):
 
 
 def _annotation(node: ast.expr | None) -> Sort:
-    if isinstance(node, ast.Name) and node.id in ("int", "bool"):
-        return node.id  # type: ignore[return-value]
+    if isinstance(node, ast.Name):
+        if node.id == "int":
+            return "int"
+        if node.id == "bool":
+            return "bool"
     raise UnsupportedSource("parameters and return values need explicit int or bool annotations")
 
 

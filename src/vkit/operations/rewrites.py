@@ -75,7 +75,9 @@ def _to_solver(term: Term, variables: dict[str, Any], solver: Any, cvc5: Any) ->
 
 def _evaluate(term: Term, values: dict[str, int | bool]) -> int | bool:
     if term.op in ("int_const", "bool_const"):
-        return term.value  # type: ignore[return-value]
+        if isinstance(term.value, (int, bool)):
+            return term.value
+        raise ValueError("constant IR node requires an integer or boolean value")
     if term.op == "var":
         return values[str(term.value)]
     args = tuple(_evaluate(arg, values) for arg in term.args)

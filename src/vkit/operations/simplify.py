@@ -8,14 +8,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from .expressions import (
-    MODEL_SCOPE as PROOF_MODEL_SCOPE,
+    MODEL_SCOPE,
     FunctionModel,
     ParseFailure,
     ResourceLimits,
     Term,
     parse_function,
 )
-from .rewrites import check_function_rewrite
+from .rewrites import ProofResult, Status, check_function_rewrite
 
 try:
     from egglog import (
@@ -37,13 +37,12 @@ else:
     _EGGLOG_IMPORT_ERROR = None
 
 
-MODEL_SCOPE = PROOF_MODEL_SCOPE
 MAX_EGRAPH_ITERATIONS = 4
 
 
 @dataclass(frozen=True, slots=True)
 class SimplifyResult:
-    status: str
+    status: Status
     replacement: str | None
     source_sha256: str
     model_scope: str
@@ -52,7 +51,7 @@ class SimplifyResult:
     proof_backend: str
     proof_version: str | None
     reason: str | None = None
-    proof: Any | None = None
+    proof: ProofResult | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -236,12 +235,12 @@ def simplify_function(
 
 
 def _result(
-    status: str,
+    status: Status,
     replacement: str | None,
     source_sha256: str,
     *,
     reason: str | None = None,
-    proof: Any | None = None,
+    proof: ProofResult | None = None,
 ) -> SimplifyResult:
     return SimplifyResult(
         status=status,
@@ -251,9 +250,7 @@ def _result(
         simplifier_backend="egglog",
         simplifier_version=_version("egglog"),
         proof_backend="cvc5",
-        proof_version=(
-            getattr(proof, "backend_version", None) or _version("cvc5")
-        ),
+        proof_version=proof.backend_version if proof is not None else _version("cvc5"),
         reason=reason,
         proof=proof,
     )
@@ -282,7 +279,7 @@ def _extract_candidate(model: FunctionModel) -> Term:
     extracted, cost = graph.extract(
         root, include_cost=True, cost_model=_ast_node_cost
     )
-    candidate = _from_egglog(extracted, names)
+    candidate = _from_egglog_decl(expr_parts(extracted), names)
     if cost != _term_size(candidate):
         raise RuntimeError("Egglog extraction cost does not match AST node count.")
     return candidate
@@ -298,7 +295,7 @@ def _to_egglog(term: Term, indices: dict[str, int]) -> Any:
     if op == "var":
         if not isinstance(term.value, str):
             raise ValueError("A variable term has no name.")
-        index = indices.setdefault(term.value, len(indices))
+        index = indices[term.value]
         if term.sort == "int":
             return _IntExpr.variable(index)
         return _BoolExpr.variable(index)
@@ -336,10 +333,6 @@ def _ast_node_cost(egraph: Any, expression: Any, children_costs: list[int]) -> i
     if type_name in {"_IntExpr", "_BoolExpr"}:
         return 1 + sum(children_costs)
     return 0
-
-
-def _from_egglog(expression: Any, names: dict[int, str]) -> Term:
-    return _from_egglog_decl(expr_parts(expression), names)
 
 
 def _from_egglog_decl(declaration: Any, names: dict[int, str]) -> Term:
@@ -391,11 +384,10 @@ def _from_egglog_decl(declaration: Any, names: dict[int, str]) -> Term:
 
 def _render_function(model: FunctionModel, body: Term) -> str:
     parameters = ", ".join(
-        f"{parameter.name}: {'int' if parameter.sort == 'int' else 'bool'}"
+        f"{parameter.name}: {parameter.sort}"
         for parameter in model.parameters
     )
-    result = "int" if model.return_sort == "int" else "bool"
-    return f"def {model.name}({parameters}) -> {result}:\n    return {_render_term(body)}\n"
+    return f"def {model.name}({parameters}) -> {model.return_sort}:\n    return {_render_term(body)}\n"
 
 
 def _render_term(term: Term) -> str:

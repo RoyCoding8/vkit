@@ -24,6 +24,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: uv sync --extra test
+      - uses: actions/setup-java@v4
+        if: runner.os == 'Linux'
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install pinned Perses
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 https://github.com/uw-pluverse/perses/releases/download/v2.7/perses_deploy.jar -o "$RUNNER_TEMP/perses.jar"
+          echo "1102ec7e3e601792a3c271c41ac7df52b03fca635df552500c241933c2c1e427  $RUNNER_TEMP/perses.jar" | sha256sum --check
+          echo "VKIT_PERSES_JAR=$RUNNER_TEMP/perses.jar" >> "$GITHUB_ENV"
+          echo "VKIT_PERSES_SHA256=1102ec7e3e601792a3c271c41ac7df52b03fca635df552500c241933c2c1e427" >> "$GITHUB_ENV"
+      - run: uv sync --python 3.11 --extra test --extra engines
       - run: uv run pytest -ra
       - run: uv run python scripts/e2e.py

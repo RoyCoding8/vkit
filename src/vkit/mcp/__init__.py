@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from jsonschema import ValidationError, validate
+
 from .. import __version__, query
 from ..manifest import ManifestError
 from ..store import new_run_id
@@ -19,7 +21,9 @@ INSTRUCTIONS = (
     "which registered checks are fresh, stale or missing; check_run with needed=true runs exactly the stale ones; "
     "run_get reads a run's outcome and log; gate says READY only when every check passed against the current "
     "inputs. features describes what the application does and how a user reaches each feature. Check ids come "
-    "from the manifest; no tool accepts a command, and only a human can accept a check definition."
+    "from the manifest; no tool accepts a command, and only a human can accept a check definition. "
+    "check_rewrite and simplify_function compute over a restricted Python integer/boolean model; "
+    "reduce_failure shrinks a recorded failure using its approved check. Computation results do not change the gate."
 )
 
 
@@ -38,26 +42,24 @@ class Tool:
     properties: dict[str, Any]
     handler: Callable[["Server", dict[str, Any]], Any]
     read_only: bool = True
+    required: tuple[str, ...] = ()
 
     @property
     def input_schema(self) -> dict[str, Any]:
-        return {"type": "object", "properties": self.properties, "additionalProperties": False}
+        return {"type": "object", "properties": self.properties, "required": list(self.required),
+                "additionalProperties": False}
 
 
-def _check(arguments: dict[str, Any], properties: dict[str, Any]) -> None:
-    unknown = sorted(set(arguments) - set(properties))
+def _check(arguments: dict[str, Any], schema: dict[str, Any]) -> None:
+    if not isinstance(arguments, dict):
+        raise Refusal("arguments must be an object")
+    unknown = sorted(set(arguments) - set(schema["properties"]))
     if unknown:
         raise Refusal(f"unknown argument(s): {', '.join(unknown)}")
-    for name, value in arguments.items():
-        expected = properties[name]["type"]
-        items = properties[name].get("items", {}).get("type", "string")
-        ok = {"string": isinstance(value, str), "boolean": isinstance(value, bool),
-              "integer": isinstance(value, int) and not isinstance(value, bool),
-              "object": isinstance(value, dict),
-              "array": isinstance(value, list) and all(isinstance(v, dict if items == "object" else str)
-                                                       for v in value)}[expected]
-        if not ok:
-            raise Refusal(f"{name} must be {'a list of ' + items + 's' if expected == 'array' else 'a ' + expected}")
+    try:
+        validate(arguments, schema)
+    except ValidationError as exc:
+        raise Refusal(exc.message) from exc
 
 
 @dataclass
@@ -72,9 +74,9 @@ class Server:
         tool = BY_NAME.get(name)
         if tool is None:
             return {"error": f"unknown tool {name!r}"}, True
-        arguments = arguments or {}
+        arguments = {} if arguments is None else arguments
         try:
-            _check(arguments, tool.properties)
+            _check(arguments, tool.input_schema)
             return tool.handler(self, arguments), False
         except (Refusal, ManifestError, ValueError) as exc:
             return {"error": str(exc)}, True
@@ -173,9 +175,45 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
     return {"run_id": args["run_id"], "cancelled": True}
 
 
+def _check_rewrite(server: Server, args: dict[str, Any]) -> Any:
+    from ..operations import check_rewrite
+
+    return check_rewrite(server.root, **args)
+
+
+def _simplify_function(server: Server, args: dict[str, Any]) -> Any:
+    from ..operations import simplify_function
+
+    return simplify_function(server.root, **args)
+
+
+def _reduce_failure(server: Server, args: dict[str, Any]) -> Any:
+    from ..operations import reduce_failure
+
+    return reduce_failure(server.root, **args)
+
+
 _STR = {"type": "string"}
 _PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
+_EXPRESSION = {"path": {"type": "string", "description": "repository-relative Python source file"},
+               "function": {"type": "string", "minLength": 1},
+               "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60_000}}
 TOOLS = (
+    Tool("check_rewrite", "Prove equal return values for a supported pure Python int/bool function and a "
+         "replacement function with the same signature. Returns PROVED, COUNTEREXAMPLE, UNKNOWN, UNSUPPORTED "
+         "or UNAVAILABLE, with the modeled domain and source digest. Does not execute or modify the source.",
+         {**_EXPRESSION, "replacement": {"type": "string", "maxLength": 65_536}}, _check_rewrite,
+         required=("path", "function", "replacement")),
+    Tool("simplify_function", "Derive a smaller equivalent pure Python int/bool function using fixed egglog "
+         "rules and independently check it with cvc5. Returns a suggested replacement and the proof status; "
+         "does not modify files or establish a global minimum.", _EXPRESSION, _simplify_function,
+         required=("path", "function")),
+    Tool("reduce_failure", "Reduce one input file of a recorded, still-current failed run using Perses. "
+         "Reuses the approved check and preserves the recorded failure. Returns a validated reproducer "
+         "without modifying the checkout. Requires the configured POSIX Java/Perses runtime.",
+         {"run_id": _STR, "path": _STR,
+          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300}}, _reduce_failure,
+         read_only=False, required=("run_id", "path")),
     Tool("status", "Freshness of every registered check (fresh_pass, fresh_fail, fresh_blocked, stale, missing, "
          "not_approved), what each kind of evidence establishes and does not, the gate, and the features. Pass "
          "paths to see only the checks and features that read them, and which paths no check reads.",

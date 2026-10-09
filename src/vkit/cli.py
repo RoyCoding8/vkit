@@ -273,6 +273,33 @@ def cmd_console(args: argparse.Namespace) -> int:
     return serve(_context(args).project, port=args.port, open_browser=not args.no_browser)
 
 
+def cmd_compute(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .mcp import Server
+    from .operations import MAX_SOURCE_BYTES
+
+    operation = args.compute_command.replace("-", "_")
+    arguments = {name: getattr(args, name) for name in
+                 ("path", "function", "timeout_ms", "run_id", "timeout_seconds")
+                 if hasattr(args, name)}
+    if operation == "check_rewrite":
+        try:
+            with Path(args.replacement_file).open("rb") as handle:
+                data = handle.read(MAX_SOURCE_BYTES + 1)
+            if len(data) > MAX_SOURCE_BYTES:
+                raise ValueError(f"replacement must be at most {MAX_SOURCE_BYTES} bytes")
+            arguments["replacement"] = data.decode("utf-8")
+        except (OSError, ValueError) as exc:
+            raise Refused(f"cannot read replacement: {exc}", EXIT_INVALID) from exc
+    body, error = Server(_context(args).project.root).call(operation, arguments)
+    _emit(body, args.json, json.dumps(body, indent=2))
+    if error:
+        return EXIT_INVALID
+    return {"PROVED": EXIT_OK, "REDUCED": EXIT_OK, "COUNTEREXAMPLE": EXIT_FAILED,
+            "UNSUPPORTED": EXIT_INVALID, "UNAVAILABLE": EXIT_UNAVAILABLE}.get(body["status"], EXIT_BLOCKED)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vkit", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -322,6 +349,20 @@ def build_parser() -> argparse.ArgumentParser:
     mcp = sub.add_parser("mcp", help="serve an agent over MCP").add_subparsers(dest="mcp_command", required=True)
     command(mcp, "serve", "serve stdio for one project root; --json prints the tool catalogue")
 
+    compute = sub.add_parser("compute", help="run a built-in source computation").add_subparsers(
+        dest="compute_command", required=True)
+    for name in ("check-rewrite", "simplify-function"):
+        operation = command(compute, name, "compute over a pure Python int/bool function")
+        operation.add_argument("--path", required=True, help="repository-relative Python source file")
+        operation.add_argument("--function", required=True, help="top-level function name")
+        operation.add_argument("--timeout-ms", type=int, default=2_000)
+        if name == "check-rewrite":
+            operation.add_argument("--replacement-file", required=True, help="UTF-8 replacement function source")
+    reduce = command(compute, "reduce-failure", "reduce an input of a recorded failed check with Perses")
+    reduce.add_argument("--run-id", required=True)
+    reduce.add_argument("--path", required=True)
+    reduce.add_argument("--timeout-seconds", type=int, default=60)
+
     console = command(sub, "console", "serve a read-only console on 127.0.0.1")
     console.add_argument("--port", type=int, default=8765, help="0 lets the OS pick a free port")
     console.add_argument("--no-browser", action="store_true")
@@ -335,6 +376,8 @@ _DISPATCH = {
     ("project", "inspect"): cmd_project_inspect,
     ("proposals", None): cmd_proposals, ("reject", None): cmd_reject,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
+    ("compute", "check-rewrite"): cmd_compute, ("compute", "simplify-function"): cmd_compute,
+    ("compute", "reduce-failure"): cmd_compute,
 }
 
 

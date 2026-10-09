@@ -74,6 +74,13 @@ are:
 - `gate`: returns READY, REJECTED or BLOCKED.
 - `propose`: suggests a check, a feature entry, or a new file. Nothing changes until a human runs
   `vkit accept --proposal <digest>`.
+- `check_rewrite`: prove equivalent return values or produce a counterexample for a supported Python function.
+- `simplify_function`: derive a replacement with egglog and independently verify it with cvc5.
+- `reduce_failure`: use Perses to shrink a source file while preserving a recorded failure.
+
+The three computation tools use fixed algorithms and do not change the gate. Install their Python
+engines with `uv sync --extra mcp --extra engines`. See [built-in computations](docs/computations.md)
+for the supported language, CLI commands, Perses setup, and deployment boundary.
 
 For Claude Code, `plugin/` holds two skills and two hooks. The session-start hook reports the gate. The stop
 hook holds the session while a check the agent can rerun is stale or failing.
@@ -84,8 +91,12 @@ hook holds the session while a check the agent can rerun is stale or failing.
 vkit console --project .
 ```
 
-This opens a read-only page on `127.0.0.1:8765` with the gate, checks, live runs and their logs, pending
-proposals, and features. It has no login and changes nothing. Pass `--port 0` to pick a free port.
+This opens a read-only workspace on `127.0.0.1:8765`. The collapsible sidebar provides an overview,
+check definitions and their limits, run outcomes and logs, verification methods, feature coverage,
+pending proposals, and project setup. It follows the system's light or dark theme; you can change
+the theme in the top bar. Assets ship locally. Pass `--port 0` to pick a free port.
+
+Frontend development and asset rebuild instructions are in [tools/console](tools/console/README.md).
 
 ## Commands
 
@@ -103,6 +114,9 @@ proposals, and features. It has no login and changes nothing. Pass `--port 0` to
 | `vkit project inspect` | Find the test commands a repository already declares |
 | `vkit console` | Serve the read-only console |
 | `vkit mcp serve` | Serve MCP over stdio |
+| `vkit compute check-rewrite` | Check equivalence of two supported Python functions |
+| `vkit compute simplify-function` | Suggest a replacement and prove its equivalence |
+| `vkit compute reduce-failure` | Reduce a recorded failure with its approved predicate |
 
 Every command takes `--project` (default `.`) and `--json`.
 
@@ -120,7 +134,7 @@ Every command takes `--project` (default `.`) and `--json`.
 ## Development
 
 ```powershell
-uv sync --extra test
+uv sync --extra test --extra engines
 uv run pytest
 uv run python scripts/e2e.py
 ```

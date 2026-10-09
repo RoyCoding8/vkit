@@ -78,6 +78,16 @@ def test_nonregular_construct_is_reported_as_unsupported() -> None:
     assert result.new_only is None
 
 
+def test_unterminated_character_class_is_reported_as_unsupported() -> None:
+    pytest.importorskip("greenery")
+
+    result = compare_matchsets("[", "a", "a")
+
+    assert result.status == "UNSUPPORTED"
+    assert result.old_only is None
+    assert result.new_only is None
+
+
 def test_pattern_and_timeout_bounds_are_checked() -> None:
     with pytest.raises(ValueError, match="2048 UTF-8 bytes"):
         compare_matchsets("a" * 2_049, "a", "a")

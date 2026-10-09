@@ -61,7 +61,7 @@ def _utf8_size(value: str, name: str) -> int:
 def _validate(old_pattern: str, new_pattern: str, alphabet: str, timeout_ms: int) -> None:
     for value, name in ((old_pattern, "old_pattern"), (new_pattern, "new_pattern"), (alphabet, "alphabet")):
         if not isinstance(value, str):
-            raise ValueError(f"{name} must be a string")
+            raise TypeError(f"{name} must be a string")
     if len(old_pattern) > MAX_PATTERN_BYTES or _utf8_size(old_pattern, "old_pattern") > MAX_PATTERN_BYTES:
         raise ValueError(f"old_pattern must be at most {MAX_PATTERN_BYTES} UTF-8 bytes")
     if len(new_pattern) > MAX_PATTERN_BYTES or _utf8_size(new_pattern, "new_pattern") > MAX_PATTERN_BYTES:
@@ -119,17 +119,16 @@ def compare_matchsets(old_pattern: str, new_pattern: str, alphabet: str,
 
 def _worker_result(old_pattern: str, new_pattern: str, alphabet: str) -> dict[str, Any]:
     try:
-        import greenery
         from greenery import Charclass, parse
         from greenery.parse import NoMatch
     except ImportError:
         return _payload("UNAVAILABLE", alphabet, reason="greenery 4.2.2 is not installed", backend_version=None)
 
     try:
-        from importlib.metadata import version
+        from importlib.metadata import PackageNotFoundError, version
 
         backend_version = version(BACKEND)
-    except Exception:
+    except PackageNotFoundError:
         backend_version = None
     if backend_version != BACKEND_VERSION:
         return _payload(
@@ -140,22 +139,23 @@ def _worker_result(old_pattern: str, new_pattern: str, alphabet: str) -> dict[st
         )
 
     try:
-        old = parse(old_pattern).to_fsm()
-        new = parse(new_pattern).to_fsm()
-        sigma_star = parse(str(Charclass(alphabet)) + "*").to_fsm()
-    except NoMatch as exc:
+        old_source = parse(old_pattern)
+        new_source = parse(new_pattern)
+    except (NoMatch, IndexError) as exc:
         return _payload("UNSUPPORTED", alphabet, reason=str(exc), backend_version=backend_version)
     except RecursionError:
         return _payload(
             "UNSUPPORTED", alphabet, reason="pattern exceeds the backend parser's recursion limit",
             backend_version=backend_version,
         )
-    except Exception as exc:
-        return _payload(
-            "UNAVAILABLE", alphabet, reason=f"greenery could not compile the input: {type(exc).__name__}",
-            backend_version=backend_version,
-        )
 
+    try:
+        old = old_source.to_fsm()
+        new = new_source.to_fsm()
+        sigma_star = parse(str(Charclass(alphabet)) + "*").to_fsm()
+    except RecursionError:
+        return _payload("UNKNOWN", alphabet, reason="automata conversion exceeded the backend recursion limit",
+                        backend_version=backend_version)
     old_domain = old.intersection(sigma_star)
     new_domain = new.intersection(sigma_star)
     old_only, old_valid = _shortest_checked(old_domain.difference(new_domain), alphabet, old, new)
@@ -196,7 +196,7 @@ def _main() -> int:
         result = _worker_result(request["old_pattern"], request["new_pattern"], request["alphabet"])
         print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
         return 0
-    except Exception:
+    except (IndexError, KeyError, TypeError, ValueError):
         return 1
 
 

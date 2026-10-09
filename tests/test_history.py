@@ -17,7 +17,7 @@ def _write_trace(root: Path, operations: list[dict], *, name: str = "history.jso
     if extra:
         trace.update(extra)
     path = root / name
-    path.write_text(json.dumps(trace), encoding="utf-8")
+    path.write_text(json.dumps(trace, ensure_ascii=False), encoding="utf-8")
     return path
 
 
@@ -35,10 +35,12 @@ def configured_helper(monkeypatch: pytest.MonkeyPatch) -> Path:
     binary = os.environ.get("VKIT_HISTORY_BIN")
     expected = os.environ.get("VKIT_HISTORY_SHA256")
     if not binary or not expected:
+        if binary or expected:
+            pytest.fail("the configured Porcupine helper requires both its path and SHA-256")
         pytest.skip("a pinned Porcupine helper is not configured")
     path = Path(binary).resolve()
     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected.lower():
-        pytest.skip("the configured Porcupine helper does not match its SHA-256")
+        pytest.fail("the configured Porcupine helper does not match its SHA-256")
     monkeypatch.setenv("VKIT_HISTORY_BIN", str(path))
     monkeypatch.setenv("VKIT_HISTORY_SHA256", expected.lower())
     return path
@@ -158,6 +160,19 @@ def test_missing_or_mismatched_backend_is_unavailable(tmp_path, monkeypatch):
     assert missing["status"] == mismatched["status"] == "UNAVAILABLE"
 
 
+def test_non_executable_configured_helper_is_unavailable(tmp_path, monkeypatch):
+    trace = _write_trace(tmp_path, [_op("read", 1, 2, "read", output=0)])
+    binary = tmp_path / "not-an-executable.exe"
+    binary.write_bytes(b"not an executable")
+    monkeypatch.setenv("VKIT_HISTORY_BIN", str(binary))
+    monkeypatch.setenv("VKIT_HISTORY_SHA256", hashlib.sha256(binary.read_bytes()).hexdigest())
+
+    result = check_history(tmp_path, trace.name, "register")
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["detail"] == "the configured Porcupine helper could not be started"
+
+
 def test_partial_or_malformed_helper_witness_never_proves_history(tmp_path, monkeypatch):
     trace = _write_trace(tmp_path, [
         _op("first", 1, 2, "write", value=7),
@@ -196,3 +211,38 @@ def test_trace_file_escape_and_integer_overflow_are_rejected(tmp_path):
     ])
     with pytest.raises(ValueError, match="at most 1000"):
         check_history(tmp_path, too_many.name, "register")
+
+
+def test_deeply_nested_invalid_json_is_rejected_as_value_error(tmp_path):
+    trace = tmp_path / "nested.json"
+    trace.write_text('{"schema_version":1,"operations":' + "[" * 2_000 + "0" + "]" * 2_000 + "}",
+                     encoding="utf-8")
+
+    with pytest.raises(ValueError, match="nesting"):
+        check_history(tmp_path, trace.name, "register")
+
+
+def test_operation_ids_reject_non_scalar_unicode(tmp_path):
+    trace = tmp_path / "surrogate.json"
+    trace.write_text(
+        '{"schema_version":1,"operations":[{"id":"\\ud800","client_id":0,"call":1,'
+        '"return":2,"input":{"op":"read"},"output":0}]}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unicode scalar"):
+        check_history(tmp_path, trace.name, "register")
+
+
+def test_long_unicode_ids_fit_the_helper_request_and_complete_witness(tmp_path, configured_helper):
+    operations = [
+        _op(f"{index:04d}" + "😀" * 124, 2 * index + 1, 2 * index + 2, "read", output=0)
+        for index in range(700)
+    ]
+    trace = _write_trace(tmp_path, operations)
+
+    result = check_history(tmp_path, trace.name, "register")
+
+    assert result["status"] == "LINEARIZABLE"
+    assert len(result["linearization"]) == len(operations)
+    assert result["linearization"] == [operation["id"] for operation in operations]

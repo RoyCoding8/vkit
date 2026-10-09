@@ -70,7 +70,7 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
 
 def _fields(value: Any, expected: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object")
+        raise TypeError(f"{label} must be a JSON object")
     actual = set(value)
     missing = expected - actual
     extra = actual - expected
@@ -103,6 +103,8 @@ def _parse_operation(raw: Any, model: str, index: int) -> _Operation:
     operation_id = item["id"]
     if not isinstance(operation_id, str) or not operation_id or len(operation_id) > MAX_ID_CHARS:
         raise ValueError(f"{label}.id must be a nonempty string of at most {MAX_ID_CHARS} characters")
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in operation_id):
+        raise ValueError(f"{label}.id must contain only Unicode scalar characters")
     client_id = _integer(item["client_id"], f"{label}.client_id", 0, _MAX_CLIENT_ID)
     call = _integer(item["call"], f"{label}.call", MIN_INT64, MAX_INT64)
     returned = _integer(item["return"], f"{label}.return", MIN_INT64, MAX_INT64)
@@ -146,16 +148,21 @@ def _load_trace(root: Path, path: str, model: str) -> tuple[list[_Operation], st
         trace = json.loads(raw.decode("utf-8"), object_pairs_hook=_object, parse_constant=_reject_constant)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("history must be valid UTF-8 JSON") from exc
-    trace = _fields(trace, {"schema_version", "operations"}, "history")
-    if type(trace["schema_version"]) is not int or trace["schema_version"] != 1:
-        raise ValueError("history.schema_version must be 1")
-    raw_operations = trace["operations"]
-    if not isinstance(raw_operations, list) or len(raw_operations) > MAX_OPERATIONS:
-        raise ValueError(f"history.operations must be a list with at most {MAX_OPERATIONS} entries")
-    operations = [_parse_operation(raw, model, i) for i, raw in enumerate(raw_operations)]
-    ids = [operation.id for operation in operations]
-    if len(set(ids)) != len(ids):
-        raise ValueError("operation ids must be unique")
+    except RecursionError as exc:
+        raise ValueError("history JSON nesting exceeds parser limits") from exc
+    try:
+        trace = _fields(trace, {"schema_version", "operations"}, "history")
+        if type(trace["schema_version"]) is not int or trace["schema_version"] != 1:
+            raise ValueError("history.schema_version must be 1")
+        raw_operations = trace["operations"]
+        if not isinstance(raw_operations, list) or len(raw_operations) > MAX_OPERATIONS:
+            raise ValueError(f"history.operations must be a list with at most {MAX_OPERATIONS} entries")
+        operations = [_parse_operation(raw, model, i) for i, raw in enumerate(raw_operations)]
+        ids = [operation.id for operation in operations]
+        if len(set(ids)) != len(ids):
+            raise ValueError("operation ids must be unique")
+    except TypeError as exc:
+        raise ValueError(str(exc)) from exc
     return operations, hashlib.sha256(raw).hexdigest()
 
 
@@ -193,14 +200,18 @@ def _replay(operations: list[_Operation], witness: list[str], model: str) -> boo
                 if operation.output != state:
                     return False
             else:
-                state = operation.value  # type: ignore[assignment]
+                if operation.value is None:
+                    return False
+                state = operation.value
         return True
 
     queue: deque[int] = deque()
     for operation_id in witness:
         operation = by_id[operation_id]
         if operation.op == "enqueue":
-            queue.append(operation.value)  # type: ignore[arg-type]
+            if operation.value is None:
+                return False
+            queue.append(operation.value)
         elif queue:
             if operation.output != queue.popleft():
                 return False
@@ -230,14 +241,17 @@ def check_history(root: Path, path: str, model: str, timeout_seconds: int = 10) 
     binary, backend_sha256 = runtime
     request = json.dumps({"schema_version": _PROTOCOL_VERSION,
                           "operations": [operation.helper_record() for operation in operations]},
-                         separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+                         separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     command = [str(binary), "--model", model, "--timeout-seconds", str(timeout_seconds)]
     try:
         result = subprocess.run(command, input=request, capture_output=True, timeout=timeout_seconds, check=False)
     except subprocess.TimeoutExpired:
         return {**base, "status": "UNKNOWN", "backend_sha256": backend_sha256,
                 "detail": "the history check exceeded its time budget"}
-    if result.returncode != 0 or len(result.stdout) > 65_536:
+    except OSError:
+        return {**base, "status": "UNAVAILABLE", "backend_sha256": backend_sha256,
+                "detail": "the configured Porcupine helper could not be started"}
+    if result.returncode != 0 or len(result.stdout) > MAX_TRACE_BYTES:
         return {**base, "status": "UNKNOWN", "backend_sha256": backend_sha256,
                 "detail": "the Porcupine helper did not return a valid result"}
     try:
@@ -245,7 +259,7 @@ def check_history(root: Path, path: str, model: str, timeout_seconds: int = 10) 
                               parse_constant=_reject_constant)
         response = _fields(response, {"protocol_version", "backend_version", "status", "linearization"},
                            "helper response")
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
         return {**base, "status": "UNKNOWN", "backend_sha256": backend_sha256,
                 "detail": "the Porcupine helper returned malformed output"}
     if type(response["protocol_version"]) is not int or response["protocol_version"] != _PROTOCOL_VERSION \

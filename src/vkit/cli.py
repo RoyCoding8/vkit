@@ -11,6 +11,9 @@ from typing import Any, Sequence
 
 from . import query
 from .manifest import ManifestError
+from .operations.catalog import OPERATIONS
+from .operations.contract import (Operation, OperationContractError, OperationInputError, cli_arguments, cli_value,
+                                  invoke)
 from .paths import ProjectError
 from .store import now
 
@@ -274,29 +277,52 @@ def cmd_console(args: argparse.Namespace) -> int:
 
 
 def cmd_compute(args: argparse.Namespace) -> int:
-    from pathlib import Path
-
-    from .mcp import BY_NAME, Server
-    from .operations import MAX_SOURCE_BYTES
-
-    operation = args.compute_command.replace("-", "_")
-    arguments = {name: vars(args)[name] for name in BY_NAME[operation].properties if name in vars(args)}
-    if operation == "check_rewrite":
-        try:
-            with Path(args.replacement_file).open("rb") as handle:
-                data = handle.read(MAX_SOURCE_BYTES + 1)
-            if len(data) > MAX_SOURCE_BYTES:
-                raise ValueError(f"replacement must be at most {MAX_SOURCE_BYTES} bytes")
-            arguments["replacement"] = data.decode("utf-8")
-        except (OSError, ValueError) as exc:
-            raise Refused(f"cannot read replacement: {exc}", EXIT_INVALID) from exc
-    body, error = Server(_context(args).project.root).call(operation, arguments)
+    operation = args._vkit_operation
+    try:
+        body = invoke(operation, _context(args).project.root, cli_arguments(operation, vars(args)))
+    except OperationInputError as exc:
+        raise Refused(str(exc), EXIT_INVALID) from exc
+    except OperationContractError as exc:
+        raise Refused(str(exc), EXIT_INTERNAL) from exc
     _emit(body, args.json, json.dumps(body, indent=2))
-    if error:
-        return EXIT_INVALID
-    return {"PROVED": EXIT_OK, "REDUCED": EXIT_OK, "EQUIVALENT": EXIT_OK, "LINEARIZABLE": EXIT_OK,
-            "COUNTEREXAMPLE": EXIT_FAILED, "NOT_LINEARIZABLE": EXIT_FAILED,
-            "UNSUPPORTED": EXIT_INVALID, "UNAVAILABLE": EXIT_UNAVAILABLE}.get(body["status"], EXIT_BLOCKED)
+    return operation.outcomes[body["status"]]
+
+
+def _command_parser(container: Any, name: str, help_text: str) -> argparse.ArgumentParser:
+    target = container.add_parser(name, help=help_text)
+    target.add_argument("--project", default=".", help="repository root, or a directory inside it")
+    target.add_argument("--json", action="store_true", help="write one JSON object to stdout")
+    return target
+
+
+def _add_operation_parser(compute: Any, operation: Operation) -> argparse.ArgumentParser:
+    parser = _command_parser(compute, operation.cli_name, operation.description)
+    parser.set_defaults(handler=cmd_compute, _vkit_operation=operation)
+    for name, schema in operation.properties.items():
+        file_input = operation.cli_files.get(name)
+        flag = file_input.flag if file_input is not None else name.replace("_", "-")
+        argument_type = str if file_input is not None or schema["type"] == "string" else (
+            int if schema["type"] == "integer" else float if schema["type"] == "number" else
+            lambda text, schema=schema: _parse_cli_value(text, schema))
+        options: dict[str, Any] = {"dest": name + "_file" if file_input is not None else name,
+                                  "required": name in operation.required}
+        options["default"] = argparse.SUPPRESS
+        if file_input is not None:
+            options["required"] = name in operation.required
+            help_text = f"UTF-8 input file, at most {file_input.max_bytes} bytes"
+        else:
+            help_text = schema.get("description", "")
+            if "enum" in schema:
+                options["choices"] = schema["enum"]
+        parser.add_argument(f"--{flag}", type=argument_type, help=help_text, **options)
+    return parser
+
+
+def _parse_cli_value(text: str, schema: dict[str, Any]) -> Any:
+    try:
+        return cli_value(text, schema)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -304,12 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def command(container, name: str, help_text: str) -> argparse.ArgumentParser:
-        target = container.add_parser(name, help=help_text)
-        target.add_argument("--project", default=".", help="repository root, or a directory inside it")
-        target.add_argument("--json", action="store_true", help="write one JSON object to stdout")
-        return target
-
+    command = _command_parser
     command(sub, "doctor", "report whether this project's checks could run")
     status = command(sub, "status", "show every check's freshness and the gate")
     status.add_argument("--path", action="append", help="only checks that read this path (repeatable)")
@@ -350,28 +371,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     compute = sub.add_parser("compute", help="run a built-in source computation").add_subparsers(
         dest="compute_command", required=True)
-    for name in ("check-rewrite", "simplify-function"):
-        operation = command(compute, name, "compute over a pure Python int/bool function")
-        operation.add_argument("--path", required=True, help="repository-relative Python source file")
-        operation.add_argument("--function", required=True, help="top-level function name")
-        operation.add_argument("--timeout-ms", type=int, default=2_000)
-        if name == "check-rewrite":
-            operation.add_argument("--replacement-file", required=True, help="UTF-8 replacement function source")
-    reduce = command(compute, "reduce-failure", "reduce an input of a recorded failed check with Perses")
-    reduce.add_argument("--run-id", required=True)
-    reduce.add_argument("--path", required=True)
-    reduce.add_argument("--timeout-seconds", type=int, default=60)
-
-    matchsets = command(compute, "compare-matchsets", "compare complete regex languages over a finite alphabet")
-    matchsets.add_argument("--old-pattern", required=True)
-    matchsets.add_argument("--new-pattern", required=True)
-    matchsets.add_argument("--alphabet", required=True, help="unique characters that may occur in matched strings")
-    matchsets.add_argument("--timeout-ms", type=int, default=2_000)
-
-    history = command(compute, "check-history", "check a completed concurrent history against a built-in model")
-    history.add_argument("--path", required=True, help="repository-relative JSON trace")
-    history.add_argument("--model", required=True, help="register or queue")
-    history.add_argument("--timeout-seconds", type=int, default=10)
+    for operation in OPERATIONS:
+        _add_operation_parser(compute, operation)
 
     console = command(sub, "console", "serve a read-only console on 127.0.0.1")
     console.add_argument("--port", type=int, default=8765, help="0 lets the OS pick a free port")
@@ -386,16 +387,14 @@ _DISPATCH = {
     ("project", "inspect"): cmd_project_inspect,
     ("proposals", None): cmd_proposals, ("reject", None): cmd_reject,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
-    ("compute", "check-rewrite"): cmd_compute, ("compute", "simplify-function"): cmd_compute,
-    ("compute", "reduce-failure"): cmd_compute,
-    ("compute", "compare-matchsets"): cmd_compute,
-    ("compute", "check-history"): cmd_compute,
 }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    handler = _DISPATCH[(args.command, getattr(args, f"{args.command}_command", None))]
+    handler = getattr(args, "handler", None)
+    if handler is None:
+        handler = _DISPATCH[(args.command, getattr(args, f"{args.command}_command", None))]
     try:
         return handler(args)
     except Refused as exc:

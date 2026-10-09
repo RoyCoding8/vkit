@@ -141,8 +141,11 @@ def _worker_result(old_pattern: str, new_pattern: str, alphabet: str) -> dict[st
     try:
         old_source = parse(old_pattern)
         new_source = parse(new_pattern)
-    except (NoMatch, IndexError) as exc:
-        return _payload("UNSUPPORTED", alphabet, reason=str(exc), backend_version=backend_version)
+    except (NoMatch, IndexError, ValueError):
+        return _payload(
+            "UNSUPPORTED", alphabet, reason=f"pattern is invalid in the {DIALECT} syntax",
+            backend_version=backend_version,
+        )
     except RecursionError:
         return _payload(
             "UNSUPPORTED", alphabet, reason="pattern exceeds the backend parser's recursion limit",

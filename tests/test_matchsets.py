@@ -78,14 +78,16 @@ def test_nonregular_construct_is_reported_as_unsupported() -> None:
     assert result.new_only is None
 
 
-def test_unterminated_character_class_is_reported_as_unsupported() -> None:
+@pytest.mark.parametrize("pattern", ("[", "[z-a]", r"\x"))
+def test_malformed_pattern_syntax_is_reported_as_unsupported(pattern: str) -> None:
     pytest.importorskip("greenery")
 
-    result = compare_matchsets("[", "a", "a")
+    result = compare_matchsets(pattern, "a", "a")
 
     assert result.status == "UNSUPPORTED"
     assert result.old_only is None
     assert result.new_only is None
+    assert result.reason == "pattern is invalid in the greenery-4.2.2 syntax"
 
 
 def test_pattern_and_timeout_bounds_are_checked() -> None:

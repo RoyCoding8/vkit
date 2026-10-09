@@ -1,12 +1,23 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from vkit.operations.expressions import ParseFailure, ResourceLimits, parse_function
+from vkit.operations.rewrites import check_function_rewrite
 
-from vkit.operations.expressions import ParseFailure, ResourceLimits, parse_function  # noqa: E402
-from vkit.operations.rewrites import check_function_rewrite  # noqa: E402
+
+@pytest.fixture(autouse=True)
+def optional_backend() -> None:
+    pytest.importorskip("cvc5")
+
+
+def test_python_compile_rejects_duplicate_parameters_without_execution() -> None:
+    source = "def invalid(x: int, x: int) -> int:\n    return x\n"
+
+    result = check_function_rewrite(source, "invalid", source)
+
+    assert result.status == "UNSUPPORTED"
+    assert "duplicate argument" in result.reason
 
 
 

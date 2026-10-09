@@ -298,6 +298,7 @@ def parse_function(source: str, function: str, limits: ResourceLimits | None = N
         tree = ast.parse(source)
         node_count = sum(1 for _ in ast.walk(tree))
         budget = _Budget(limits.max_ast_nodes, node_count)
+        compile(tree, "<vkit-source>", "exec", dont_inherit=True)
         matches = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                    and node.name == function]
         if len(matches) != 1 or not isinstance(matches[0], ast.FunctionDef):

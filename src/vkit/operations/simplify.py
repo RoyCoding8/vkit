@@ -127,10 +127,12 @@ if _EGGLOG_IMPORT_ERROR is None:
     _ONE = _IntExpr.literal(BigInt.from_string("1"))
     _TRUE = _BoolExpr.literal(Bool(True))
     _FALSE = _BoolExpr.literal(Bool(False))
-    _IX, _IY = vars_("ix iy", _IntExpr)
+    _IX, _IY, _IZ = vars_("ix iy iz", _IntExpr)
     _BX, _BY = vars_("bx by", _BoolExpr)
     _IA, _IB = vars_("ia ib", BigInt)
     _RULES = ruleset(
+        rewrite(_IX.mul(_IY).add(_IX.mul(_IZ))).to(_IX.mul(_IY.add(_IZ))),
+        rewrite(_IY.mul(_IX).add(_IZ.mul(_IX))).to(_IY.add(_IZ).mul(_IX)),
         rewrite(_IX.add(_ZERO)).to(_IX),
         rewrite(_ZERO.add(_IX)).to(_IX),
         rewrite(_IX.sub(_ZERO)).to(_IX),

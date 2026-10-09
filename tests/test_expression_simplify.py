@@ -77,3 +77,12 @@ def test_unbound_unused_assignment_is_rejected() -> None:
 
     assert result.status == "UNSUPPORTED"
     assert result.replacement is None
+
+
+def test_factors_a_common_polynomial_operand() -> None:
+    source = "def factor(x: int, y: int, z: int) -> int:\n    return x * y + x * z\n"
+
+    result = simplify_function(source, "factor")
+
+    assert result.status == "PROVED"
+    assert result.replacement == "def factor(x: int, y: int, z: int) -> int:\n    return (x * (y + z))\n"

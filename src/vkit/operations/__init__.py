@@ -50,7 +50,5 @@ def reduce_failure(root: Path, run_id: str, path: str,
                    timeout_seconds: int = 60) -> dict[str, Any]:
     from .reduction import reduce_failure as reduce
 
-    if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 300:
-        raise ValueError("timeout_seconds must be an integer between 1 and 300")
     result = reduce(open_project(root), run_id, path, timeout_seconds=timeout_seconds).to_json()
     return {"operation": "reduce_failure", "run_id": run_id, "path": path, **result}

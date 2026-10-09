@@ -58,7 +58,8 @@ vkit compute simplify-function --project . --path src/score.py --function score 
 The MCP tool is `simplify_function`, with `path`, `function`, and optional `timeout_ms`.
 
 egglog searches with fixed arithmetic, boolean, and conditional identities for four iterations, then extracts
-an expression using node count as its cost. For example, `return (x + 0) * 1` becomes `return x`. Integer
+an expression using node count as its cost. For example, `return (x + 0) * 1` becomes `return x`, and
+`return x * y + x * z` becomes `return x * (y + z)`. Integer
 constant folding uses arbitrary precision. cvc5 then checks the rendered replacement against the original
 function through the same frontend. Only that independent check can produce `PROVED`.
 
@@ -77,7 +78,8 @@ The MCP tool is `reduce_failure`, with `run_id`, `path`, and optional `timeout_s
 
 The selected run must be a completed failure of an approved `scenario`, `pytest`, or `node_test` check in
 the current checkout. Its definition and declared input snapshot must still match. The target must be a
-recorded Python source input. Budget-only failures and unsupported checks are refused.
+recorded Python source input. Check drivers and required test files cannot be reduction targets.
+Budget-only failures and unsupported checks are refused.
 
 vkit copies recorded inputs into temporary workspaces. Perses changes the target source while the built-in
 predicate replays the approved check and requires the selected failed scenario ID and exact observation.
@@ -107,7 +109,7 @@ Set `JAVA_HOME` or put Java on `PATH`. vkit checks the configured JAR hash and r
 These APIs expose fixed operations. They contain no method for changing the parser, solver translation,
 rewrite rules, or failure predicate. To enforce that boundary against an agent with a shell, install vkit,
 its dependencies, and the Perses JAR under a separate owner or in a service container the agent cannot write.
-Give the service access to candidate repository files. Keep its interpreter, import path, and environment
+Give the service access to candidate repository files. Keep its interpreter, working directory, import path, and environment
 under the service owner's control. Running an editable vkit checkout as the same operating-system user as
 the agent does not enforce immutability. This release does not provision that deployment isolation.
 

@@ -84,3 +84,27 @@ def test_simplification_cli_returns_a_verified_replacement(make_project):
     assert body["replacement"] == "def total(x: int, y: int) -> int:\n    return (x + y)\n"
     assert body["proof"]["status"] == "PROVED"
     assert (project / "maths.py").read_text() == SOURCE
+
+
+def test_reduction_transports_report_missing_engine_and_refuse_unknown_runs(make_project, monkeypatch):
+    monkeypatch.delenv("VKIT_PERSES_JAR", raising=False)
+    monkeypatch.delenv("VKIT_PERSES_SHA256", raising=False)
+    project = make_project({"maths.py": SOURCE, "driver.py": DRIVER + 'report([("bug", False, "observed")])\n'},
+                           [scenario_check("failure", "driver.py", scenarios=["bug"],
+                                           inputs=["maths.py", "driver.py"])])
+    code, run = vkit(project, "check", "run", "--check", "failure")
+    assert code == 1
+    run_id = run["runs"][0]["run_id"]
+
+    code, body = vkit(project, "compute", "reduce-failure", "--run-id", run_id, "--path", "maths.py")
+
+    assert (code, body["status"]) == (5, "UNAVAILABLE")
+    client = McpClient(project)
+    try:
+        body, error = client.call("reduce_failure", run_id=run_id, path="maths.py")
+        assert not error and body["status"] == "UNAVAILABLE"
+        body, error = client.call("reduce_failure", run_id="missing", path="maths.py")
+        assert error and "run is missing" in body["error"]
+    finally:
+        client.close()
+    assert (project / "maths.py").read_text() == SOURCE

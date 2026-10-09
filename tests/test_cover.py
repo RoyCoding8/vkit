@@ -123,6 +123,30 @@ def test_preserves_exact_objective_at_the_float_safe_cost_limit(tmp_path: Path) 
     assert result["total_cost"] == (1 << 53) - 1
 
 
+def test_distinguishes_costs_one_unit_apart_near_the_admitted_limit(tmp_path: Path) -> None:
+    matrix = {"version": 1, "required": ["element"], "candidates": [
+        {"id": "expensive", "cost": 1 << 52, "covers": ["element"]},
+        {"id": "cheaper", "cost": (1 << 52) - 1, "covers": ["element"]},
+    ]}
+    result = minimize_cover(tmp_path, _write_matrix(tmp_path, matrix))
+    assert (result["status"], result["selected"], result["total_cost"]) == (
+        "OPTIMAL", ["cheaper"], (1 << 52) - 1)
+
+
+@pytest.mark.parametrize("selected,cost", [(["missing"], 1), (["one", "one"], 2), ([], 0), (["one"], 2)])
+def test_refuses_invalid_backend_selection_or_cost(tmp_path, monkeypatch, selected, cost):
+    matrix = {"version": 1, "required": ["element"], "candidates": [
+        {"id": "one", "cost": 1, "covers": ["element"]},
+    ]}
+    response = {"status": "OPTIMAL", "selected": selected, "cost": cost,
+                "backend_version": "9.15.6755"}
+    monkeypatch.setattr(cover.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(
+        args="worker", returncode=0, stdout=json.dumps(response), stderr=""))
+    result = minimize_cover(tmp_path, _write_matrix(tmp_path, matrix))
+    assert result["status"] == "UNAVAILABLE"
+    assert result["selected"] is None and result["total_cost"] is None
+
+
 def test_rejects_duplicate_keys_nonfinite_values_and_invalid_costs(tmp_path: Path) -> None:
     empty = {"version": 1, "required": [], "candidates": []}
     for raw in (

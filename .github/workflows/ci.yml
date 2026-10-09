@@ -57,6 +57,58 @@ jobs:
           echo "1102ec7e3e601792a3c271c41ac7df52b03fca635df552500c241933c2c1e427  $RUNNER_TEMP/perses.jar" | sha256sum --check
           echo "VKIT_PERSES_JAR=$RUNNER_TEMP/perses.jar" >> "$GITHUB_ENV"
           echo "VKIT_PERSES_SHA256=1102ec7e3e601792a3c271c41ac7df52b03fca635df552500c241933c2c1e427" >> "$GITHUB_ENV"
+      - name: Install pinned Buf
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import platform
+          import urllib.request
+          assets = {
+              ("Linux", "x86_64"): ("buf-Linux-x86_64", "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1"),
+              ("Darwin", "arm64"): ("buf-Darwin-arm64", "6e6df0fef4522e4e43dfe7c341873c3f2c29ceb45a9dfa5e0bad5580b8b2022f"),
+              ("Darwin", "x86_64"): ("buf-Darwin-x86_64", "ff78d0ebf34180ebfa81d370275851ec630fcb088bf33e213fd723d0fd7444a6"),
+              ("Windows", "AMD64"): ("buf-Windows-x86_64.exe", "13542f2892c4f774150ddb525266d6421d457b3e741297056b64427853526e36"),
+          }
+          asset, digest = assets[(platform.system(), platform.machine())]
+          binary = pathlib.Path(os.environ["RUNNER_TEMP"]) / asset
+          urllib.request.urlretrieve(f"https://github.com/bufbuild/buf/releases/download/v1.73.0/{asset}", binary)
+          if hashlib.sha256(binary.read_bytes()).hexdigest() != digest:
+              raise RuntimeError("Buf release digest mismatch")
+          binary.chmod(0o755)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_BUF_BIN={binary}\nVKIT_BUF_SHA256={digest}\n")
+      - name: Extract pinned CBMC
+        if: runner.os != 'macOS'
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import subprocess
+          import urllib.request
+          runtime = pathlib.Path(os.environ["RUNNER_TEMP"]) / "cbmc-runtime"
+          runtime.mkdir()
+          windows = os.name == "nt"
+          asset, digest = (
+              ("cbmc-6.11.0-win64.msi", "8dcb29c2e91329898ecde5b79198dad2f4b5ebc5cb6b7d15e892c4fe26c6ea53") if windows else
+              ("ubuntu-24.04-cbmc-6.11.0-Linux.deb", "b3721aa541038384d7801ea3aeabbcddc3e8845ac8f1cbff637cf8dec7481ac8")
+          )
+          archive = runtime / asset
+          urllib.request.urlretrieve(f"https://github.com/diffblue/cbmc/releases/download/cbmc-6.11.0/{asset}", archive)
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+              raise RuntimeError("CBMC release digest mismatch")
+          extracted = runtime / "extracted"
+          if windows:
+              subprocess.run(["7z", "x", str(archive), f"-o{extracted}", "-y", "-bso0", "-bsp0"], check=True)
+              binary = extracted / "CM_FP_Unspecified.bin.cbmc.exe"
+          else:
+              subprocess.run(["dpkg-deb", "--extract", str(archive), str(extracted)], check=True)
+              binary = extracted / "usr/bin/cbmc"
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_CBMC_BIN={binary}\n")
+              output.write(f"VKIT_CBMC_SHA256={hashlib.sha256(binary.read_bytes()).hexdigest()}\n")
       - run: uv sync --python 3.11 --extra test --extra engines
       - run: uv run pytest -ra
       - run: uv run python scripts/e2e.py

@@ -79,6 +79,9 @@ are:
 - `reduce_failure`: use Perses to shrink a source file while preserving a recorded failure.
 - `compare_matchsets`: compare complete regex languages and return shortest distinguishing strings.
 - `check_history`: check a recorded concurrent history against a built-in register or FIFO queue model.
+- `minimize_cover`: find a minimum-cost selection covering the required IDs in a supplied matrix.
+- `check_proto_compatibility`: check captured Protobuf schemas under protected Buf compatibility rules.
+- `compare_iteration_sets`: compare the yielded coordinate sets of supported affine integer generators.
 
 The computation tools use fixed algorithms and do not change the gate. Install their Python
 engines with `uv sync --extra mcp --extra engines`. See [built-in computations](docs/computations.md)
@@ -121,6 +124,9 @@ Frontend development and asset rebuild instructions are in [tools/console](tools
 | `vkit compute reduce-failure` | Reduce a recorded failure with its approved predicate |
 | `vkit compute compare-matchsets` | Compare complete regex languages over a supplied alphabet |
 | `vkit compute check-history` | Check linearizability of a completed concurrent history |
+| `vkit compute minimize-cover` | Optimize coverage selection under supplied integer costs |
+| `vkit compute check-proto-compatibility` | Check a fixed Protobuf compatibility category |
+| `vkit compute compare-iteration-sets` | Compare affine coordinate sets for all integer parameters |
 
 Every command takes `--project` (default `.`) and `--json`.
 

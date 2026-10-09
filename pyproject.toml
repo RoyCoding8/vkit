@@ -14,7 +14,14 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=2.2,<3"]
-engines = ["cvc5==1.4.2", "egglog==13.2.0", "greenery==4.2.2"]
+engines = [
+    "cvc5==1.4.2",
+    "egglog==13.2.0",
+    "greenery==4.2.2",
+    "ortools==9.15.6755",
+    "pycparser==3.0",
+    "islpy==2026.2.2; sys_platform != 'win32'",
+]
 test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5", "hypothesis>=6.100"]
 
 [project.scripts]

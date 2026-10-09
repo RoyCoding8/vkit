@@ -14,8 +14,11 @@ uv sync --extra mcp --extra engines
 ```
 
 The Python engines are pinned to [cvc5 1.4.2](https://cvc5.github.io/docs/cvc5-1.4.2/),
-[egglog 13.2.0](https://egglog-python.readthedocs.io/stable/), and greenery 4.2.2.
-Perses and the compiled Porcupine helper are configured separately.
+[egglog 13.2.0](https://egglog-python.readthedocs.io/stable/), greenery 4.2.2,
+[OR-Tools 9.15.6755](https://developers.google.com/optimization/cp/cp_solver), and
+[islpy 2026.2.2](https://documen.tician.de/islpy/). The islpy dependency is installed on Linux and macOS;
+the pinned release has no native Windows wheel. Perses, Buf, and the compiled Porcupine helper are
+configured separately. The [engine queue](engine-roadmap.md) records the remaining integration candidates.
 
 ## Check a replacement
 
@@ -200,16 +203,131 @@ The parent process enforces the helper's wall-clock deadline. File parsing, bina
 witness replay occur outside that search deadline. CI builds and exercises the pinned helper on Linux,
 Windows, and macOS.
 
+## Choose minimum-cost coverage
+
+`minimize_cover` selects candidates covering every required element in a supplied matrix. It uses a fixed
+OR-Tools CP-SAT set-cover model. For example, use observed test coverage as the matrix and measured test
+costs as integers. The answer concerns that matrix, not future regression detection.
+
+```powershell
+vkit compute minimize-cover --project . --path coverage.json --timeout-seconds 10 --json
+```
+
+The MCP tool accepts `path` and optional `timeout_seconds`. A matrix has this shape.
+
+```json
+{
+  "version": 1,
+  "required": ["parse", "validate"],
+  "candidates": [
+    {"id": "parser-tests", "cost": 3, "covers": ["parse"]},
+    {"id": "validation-tests", "cost": 4, "covers": ["validate"]},
+    {"id": "integration-tests", "cost": 5, "covers": ["parse", "validate"]}
+  ]
+}
+```
+
+The optimum in this example is `integration-tests` at cost 5. Candidate IDs are unique, and costs are
+nonnegative integers. Candidate coverage may include elements outside `required`. The service checks
+the returned selection against the captured matrix and recomputes its integer cost.
+
+The matrix limit is 512,000 bytes, 2,000 required IDs, 4,000 candidates, and 100,000 coverage pairs.
+IDs contain at most 256 UTF-8 bytes. The sum of candidate costs cannot exceed `2^53 - 1`.
+The isolated worker deadline includes imports and solving. Matrix reading and validation occur before it.
+
+`OPTIMAL` means the solver proved minimum cost. `FEASIBLE` returns a checked selection without an
+optimality proof. `INFEASIBLE` means no selection covers the required elements. `UNKNOWN` preserves an
+unfinished computation. `UNAVAILABLE` means the pinned backend cannot run. A file digest binds the
+answer to the supplied matrix. No test is run or deleted.
+
+## Check Protobuf compatibility
+
+`check_proto_compatibility` captures local `.proto` source trees and runs Buf 1.73.0 under one fixed
+built-in compatibility category. It ignores repository Buf configuration, ignore rules, and plugins.
+Imports must resolve within each captured source tree or Buf's built-in well-known types.
+
+```powershell
+vkit compute check-proto-compatibility --project . --old-path api-before --new-path api-after --category WIRE_JSON --json
+```
+
+The MCP tool accepts `old_path`, `new_path`, optional `category`, and optional `timeout_seconds`.
+The category defaults to `WIRE_JSON`. Buf defines these categories in its
+[breaking rule reference](https://buf.build/docs/breaking/rules/).
+
+| Category | Compatibility checked |
+| --- | --- |
+| `FILE` | Generated source compatibility at the file level |
+| `PACKAGE` | Generated source compatibility at the package level |
+| `WIRE_JSON` | Binary and JSON wire compatibility |
+| `WIRE` | Binary wire compatibility |
+
+`COMPATIBLE` means Buf found no violation of the selected category. `BREAKING` includes rule IDs and
+source diagnostics. Neither result proves application behavior. `UNSUPPORTED` means the captured
+schemas could not be checked. `UNKNOWN` preserves timeouts or an invalid backend response.
+`UNAVAILABLE` means the configured pinned binary cannot run. Results include both captured tree digests.
+
+Each tree admits at most 500 `.proto` files, 1 MiB per file, 16 MiB total, and 10,000 scanned entries.
+The process deadline covers version detection and compatibility checking. Snapshotting checks the same
+deadline between files. Filesystem reads and executable hashing are synchronous.
+
+Install the matching asset from the [Buf 1.73.0 release](https://github.com/bufbuild/buf/releases/tag/v1.73.0)
+under the service owner's control, verify it against the release's `sha256.txt`, and set these variables.
+For the Windows x86-64 asset, the configuration is:
+
+```powershell
+$env:VKIT_BUF_BIN = 'C:/vkit-runtime/buf-Windows-x86_64.exe'
+$env:VKIT_BUF_SHA256 = '13542f2892c4f774150ddb525266d6421d457b3e741297056b64427853526e36'
+```
+
+The request cannot select an executable or change the rules. CI downloads and exercises pinned assets
+on Linux, Windows, and macOS.
+
+## Compare affine iteration sets
+
+`compare_iteration_sets` compares the coordinate sets yielded by two supported integer generators for
+every mathematical integer parameter valuation. It parses source without executing it, constructs
+Presburger sets with isl, and checks both directional differences.
+
+The model interprets each selected function AST with mathematical integer parameters and built-in
+`range`. Module statements and global bindings are ignored. Every parameter requires the exact `int`
+annotation. Decorators, default arguments, and return annotations are unsupported.
+
+```python
+def points(n: int):
+    for i in range(n):
+        for j in range(i, n):
+            yield (i, j)
+```
+
+A replacement may reverse loop order while yielding the same coordinate set. This check concerns set
+membership. Yield order, duplicate multiplicity, runtime types, and resource consumption are outside
+the model.
+
+```powershell
+vkit compute compare-iteration-sets --project . --path loops.py --function points --replacement-file candidate.py --json
+```
+
+The MCP tool accepts `path`, `function`, `replacement`, and optional `timeout_ms`. Supported syntax
+includes affine integer expressions, nested `for ... in range(...)` loops with constant nonzero steps,
+affine comparisons and Boolean combinations, and fixed-arity tuple yields. Effects, assignments,
+nonlinear multiplication, arbitrary calls, floating point, and loop exits are rejected. Loop variables
+are scoped to their active loop bodies in this model.
+
+`EQUIVALENT` means both differences are empty. `COUNTEREXAMPLE` gives a parameter valuation and coordinate
+in a directional difference. `UNSUPPORTED` rejects source outside the model. `UNKNOWN` preserves an
+unfinished computation. `UNAVAILABLE` means the pinned islpy backend cannot run, including its absence
+on native Windows. Source digests bind the result to both inputs.
+
 ## Protect the service
 
 These APIs expose fixed operations. They contain no method for changing the parser, solver translation,
 rewrite rules, or failure predicate. To enforce that boundary against an agent with a shell, install vkit,
-its dependencies, the Perses JAR, and the history helper under a separate owner or in a service container
+its dependencies, the Perses JAR, the Buf binary, and the history helper under a separate owner or in a service container
 the agent cannot write.
 Give the service access to candidate repository files. Keep its interpreter, working directory, import path, and environment
 under the service owner's control. Running an editable vkit checkout as the same operating-system user as
 the agent does not enforce immutability. This release does not provision that deployment isolation.
 
-CLI exit codes are 0 for `PROVED`, `REDUCED`, `EQUIVALENT`, or `LINEARIZABLE`, 1 for `COUNTEREXAMPLE` or
-`NOT_LINEARIZABLE`, 2 for invalid or unsupported requests,
-3 for `UNKNOWN` or `UNRESOLVED`, 4 for an internal operation contract error, and 5 for `UNAVAILABLE`.
+CLI exit codes are 0 for `PROVED`, `REDUCED`, `EQUIVALENT`, `LINEARIZABLE`, `OPTIMAL`, or `COMPATIBLE`;
+1 for `COUNTEREXAMPLE`, `NOT_LINEARIZABLE`, `INFEASIBLE`, or `BREAKING`; 2 for invalid or unsupported requests;
+3 for `UNKNOWN`, `UNRESOLVED`, or `FEASIBLE`; 4 for an internal operation contract error; and 5 for `UNAVAILABLE`.

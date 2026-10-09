@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from .. import proc
-from ..inputs import Snapshot
+from ..inputs import Snapshot, matches
 from ..manifest import Manifest, parse_manifest
 from ..paths import Project
 from ..runner import _child_env
@@ -139,11 +139,9 @@ def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck,
         raise ReductionRefused("check working directory escapes the repository") from None
     if isinstance(check, ScenarioCheck):
         command = check.command
-    elif isinstance(check, PytestCheck):
+    else:
         command = (check.runner.executable, *check.runner.base_argv,
                    *(test.split("::", 1)[0] for test in check.required_tests))
-    else:
-        command = ()
     for token in command:
         if not isinstance(token, str) or "{{run_dir}}" in token or "{{python}}" in token:
             continue
@@ -213,8 +211,7 @@ def _prepare(project: Project, run_id: str, raw_path: str, store: Store) -> _Req
     _validate_dependencies(project, check, {name for name, _ in input_files}, relative)
     if isinstance(check, PytestCheck) and PurePosixPath(relative).name == "conftest.py":
         raise ReductionRefused("pytest configuration and conftest files cannot be reduced")
-    if not any(relative == subject or relative.startswith(subject.rstrip("/") + "/")
-               for subject in check.subject.paths):
+    if not any(matches(relative, subject) for subject in check.subject.paths):
         raise ReductionRefused("source file is outside the approved check subject")
     if source.suffix.lower() not in _SUPPORTED_SUFFIXES:
         raise ReductionRefused("Perses does not support this source file type")
@@ -259,8 +256,6 @@ def _copy_inputs(request: _Request, destination: Path) -> None:
         shutil.copyfile(request.project.manifest_path, target)
     cwd_relative = request.check.cwd.relative_to(root).as_posix()
     (destination / cwd_relative).mkdir(parents=True, exist_ok=True)
-    if request.source_path not in copied:
-        raise ReductionRefused("source file was not copied into the temporary workspace")
 
 
 def _runtime() -> tuple[Path, str, str] | None:
@@ -326,12 +321,13 @@ def _candidate_matches(config_path: Path, candidate_root: Path) -> bool:
             check = manifest.require(config["check_id"])
             if manifest.digest(check.id) != config["check_digest"] or not isinstance(check, _SUPPORTED):
                 return False
+            check.cwd.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(prefix="vkit-replay-") as raw_run_dir:
                 run_dir = Path(raw_run_dir)
                 artifact = run_dir / check.artifact_name
                 result = proc.run(
                     dispatch.argv_for(check, run_dir, None),
-                    cwd=workspace / check.cwd.relative_to(project.root),
+                    cwd=check.cwd,
                     env=_child_env(),
                     stdout_path=run_dir / "stdout.log",
                     stderr_path=run_dir / "stderr.log",

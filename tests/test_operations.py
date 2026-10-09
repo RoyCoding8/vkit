@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
+import sys
 
 import pytest
 
-from helpers import DRIVER, McpClient, scenario_check, vkit
+from helpers import DRIVER, McpClient, pytest_kind_check, scenario_check, vkit
 
 SOURCE = "def total(x: int, y: int) -> int:\n    extra = x + 0\n    return extra + y\n"
 EQUIVALENT = "def total(x: int, y: int) -> int:\n    return y + x\n"
@@ -108,3 +111,33 @@ def test_reduction_transports_report_missing_engine_and_refuse_unknown_runs(make
     finally:
         client.close()
     assert (project / "maths.py").read_text() == SOURCE
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Perses requires a POSIX runtime")
+def test_real_pytest_failure_reduction_through_cli(make_project, tmp_path):
+    if not os.environ.get("VKIT_PERSES_JAR") or not os.environ.get("VKIT_PERSES_SHA256"):
+        pytest.skip("pinned Perses runtime is not configured")
+    source = "VALUE = 0\n\ndef unused():\n    return 42\n"
+    test = "from pkg.subject import VALUE\n\ndef test_value():\n    assert VALUE == 1\n"
+    test_id = "test_subject.py::test_value"
+    project = make_project({"pkg/subject.py": source, "test_subject.py": test},
+                           [pytest_kind_check("failure", [test_id], ["pkg/subject.py", "test_subject.py"])])
+    code, run = vkit(project, "check", "run", "--check", "failure")
+    assert code == 1
+    record = run["runs"][0]
+
+    code, body = vkit(project, "compute", "reduce-failure", "--run-id", record["run_id"],
+                      "--path", "pkg/subject.py", "--timeout-seconds", "120")
+
+    assert (code, body["status"]) == (0, "REDUCED")
+    assert body["reduced_source"] == "VALUE = 0\n"
+    assert body["failure_id"] == test_id
+    assert body["failure_observation"] == record["outcome"]["scenarios"][0]["observation"]
+    assert (project / "pkg" / "subject.py").read_text() == source
+    replay = tmp_path / "replay"
+    (replay / "pkg").mkdir(parents=True)
+    (replay / "pkg" / "subject.py").write_text(body["reduced_source"], encoding="utf-8")
+    (replay / "test_subject.py").write_text(test, encoding="utf-8")
+    result = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test_id],
+                            cwd=replay, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 1 and "assert 0 == 1" in result.stdout

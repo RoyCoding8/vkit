@@ -76,9 +76,10 @@ vkit compute reduce-failure --project . --run-id RUN_ID --path src/subject.py --
 
 The MCP tool is `reduce_failure`, with `run_id`, `path`, and optional `timeout_seconds` between 1 and 300.
 
-The selected run must be a completed failure of an approved `scenario`, `pytest`, or `node_test` check in
+The selected run must be a completed failure of an approved `scenario` or `pytest` check in
 the current checkout. Its definition and declared input snapshot must still match. The target must be a
-recorded Python source input. Check drivers and required test files cannot be reduction targets.
+recorded Python source input within the check's declared subject. Check drivers, required tests, and
+pytest `conftest.py` files cannot be reduction targets.
 Budget-only failures and unsupported checks are refused.
 
 vkit copies recorded inputs into temporary workspaces. Perses changes the target source while the built-in

@@ -35,7 +35,11 @@ def failed_run(make_project, *, accept: bool = True, nested_source: bool = False
                        inputs=[source_path, "driver.py", "helper.py"])], accept=False)
     manifest = project / "verification" / "manifest.json"
     raw = json.loads(manifest.read_text(encoding="utf-8"))
-    raw["checks"][0]["subject"]["paths"] = [source_path]
+    raw["checks"][0]["subject"]["paths"] = ["pkg/*.py" if nested_source else source_path]
+    if nested_source:
+        (project / "scratch").mkdir()
+        raw["checks"][0]["cwd"] = "scratch"
+        raw["checks"][0]["command"][1] = "../driver.py"
     manifest.write_text(json.dumps(raw, indent=2), encoding="utf-8")
     if accept:
         code, body = vkit(project, "accept", "--yes")

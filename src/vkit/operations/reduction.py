@@ -21,9 +21,9 @@ from ..paths import Project
 from ..runner import _child_env
 from ..store import Store
 from ..verifiers import dispatch
-from ..verifiers.spec import NodeTestCheck, PytestCheck, ScenarioCheck
+from ..verifiers.spec import PytestCheck, ScenarioCheck
 
-_SUPPORTED = (ScenarioCheck, PytestCheck, NodeTestCheck)
+_SUPPORTED = (ScenarioCheck, PytestCheck)
 _PERSES_ENV = "VKIT_PERSES_JAR"
 _PERSES_SHA_ENV = "VKIT_PERSES_SHA256"
 _PERSES_SOURCE = str(Path(__file__).resolve().parents[2])
@@ -83,7 +83,7 @@ class _Target:
 class _Request:
     project: Project
     manifest: Manifest
-    check: ScenarioCheck | PytestCheck | NodeTestCheck
+    check: ScenarioCheck | PytestCheck
     record: dict
     target: _Target
     source_path: str
@@ -129,8 +129,8 @@ def _failed_scenarios(outcome: object) -> list[dict]:
     return failed
 
 
-def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck | NodeTestCheck,
-                           copied: set[str]) -> None:
+def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck,
+                           copied: set[str], target_path: str) -> None:
     root = project.root.resolve()
     cwd = check.cwd.resolve()
     try:
@@ -140,9 +140,6 @@ def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck 
     if isinstance(check, ScenarioCheck):
         command = check.command
     elif isinstance(check, PytestCheck):
-        command = (check.runner.executable, *check.runner.base_argv,
-                   *(test.split("::", 1)[0] for test in check.required_tests))
-    elif isinstance(check, NodeTestCheck):
         command = (check.runner.executable, *check.runner.base_argv,
                    *(test.split("::", 1)[0] for test in check.required_tests))
     else:
@@ -163,12 +160,12 @@ def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck 
             except ValueError:
                 continue
         source = root.joinpath(*PurePosixPath(relative).parts)
+        if relative == target_path:
+            raise ReductionRefused("the check driver or required test file cannot be reduced")
         if source.is_file() and relative not in copied:
             raise ReductionRefused("check driver or dependency is outside the recorded inputs")
     required = ()
     if isinstance(check, PytestCheck):
-        required = tuple(test.split("::", 1)[0] for test in check.required_tests)
-    elif isinstance(check, NodeTestCheck):
         required = tuple(test.split("::", 1)[0] for test in check.required_tests)
     for raw in required:
         path = Path(raw)
@@ -179,9 +176,13 @@ def _validate_dependencies(project: Project, check: ScenarioCheck | PytestCheck 
             raise ReductionRefused("required test file is missing or escapes the repository") from None
         if relative not in copied:
             raise ReductionRefused("required test file is outside the recorded inputs")
+        if relative == target_path:
+            raise ReductionRefused("the check driver or required test file cannot be reduced")
 
 
 def _prepare(project: Project, run_id: str, raw_path: str, store: Store) -> _Request:
+    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+        raise ReductionRefused("run ID has an invalid format")
     record = store.record(run_id)
     if record is None or record.get("state") != "done":
         raise ReductionRefused("run is missing or was not completed")
@@ -209,7 +210,12 @@ def _prepare(project: Project, run_id: str, raw_path: str, store: Store) -> _Req
     input_files = tuple((entry["path"], entry["sha256"]) for entry in recorded_inputs.get("files", []))
     if not any(name == relative for name, _ in input_files):
         raise ReductionRefused("source file is outside the recorded check inputs")
-    _validate_dependencies(project, check, {name for name, _ in input_files})
+    _validate_dependencies(project, check, {name for name, _ in input_files}, relative)
+    if isinstance(check, PytestCheck) and PurePosixPath(relative).name == "conftest.py":
+        raise ReductionRefused("pytest configuration and conftest files cannot be reduced")
+    if not any(relative == subject or relative.startswith(subject.rstrip("/") + "/")
+               for subject in check.subject.paths):
+        raise ReductionRefused("source file is outside the approved check subject")
     if source.suffix.lower() not in _SUPPORTED_SUFFIXES:
         raise ReductionRefused("Perses does not support this source file type")
     failed = _failed_scenarios(record.get("outcome"))
@@ -239,11 +245,12 @@ def _copy_inputs(request: _Request, destination: Path) -> None:
     root = request.project.root
     for relative, expected in request.snapshot_files:
         _, source = _relative_file(request.project, relative)
-        if hashlib.sha256(source.read_bytes().replace(b"\r\n", b"\n")).hexdigest() != expected:
+        content = source.read_bytes()
+        if hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest() != expected:
             raise ReductionRefused("check inputs changed while preparing the temporary workspace")
         target = destination.joinpath(*PurePosixPath(relative).parts)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        target.write_bytes(content)
         copied.add(relative)
     manifest_relative = request.project.manifest_path.relative_to(root).as_posix()
     if manifest_relative not in copied:
@@ -287,7 +294,8 @@ def _engine_version(java: str, jar: Path, scratch: Path) -> str | None:
     version = stdout.read_text(encoding="utf-8", errors="replace").strip()
     if not version:
         version = stderr.read_text(encoding="utf-8", errors="replace").strip()
-    return version if re.search(r"(?<!\d)2\.7(?!\d)", version) else None
+    first_line = version.splitlines()[0] if version else ""
+    return first_line if re.search(r"(?<!\d)2\.7(?!\d)", first_line) else None
 
 
 def _assert_fresh(request: _Request) -> None:
@@ -300,40 +308,52 @@ def _assert_fresh(request: _Request) -> None:
 def _candidate_matches(config_path: Path, candidate_root: Path) -> bool:
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        project = Project(candidate_root.resolve(), candidate_root.resolve())
-        manifest = parse_manifest(project)
-        check = manifest.require(config["check_id"])
-        if manifest.digest(check.id) != config["check_digest"] or not isinstance(check, _SUPPORTED):
+        source_path = config["source_path"]
+        snapshot_root = Path(config["snapshot_root"])
+        source = candidate_root.resolve() / config["candidate_name"]
+        if source.is_symlink() or not source.is_file():
             return False
-        run_dir_obj = tempfile.TemporaryDirectory(prefix="vkit-replay-")
-        with run_dir_obj as raw_run_dir:
-            run_dir = Path(raw_run_dir)
-            artifact = run_dir / check.artifact_name
-            result = proc.run(
-                dispatch.argv_for(check, run_dir, None),
-                cwd=check.cwd,
-                env=_child_env(),
-                stdout_path=run_dir / "stdout.log",
-                stderr_path=run_dir / "stderr.log",
-                timeout_seconds=float(config["check_timeout_seconds"]),
-            )
-            if result.launch_error or result.cancelled or result.timed_out or result.code not in (0, 1):
+        with tempfile.TemporaryDirectory(prefix="vkit-replay-workspace-") as raw_workspace:
+            workspace = Path(raw_workspace)
+            for relative in config["snapshot_files"]:
+                original = snapshot_root.joinpath(*PurePosixPath(relative).parts)
+                target = workspace.joinpath(*PurePosixPath(relative).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(original.read_bytes())
+            workspace.joinpath(*PurePosixPath(source_path).parts).write_bytes(source.read_bytes())
+            project = Project(workspace, workspace)
+            manifest = parse_manifest(project)
+            check = manifest.require(config["check_id"])
+            if manifest.digest(check.id) != config["check_digest"] or not isinstance(check, _SUPPORTED):
                 return False
-            if not artifact.is_file():
-                return False
-            reading = dispatch.interpret(check, artifact.read_bytes())
-            outcome = dispatch.outcome_from_reading(reading)
-            return any(
-                not scenario.passed and scenario.scenario_id == config["failure_id"]
-                and scenario.observation == config["failure_observation"]
-                for scenario in getattr(outcome, "scenarios", ())
-            )
+            with tempfile.TemporaryDirectory(prefix="vkit-replay-") as raw_run_dir:
+                run_dir = Path(raw_run_dir)
+                artifact = run_dir / check.artifact_name
+                result = proc.run(
+                    dispatch.argv_for(check, run_dir, None),
+                    cwd=workspace / check.cwd.relative_to(project.root),
+                    env=_child_env(),
+                    stdout_path=run_dir / "stdout.log",
+                    stderr_path=run_dir / "stderr.log",
+                    timeout_seconds=float(config["check_timeout_seconds"]),
+                )
+                if result.launch_error or result.cancelled or result.timed_out or result.code not in (0, 1):
+                    return False
+                if not artifact.is_file():
+                    return False
+                reading = dispatch.interpret(check, artifact.read_bytes())
+                outcome = dispatch.outcome_from_reading(reading)
+                return any(
+                    not scenario.passed and scenario.scenario_id == config["failure_id"]
+                    and scenario.observation == config["failure_observation"]
+                    for scenario in getattr(outcome, "scenarios", ())
+                )
     except Exception:
         return False
 
 
 def _test_script(python: str, config: Path) -> str:
-    return "#!/bin/sh\nexec " + shlex.quote(python) + " -m vkit.operations.reduction --perses-candidate " \
+    return "#!/bin/sh\nexec " + shlex.quote(python) + " -P -m vkit.operations.reduction --perses-candidate " \
         + shlex.quote(str(config)) + " \"$PWD\"\n"
 
 
@@ -356,14 +376,26 @@ def reduce_failure(project: Project, run_id: str, path: str, *, timeout_seconds:
         workspace = temp / "workspace"
         workspace.mkdir()
         _copy_inputs(request, workspace)
-        target = workspace.joinpath(*PurePosixPath(request.source_path).parts)
+        engine_input = temp / "input"
+        engine_input.mkdir()
+        source_name = PurePosixPath(request.source_path).name
+        target = engine_input / source_name
+        target.write_bytes(request.source_bytes)
         config = temp / "predicate.json"
+        manifest_relative = request.project.manifest_path.relative_to(request.project.root).as_posix()
+        snapshot_files = [name for name, _ in request.snapshot_files]
+        if manifest_relative not in snapshot_files:
+            snapshot_files.append(manifest_relative)
         config.write_text(json.dumps({
             "check_id": request.check.id,
             "check_digest": request.manifest.digest(request.check.id),
             "check_timeout_seconds": min(request.check.timeout_seconds, timeout_seconds),
             "failure_id": request.target.scenario_id,
             "failure_observation": request.target.observation,
+            "snapshot_root": str(workspace),
+            "snapshot_files": snapshot_files,
+            "source_path": request.source_path,
+            "candidate_name": f"input/{source_name}",
         }), encoding="utf-8")
         script = temp / "test.sh"
         script.write_text(_test_script(sys.executable, config), encoding="utf-8")
@@ -376,24 +408,19 @@ def reduce_failure(project: Project, run_id: str, path: str, *, timeout_seconds:
         if version is None:
             return ReductionResult("UNAVAILABLE", **base, perses_sha256=jar_sha,
                                    detail="configured JAR did not identify itself as Perses 2.7")
-        dependencies = [str(workspace.joinpath(*PurePosixPath(name).parts))
-                        for name, _ in request.snapshot_files if name != request.source_path]
-        manifest_path = workspace / request.project.manifest_path.relative_to(request.project.root)
-        if str(manifest_path) not in dependencies:
-            dependencies.append(str(manifest_path))
-        argv = [java, "-jar", str(jar), "--test-script", str(script), "--input-file", str(target),
-                "--output-dir", str(output), "--script-execution-timeout-in-seconds",
-                str(max(1, math.ceil(min(timeout_seconds, request.check.timeout_seconds))))]
-        if dependencies:
-            argv.extend(["--deps", *dependencies])
-        result = proc.run(argv, cwd=workspace, env={**os.environ, "PYTHONPATH": _PERSES_SOURCE},
+        argv = [java, "-jar", str(jar), "--test-script", str(script), "--input-file", source_name,
+                "--output-dir", str(output), "--parser-facade-class-name",
+                "org.perses.grammar.python3.Python3ParserFacade", "--script-execution-timeout-in-seconds",
+                str(max(1, math.ceil(min(timeout_seconds, request.check.timeout_seconds)))),
+                "--fully-deterministic-mode", "true", "--threads", "1"]
+        result = proc.run(argv, cwd=engine_input, env={**os.environ, "PYTHONPATH": _PERSES_SOURCE},
                           stdout_path=scratch / "perses.out", stderr_path=scratch / "perses.err",
                           timeout_seconds=timeout_seconds)
         _assert_fresh(request)
         if result.code != 0:
             return ReductionResult("UNRESOLVED", **base, perses_version=version, perses_sha256=jar_sha,
                                    detail="Perses did not complete a reduction")
-        reduced_path = output / PurePosixPath(request.source_path).name
+        reduced_path = output / "input" / source_name
         if not reduced_path.is_file() or reduced_path.is_symlink():
             return ReductionResult("UNRESOLVED", **base, perses_version=version, perses_sha256=jar_sha,
                                    detail="Perses did not produce the expected reduced source file")
@@ -401,11 +428,7 @@ def reduce_failure(project: Project, run_id: str, path: str, *, timeout_seconds:
         if reduced == request.source_bytes:
             return ReductionResult("UNRESOLVED", **base, perses_version=version, perses_sha256=jar_sha,
                                    detail="Perses completed without changing the source")
-        replay = temp / "replay"
-        replay.mkdir()
-        _copy_inputs(request, replay)
-        replay.joinpath(*PurePosixPath(request.source_path).parts).write_bytes(reduced)
-        if not _candidate_matches(config, replay):
+        if not _candidate_matches(config, output):
             _assert_fresh(request)
             return ReductionResult("UNRESOLVED", **base, perses_version=version, perses_sha256=jar_sha,
                                    detail="independent replay did not preserve the selected failure")

@@ -13,6 +13,8 @@ from jsonschema import ValidationError, validate
 
 from .. import __version__, query
 from ..manifest import ManifestError
+from ..operations.catalog import OPERATIONS
+from ..operations.contract import Operation, OperationContractError, OperationInputError, invoke
 from ..store import new_run_id
 
 MAX_WAIT_SECONDS = 60
@@ -22,10 +24,8 @@ INSTRUCTIONS = (
     "run_get reads a run's outcome and log; gate says READY only when every check passed against the current "
     "inputs. features describes what the application does and how a user reaches each feature. Check ids come "
     "from the manifest; no tool accepts a command, and only a human can accept a check definition. "
-    "check_rewrite and simplify_function compute over a restricted Python integer/boolean model; "
-    "reduce_failure shrinks a recorded failure using its approved check; compare_matchsets compares complete "
-    "regex languages over a stated finite alphabet; check_history checks a completed concurrent trace against "
-    "a built-in sequential model. Computation results do not change the gate."
+    "Each built-in computation tool describes its exact input scope and possible outcomes. "
+    "Computation results do not change the gate."
 )
 
 
@@ -78,9 +78,13 @@ class Server:
             return {"error": f"unknown tool {name!r}"}, True
         arguments = {} if arguments is None else arguments
         try:
+            if isinstance(tool, Operation):
+                return invoke(tool, self.root, arguments), False
             _check(arguments, tool.input_schema)
             return tool.handler(self, arguments), False
-        except (Refusal, ManifestError, ValueError) as exc:
+        except OperationContractError as exc:
+            return {"error": str(exc), "kind": "operation_contract_error"}, True
+        except (OperationInputError, Refusal, ManifestError, ValueError) as exc:
             return {"error": str(exc)}, True
 
     def start(self, ctx: query.Context, check_id: str) -> str:
@@ -177,73 +181,9 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
     return {"run_id": args["run_id"], "cancelled": True}
 
 
-def _check_rewrite(server: Server, args: dict[str, Any]) -> Any:
-    from ..operations import check_rewrite
-
-    return check_rewrite(server.root, **args)
-
-
-def _simplify_function(server: Server, args: dict[str, Any]) -> Any:
-    from ..operations import simplify_function
-
-    return simplify_function(server.root, **args)
-
-
-def _reduce_failure(server: Server, args: dict[str, Any]) -> Any:
-    from ..operations import reduce_failure
-
-    return reduce_failure(server.root, **args)
-
-
-def _compare_matchsets(server: Server, args: dict[str, Any]) -> Any:
-    from ..operations.matchsets import compare_matchsets
-
-    return compare_matchsets(**args).to_json()
-
-
-def _check_history(server: Server, args: dict[str, Any]) -> Any:
-    from ..operations.history import check_history
-
-    return check_history(server.root, **args)
-
-
 _STR = {"type": "string"}
 _PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
-_EXPRESSION = {"path": {"type": "string", "description": "repository-relative Python source file"},
-               "function": {"type": "string", "minLength": 1},
-               "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60_000}}
-TOOLS = (
-    Tool("check_history", "Decide whether a completed concurrent history can be ordered under the built-in "
-         "register-zero or initially-empty FIFO queue model. LINEARIZABLE includes an independently replayed "
-         "ordering; NOT_LINEARIZABLE concerns this trace only. UNKNOWN preserves timeouts; UNAVAILABLE "
-         "means the configured pinned helper cannot run. Does not change gate evidence.",
-         {"path": {"type": "string", "minLength": 1, "description": "repository-relative JSON history file"},
-          "model": {"type": "string", "enum": ["register", "queue"]},
-          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60}},
-         _check_history, required=("path", "model")),
-    Tool("compare_matchsets", "Compare full-match acceptance sets in the fixed greenery regex dialect over the "
-         "supplied alphabet. Returns EQUIVALENT or COUNTEREXAMPLE with shortest directional witnesses; "
-         "UNKNOWN on timeout, UNSUPPORTED for unsupported inputs, or UNAVAILABLE without the backend.",
-         {"old_pattern": {"type": "string", "maxLength": 2048},
-          "new_pattern": {"type": "string", "maxLength": 2048},
-          "alphabet": {"type": "string", "maxLength": 64},
-          "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60_000}},
-         _compare_matchsets, required=("old_pattern", "new_pattern", "alphabet")),
-    Tool("check_rewrite", "Prove equal return values for a supported pure Python int/bool function and a "
-         "replacement function with the same signature. Returns PROVED, COUNTEREXAMPLE, UNKNOWN, UNSUPPORTED "
-         "or UNAVAILABLE, with the modeled domain and source digest. Does not execute or modify the source.",
-         {**_EXPRESSION, "replacement": {"type": "string", "maxLength": 65_536}}, _check_rewrite,
-         required=("path", "function", "replacement")),
-    Tool("simplify_function", "Derive a smaller equivalent pure Python int/bool function using fixed egglog "
-         "rules and independently check it with cvc5. Returns a suggested replacement and the proof status; "
-         "does not modify files or establish a global minimum.", _EXPRESSION, _simplify_function,
-         required=("path", "function")),
-    Tool("reduce_failure", "Reduce one input file of a recorded, still-current failed run using Perses. "
-         "Reuses the approved check and preserves the recorded failure. Returns a validated reproducer "
-         "without modifying the checkout. Requires the configured POSIX Java/Perses runtime.",
-         {"run_id": _STR, "path": _STR,
-          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300}}, _reduce_failure,
-         read_only=False, required=("run_id", "path")),
+_BASE_TOOLS = (
     Tool("status", "Freshness of every registered check (fresh_pass, fresh_fail, fresh_blocked, stale, missing, "
          "not_approved), what each kind of evidence establishes and does not, the gate, and the features. Pass "
          "paths to see only the checks and features that read them, and which paths no check reads.",
@@ -268,12 +208,15 @@ TOOLS = (
     Tool("gate", "READY only when every registered check passed against the current inputs; REJECTED when one "
          "failed; otherwise BLOCKED with the checks that lack fresh evidence.", {}, _gate),
 )
+TOOLS = (*OPERATIONS, *_BASE_TOOLS)
+if len({tool.name for tool in TOOLS}) != len(TOOLS):
+    raise ValueError("duplicate MCP tool name")
 BY_NAME = {tool.name: tool for tool in TOOLS}
 
 
-def tool_definitions() -> list[dict[str, Any]]:
+def tool_definitions(tools: tuple[Tool | Operation, ...] = TOOLS) -> list[dict[str, Any]]:
     return [{"name": t.name, "description": t.description, "inputSchema": t.input_schema,
-             "annotations": {"readOnlyHint": t.read_only}} for t in TOOLS]
+             "annotations": {"readOnlyHint": t.read_only}} for t in tools]
 
 
 def serve_stdio(root: str | Path) -> int:

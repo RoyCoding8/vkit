@@ -137,6 +137,9 @@ Every command takes `--project` (default `.`) and `--json`.
 
 ## Development
 
+To add a verifier operation, follow [Add a built-in operation](docs/adding-operations.md).
+One trusted contract supplies the CLI and MCP wiring.
+
 ```powershell
 uv sync --extra test --extra engines
 uv run pytest

@@ -4,6 +4,9 @@ These operations give an agent a specific answer or a specific artifact. The age
 a function name, or a recorded run. It cannot supply solver assertions, rewrite rules, or a reduction
 predicate through these APIs. Results do not create check evidence, accept definitions, or change the gate.
 
+Each operation has one trusted declaration shared by the CLI and MCP.
+See [Add a built-in operation](adding-operations.md) for the extension contract and addition procedure.
+
 Install the optional Python engines in the environment that runs vkit.
 
 ```powershell
@@ -209,4 +212,4 @@ the agent does not enforce immutability. This release does not provision that de
 
 CLI exit codes are 0 for `PROVED`, `REDUCED`, `EQUIVALENT`, or `LINEARIZABLE`, 1 for `COUNTEREXAMPLE` or
 `NOT_LINEARIZABLE`, 2 for invalid or unsupported requests,
-3 for `UNKNOWN` or `UNRESOLVED`, and 5 for `UNAVAILABLE`.
+3 for `UNKNOWN` or `UNRESOLVED`, 4 for an internal operation contract error, and 5 for `UNAVAILABLE`.

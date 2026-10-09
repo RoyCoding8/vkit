@@ -6,7 +6,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from greenery.fsm import Fsm
 
 BACKEND = "greenery"
 BACKEND_VERSION = "4.2.2"
@@ -168,8 +171,8 @@ def _worker_result(old_pattern: str, new_pattern: str, alphabet: str) -> dict[st
     return _payload("COUNTEREXAMPLE", alphabet, old_only, new_only, backend_version=backend_version)
 
 
-def _shortest_checked(difference: Any, alphabet: str, accepted: Any,
-                      rejected: Any) -> tuple[str | None, bool]:
+def _shortest_checked(difference: Fsm, alphabet: str, accepted: Fsm,
+                      rejected: Fsm) -> tuple[str | None, bool]:
     witness = next(difference.strings(()), None)
     if witness is None:
         return None, True
@@ -183,17 +186,8 @@ def _shortest_checked(difference: Any, alphabet: str, accepted: Any,
 def _payload(status: Status, alphabet: str, old_only: str | None = None,
              new_only: str | None = None, *, reason: str | None = None,
              backend_version: str | None = None) -> dict[str, Any]:
-    return {
-        "status": status,
-        "old_only": old_only,
-        "new_only": new_only,
-        "reason": reason,
-        "backend": BACKEND,
-        "backend_version": backend_version,
-        "dialect": DIALECT,
-        "alphabet": alphabet,
-        "model_scope": MODEL_SCOPE,
-    }
+    return MatchsetResult(status, alphabet, old_only, new_only, reason,
+                          backend_version=backend_version).to_json()
 
 
 def _main() -> int:

@@ -23,7 +23,8 @@ INSTRUCTIONS = (
     "inputs. features describes what the application does and how a user reaches each feature. Check ids come "
     "from the manifest; no tool accepts a command, and only a human can accept a check definition. "
     "check_rewrite and simplify_function compute over a restricted Python integer/boolean model; "
-    "reduce_failure shrinks a recorded failure using its approved check. Computation results do not change the gate."
+    "reduce_failure shrinks a recorded failure using its approved check; compare_matchsets compares complete "
+    "regex languages over a stated finite alphabet. Computation results do not change the gate."
 )
 
 
@@ -193,12 +194,26 @@ def _reduce_failure(server: Server, args: dict[str, Any]) -> Any:
     return reduce_failure(server.root, **args)
 
 
+def _compare_matchsets(server: Server, args: dict[str, Any]) -> Any:
+    from ..operations.matchsets import compare_matchsets
+
+    return compare_matchsets(**args).to_json()
+
+
 _STR = {"type": "string"}
 _PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
 _EXPRESSION = {"path": {"type": "string", "description": "repository-relative Python source file"},
                "function": {"type": "string", "minLength": 1},
                "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60_000}}
 TOOLS = (
+    Tool("compare_matchsets", "Compare full-match acceptance sets in the fixed greenery regex dialect over the "
+         "supplied alphabet. Returns EQUIVALENT or COUNTEREXAMPLE with shortest directional witnesses; "
+         "UNKNOWN on timeout, UNSUPPORTED for unsupported inputs, or UNAVAILABLE without the backend.",
+         {"old_pattern": {"type": "string", "maxLength": 2048},
+          "new_pattern": {"type": "string", "maxLength": 2048},
+          "alphabet": {"type": "string", "maxLength": 64},
+          "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60_000}},
+         _compare_matchsets, required=("old_pattern", "new_pattern", "alphabet")),
     Tool("check_rewrite", "Prove equal return values for a supported pure Python int/bool function and a "
          "replacement function with the same signature. Returns PROVED, COUNTEREXAMPLE, UNKNOWN, UNSUPPORTED "
          "or UNAVAILABLE, with the modeled domain and source digest. Does not execute or modify the source.",

@@ -10,7 +10,8 @@ Install the optional Python engines in the environment that runs vkit.
 uv sync --extra mcp --extra engines
 ```
 
-The engine versions are pinned to cvc5 1.4.2 and egglog 13.2.0. Perses is configured separately.
+The Python engines are pinned to cvc5 1.4.2, egglog 13.2.0, and greenery 4.2.2.
+Perses is configured separately.
 
 ## Check a replacement
 
@@ -68,6 +69,32 @@ The source file is unchanged. The result is not a globally minimal program or a 
 already simple function can produce an equivalent replacement with the same cost. `timeout_ms` limits the
 cvc5 query. The egglog search is bounded by frontend size, a fixed rule set, and iteration count.
 
+## Compare regex acceptance sets
+
+`compare_matchsets` compares two complete regular languages over a supplied finite alphabet.
+It uses the fixed [greenery 4.2.2 dialect](https://github.com/qntm/greenery).
+This dialect does not provide a compatibility claim for Python, JavaScript, or other regex engines.
+Matching covers the entire string. The operation accepts no flags or custom rewrite rules.
+
+```powershell
+vkit compute compare-matchsets --project . --old-pattern "a*" --new-pattern "a+" --alphabet "a" --json
+```
+
+The equivalent MCP request uses `compare_matchsets` with `old_pattern`, `new_pattern`, and `alphabet`.
+The alphabet is a string of at most 64 unique characters. An empty alphabet permits only the empty string.
+Each pattern is limited to 2048 UTF-8 bytes. `timeout_ms` defaults to 2000 and ranges from 1 to 60000.
+
+The engine intersects both languages with the alphabet's complete string language, computes both
+directional differences, and checks those differences for emptiness. `EQUIVALENT` establishes equality
+over that alphabet. `COUNTEREXAMPLE` includes `old_only` and `new_only`, each a shortest string accepted
+only by that side, or `null` when that direction has no difference. An empty string witness is `""`.
+The service checks each witness against both original automata and the alphabet before returning it.
+
+Library parsing and automata operations run in a separate process under one wall-clock timeout.
+`UNKNOWN` means the computation did not finish. `UNSUPPORTED` rejects syntax or inputs outside the
+contract. `UNAVAILABLE` means the optional backend cannot run. Neither result establishes equivalence.
+The operation does not edit source files or publish gate evidence.
+
 ## Reduce a recorded failure
 
 ```powershell
@@ -121,5 +148,5 @@ The engines are [cvc5](https://cvc5.github.io/docs/cvc5-1.4.2/),
 [egglog](https://egglog-python.readthedocs.io/stable/), and
 [Perses](https://github.com/uw-pluverse/perses). Their answers depend on the fixed translation and stated model.
 
-CLI exit codes are 0 for `PROVED` or `REDUCED`, 1 for `COUNTEREXAMPLE`, 2 for invalid or unsupported requests,
+CLI exit codes are 0 for `PROVED`, `REDUCED`, or `EQUIVALENT`, 1 for `COUNTEREXAMPLE`, 2 for invalid or unsupported requests,
 3 for `UNKNOWN` or `UNRESOLVED`, and 5 for `UNAVAILABLE`.

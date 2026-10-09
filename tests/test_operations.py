@@ -19,6 +19,52 @@ def example_project(make_project, source=SOURCE):
                         [scenario_check("ok", "driver.py", scenarios=["ok"], inputs=["maths.py", "driver.py"])])
 
 
+def test_matchsets_cli_returns_shortest_directional_witnesses(make_project):
+    pytest.importorskip("greenery")
+    project = example_project(make_project)
+    code, body = vkit(project, "compute", "compare-matchsets", "--old-pattern", "a*", "--new-pattern", "a+",
+                      "--alphabet", "a")
+    assert (code, body["status"], body["old_only"], body["new_only"]) == (1, "COUNTEREXAMPLE", "", None)
+    code, body = vkit(project, "compute", "compare-matchsets", "--old-pattern", "a|b", "--new-pattern", "[ab]",
+                      "--alphabet", "ab")
+    assert (code, body["status"], body["old_only"], body["new_only"]) == (0, "EQUIVALENT", None, None)
+
+
+def test_matchsets_mcp_preserves_gate_and_refuses_untrusted_options(make_project):
+    pytest.importorskip("greenery")
+    project = example_project(make_project)
+    client = McpClient(project)
+    try:
+        before, _ = client.call("gate")
+        result, error = client.call("compare_matchsets", old_pattern="a|bc", new_pattern="a|bd", alphabet="abcd")
+        assert not error
+        assert (result["status"], result["old_only"], result["new_only"]) == ("COUNTEREXAMPLE", "bc", "bd")
+        after, _ = client.call("gate")
+        assert after == before
+        for args in ({"old_pattern": "a", "new_pattern": "a"},
+                     {"old_pattern": "a", "new_pattern": "a", "alphabet": "a", "timeout_ms": 0},
+                     {"old_pattern": "a", "new_pattern": "a", "alphabet": "a", "rules": []},
+                     {"old_pattern": "a", "new_pattern": "a", "alphabet": "a", "dialect": "python"}):
+            result, error = client.call("compare_matchsets", **args)
+            assert error and "error" in result
+        assert (project / "maths.py").read_text() == SOURCE
+    finally:
+        client.close()
+
+
+def test_matchsets_worker_ignores_candidate_imports(tmp_path, monkeypatch):
+    pytest.importorskip("greenery")
+    from vkit.operations.matchsets import compare_matchsets
+
+    (tmp_path / "greenery.py").write_text(
+        "open('candidate-loaded', 'w').write('loaded')\nraise RuntimeError('candidate backend')\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    result = compare_matchsets("a|b", "[ab]", "ab")
+    assert result.status == "EQUIVALENT"
+    assert not (tmp_path / "candidate-loaded").exists()
+
+
 def test_rewrite_cli_proves_or_returns_a_concrete_counterexample(make_project, tmp_path):
     pytest.importorskip("cvc5")
     project = example_project(make_project)

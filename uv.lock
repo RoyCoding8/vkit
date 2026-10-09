@@ -404,6 +404,15 @@ wheels = [
 ]
 
 [[package]]
+name = "greenery"
+version = "4.2.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a3/84/7ab4ea60ceaf9d5594cc4fe98c585ba7f9137b2203e84ac5b72c3f8a258b/greenery-4.2.2.tar.gz", hash = "sha256:6221d5727d19b4f46fc794635aa00b3dbbab33ed7ff1d686a0011d9197a4b7a0", size = 50696, upload-time = "2024-06-08T12:09:00.185Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/12/e604674ba0ce89bb710e60ed57e165e088787216cd7b27302c0cd7e7b095/greenery-4.2.2-py3-none-any.whl", hash = "sha256:df82131963230c9e9ff7d356eed7556626accef52c1c6c2abda8eb57565f7197", size = 51158, upload-time = "2024-06-08T12:08:58.335Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1368,6 +1377,7 @@ dependencies = [
 engines = [
     { name = "cvc5" },
     { name = "egglog" },
+    { name = "greenery" },
 ]
 mcp = [
     { name = "mcp" },
@@ -1384,6 +1394,7 @@ requires-dist = [
     { name = "anyio", marker = "extra == 'test'", specifier = ">=4.5" },
     { name = "cvc5", marker = "extra == 'engines'", specifier = "==1.4.2" },
     { name = "egglog", marker = "extra == 'engines'", specifier = "==13.2.0" },
+    { name = "greenery", marker = "extra == 'engines'", specifier = "==4.2.2" },
     { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.100" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.2,<3" },

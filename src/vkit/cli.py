@@ -276,13 +276,11 @@ def cmd_console(args: argparse.Namespace) -> int:
 def cmd_compute(args: argparse.Namespace) -> int:
     from pathlib import Path
 
-    from .mcp import Server
+    from .mcp import BY_NAME, Server
     from .operations import MAX_SOURCE_BYTES
 
     operation = args.compute_command.replace("-", "_")
-    arguments = {name: getattr(args, name) for name in
-                 ("path", "function", "timeout_ms", "run_id", "timeout_seconds")
-                 if hasattr(args, name)}
+    arguments = {name: vars(args)[name] for name in BY_NAME[operation].properties if name in vars(args)}
     if operation == "check_rewrite":
         try:
             with Path(args.replacement_file).open("rb") as handle:
@@ -296,7 +294,7 @@ def cmd_compute(args: argparse.Namespace) -> int:
     _emit(body, args.json, json.dumps(body, indent=2))
     if error:
         return EXIT_INVALID
-    return {"PROVED": EXIT_OK, "REDUCED": EXIT_OK, "COUNTEREXAMPLE": EXIT_FAILED,
+    return {"PROVED": EXIT_OK, "REDUCED": EXIT_OK, "EQUIVALENT": EXIT_OK, "COUNTEREXAMPLE": EXIT_FAILED,
             "UNSUPPORTED": EXIT_INVALID, "UNAVAILABLE": EXIT_UNAVAILABLE}.get(body["status"], EXIT_BLOCKED)
 
 
@@ -363,6 +361,12 @@ def build_parser() -> argparse.ArgumentParser:
     reduce.add_argument("--path", required=True)
     reduce.add_argument("--timeout-seconds", type=int, default=60)
 
+    matchsets = command(compute, "compare-matchsets", "compare complete regex languages over a finite alphabet")
+    matchsets.add_argument("--old-pattern", required=True)
+    matchsets.add_argument("--new-pattern", required=True)
+    matchsets.add_argument("--alphabet", required=True, help="unique characters that may occur in matched strings")
+    matchsets.add_argument("--timeout-ms", type=int, default=2_000)
+
     console = command(sub, "console", "serve a read-only console on 127.0.0.1")
     console.add_argument("--port", type=int, default=8765, help="0 lets the OS pick a free port")
     console.add_argument("--no-browser", action="store_true")
@@ -378,6 +382,7 @@ _DISPATCH = {
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
     ("compute", "check-rewrite"): cmd_compute, ("compute", "simplify-function"): cmd_compute,
     ("compute", "reduce-failure"): cmd_compute,
+    ("compute", "compare-matchsets"): cmd_compute,
 }
 
 

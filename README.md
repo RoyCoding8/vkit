@@ -77,8 +77,9 @@ are:
 - `check_rewrite`: prove equivalent return values or produce a counterexample for a supported Python function.
 - `simplify_function`: derive a replacement with egglog and independently verify it with cvc5.
 - `reduce_failure`: use Perses to shrink a source file while preserving a recorded failure.
+- `compare_matchsets`: compare complete regex languages and return shortest distinguishing strings.
 
-The three computation tools use fixed algorithms and do not change the gate. Install their Python
+The computation tools use fixed algorithms and do not change the gate. Install their Python
 engines with `uv sync --extra mcp --extra engines`. See [built-in computations](docs/computations.md)
 for the supported language, CLI commands, Perses setup, and deployment boundary.
 
@@ -117,6 +118,7 @@ Frontend development and asset rebuild instructions are in [tools/console](tools
 | `vkit compute check-rewrite` | Check equivalence of two supported Python functions |
 | `vkit compute simplify-function` | Suggest a replacement and prove its equivalence |
 | `vkit compute reduce-failure` | Reduce a recorded failure with its approved predicate |
+| `vkit compute compare-matchsets` | Compare complete regex languages over a supplied alphabet |
 
 Every command takes `--project` (default `.`) and `--json`.
 

@@ -23,6 +23,13 @@ const pages = {
     "Runs",
     "Recorded outcomes, observations, measurements, and logs.",
   ],
+  computations: [
+    "Computations",
+    "science",
+    "BOUNDED OPERATIONS",
+    "Computations",
+    "Run an installed operation with inputs defined by its schema.",
+  ],
   capabilities: [
     "Capabilities",
     "extension",
@@ -114,6 +121,12 @@ const labels = {
   REJECTED: ["Rejected", "error"],
   verified: ["Verified", "success"],
   unverified: ["Unverified", "warning"],
+  UNKNOWN: ["Unknown", "warning"],
+  UNAVAILABLE: ["Unavailable", "warning"],
+  UNSUPPORTED: ["Unsupported", "warning"],
+  COUNTEREXAMPLE: ["Counterexample", "warning"],
+  BREAKING: ["Breaking", "warning"],
+  INFEASIBLE: ["Infeasible", "warning"],
 };
 let report,
   runs = [],
@@ -124,7 +137,24 @@ let report,
   stream = "stdout";
 let search = "",
   kind = "",
-  activePage = "";
+  activePage = "",
+  settingsVersion = 0,
+  settingsDraft = null,
+  settingsMessage = "",
+  settingsSaving = false,
+  computation = {
+    selectedName: "",
+    drafts: Object.create(null),
+    touched: Object.create(null),
+    results: Object.create(null),
+    errors: Object.create(null),
+    pendingName: "",
+  },
+  execution = {
+    pending: new Set(),
+    checksMessage: "",
+    runsMessage: "",
+  };
 
 function el(tag, text, cls) {
   const node = document.createElement(tag);
@@ -157,6 +187,11 @@ function action(text, page, type = "md-text-button") {
   button.onclick = () => {
     location.hash = page;
   };
+  return button;
+}
+function consoleButton(text, tone = "tonal") {
+  const button = el("button", text, `console-button ${tone}`);
+  button.type = "button";
   return button;
 }
 function panel(title, description, children, button) {
@@ -427,12 +462,79 @@ function overview() {
   fragment.append(grid);
   return fragment;
 }
+function checkRunMessage(response) {
+  if (response.is_error)
+    return `Check run request failed: ${response.result?.error || "vkit rejected the request."}`;
+  const started = response.result?.runs || [];
+  return started.length
+    ? `Returned ${started.length} run${started.length === 1 ? "" : "s"}. Check their states in Runs.`
+    : "No checks needed a run.";
+}
+async function runChecks(arguments_) {
+  if (execution.pending.has("check_run")) return;
+  execution.pending.add("check_run");
+  execution.checksMessage = "Starting check run…";
+  render();
+  try {
+    execution.checksMessage = checkRunMessage(
+      await callTool("check_run", arguments_),
+    );
+  } catch (error) {
+    execution.checksMessage = `Check run request failed: ${error.message}`;
+  } finally {
+    execution.pending.delete("check_run");
+    render();
+    refresh().catch(showError);
+  }
+}
+function cancelRunMessage(runId, response) {
+  if (response.is_error)
+    return `Could not cancel ${runId}: ${response.result?.error || "vkit rejected the request."}`;
+  return response.result?.cancelled
+    ? `Cancellation requested for ${runId}.`
+    : `${runId} is ${response.result?.state || "no longer running"}.`;
+}
+async function cancelRun(runId) {
+  const key = `run_cancel:${runId}`;
+  if (execution.pending.has(key)) return;
+  execution.pending.add(key);
+  execution.runsMessage = `Cancelling ${runId}…`;
+  render();
+  try {
+    execution.runsMessage = cancelRunMessage(
+      runId,
+      await callTool("run_cancel", { run_id: runId }),
+    );
+  } catch (error) {
+    execution.runsMessage = `Could not cancel ${runId}: ${error.message}`;
+  } finally {
+    execution.pending.delete(key);
+    render();
+    refresh().catch(showError);
+  }
+}
 function checks() {
   const fragment = document.createDocumentFragment(),
     grid = table(
-      ["CHECK", "STATE", "METHOD", "INPUT SCOPE", "LAST RUN"],
+      ["CHECK", "STATE", "METHOD", "INPUT SCOPE", "LAST RUN", "ACTION"],
       "checks",
     );
+  const runNeeded = consoleButton("Run needed checks");
+  runNeeded.disabled =
+    execution.pending.has("check_run") || !report.needs_run?.length;
+  const feedback = el("p", execution.checksMessage, "action-feedback");
+  feedback.setAttribute("role", "status");
+  feedback.setAttribute("aria-live", "polite");
+  feedback.hidden = !execution.checksMessage;
+  const feedbackBody = el("div", null, "panel-body");
+  feedbackBody.append(feedback);
+  const runPanel = panel(
+    "Run needed checks",
+    "Start checks with stale or missing evidence. Each run records its own scope.",
+    [feedbackBody],
+    runNeeded,
+  );
+  runNeeded.onclick = () => runChecks({ needed: true, wait_seconds: 0 });
   function update() {
     const shown = report.checks.filter(
       (c) => matches(c) && (!kind || c.kind === kind),
@@ -447,21 +549,31 @@ function checks() {
         const last = c.last
           ? link(`${c.last.result} · ${date(c.last.ended_at)}`, () => {
               location.hash = `runs/${encodeURIComponent(c.last.run_id)}`;
-            })
+          })
           : "Not run";
+        const run = consoleButton(
+          c.running.length ? "Running" : "Run",
+          "text",
+        );
+        run.setAttribute("aria-label", `Run check ${c.id}`);
+        run.disabled =
+          c.running.length > 0 || execution.pending.has("check_run");
+        run.onclick = () =>
+          runChecks({ check_ids: [c.id], wait_seconds: 0 });
         return row([
           copy,
           badge(checkState(c)),
           methods[c.kind]?.[0] || c.kind,
           c.inputs.scope,
           last,
+          run,
         ]);
       }),
     );
     if (!shown.length) {
       const tr = el("tr"),
         td = el("td");
-      td.colSpan = 5;
+      td.colSpan = 6;
       td.append(
         empty(
           "No matching checks",
@@ -475,13 +587,24 @@ function checks() {
       grid.body.append(tr);
     }
   }
-  fragment.append(toolbar("Search checks", update, true), grid.wrap);
+  fragment.append(
+    runPanel,
+    toolbar("Search checks", update, true),
+    grid.wrap,
+  );
   update();
   return fragment;
 }
 function runHistory() {
   const fragment = document.createDocumentFragment(),
-    grid = table(["CHECK / RUN", "RESULT", "STARTED", "WORKTREE"], "runs");
+    grid = table(
+      ["CHECK / RUN", "RESULT", "STARTED", "WORKTREE", "ACTION"],
+      "runs",
+    );
+  const feedback = el("p", execution.runsMessage, "action-feedback run-feedback");
+  feedback.setAttribute("role", "status");
+  feedback.setAttribute("aria-live", "polite");
+  feedback.hidden = !execution.runsMessage;
   function update() {
     const shown = runs.filter(matches);
     grid.body.replaceChildren(
@@ -493,18 +616,30 @@ function runHistory() {
           }),
           el("p", r.run_id),
         );
+        const cancel = consoleButton(
+          execution.pending.has(`run_cancel:${r.run_id}`)
+            ? "Cancelling…"
+            : "Cancel",
+          "text",
+        );
+        cancel.setAttribute("aria-label", `Cancel run ${r.run_id}`);
+        cancel.disabled =
+          r.state !== "running" ||
+          execution.pending.has(`run_cancel:${r.run_id}`);
+        cancel.onclick = () => cancelRun(r.run_id);
         return row([
           copy,
           badge(r.result || r.state),
           date(r.started_at),
           r.worktree,
+          cancel,
         ]);
       }),
     );
     if (!shown.length) {
       const tr = el("tr"),
         td = el("td");
-      td.colSpan = 4;
+      td.colSpan = 5;
       td.append(
         empty(
           "No matching runs",
@@ -521,8 +656,329 @@ function runHistory() {
   const detail = el("section", null, "panel run-selected");
   detail.id = "run-detail";
   detail.hidden = !selectedRun;
-  fragment.append(toolbar("Search recent runs", update), grid.wrap, detail);
+  fragment.append(
+    feedback,
+    toolbar("Search recent runs", update),
+    grid.wrap,
+    detail,
+  );
   update();
+  return fragment;
+}
+function operationInitialDraft(operation) {
+  const schema = operation.input_schema || {},
+    properties = schema.properties || {};
+  return Object.fromEntries(
+    Object.entries(properties).map(([name, property]) => {
+      let value = "";
+      if (Object.hasOwn(property, "default")) value = property.default;
+      return [
+        name,
+        typeof value === "object" && value !== null
+          ? JSON.stringify(value, null, 2)
+          : String(value),
+      ];
+    }),
+  );
+}
+function operationField(name, property, value, index, required) {
+  const field = el("div", null, "form-field"),
+    id = `operation-input-${index}`,
+    label = el("label", name.replaceAll("_", " "));
+  label.htmlFor = id;
+  if (required) label.append(el("span", " Required", "required-label"));
+  field.append(label);
+  let input;
+  if (Array.isArray(property.enum)) {
+    input = el("select");
+    if (!required || !Object.hasOwn(property, "default")) {
+      const placeholder = el("option", "Choose an option");
+      placeholder.value = "";
+      input.append(placeholder);
+    }
+    for (const optionValue of property.enum) {
+      const option = el("option", String(optionValue));
+      option.value = String(optionValue);
+      input.append(option);
+    }
+  } else if (property.type === "string" && name !== "replacement") {
+    input = el("input");
+    input.type = "text";
+    if (property.minLength != null) input.minLength = property.minLength;
+    if (property.maxLength != null) input.maxLength = property.maxLength;
+  } else if (property.type === "integer") {
+    input = el("input");
+    input.type = "number";
+    input.step = "1";
+    if (property.minimum != null) input.min = property.minimum;
+    if (property.maximum != null) input.max = property.maximum;
+  } else {
+    input = el("textarea");
+    input.rows = name === "replacement" ? 10 : 5;
+    input.spellcheck = false;
+    if (property.minLength != null) input.minLength = property.minLength;
+    if (property.maxLength != null) input.maxLength = property.maxLength;
+    if (property.type !== "string")
+      input.setAttribute("aria-describedby", `${id}-help`);
+  }
+  input.id = id;
+  input.dataset.argument = name;
+  input.value = value;
+  field.append(input);
+  if (property.description) {
+    const help = el("p", property.description, "field-help");
+    help.id = `${id}-help`;
+    input.setAttribute("aria-describedby", help.id);
+    field.append(help);
+  } else if (property.type !== "string" && property.type !== "integer") {
+    const help = el("p", "Enter a JSON value.", "field-help");
+    help.id = `${id}-help`;
+    input.setAttribute("aria-describedby", help.id);
+    field.append(help);
+  }
+  return field;
+}
+function parseOperationArguments(operation) {
+  const schema = operation.input_schema || {},
+    properties = schema.properties || {},
+    required = new Set(schema.required || []),
+    draft = computation.drafts[operation.name] || {},
+    touched = computation.touched[operation.name] || {},
+    values = {};
+  for (const [name, property] of Object.entries(properties)) {
+    const raw = draft[name] ?? "",
+      isRequired = required.has(name);
+    if (property.type === "string" && !Array.isArray(property.enum)) {
+      if (
+        !isRequired &&
+        raw === "" &&
+        !touched[name] &&
+        !Object.hasOwn(property, "default")
+      )
+        continue;
+      if (property.minLength != null && raw.length < property.minLength)
+        return {
+          error: `${name.replaceAll("_", " ")} must contain at least ${property.minLength} characters.`,
+        };
+      values[name] = raw;
+      continue;
+    }
+    if (Array.isArray(property.enum)) {
+      if (
+        !isRequired &&
+        raw === "" &&
+        !touched[name] &&
+        !Object.hasOwn(property, "default")
+      )
+        continue;
+      if (
+        isRequired &&
+        raw === "" &&
+        !touched[name] &&
+        !Object.hasOwn(property, "default")
+      )
+        return { error: `Choose a valid ${name.replaceAll("_", " ")}.` };
+      const value = property.enum.find((item) => String(item) === raw);
+      if (value === undefined) {
+        if (!isRequired && raw === "") continue;
+        return { error: `Choose a valid ${name.replaceAll("_", " ")}.` };
+      }
+      values[name] = value;
+    } else if (property.type === "integer") {
+      if (raw === "") {
+        if (isRequired) return { error: `${name.replaceAll("_", " ")} is required.` };
+        continue;
+      }
+      const number = Number(raw);
+      if (!Number.isSafeInteger(number))
+        return { error: `${name.replaceAll("_", " ")} must be a whole number.` };
+      values[name] = number;
+    } else {
+      if (raw === "") {
+        if (isRequired) return { error: `${name.replaceAll("_", " ")} is required.` };
+        continue;
+      }
+      try {
+        values[name] = JSON.parse(raw);
+      } catch {
+        return { error: `${name.replaceAll("_", " ")} must contain valid JSON.` };
+      }
+    }
+  }
+  return { values };
+}
+function operationResult(operation, entry) {
+  const result = entry.result,
+    box = el("section", null, "panel operation-result"),
+    header = el("div", null, "result-heading"),
+    summary = el("div", null, "result-summary");
+  const status = entry.is_error
+    ? "Request error"
+    : result?.status || result?.state || result?.outcome || "Completed";
+  header.append(el("h2", `${operation.name} result`), badge(status));
+  summary.append(header);
+  if (entry.is_error && result?.error)
+    summary.append(el("p", result.error, "result-error"));
+  const scope =
+    result?.model_scope ??
+    result?.scope ??
+    result?.evidence_scope ??
+    result?.domain;
+  if (scope != null) {
+    const section = el("section", null, "result-detail");
+    section.append(
+      el("h3", result?.model_scope != null ? "Model scope" : "Scope"),
+    );
+    const pre = el(
+      "pre",
+      typeof scope === "string" ? scope : JSON.stringify(scope, null, 2),
+    );
+    section.append(pre);
+    summary.append(section);
+  }
+  for (const [key, label] of [
+    ["old_only", "Accepted only by the old input"],
+    ["new_only", "Accepted only by the new input"],
+  ])
+    if (result?.[key] != null) {
+      const section = el("section", null, "result-detail");
+      section.append(el("h3", label));
+      section.append(
+        el(
+          "pre",
+          typeof result[key] === "string"
+            ? JSON.stringify(result[key])
+            : JSON.stringify(result[key], null, 2),
+        ),
+      );
+      summary.append(section);
+    }
+  const witness =
+    result?.witness ?? result?.counterexample ?? result?.reproducer;
+  if (witness != null) {
+    const section = el("section", null, "result-detail");
+    section.append(el("h3", "Witness"));
+    const pre = el("pre", JSON.stringify(witness, null, 2));
+    section.append(pre);
+    summary.append(section);
+  }
+  const details = el("details", null, "result-json"),
+    source = el("summary", "Full result JSON"),
+    pre = el("pre", JSON.stringify(result, null, 2));
+  details.dataset.resultOperation = operation.name;
+  details.append(source, pre);
+  box.append(summary, details);
+  return box;
+}
+async function runOperation(operation) {
+  if (computation.pendingName) return;
+  const parsed = parseOperationArguments(operation);
+  if (parsed.error) {
+    computation.errors[operation.name] = parsed.error;
+    render();
+    return;
+  }
+  delete computation.errors[operation.name];
+  computation.pendingName = operation.name;
+  render();
+  try {
+    const response = await callTool(operation.name, parsed.values);
+    computation.results[operation.name] = {
+      result: response.result,
+      is_error: response.is_error,
+    };
+  } catch (error) {
+    computation.results[operation.name] = {
+      result: { error: error.message },
+      is_error: true,
+    };
+  } finally {
+    computation.pendingName = "";
+    render();
+    refresh().catch(showError);
+  }
+}
+function computations() {
+  const fragment = document.createDocumentFragment(),
+    operations = configuration.operations || [];
+  if (!operations.some((operation) => operation.name === computation.selectedName))
+    computation.selectedName = operations[0]?.name || "";
+  if (!operations.length) {
+    fragment.append(
+      empty(
+        "No computations are registered",
+        "The server has not exposed any installed operations.",
+        "science",
+      ),
+    );
+    return fragment;
+  }
+  const operation = operations.find(
+      (item) => item.name === computation.selectedName,
+    ),
+    schema = operation.input_schema || {},
+    properties = Object.entries(schema.properties || {}),
+    required = new Set(schema.required || []),
+    form = el("form", null, "computation-form"),
+    pickerField = el("div", null, "form-field"),
+    pickerLabel = el("label", "Operation");
+  pickerLabel.htmlFor = "computation-operation";
+  const picker = el("select");
+  picker.id = "computation-operation";
+  for (const item of operations) {
+    const option = el("option", item.name);
+    option.value = item.name;
+    picker.append(option);
+  }
+  picker.value = operation.name;
+  picker.onchange = () => {
+    computation.selectedName = picker.value;
+    render();
+  };
+  pickerField.append(pickerLabel, picker);
+  form.append(pickerField, el("p", operation.description, "operation-description"));
+  const draft = (computation.drafts[operation.name] ||=
+    operationInitialDraft(operation));
+  const fields = el("div", null, "form-grid");
+  for (const [index, [name, property]] of properties.entries())
+    fields.append(
+      operationField(name, property, draft[name] ?? "", index, required.has(name)),
+    );
+  form.append(fields);
+  const error = el(
+    "p",
+    computation.errors[operation.name] || "",
+    "form-message error-message",
+  );
+  error.setAttribute("role", "alert");
+  const pending = computation.pendingName === operation.name,
+    submit = el("button", pending ? "Running…" : "Run computation", "console-button primary");
+  submit.type = "submit";
+  submit.disabled = Boolean(computation.pendingName);
+  const actions = el("div", null, "form-actions");
+  actions.append(submit);
+  form.addEventListener("input", (event) => {
+    const name = event.target.dataset.argument;
+    if (!name) return;
+    (computation.touched[operation.name] ||= Object.create(null))[name] = true;
+    draft[name] = event.target.value;
+    delete computation.errors[operation.name];
+    error.textContent = "";
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runOperation(operation);
+  });
+  form.append(error, actions);
+  fragment.append(
+    panel(
+      "Run a computation",
+      "Fields come from the installed operation schema. JSON fields accept JSON values.",
+      [form],
+    ),
+  );
+  const result = computation.results[operation.name];
+  if (result) fragment.append(operationResult(operation, result));
   return fragment;
 }
 function capabilities() {
@@ -709,6 +1165,211 @@ function proposals() {
     );
   return list;
 }
+function mergeSettingsDraft(next, previous, defaults) {
+  if (!settingsDraft) {
+    settingsDraft = { ...next };
+    return;
+  }
+  const draft = { ...settingsDraft };
+  for (const key of Object.keys(defaults))
+    if (draft[key] === previous?.[key]) draft[key] = next[key];
+  settingsDraft = draft;
+}
+function setPreferenceFeedback(message) {
+  const status = $("preference-feedback");
+  status.hidden = !message;
+  status.textContent = message;
+}
+function syncSettingsForm() {
+  const status = $("settings-message");
+  if (status) {
+    status.textContent = settingsMessage;
+    status.dataset.state = settingsMessage.startsWith("Could not") ? "error" : "";
+  }
+  const save = $("settings-save"),
+    reset = $("settings-reset");
+  if (save) save.disabled = settingsSaving;
+  if (reset) reset.disabled = settingsSaving;
+  if ($("theme-toggle")) $("theme-toggle").disabled = !configuration || settingsSaving;
+  if ($("collapse-nav")) $("collapse-nav").disabled = !configuration || settingsSaving;
+}
+function applySettings(settings) {
+  if (!settings) return;
+  applyTheme(settings.theme);
+  collapse(settings.sidebar_collapsed);
+}
+function validateSettingsDraft() {
+  if (!settingsDraft || !["system", "light", "dark"].includes(settingsDraft.theme))
+    return "Choose system, light, or dark theme.";
+  for (const [key, label, minimum, maximum] of [
+    ["refresh_seconds", "Refresh interval", 1, 60],
+    ["history_limit", "Run history limit", 1, 200],
+  ]) {
+    const value = settingsDraft[key];
+    if (!Number.isInteger(value) || value < minimum || value > maximum)
+      return `${label} must be between ${minimum} and ${maximum}.`;
+  }
+  return "";
+}
+async function persistSettings(candidate, source = "form") {
+  if (settingsSaving) return;
+  const previous = { ...configuration.settings },
+    draftAtRequest = { ...settingsDraft },
+    snapshot = { ...candidate };
+  settingsSaving = true;
+  settingsMessage = source === "reset" ? "Resetting defaults…" : "Saving settings…";
+  if (source === "preference") setPreferenceFeedback(settingsMessage);
+  syncSettingsForm();
+  try {
+    const response = await post("/api/settings", snapshot);
+    configuration.settings = response.settings;
+    configuration.settings_path = response.settings_path;
+    settingsVersion += 1;
+    settingsDraft = Object.fromEntries(
+      Object.keys(configuration.settings_defaults).map((key) => [
+        key,
+        settingsDraft[key] !== draftAtRequest[key]
+          ? settingsDraft[key]
+          : source === "preference" && draftAtRequest[key] !== previous[key]
+            ? draftAtRequest[key]
+            : response.settings[key],
+      ]),
+    );
+    applySettings(settingsDraft);
+    const hasUnsavedChanges = Object.keys(response.settings).some(
+      (key) => settingsDraft[key] !== response.settings[key],
+    );
+    settingsMessage = hasUnsavedChanges
+      ? "Settings saved. Unsaved changes remain."
+      : source === "reset"
+        ? "Defaults saved."
+        : "Settings saved.";
+    if (source === "preference") setPreferenceFeedback(settingsMessage);
+  } catch (error) {
+    settingsMessage = `Could not save settings: ${error.message}`;
+    if (source === "preference") setPreferenceFeedback(settingsMessage);
+  } finally {
+    settingsSaving = false;
+    syncSettingsForm();
+    refresh().catch(showError);
+  }
+}
+function saveSettingsDraft() {
+  const error = validateSettingsDraft();
+  if (error) {
+    settingsMessage = `Could not save settings: ${error}`;
+    syncSettingsForm();
+    return;
+  }
+  persistSettings(settingsDraft);
+}
+function resetSettings() {
+  settingsDraft = { ...configuration.settings_defaults };
+  settingsMessage = "Resetting defaults…";
+  applySettings(settingsDraft);
+  render();
+  persistSettings(settingsDraft, "reset");
+}
+function updatePreference(key, value) {
+  if (!configuration || settingsSaving) return;
+  settingsDraft = { ...settingsDraft, [key]: value };
+  applySettings(settingsDraft);
+  persistSettings({ ...configuration.settings, [key]: value }, "preference");
+}
+function settingsForm() {
+  const form = el("form", null, "settings-form"),
+    fields = el("div", null, "form-grid");
+  form.id = "settings-form";
+  const themeField = el("div", null, "form-field"),
+    themeLabel = el("label", "Color theme"),
+    theme = el("select");
+  theme.id = "settings-theme";
+  theme.dataset.setting = "theme";
+  themeLabel.htmlFor = theme.id;
+  for (const [value, label] of [
+    ["system", "Use system setting"],
+    ["light", "Light"],
+    ["dark", "Dark"],
+  ]) {
+    const option = el("option", label);
+    option.value = value;
+    theme.append(option);
+  }
+  theme.value = settingsDraft.theme;
+  themeField.append(themeLabel, theme, el("p", "Follow the device theme or choose one.", "field-help"));
+  fields.append(themeField);
+
+  const refreshField = el("div", null, "form-field"),
+    refreshLabel = el("label", "Refresh interval in seconds"),
+    refresh = el("input");
+  refresh.type = "number";
+  refresh.id = "settings-refresh-seconds";
+  refresh.dataset.setting = "refresh_seconds";
+  refresh.min = "1";
+  refresh.max = "60";
+  refresh.step = "1";
+  refresh.value = settingsDraft.refresh_seconds;
+  refreshLabel.htmlFor = refresh.id;
+  refreshField.append(refreshLabel, refresh, el("p", "Refresh workspace status and runs every 1 to 60 seconds.", "field-help"));
+  fields.append(refreshField);
+
+  const historyField = el("div", null, "form-field"),
+    historyLabel = el("label", "Recent runs to load"),
+    history = el("input");
+  history.type = "number";
+  history.id = "settings-history-limit";
+  history.dataset.setting = "history_limit";
+  history.min = "1";
+  history.max = "200";
+  history.step = "1";
+  history.value = settingsDraft.history_limit;
+  historyLabel.htmlFor = history.id;
+  historyField.append(historyLabel, history, el("p", "Load between 1 and 200 recent runs.", "field-help"));
+  fields.append(historyField);
+
+  const sidebar = el("input");
+  sidebar.type = "checkbox";
+  sidebar.id = "settings-sidebar-collapsed";
+  sidebar.dataset.setting = "sidebar_collapsed";
+  sidebar.checked = settingsDraft.sidebar_collapsed;
+  const sidebarLabel = el("label", "Keep the sidebar collapsed");
+  sidebarLabel.htmlFor = sidebar.id;
+  const toggle = el("div", null, "form-checkbox");
+  toggle.append(sidebar, sidebarLabel);
+  fields.append(toggle);
+  form.append(fields);
+
+  const status = el("p", settingsMessage, "settings-message");
+  status.id = "settings-message";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const actions = el("div", null, "form-actions");
+  const save = el("button", "Save settings", "console-button primary");
+  save.type = "submit";
+  save.id = "settings-save";
+  const reset = consoleButton("Reset defaults", "text");
+  reset.id = "settings-reset";
+  reset.onclick = resetSettings;
+  actions.append(save, reset);
+  form.append(status, actions);
+  const change = (event) => {
+    const key = event.target.dataset.setting;
+    if (!key) return;
+    if (key === "sidebar_collapsed") settingsDraft[key] = event.target.checked;
+    else if (key === "refresh_seconds" || key === "history_limit")
+      settingsDraft[key] = event.target.value === "" ? "" : Number(event.target.value);
+    else settingsDraft[key] = event.target.value;
+    settingsMessage = "Unsaved settings.";
+    applySettings(settingsDraft);
+    syncSettingsForm();
+  };
+  form.addEventListener("input", change);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveSettingsDraft();
+  });
+  return form;
+}
 function setup() {
   const fragment = document.createDocumentFragment(),
     grid = el("div", null, "overview-grid"),
@@ -717,6 +1378,7 @@ function setup() {
   for (const [name, value] of [
     ["Repository", report.project],
     ["Evidence storage", configuration.doctor.state_root],
+    ["Console settings", configuration.settings_path],
     ["Check definitions", "verification/manifest.json"],
     ["Feature map", "verification/features.json"],
     ["Version", configuration.version],
@@ -775,11 +1437,16 @@ function setup() {
     command(`vkit mcp serve --project "${report.project}"`),
     note(
       "Independent interfaces",
-      "The MCP server exposes callable functions. The Claude plugin separately bundles guidance skills and session hooks. This console displays evidence without executing or accepting checks.",
+      "The MCP server exposes callable functions. This console can run selected checks and computations, and shows their results without changing the verification gate.",
     ),
   );
   fragment.append(
     grid,
+    panel(
+      "Console settings",
+      "Preferences are saved for this project.",
+      [settingsForm()],
+    ),
     el("h2", "Connect an agent", "section-label"),
     panel(
       "MCP over stdio",
@@ -961,10 +1628,15 @@ async function refreshRun() {
 }
 function render() {
   const focused = document.activeElement,
-    position = focused?.selectionStart;
+    focusId = focused?.id,
+    start = focused?.selectionStart,
+    end = focused?.selectionEnd;
   const openedFeatures = [...$("view").querySelectorAll("details[open]")].map(
     (d) => d.dataset.feature,
   );
+  const openedResults = [
+    ...$("view").querySelectorAll("details[data-result-operation][open]"),
+  ].map((details) => details.dataset.resultOperation);
   const [, , eyebrow, title, description] = pages[activePage];
   $("breadcrumb").textContent = pages[activePage][0];
   $("page-eyebrow").textContent = eyebrow;
@@ -988,18 +1660,27 @@ function render() {
       overview,
       checks,
       runs: runHistory,
+      computations,
       capabilities,
       features: featureMap,
       proposals,
       setup,
     }[activePage](),
   );
-  for (const details of $("view").querySelectorAll("details"))
-    details.open = openedFeatures.includes(details.dataset.feature);
-  if (focused?.id === "view-search") {
-    const input = $("view-search");
-    input?.focus();
-    if (position != null) input?.setSelectionRange(position, position);
+  for (const details of $("view").querySelectorAll("details")) {
+    if (details.dataset.feature)
+      details.open = openedFeatures.includes(details.dataset.feature);
+    if (details.dataset.resultOperation)
+      details.open = openedResults.includes(details.dataset.resultOperation);
+  }
+  if (focusId) {
+    const next = $(focusId);
+    next?.focus();
+    if (next && start != null && end != null) {
+      try {
+        next.setSelectionRange(start, end);
+      } catch {}
+    }
   }
 }
 function route() {
@@ -1025,6 +1706,23 @@ async function get(url) {
     throw new Error(body.error || `Request failed (${response.status})`);
   return body;
 }
+async function post(url, value) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Vkit-Token": configuration.csrf_token,
+    },
+    body: JSON.stringify(value),
+  });
+  const body = await response.json();
+  if (!response.ok)
+    throw new Error(body.error || `Request failed (${response.status})`);
+  return body;
+}
+function callTool(name, arguments_) {
+  return post("/api/call", { name, arguments: arguments_ });
+}
 function showError(error) {
   $("connection-error").hidden = false;
   $("connection-error").textContent =
@@ -1034,15 +1732,30 @@ function showError(error) {
 function refresh() {
   if (refreshing) return refreshing;
   refreshing = (async () => {
+    const requestedSettingsVersion = settingsVersion;
     try {
-      const [nextReport, nextRuns, nextConfig] = await Promise.all([
+      const nextConfig = await get("/api/config");
+      const [nextReport, nextRuns] = await Promise.all([
         get("/api/status"),
-        get("/api/runs?limit=50"),
-        get("/api/config"),
+        get(`/api/runs?limit=${nextConfig.settings.history_limit}`),
       ]);
+      if (requestedSettingsVersion !== settingsVersion && configuration) {
+        nextConfig.settings = configuration.settings;
+        nextConfig.settings_path = configuration.settings_path;
+      }
+      const previousSettings = configuration?.settings;
+      if (settingsDraft && previousSettings)
+        mergeSettingsDraft(
+          nextConfig.settings,
+          previousSettings,
+          nextConfig.settings_defaults,
+        );
+      else settingsDraft = { ...nextConfig.settings };
       report = nextReport;
       runs = nextRuns;
       configuration = nextConfig;
+      applySettings(settingsDraft);
+      syncSettingsForm();
       const nextSignature = JSON.stringify([report, runs, configuration]);
       $("workspace-name").textContent = report.project
         .replaceAll("\\", "/")
@@ -1050,7 +1763,7 @@ function refresh() {
         .pop();
       $("workspace-name").title = report.project;
       $("project-path").textContent = report.project;
-      $("version").textContent = `v${configuration.version} · Read-only`;
+      $("version").textContent = `v${configuration.version}`;
       $("updated").textContent =
         `Updated ${new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
       if (signature !== nextSignature) {
@@ -1073,35 +1786,25 @@ function refresh() {
   })();
   return refreshing;
 }
-function stored(key) {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-function save(key, value) {
-  try {
-    localStorage.setItem(key, value);
-  } catch {}
-}
 const systemTheme = matchMedia("(prefers-color-scheme: dark)");
-function applyTheme(mode) {
+let themePreference = "system";
+function applyTheme(preference) {
+  themePreference = preference;
+  const mode =
+    preference === "system" ? (systemTheme.matches ? "dark" : "light") : preference;
   document.documentElement.dataset.theme = mode;
   const next = mode === "dark" ? "light" : "dark";
   $("theme-icon").setAttribute("href", `/assets/icons.svg#${next}`);
   $("theme-toggle").setAttribute("aria-label", `Switch to ${next} theme`);
   $("theme-toggle").title = `Switch to ${next} theme`;
 }
-applyTheme(stored("vkit-theme") || (systemTheme.matches ? "dark" : "light"));
-systemTheme.addEventListener("change", (event) => {
-  if (!stored("vkit-theme")) applyTheme(event.matches ? "dark" : "light");
+applyTheme("system");
+systemTheme.addEventListener("change", () => {
+  if (themePreference === "system") applyTheme("system");
 });
 $("theme-toggle").onclick = () => {
-  const next =
-    document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  save("vkit-theme", next);
-  applyTheme(next);
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  updatePreference("theme", next);
 };
 function closeNavigation() {
   document.body.classList.remove("nav-open");
@@ -1134,11 +1837,10 @@ function collapse(collapsed) {
     collapsed ? "Expand sidebar" : "Collapse sidebar",
   );
 }
-collapse(stored("vkit-nav-collapsed") === "true");
+collapse(false);
 $("collapse-nav").onclick = () => {
   const collapsed = !document.body.classList.contains("nav-collapsed");
-  save("vkit-nav-collapsed", String(collapsed));
-  collapse(collapsed);
+  updatePreference("sidebar_collapsed", collapsed);
 };
 $("close-detail").onclick = () => $("detail-dialog").close();
 $("detail-dialog").addEventListener("click", (event) => {
@@ -1172,6 +1874,6 @@ window.addEventListener("hashchange", route);
 route();
 async function poll() {
   await refresh();
-  setTimeout(poll, 2000);
+  setTimeout(poll, (configuration?.settings.refresh_seconds || 2) * 1000);
 }
 poll();

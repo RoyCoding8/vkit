@@ -16,16 +16,11 @@ A repository's popularity does not establish that an operation is ready.
 | [OR-Tools](https://github.com/google/or-tools) | `minimize_cover` | Minimum-cost coverage of supplied required IDs, with checked selection and exact integer cost |
 | [Buf](https://github.com/bufbuild/buf) | `check_proto_compatibility` | Selected built-in compatibility category, protected configuration, captured local schemas |
 | [isl](https://github.com/Meinersbur/isl) via [islpy](https://github.com/inducer/islpy) | `compare_iteration_sets` | Equality of yielded integer-coordinate sets extracted from supported affine generators |
+| [CBMC](https://github.com/diffblue/cbmc) | `check_c_safety` | Fixed array and integer safety checks on a restricted standalone C function, with unwinding assertions and no compiler execution |
 
 These operations use the existing catalog contract. Adding an engine does not justify
 another transport, plugin loader, or command executor. Native Windows has no islpy wheel in the pinned
 2026.2.2 release. Linux and macOS must exercise that backend; Windows must report its absence accurately.
-
-## Current batch
-
-| Engine | Operation being built | Acceptance condition |
-| --- | --- | --- |
-| [CBMC](https://github.com/diffblue/cbmc) | `check_c_safety` | Fixed memory and integer safety checks on a supported standalone C function, with unwinding assertions and no compiler execution |
 
 ## Further candidates
 

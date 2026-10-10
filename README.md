@@ -82,6 +82,7 @@ are:
 - `minimize_cover`: find a minimum-cost selection covering the required IDs in a supplied matrix.
 - `check_proto_compatibility`: check captured Protobuf schemas under protected Buf compatibility rules.
 - `compare_iteration_sets`: compare the yielded coordinate sets of supported affine integer generators.
+- `check_c_safety`: check a restricted standalone C function for fixed array and integer safety properties.
 
 The computation tools use fixed algorithms and do not change the gate. Install their Python
 engines with `uv sync --extra mcp --extra engines`. See [built-in computations](docs/computations.md)
@@ -127,6 +128,7 @@ Frontend development and asset rebuild instructions are in [tools/console](tools
 | `vkit compute minimize-cover` | Optimize coverage selection under supplied integer costs |
 | `vkit compute check-proto-compatibility` | Check a fixed Protobuf compatibility category |
 | `vkit compute compare-iteration-sets` | Compare affine coordinate sets for all integer parameters |
+| `vkit compute check-c-safety` | Check fixed C safety properties with loop-completeness assertions |
 
 Every command takes `--project` (default `.`) and `--json`.
 

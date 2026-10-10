@@ -4,7 +4,6 @@ import hashlib
 import os
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -94,18 +93,27 @@ def test_division_and_shift_checks_return_traced_counterexamples(tmp_path, confi
 
 @pytest.mark.parametrize("source", [
     "int malformed( { return 1; }",
-    "#include <stdio.h>\nint main(void) { return 0; }",
-    "int unsafe(int value) { return __CPROVER_assume(value); }",
-    "int external(int value) { return helper(value); }",
-    "int state; int use_state(void) { return state; }",
-    "int uninitialized(void) { int value; return value; }",
-    "int pointer(int *value) { return *value; }",
+    "#include <stdio.h>\nint candidate(void) { return 0; }",
+    "int candidate(int value) { return __CPROVER_assume(value); }",
+    "int candidate(int value) { return helper(value); }",
+    "int state; int candidate(void) { return state; }",
+    "int candidate(void) { int value; return value; }",
+    "int candidate(int *value) { return *value; }",
     "int candidate(int value) { return (float)value; }",
     "int candidate(int value) { return (long)value; }",
     "int candidate(void) { return sizeof(double); }",
     "int candidate(void *value) { return 0; }",
     "int candidate(void *) { return 0; }",
     "int candidate(int [4]) { return 0; }",
+    "int candidate(int i) { int a[2] = {0, 0}; return (a + i) == a; }",
+    "int candidate(void) { int a[2] = {0, 0}; return (a + 3) == a; }",
+    "int candidate(void) { int a[1] = {0}; int b[1] = {0}; return a < b; }",
+    "int candidate(void) { int x = 0; return x++ + x++; }",
+    "int candidate(void) { int x = 0; return (x = 1) + x; }",
+    "int candidate(void) { int x = 0; int a[2] = {0}; return a[x++]; }",
+    "int candidate(void) { int x = x; return x; }",
+    "int candidate(void) { int a[2] = {a[1], 0}; return a[0]; }",
+    "int candidate(void) { int x = 1; { int x = x; return x; } }",
 ])
 def test_source_outside_the_supported_subset_is_unsupported(tmp_path, source):
     _source(tmp_path, "candidate.c", source)

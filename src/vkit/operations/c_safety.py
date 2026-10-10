@@ -38,6 +38,7 @@ _SAFETY_RULES = {
     "undefined shift": "undefined-shift-check",
     "overflow": "signed-overflow-check",
     "pointer dereference": "pointer-check",
+    "pointer": "pointer-check",
 }
 _SELECTED_CHECKS = [
     "bounds-check", "pointer-check", "div-by-zero-check", "signed-overflow-check",
@@ -158,12 +159,14 @@ def _validate_ast(c_ast: Any, tree: Any, function: str) -> None:
     void_type_ids = {id(function_type.type)}
     if void_parameter is not None:
         void_type_ids.add(id(void_parameter))
-    stack = [(definition, 1)]
+    stack = [(definition, 1, None, "")]
+    array_names: set[str] = set()
+    identifier_uses: list[tuple[Any, Any, str]] = []
     declarations = 0
     array_count = 0
     array_elements = 0
     while stack:
-        node, depth = stack.pop()
+        node, depth, parent, slot = stack.pop()
         node_count += 1
         if node_count > _MAX_AST_NODES or depth > _MAX_AST_DEPTH:
             raise _UnsupportedSource("source syntax exceeds the supported size or nesting limit")
@@ -171,6 +174,19 @@ def _validate_ast(c_ast: Any, tree: Any, function: str) -> None:
             raise _UnsupportedSource(f"unsupported C syntax: {type(node).__name__}")
         if isinstance(node, c_ast.ID) and "__CPROVER" in node.name:
             raise _UnsupportedSource("CBMC intrinsic identifiers are unsupported")
+        if isinstance(node, c_ast.ID):
+            identifier_uses.append((node, parent, slot))
+        mutation = isinstance(node, c_ast.Assignment) or (
+            isinstance(node, c_ast.UnaryOp) and node.op in {"++", "--", "p++", "p--"}
+        )
+        statement = isinstance(parent, c_ast.Compound) or (
+            isinstance(parent, c_ast.For) and slot in {"init", "next", "stmt"}
+        ) or (
+            isinstance(parent, (c_ast.If, c_ast.While, c_ast.DoWhile))
+            and slot in {"iftrue", "iffalse", "stmt"}
+        ) or isinstance(parent, (c_ast.Case, c_ast.Default))
+        if mutation and not statement:
+            raise _UnsupportedSource("assignments and increments must be standalone statements or for-loop updates")
         if isinstance(node, c_ast.TypeDecl):
             _scalar_type(c_ast, node, allow_void=id(node) in void_type_ids)
         if isinstance(node, c_ast.Decl):
@@ -184,7 +200,14 @@ def _validate_ast(c_ast: Any, tree: Any, function: str) -> None:
                     raise _UnsupportedSource("local storage classes, qualifiers, and bitfields are unsupported")
                 if node.init is None:
                     raise _UnsupportedSource("local variables and arrays must have explicit initializers")
+                initializer_nodes = [node.init]
+                while initializer_nodes:
+                    initializer = initializer_nodes.pop()
+                    if isinstance(initializer, c_ast.ID) and initializer.name == node.name:
+                        raise _UnsupportedSource("local initializers must not reference the variable being declared")
+                    initializer_nodes.extend(child for _, child in initializer.children())
                 if isinstance(node.type, c_ast.ArrayDecl):
+                    array_names.add(node.name)
                     array_count += 1
                     if array_count > _MAX_ARRAYS or node.type.dim is None \
                             or not isinstance(node.type.dim, c_ast.Constant) \
@@ -218,7 +241,13 @@ def _validate_ast(c_ast: Any, tree: Any, function: str) -> None:
                 raise _UnsupportedSource("only int, unsigned int, and character constants are supported")
             if len(node.value) > 128:
                 raise _UnsupportedSource("integer constants exceed the supported size limit")
-        stack.extend((child, depth + 1) for _, child in node.children())
+        stack.extend((child, depth + 1, node, name) for name, child in node.children())
+    for node, parent, slot in identifier_uses:
+        if node.name in array_names and not (
+            isinstance(parent, c_ast.ArrayRef) and slot == "name"
+            or isinstance(parent, c_ast.UnaryOp) and parent.op == "sizeof"
+        ):
+            raise _UnsupportedSource("local arrays may only be indexed directly or used with sizeof")
 
 
 def _validate_and_generate(source: bytes, function: str, parser: Any) -> bytes:

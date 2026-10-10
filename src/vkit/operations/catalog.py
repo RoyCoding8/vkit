@@ -6,6 +6,7 @@ from typing import Any
 
 from . import MAX_SOURCE_BYTES, check_rewrite, reduce_failure, simplify_function
 from .affine import compare_iteration_sets
+from .c_safety import check_c_safety
 from .contract import FileInput, Operation, operation_by_name
 from .cover import minimize_cover
 from .history import check_history
@@ -27,6 +28,25 @@ def _compare_matchsets(root: Path, old_pattern: str, new_pattern: str, alphabet:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="check_c_safety",
+        description=("Check a supported standalone C function for fixed bounds, pointer, division-by-zero, "
+                     "signed-overflow, and undefined-shift violations with CBMC under a fixed C11 LP64 model. "
+                     "SAFE requires completed checks and sufficient unwinding. COUNTEREXAMPLE returns a model "
+                     "trace. UNKNOWN preserves insufficient unwinding or unfinished work. UNSUPPORTED rejects "
+                     "other source; UNAVAILABLE means a pinned runtime cannot run. No project compiler executes. "
+                     "Does not check every form of C undefined behavior or change gate evidence."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative standalone C source"},
+            "function": {"type": "string", "minLength": 1},
+            "unwind": {"type": "integer", "minimum": 1, "maximum": 256, "default": 16},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path", "function"),
+        handler=check_c_safety,
+        outcomes={"SAFE": 0, "COUNTEREXAMPLE": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="compare_iteration_sets",

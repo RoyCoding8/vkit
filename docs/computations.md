@@ -16,8 +16,9 @@ uv sync --extra mcp --extra engines
 The Python engines are pinned to [cvc5 1.4.2](https://cvc5.github.io/docs/cvc5-1.4.2/),
 [egglog 13.2.0](https://egglog-python.readthedocs.io/stable/), greenery 4.2.2,
 [OR-Tools 9.15.6755](https://developers.google.com/optimization/cp/cp_solver), and
-[islpy 2026.2.2](https://documen.tician.de/islpy/). The islpy dependency is installed on Linux and macOS;
-the pinned release has no native Windows wheel. Perses, Buf, and the compiled Porcupine helper are
+[islpy 2026.2.2](https://documen.tician.de/islpy/), with pycparser 3.0 for the C frontend.
+The islpy dependency is installed on Linux and macOS;
+the pinned release has no native Windows wheel. Perses, Buf, CBMC, and the compiled Porcupine helper are
 configured separately. The [engine queue](engine-roadmap.md) records the remaining integration candidates.
 
 ## Check a replacement
@@ -318,16 +319,67 @@ in a directional difference. `UNSUPPORTED` rejects source outside the model. `UN
 unfinished computation. `UNAVAILABLE` means the pinned islpy backend cannot run, including its absence
 on native Windows. Source digests bind the result to both inputs.
 
+## Check standalone C safety
+
+`check_c_safety` parses one standalone C function, admits a restricted syntax, and checks a normalized
+snapshot with CBMC 6.11.0. Parameters are unconstrained scalar inputs. The fixed model is C11 on x86-64
+Linux LP64, little-endian, with 32-bit `int`. No repository compiler, preprocessor, or executable runs.
+
+```powershell
+vkit compute check-c-safety --project . --path src/bump.c --function bump --unwind 16 --json
+```
+
+The MCP tool accepts `path`, `function`, optional `unwind` (1–256, default 16), and optional
+`timeout_seconds` (1–60, default 10). Requests cannot change checks, supply assumptions, or select flags.
+The fixed properties are array bounds, pointer checks, division by zero, signed integer overflow,
+undefined shifts, and loop unwinding assertions.
+
+The source must contain exactly one function definition with an explicit prototype. Parameters and
+locals support unqualified `int`, `signed int`, `unsigned int`, and `_Bool`; the return may also be `void`.
+Locals require explicit initializers that do not reference the variable being declared.
+Fixed one-dimensional local arrays may only be indexed directly or
+used with `sizeof`. Assignments and increments must be standalone statements or for-loop updates.
+Integer expressions, branches, loops, and switches are supported. Globals, includes, directives, calls,
+pointers, structs, attributes, and CBMC intrinsic identifiers are rejected. CBMC performs type checking
+after the syntax boundary. Rejection is `UNSUPPORTED`.
+
+`SAFE` means all generated properties succeeded and all loops were completely unwound under the fixed
+checks and model. It does not establish absence of every C undefined behavior: uninitialized reads are
+not checked, and an explicit initializer alone does not establish definite initialization. It does not
+prove functional correctness, termination, portability, or safety of callers or the surrounding program.
+`COUNTEREXAMPLE` includes a CBMC model trace for a recognized failed safety property. The trace is not an
+independent replay of compiled code. `UNKNOWN` preserves exhausted loop bounds, unfinished checks,
+timeouts, and malformed backend results. `UNAVAILABLE` means the pinned parser or configured runtime
+cannot run.
+
+Source and normalized-snapshot SHA-256 digests bind the answer to the checked input. Diagnostics use
+normalized-snapshot line numbers; results with failed or unfinished properties include `snapshot_source`
+so those lines can be inspected. Limits are 64 KiB of source, 8,192 AST nodes, depth 128, 32 parameters,
+64 locals, 16 arrays, 256 elements per array, and 1,024 array elements total. Backend output over 8 MiB is
+rejected after capture. The native process deadline covers version detection and solving. Source parsing,
+filesystem reads, and executable hashing are synchronous outside that deadline.
+
+Obtain CBMC from the [6.11.0 release](https://github.com/diffblue/cbmc/releases/tag/cbmc-6.11.0), verify
+the release asset, and put the extracted executable under the service owner's control. Configure its
+absolute path and executable SHA-256; requests cannot choose either. For the Windows release executable:
+
+```powershell
+$env:VKIT_CBMC_BIN = 'C:/vkit-runtime/cbmc-6.11.0.exe'
+$env:VKIT_CBMC_SHA256 = 'e2f6a110906b7c5998f31617c89220f9840735250333c90c56ef467c667d8bda'
+```
+
+CI exercises release binaries on Linux and Windows. macOS CI checks the unavailable-runtime behavior.
+
 ## Protect the service
 
 These APIs expose fixed operations. They contain no method for changing the parser, solver translation,
 rewrite rules, or failure predicate. To enforce that boundary against an agent with a shell, install vkit,
-its dependencies, the Perses JAR, the Buf binary, and the history helper under a separate owner or in a service container
+its dependencies, the Perses JAR, Buf and CBMC binaries, and the history helper under a separate owner or in a service container
 the agent cannot write.
 Give the service access to candidate repository files. Keep its interpreter, working directory, import path, and environment
 under the service owner's control. Running an editable vkit checkout as the same operating-system user as
 the agent does not enforce immutability. This release does not provision that deployment isolation.
 
-CLI exit codes are 0 for `PROVED`, `REDUCED`, `EQUIVALENT`, `LINEARIZABLE`, `OPTIMAL`, or `COMPATIBLE`;
+CLI exit codes are 0 for `PROVED`, `REDUCED`, `EQUIVALENT`, `LINEARIZABLE`, `OPTIMAL`, `COMPATIBLE`, or `SAFE`;
 1 for `COUNTEREXAMPLE`, `NOT_LINEARIZABLE`, `INFEASIBLE`, or `BREAKING`; 2 for invalid or unsupported requests;
 3 for `UNKNOWN`, `UNRESOLVED`, or `FEASIBLE`; 4 for an internal operation contract error; and 5 for `UNAVAILABLE`.

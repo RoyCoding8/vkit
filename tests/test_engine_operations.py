@@ -83,3 +83,24 @@ def test_affine_generator_comparison_through_cli_and_mcp(make_project):
         assert error and "solver_assertions" in refused["error"]
     finally:
         client.close()
+
+
+def test_c_safety_cli_and_mcp_preserve_fixed_checks(make_project):
+    project = _project(make_project, {"bump.c": "int bump(int value) { return value + 1; }"})
+    code, result = vkit(project, "compute", "check-c-safety", "--path", "bump.c", "--function", "bump")
+    expected = "COUNTEREXAMPLE" if os.environ.get("VKIT_CBMC_BIN") else "UNAVAILABLE"
+    assert (code, result["status"]) == (1 if expected == "COUNTEREXAMPLE" else 5, expected)
+    if expected == "COUNTEREXAMPLE":
+        assert any(item["property_class"] == "overflow" and item["status"] == "FAILURE"
+                   for item in result["diagnostics"])
+        assert "int bump(int value)" in result["snapshot_source"]
+    client = McpClient(project)
+    try:
+        gate_before, _ = client.call("gate")
+        result, error = client.call("check_c_safety", path="bump.c", function="bump")
+        assert not error and result["status"] == expected
+        assert client.call("gate")[0] == gate_before
+        refused, error = client.call("check_c_safety", path="bump.c", function="bump", disable_checks=True)
+        assert error and "disable_checks" in refused["error"]
+    finally:
+        client.close()

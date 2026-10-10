@@ -667,14 +667,11 @@ function runHistory() {
 }
 function operationInitialDraft(operation) {
   const schema = operation.input_schema || {},
-    required = new Set(schema.required || []),
     properties = schema.properties || {};
   return Object.fromEntries(
     Object.entries(properties).map(([name, property]) => {
       let value = "";
       if (Object.hasOwn(property, "default")) value = property.default;
-      else if (required.has(name) && property.enum?.length)
-        value = property.enum[0];
       return [
         name,
         typeof value === "object" && value !== null
@@ -694,7 +691,7 @@ function operationField(name, property, value, index, required) {
   let input;
   if (Array.isArray(property.enum)) {
     input = el("select");
-    if (!required) {
+    if (!required || !Object.hasOwn(property, "default")) {
       const placeholder = el("option", "Choose an option");
       placeholder.value = "";
       input.append(placeholder);
@@ -774,6 +771,13 @@ function parseOperationArguments(operation) {
         !Object.hasOwn(property, "default")
       )
         continue;
+      if (
+        isRequired &&
+        raw === "" &&
+        !touched[name] &&
+        !Object.hasOwn(property, "default")
+      )
+        return { error: `Choose a valid ${name.replaceAll("_", " ")}.` };
       const value = property.enum.find((item) => String(item) === raw);
       if (value === undefined) {
         if (!isRequired && raw === "") continue;
@@ -1224,15 +1228,22 @@ async function persistSettings(candidate, source = "form") {
     settingsDraft = Object.fromEntries(
       Object.keys(configuration.settings_defaults).map((key) => [
         key,
-        source === "preference" && draftAtRequest[key] !== previous[key]
-          ? draftAtRequest[key]
-          : settingsDraft[key] !== draftAtRequest[key]
-            ? settingsDraft[key]
+        settingsDraft[key] !== draftAtRequest[key]
+          ? settingsDraft[key]
+          : source === "preference" && draftAtRequest[key] !== previous[key]
+            ? draftAtRequest[key]
             : response.settings[key],
       ]),
     );
     applySettings(settingsDraft);
-    settingsMessage = source === "reset" ? "Defaults saved." : "Settings saved.";
+    const hasUnsavedChanges = Object.keys(response.settings).some(
+      (key) => settingsDraft[key] !== response.settings[key],
+    );
+    settingsMessage = hasUnsavedChanges
+      ? "Settings saved. Unsaved changes remain."
+      : source === "reset"
+        ? "Defaults saved."
+        : "Settings saved.";
     if (source === "preference") setPreferenceFeedback(settingsMessage);
   } catch (error) {
     settingsMessage = `Could not save settings: ${error.message}`;

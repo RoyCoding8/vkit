@@ -1,9 +1,14 @@
 # Console assets
 
-The read-only console uses official Material Web components, Material 3 color
-roles generated from vkit's blue, and self-hosted Roboto. Built assets are
-checked into `src/vkit/console-assets` and ship in the Python package. Running
-the console needs neither Node nor an internet connection.
+The local console uses official Material Web components, Material 3 color roles
+generated from vkit's blue, and self-hosted Roboto. It can run selected checks,
+cancel active runs, and invoke installed computations. Computation forms use
+each operation's input schema, and results retain their status and scope. These
+actions do not change the verification gate.
+
+Built assets are checked into `src/vkit/console-assets` and ship in the Python
+package. Running the console needs neither Node nor an internet connection.
+Console preferences are saved in `.git/vkit/config.json` for the project.
 
 To rebuild from the pinned dependencies:
 

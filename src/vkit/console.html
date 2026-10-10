@@ -35,13 +35,14 @@
         <div class="sidebar-bottom">
           <div class="sidebar-note">
             <span class="connection-dot"></span
-            ><span>Local console<span id="version">Read-only</span></span>
+            ><span>Local console<span id="version">Connecting</span></span>
           </div>
           <md-text-button
             id="collapse-nav"
             aria-label="Collapse sidebar"
             aria-expanded="true"
             aria-controls="sidebar"
+            disabled
           >
             <svg slot="icon" class="icon" aria-hidden="true">
               <use href="/assets/icons.svg#collapse"></use></svg
@@ -72,7 +73,6 @@
             ><strong id="breadcrumb">Overview</strong>
           </div>
           <div class="topbar-actions">
-            <span class="read-only">Read-only</span>
             <md-icon-button
               id="refresh"
               aria-label="Refresh evidence"
@@ -84,6 +84,7 @@
               id="theme-toggle"
               aria-label="Switch color theme"
               title="Switch color theme"
+              disabled
               ><svg class="icon" aria-hidden="true">
                 <use id="theme-icon" href="/assets/icons.svg#dark"></use></svg
             ></md-icon-button>
@@ -93,6 +94,13 @@
           id="connection-error"
           class="connection-error"
           role="status"
+          hidden
+        ></div>
+        <div
+          id="preference-feedback"
+          class="preference-feedback"
+          role="status"
+          aria-live="polite"
           hidden
         ></div>
         <main id="content" tabindex="-1" aria-busy="true">

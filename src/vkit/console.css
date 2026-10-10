@@ -448,6 +448,9 @@ p {
   grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
   gap: 24px;
 }
+.overview-grid + .panel {
+  margin-top: 24px;
+}
 .stack {
   display: grid;
   gap: 24px;

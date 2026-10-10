@@ -38,6 +38,12 @@ class Refusal(Exception):
 
 
 @dataclass(frozen=True)
+class _RunThread:
+    check_id: str
+    thread: threading.Thread
+
+
+@dataclass(frozen=True)
 class Tool:
     name: str
     description: str
@@ -67,7 +73,8 @@ def _check(arguments: dict[str, Any], schema: dict[str, Any]) -> None:
 @dataclass
 class Server:
     root: Path
-    threads: dict[str, threading.Thread] = field(default_factory=dict)
+    threads: dict[str, _RunThread] = field(default_factory=dict)
+    _start_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def context(self) -> query.Context:
         return query.open_context(self.root)
@@ -90,12 +97,16 @@ class Server:
     def start(self, ctx: query.Context, check_id: str) -> str:
         from ..runner import run_check
 
-        run_id = new_run_id()
-        thread = threading.Thread(target=run_check, args=(ctx.project, ctx.require_manifest(), check_id),
-                                  kwargs={"store": ctx.store, "run_id": run_id}, daemon=True)
-        thread.start()
-        self.threads[run_id] = thread
-        return run_id
+        with self._start_lock:
+            for run_id, running in self.threads.items():
+                if running.check_id == check_id and running.thread.is_alive():
+                    return run_id
+            run_id = new_run_id()
+            thread = threading.Thread(target=run_check, args=(ctx.project, ctx.require_manifest(), check_id),
+                                      kwargs={"store": ctx.store, "run_id": run_id}, daemon=True)
+            thread.start()
+            self.threads[run_id] = _RunThread(check_id, thread)
+            return run_id
 
 
 def _status(server: Server, args: dict[str, Any]) -> Any:
@@ -139,7 +150,7 @@ def _check_run(server: Server, args: dict[str, Any]) -> Any:
     run_ids = [running.get(c) or server.start(ctx, c) for c in wanted]
     deadline = time.monotonic() + min(max(int(args.get("wait_seconds", 20)), 0), MAX_WAIT_SECONDS)
     while time.monotonic() < deadline and any(
-            server.threads.get(r) is not None and server.threads[r].is_alive() for r in run_ids):
+            server.threads.get(r) is not None and server.threads[r].thread.is_alive() for r in run_ids):
         time.sleep(0.2)
     return {"runs": [_summary(ctx, r) for r in run_ids],
             "note": "poll run_get for runs still running" if any(

@@ -704,8 +704,6 @@ function operationField(name, property, value, index, required) {
   } else if (property.type === "string" && name !== "replacement") {
     input = el("input");
     input.type = "text";
-    if (property.minLength != null) input.minLength = property.minLength;
-    if (property.maxLength != null) input.maxLength = property.maxLength;
   } else if (property.type === "integer") {
     input = el("input");
     input.type = "number";
@@ -717,7 +715,6 @@ function operationField(name, property, value, index, required) {
     input.rows = name === "replacement" ? 10 : 5;
     input.spellcheck = false;
     if (property.minLength != null) input.minLength = property.minLength;
-    if (property.maxLength != null) input.maxLength = property.maxLength;
     if (property.type !== "string")
       input.setAttribute("aria-describedby", `${id}-help`);
   }
@@ -756,7 +753,7 @@ function parseOperationArguments(operation) {
         !Object.hasOwn(property, "default")
       )
         continue;
-      if (property.minLength != null && raw.length < property.minLength)
+      if (property.minLength != null && [...raw].length < property.minLength)
         return {
           error: `${name.replaceAll("_", " ")} must contain at least ${property.minLength} characters.`,
         };

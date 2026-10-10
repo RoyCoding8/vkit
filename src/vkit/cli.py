@@ -372,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     for operation in OPERATIONS:
         _add_operation_parser(compute, operation)
 
-    console = command(sub, "console", "serve a read-only console on 127.0.0.1")
+    console = command(sub, "console", "serve the interactive console on 127.0.0.1")
     console.add_argument("--port", type=int, default=8765, help="0 lets the OS pick a free port")
     console.add_argument("--no-browser", action="store_true")
     return parser

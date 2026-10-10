@@ -127,7 +127,7 @@
     },
     {
       "id": "console",
-      "behavior": "A read-only page on 127.0.0.1 with the gate, checks, runs and their logs, proposals and features.",
+      "behavior": "A local console for evidence, registered check runs and cancellation, built-in computations, and saved display settings.",
       "how_to_reach": [
         "vkit console --project <repo>"
       ],

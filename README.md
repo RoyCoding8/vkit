@@ -97,10 +97,14 @@ hook holds the session while a check the agent can rerun is stale or failing.
 vkit console --project .
 ```
 
-This opens a read-only workspace on `127.0.0.1:8765`. The collapsible sidebar provides an overview,
-check definitions and their limits, run outcomes and logs, verification methods, feature coverage,
-pending proposals, and project setup. It follows the system's light or dark theme; you can change
-the theme in the top bar. Assets ship locally. Pass `--port 0` to pick a free port.
+This opens a workspace on `127.0.0.1:8765`. Run registered checks, cancel active runs, and use the
+built-in computations from their catalog-generated forms. The sidebar also shows check definitions,
+run outcomes and logs, verification methods, feature coverage, and pending proposals.
+
+Setup & tools saves the theme, sidebar state, refresh interval, and run-history limit to
+`<git common dir>/vkit/config.json`, usually `.git/vkit/config.json`. Git metadata is excluded from
+commits automatically, and settings survive console restarts. Check acceptance stays in the CLI.
+Assets ship locally. Pass `--port 0` to pick a free port.
 
 Frontend development and asset rebuild instructions are in [tools/console](tools/console/README.md).
 
@@ -118,7 +122,7 @@ Frontend development and asset rebuild instructions are in [tools/console](tools
 | `vkit features` | Show the feature map and audit it |
 | `vkit doctor` | Report missing tools |
 | `vkit project inspect` | Find the test commands a repository already declares |
-| `vkit console` | Serve the read-only console |
+| `vkit console` | Browse evidence, run checks and computations, and save console settings |
 | `vkit mcp serve` | Serve MCP over stdio |
 | `vkit compute check-rewrite` | Check equivalence of two supported Python functions |
 | `vkit compute simplify-function` | Suggest a replacement and prove its equivalence |

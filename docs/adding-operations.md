@@ -1,7 +1,7 @@
 # Add a built-in operation
 
 Add an operation by implementing its fixed question and declaring its contract in the installed catalog.
-The CLI and MCP derive their inputs and dispatch from that declaration.
+The CLI, MCP, and console derive their inputs and dispatch from that declaration.
 
 ## Define the question
 
@@ -63,7 +63,9 @@ Operation(
 `_compare_matchsets` adapts the existing result object to the shared JSON handler contract.
 A handler that already accepts the root and returns a JSON object needs no forwarding wrapper.
 
-Do not add an operation-specific branch to the CLI or MCP.
+Do not add an operation-specific branch to the CLI, MCP, or console.
+The console generates fields for strings, integers, and enums; other input types use JSON text.
+It displays the returned model scope, witnesses, and full JSON result.
 The existing `--replacement-file` option is a bounded UTF-8 file adapter for the `replacement` input.
 Other string inputs use their text directly unless the contract declares a file adapter.
 

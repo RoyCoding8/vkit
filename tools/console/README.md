@@ -8,7 +8,8 @@ actions do not change the verification gate.
 
 Built assets are checked into `src/vkit/console-assets` and ship in the Python
 package. Running the console needs neither Node nor an internet connection.
-Console preferences are saved in `.git/vkit/config.json` for the project.
+Console preferences are saved under the repository's Git common directory in
+`vkit/config.json`, usually `.git/vkit/config.json`.
 
 To rebuild from the pinned dependencies:
 

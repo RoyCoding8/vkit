@@ -85,6 +85,21 @@ Everything lives under `<git common dir>/vkit/`, so every worktree of a reposito
 records and logs, evidence pointers, accepted digests, baselines and proposals. A run holds an OS file lock while
 it lives. A run that reads as `running` but whose lock is free is reported as `interrupted`.
 
+## Local console
+
+`vkit console --project <repo>` serves the console on `127.0.0.1`. It can start registered checks,
+request cancellation, and invoke installed computations. Starting a check preserves the CLI/MCP
+acceptance requirement. Computation results do not create gate evidence. Accepting definitions and
+applying proposals remain CLI actions.
+
+Setup & tools saves display settings in `<git common dir>/vkit/config.json`. The file is local Git
+metadata, shared by the repository's worktrees and excluded from commits. It controls the theme,
+collapsed sidebar, refresh interval, and run-history limit. It cannot change verifier rules, executable
+paths, check definitions, or accepted digests.
+
+Write requests require the console's same-origin session token. The server binds only to loopback;
+it is a local operator interface, not a remote multi-user administration service.
+
 ## Exit codes
 
 0 PASS or READY, 1 FAIL or REJECTED, 2 invalid request, 3 BLOCKED, 4 internal error, 5 unavailable.

@@ -19,6 +19,7 @@ from .history import check_history
 from .migrations import compare_migrations
 from .regex_cost import analyze_regex_cost
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
+from .sql_equivalence import compare_sql_queries
 
 _EXPRESSION = {
     "path": {"type": "string", "description": "repository-relative Python source file"},
@@ -48,6 +49,21 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="compare_sql_queries",
+        description=("Decide exact SQL SELECT bag equivalence within captured finite database bounds using "
+                     "pinned SQLGlot and cvc5. Models nullable integer columns, WHERE and INNER JOIN with "
+                     "three-valued NULL logic and duplicate rows. Independently replays every distinguishing "
+                     "database in SQLite. EQUIVALENT_WITHIN_BOUNDS concerns the declared row/value bounds. "
+                     "Rejects unmodeled SQL clauses and executes only canonical validated read-only queries."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 bounded SQL query pair"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path",), handler=compare_sql_queries,
+        outcomes={"EQUIVALENT_WITHIN_BOUNDS": 0, "COUNTEREXAMPLE": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="compare_rational_expressions",

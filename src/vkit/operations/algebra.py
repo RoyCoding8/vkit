@@ -170,7 +170,10 @@ def _calculate(bundle: dict[str, Any]) -> dict[str, Any]:
 
 def _worker() -> None:
     try:
-        bundle = _validate(json.loads(sys.stdin.read(MAX_BYTES + 1)))
+        raw = sys.stdin.buffer.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            raise ValueError("worker input exceeded its byte limit")
+        bundle = _validate(json.loads(raw))
         result = _calculate(bundle)
     except _Limit as exc:
         result = {"status": "UNKNOWN", "reason": str(exc)}
@@ -205,7 +208,7 @@ def compare_rational_expressions(root: Path, path: str, timeout_seconds: int = 1
         completed = subprocess.run(
             [sys.executable, "-I", "-m", "vkit.operations.algebra"],
             input=encode_json(bundle, max_bytes=MAX_BYTES), text=True, encoding="utf-8",
-            capture_output=True, timeout=timeout_seconds, **hidden_window(),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout_seconds, **hidden_window(),
         )
         if completed.returncode or len(completed.stdout.encode("utf-8")) > MAX_OUTPUT:
             return {**result, "status": "UNKNOWN", "reason": "algebra worker did not produce bounded evidence"}

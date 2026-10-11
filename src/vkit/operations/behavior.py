@@ -180,7 +180,18 @@ def _replay(bundle: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]
 
 def _worker() -> None:
     try:
-        request = json.loads(sys.stdin.read(MAX_BYTES + 1))
+        raw = sys.stdin.buffer.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            raise ValueError("worker input exceeded its byte limit")
+        request = json.loads(raw)
+        if not isinstance(request, dict) or request.get("mode") not in {"search", "replay"}:
+            raise ValueError("unknown worker mode")
+        expected = {"bundle", "mode", "timeout_seconds"} if request["mode"] == "search" else {"bundle", "mode", "arguments"}
+        if set(request) != expected:
+            raise ValueError("unknown or missing worker fields")
+        if request["mode"] == "search" and (type(request["timeout_seconds"]) is not int
+                                            or not 1 <= request["timeout_seconds"] <= 60):
+            raise ValueError("invalid worker search deadline")
         bundle = _validate(request["bundle"])
         if request["mode"] == "search":
             result = _search(bundle, request["timeout_seconds"])
@@ -207,8 +218,8 @@ def find_behavioral_difference(root: Path, path: str, timeout_seconds: int = 10)
     except PackageNotFoundError:
         installed = None
     result["backend"] = {"name": "crosshair-tool", "version": installed, "python": sys.version.split()[0]}
-    if installed != BACKEND_VERSION:
-        return {**result, "status": "UNAVAILABLE", "reason": "pinned CrossHair 0.0.111 is required"}
+    if installed != BACKEND_VERSION or sys.implementation.name != "cpython":
+        return {**result, "status": "UNAVAILABLE", "reason": "pinned CrossHair 0.0.111 on CPython is required"}
     deadline = time.monotonic() + timeout_seconds
     from ..nowindow import hidden_window
 
@@ -218,11 +229,15 @@ def find_behavioral_difference(root: Path, path: str, timeout_seconds: int = 10)
             raise TimeoutError("behavior deadline exceeded")
         process = subprocess.run([sys.executable, "-I", "-m", "vkit.operations.behavior"],
                                  input=encode_json({"bundle": bundle, **request}, max_bytes=MAX_BYTES),
-                                 capture_output=True, text=True, encoding="utf-8", timeout=remaining,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 text=True, encoding="utf-8", timeout=remaining,
                                  **hidden_window())
         if process.returncode or len(process.stdout.encode("utf-8")) > MAX_OUTPUT:
             raise ValueError("behavior worker did not produce bounded evidence")
-        return json.loads(process.stdout)
+        output = json.loads(process.stdout)
+        if not isinstance(output, dict):
+            raise ValueError("behavior worker returned a non-object result")
+        return output
 
     try:
         candidate = run({"mode": "search", "timeout_seconds": max(1, timeout_seconds // 3)})

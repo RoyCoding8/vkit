@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -80,3 +82,26 @@ def test_unsupported_execution_paths_are_rejected_before_worker(tmp_path, source
 def test_annotation_mismatch_is_rejected(tmp_path):
     assert run(tmp_path, "def f(x: int) -> int:\n    return x\n",
                "def f(x: str) -> int:\n    return len(x)\n")["status"] == "UNSUPPORTED"
+
+
+def test_non_cpython_runtime_is_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.implementation, "name", "other")
+    source = "def f(x: int) -> int:\n    return x\n"
+    assert run(tmp_path, source, source)["status"] == "UNAVAILABLE"
+
+
+def test_invalid_worker_output_never_becomes_a_counterexample(tmp_path, monkeypatch):
+    monkeypatch.setattr("vkit.operations.behavior.subprocess.run", lambda *a, **k:
+                        subprocess.CompletedProcess(a[0], 0, stdout="[]"))
+    source = "def f(x: int) -> int:\n    return x\n"
+    assert run(tmp_path, source, source)["status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("payload", ["x" * 40_001, '{"mode":"unexpected"}',
+                                      '{"mode":"search","bundle":{},"timeout_seconds":1,"extra":true}'],
+                         ids=["oversized", "unknown-mode", "unknown-field"])
+def test_direct_worker_rejects_oversize_or_unknown_requests(payload):
+    completed = subprocess.run([sys.executable, "-I", "-m", "vkit.operations.behavior"],
+                               input=payload, text=True, capture_output=True, timeout=10)
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout)["status"] == "UNKNOWN"

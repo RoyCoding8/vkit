@@ -32,9 +32,10 @@ Grammar-constrained synthesis also reuses cvc5 and the existing expression front
 Recheck 4.5.0 is installed separately with a protected Node helper; its setup and scope appear in
 [regex backtracking complexity](captured-models.md#regex-backtracking-complexity).
 
-The engine extra also installs SymPy 1.14.0 and CrossHair 0.0.111. See
-[exact rational expressions](algebra-model.md) and [concrete Python differences](behavior-model.md)
-for their closed input languages, checked results, and resource limits.
+The engine extra also installs SymPy 1.14.0, CrossHair 0.0.111 and SQLGlot 30.22.0. See
+[exact rational expressions](algebra-model.md), [concrete Python differences](behavior-model.md)
+and [bounded SQL equivalence](sql-model.md) for their closed input languages, checked results,
+and resource limits.
 
 ## Check a replacement
 

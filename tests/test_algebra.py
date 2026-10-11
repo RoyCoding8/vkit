@@ -81,3 +81,13 @@ def test_missing_pin_is_unavailable(tmp_path, monkeypatch):
 def test_expression_swell_stops_without_identity_claim(tmp_path):
     large = {"pow": [{"pow": [{"pow": [var(), 8]}, 8]}, 8]}
     assert run(tmp_path, large, large)["status"] == "UNKNOWN"
+
+
+def test_incorrect_backend_normal_form_is_not_accepted(monkeypatch):
+    import sympy
+    from vkit.operations.algebra import _calculate
+
+    monkeypatch.setattr(sympy, "cancel", lambda _: sympy.Integer(1))
+    result = _calculate({"version": 1, "variables": ["x"], "before": var(), "after": var()})
+    assert result["status"] == "UNKNOWN"
+    assert "failed exact coefficient verification" in result["reason"]

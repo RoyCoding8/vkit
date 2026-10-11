@@ -584,6 +584,8 @@ Source: [rr](https://rr-project.org/).
 
 ### 34. Scheduling, blocking, and resource facts from traces
 
+Implemented recording profile: [`explain_trace_interval`](trace-model.md) captures a bounded native Perfetto trace and queries fixed scheduler tables with the package-pinned native processor. It reports clipped state durations, loss, gaps and segment samples. Recording completeness, clock synchronization and causality are not proved.
+
 Proposed call: `explain_trace_interval(trace, interval, profile)`.
 
 Ask how much of a captured interval was running, blocked, or attributable to supported recorded activities. Return events and interval arithmetic that support each observation.

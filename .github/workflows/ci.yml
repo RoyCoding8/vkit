@@ -229,5 +229,13 @@ jobs:
           echo "VKIT_GAPPA_SHA256=$(sha256sum "$RUNNER_TEMP/gappa" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
           echo "VKIT_REQUIRE_GAPPA_ENGINE=1" >> "$GITHUB_ENV"
       - run: uv sync --python 3.11 --extra test --extra engines
+      - name: Prefetch the package-pinned Trace Processor
+        shell: python
+        run: |
+          import os
+          import subprocess
+          subprocess.run(["uv", "run", "python", "-c", "from perfetto.prebuilts.manifests.trace_processor_shell import TRACE_PROCESSOR_SHELL_MANIFEST; from perfetto.prebuilts.perfetto_prebuilts import get_perfetto_prebuilt; print(get_perfetto_prebuilt(TRACE_PROCESSOR_SHELL_MANIFEST))"], check=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write("VKIT_REQUIRE_TRACE_ENGINE=1\n")
       - run: uv run pytest -ra
       - run: uv run python scripts/e2e.py

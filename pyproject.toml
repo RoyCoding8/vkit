@@ -31,6 +31,7 @@ engines = [
     "sympy==1.14.0",
     "crosshair-tool==0.0.111",
     "sqlglot==30.22.0",
+    "perfetto==0.58.2",
     "islpy==2026.2.2; sys_platform != 'win32'",
 ]
 test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5", "hypothesis>=6.100"]

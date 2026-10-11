@@ -16,7 +16,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 10 | Exact finite protocol-model exploration | Instrumented application schedule exploration |
 | 11 | Closed Python behavior-difference witnesses | Broader effects and execution models |
 | 12 | Open | Interprocedural lifetime analysis with captured compilation |
-| 13 | TypeScript declaration profile under integration | Native ABI analysis and additional languages |
+| 13 | TypeScript declaration profile integrated | Native ABI analysis and additional languages |
 | 14 | Pure integer/boolean three-way relational merge checks | Effects and broader language frontends |
 | 15 | Bounded SQL bag-query comparison | Broader SQL semantics and unbounded equivalence |
 | 16 | Open | Parser/serializer disagreement campaigns |

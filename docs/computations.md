@@ -12,6 +12,8 @@ Both questions share `analyze_roundoff` and its exact rational DAG input.
 
 The [`typescript-api` compatibility profile](typescript-api-model.md) extends `compare_contracts` with pinned compiler checks over captured local declaration files.
 
+For scheduler facts in a supplied recording, see the [Perfetto trace model](trace-model.md) and its preinstalled native processor requirement.
+
 Install the optional Python engines in the environment that runs vkit.
 
 ```powershell

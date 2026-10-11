@@ -28,6 +28,7 @@ from .semantic_merge import check_semantic_merge
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
 from .sql_equivalence import compare_sql_queries
 from .termination import analyze_loop_termination
+from .traces import explain_trace_interval
 from .wheel_artifacts import compare_wheels
 from .workloads import compare_workload_cost
 
@@ -59,6 +60,25 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="explain_trace_interval",
+        description=("Measure fixed scheduler-state facts for a captured Perfetto trace, a half-open normalized "
+                     "nanosecond interval and a recorded OS thread ID. Reports clipped running/runnable/blocked "
+                     "durations, gaps, overlaps, sampled segments and reported trace loss. Requires a preinstalled "
+                     "SHA-pinned native Trace Processor. These are facts about the recording, not causality "
+                     "or proof that the recorder observed every relevant event."),
+        properties={
+            "path": {"type": "string", "minLength": 1},
+            "start_ns": {"type": "integer", "minimum": -(1 << 61), "maximum": 1 << 61},
+            "end_ns": {"type": "integer", "minimum": -(1 << 61), "maximum": 1 << 61},
+            "tid": {"type": "integer", "minimum": 0, "maximum": (1 << 63) - 1},
+            "upid": {"type": "integer", "minimum": 0, "maximum": (1 << 63) - 1},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120, "default": 30},
+        },
+        required=("path", "start_ns", "end_ns", "tid"), handler=explain_trace_interval,
+        outcomes={"MEASURED": 0, "INCOMPLETE": 3, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="analyze_roundoff",

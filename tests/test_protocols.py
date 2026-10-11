@@ -24,12 +24,12 @@ def test_protocol_operation_cli_and_mcp(make_project):
              "variables": {"x": {"domain": [0], "initial": [0], "durability": "durable"}},
              "transitions": [], "invariants": [], "crash_recovery": False, "check_deadlock": False}
     project = make_project({"model.json": json.dumps(model)}, [], accept=False)
-    code, body = vkit(project, "compute", "check-protocol-model", "--path", "model.json")
+    code, body = vkit(project, "compute", "check-protocol-model", "--path", "model.json", "--timeout-seconds", "60")
     assert body["status"] == "EXHAUSTIVE", body.get("detail")
     assert (code, body["status"], body["states"]) == (0, "EXHAUSTIVE", 1)
     client = McpClient(project)
     try:
-        body, error = client.call("check_protocol_model", path="model.json")
+        body, error = client.call("check_protocol_model", path="model.json", timeout_seconds=60)
         assert not error and body["status"] == "EXHAUSTIVE" and body["reference_saturation"] == "exact"
     finally:
         client.close()

@@ -42,6 +42,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | [SymPy](https://github.com/sympy/sympy) | `compare_rational_expressions` | Rational-function identity over exact coefficients, independently checked by sparse polynomial arithmetic with original division guards |
 | cvc5 and vkit's pure function frontend | `check_semantic_merge` | All-input scalar return preservation across captured base/left/right/merged functions, with independent witness evaluation |
 | cvc5 and integer loop extraction | `analyze_loop_termination` | Checked linear rankings over all guarded states; replayed fixed-point nontermination witnesses; bounded synthesis may remain unknown |
+| Approved scenario drivers and paired bootstrap analysis | `compare_workload_cost` | Alternating before/candidate campaigns in fresh workspaces with captured harness bytes, raw measurements and uncertainty intervals |
 
 These operations use the existing catalog contract. Adding an engine does not justify
 another transport, plugin loader, or command executor. Native Windows has no islpy wheel in the pinned

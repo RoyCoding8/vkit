@@ -399,6 +399,8 @@ Source: [Batfish forwarding-change validation](https://batfish.readthedocs.io/en
 
 ### 21. Paired workload cost comparison
 
+Implemented: [`compare_workload_cost`](workload-model.md) captures a currently approved passing scenario check, overlays only declared subject bytes from a local immutable commit, and runs alternating paired measurements in fresh workspaces. Returns raw observations and bootstrap uncertainty, not a deterministic performance guarantee.
+
 Proposed call: `compare_workload_cost(before, after, workloads, measurement_profile)`.
 
 Ask which measured workloads exceed a declared cost-change threshold under the recorded experiment. Return raw samples, workload identities, environment metadata, uncertainty, and whether noise prevents a useful conclusion.

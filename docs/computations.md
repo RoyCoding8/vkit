@@ -44,6 +44,8 @@ abstract installation mappings and metadata without importing or installing pack
 functions and independently replays every violating input against their return-value models.
 [Integer loop termination](termination-model.md) checks synthesized rankings over all supported
 guarded states and independently replays fixed-point nontermination witnesses.
+[Paired workload comparison](workload-model.md) reruns an approved scenario driver against
+captured current and committed subject bytes, reporting measurements and statistical uncertainty.
 
 ## Check a replacement
 

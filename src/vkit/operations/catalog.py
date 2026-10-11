@@ -24,6 +24,7 @@ from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
 from .sql_equivalence import compare_sql_queries
 from .termination import analyze_loop_termination
 from .wheel_artifacts import compare_wheels
+from .workloads import compare_workload_cost
 
 _EXPRESSION = {
     "path": {"type": "string", "description": "repository-relative Python source file"},
@@ -53,6 +54,23 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="compare_workload_cost",
+        description=("Run a paired workload campaign using a current approved passing scenario check and "
+                     "a local committed subject baseline. Captures the approved inputs, overlays only declared "
+                     "subject files, alternates run order in fresh workspaces, and reports raw pairs with "
+                     "median regression and bootstrap intervals. Statistical observations concern this "
+                     "driver and environment; MEASURED is not a performance or correctness proof."),
+        properties={
+            "run_id": {"type": "string", "minLength": 1},
+            "before_ref": {"type": "string", "minLength": 40, "description": "full immutable local Git commit SHA"},
+            "pairs": {"type": "integer", "minimum": 10, "maximum": 20, "default": 10},
+            "timeout_seconds": {"type": "integer", "minimum": 30, "maximum": 600, "default": 600},
+        },
+        required=("run_id", "before_ref"), handler=compare_workload_cost,
+        outcomes={"MEASURED": 0, "INCONCLUSIVE": 3, "UNSUPPORTED": 2},
+    ),
     Operation(
         version=1,
         name="analyze_loop_termination",

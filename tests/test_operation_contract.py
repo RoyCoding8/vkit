@@ -21,10 +21,13 @@ from vkit.operations.contract import (
     operation_by_name,
     validate_arguments,
 )
+from vkit.paths import open_project
 
 
 def test_catalog_descriptor_drives_cli_and_mcp(monkeypatch, tmp_path, capsys):
     from vkit import cli, mcp
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
 
     calls = []
 
@@ -63,7 +66,7 @@ def test_catalog_descriptor_drives_cli_and_mcp(monkeypatch, tmp_path, capsys):
         "hello", 9, True, ["one", "two"], {"tag": "cli"})
 
     monkeypatch.setattr(cli, "OPERATIONS", (operation,))
-    monkeypatch.setattr(cli, "_context", lambda _args: SimpleNamespace(project=SimpleNamespace(root=tmp_path)))
+    monkeypatch.setattr(cli, "_context", lambda _args: SimpleNamespace(project=open_project(tmp_path)))
     assert cli.main(["compute", "tiny-probe", "--text", "from-cli", "--json"]) == 0
     assert '"count": 7' in capsys.readouterr().out
     assert calls[-1] == (tmp_path, "from-cli")
@@ -171,6 +174,8 @@ def test_cli_file_mapping_keeps_replacement_flag_bounded_and_utf8(tmp_path):
 def test_undeclared_result_status_fails_closed_in_mcp_and_cli(monkeypatch, tmp_path, capsys):
     from vkit import cli, mcp
 
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
     operation = Operation(1, "bad_result", "Return a bad result.", {}, (),
                           lambda _root: {"status": "NOT_DECLARED"}, {"READY": 0})
     monkeypatch.setattr(mcp, "BY_NAME", {operation.name: operation})
@@ -178,7 +183,7 @@ def test_undeclared_result_status_fails_closed_in_mcp_and_cli(monkeypatch, tmp_p
     assert is_error and body["kind"] == "operation_contract_error"
 
     monkeypatch.setattr(cli, "OPERATIONS", (operation,))
-    monkeypatch.setattr(cli, "_context", lambda _args: SimpleNamespace(project=SimpleNamespace(root=tmp_path)))
+    monkeypatch.setattr(cli, "_context", lambda _args: SimpleNamespace(project=open_project(tmp_path)))
     assert cli.main(["compute", operation.cli_name, "--json"]) == 4
     assert capsys.readouterr().out.strip() == (
         '{"error": "bad_result returned undeclared status \'NOT_DECLARED\'", "exit_code": 4}')
@@ -187,16 +192,17 @@ def test_undeclared_result_status_fails_closed_in_mcp_and_cli(monkeypatch, tmp_p
 def test_cli_keeps_operation_input_errors_at_exit_two(monkeypatch, tmp_path, capsys):
     from vkit import cli
 
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
     replacement = tmp_path / "replacement.py"
     replacement.write_text("def f(x):\n    return x\n", encoding="utf-8")
-    monkeypatch.setattr(cli, "_context", lambda _args: SimpleNamespace(project=SimpleNamespace(root=tmp_path)))
+    monkeypatch.setattr(cli, "_context", lambda _args: SimpleNamespace(project=open_project(tmp_path)))
     assert cli.main([
         "compute", "check-rewrite", "--path", "../outside.py", "--function", "f",
         "--replacement-file", str(replacement), "--json",
     ]) == 2
     assert '"exit_code": 2' in capsys.readouterr().out
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     assert cli.main([
         "compute", "reduce-failure", "--run-id", "missing", "--path", "input.txt", "--json",
     ]) == 2

@@ -18,7 +18,8 @@ The Python engines are pinned to [cvc5 1.4.2](https://cvc5.github.io/docs/cvc5-1
 [OR-Tools 9.15.6755](https://developers.google.com/optimization/cp/cp_solver), and
 [islpy 2026.2.2](https://documen.tician.de/islpy/), with pycparser 3.0 for the C frontend.
 The islpy dependency is installed on Linux and macOS;
-the pinned release has no native Windows wheel. Perses, Buf, CBMC, and the compiled Porcupine helper are
+the pinned release has no native Windows wheel. PyYAML 6.0.3 supports protected OpenAPI document parsing.
+Perses, Buf, CBMC, oasdiff, dependency-cruiser, Stryker, and the compiled Porcupine helper are
 configured separately. The [engine queue](engine-roadmap.md) records the remaining integration candidates.
 
 ## Check a replacement
@@ -241,18 +242,122 @@ optimality proof. `INFEASIBLE` means no selection covers the required elements. 
 unfinished computation. `UNAVAILABLE` means the pinned backend cannot run. A file digest binds the
 answer to the supplied matrix. No test is run or deleted.
 
-## Check Protobuf compatibility
+## Query repository dependencies
 
-`check_proto_compatibility` captures local `.proto` source trees and runs Buf 1.73.0 under one fixed
+`analyze_dependencies` captures JavaScript and TypeScript sources from a repository-relative directory
+and builds a static dependency graph with dependency-cruiser 18.5.0. One operation supports five
+questions, selected by `query`:
+
+| Query | Inputs beyond `path` | Answer |
+| --- | --- | --- |
+| `graph` | None | Captured module IDs and extracted dependency edges |
+| `path` | One `sources` entry and `target` | A shortest dependency path, or `null` |
+| `cycles` | None | Strongly connected cyclic components, including self-imports |
+| `affected` | Changed modules in `sources` | Changed modules and their transitive reverse dependents |
+| `unreachable` | Entrypoints in `sources` | Reachable and unreachable captured module IDs |
+
+All module IDs in requests and answers are repository-relative, even when `path` selects a subdirectory.
+`sources` is a JSON array on the CLI. The timeout defaults to 20 seconds and accepts 1 through 60.
+
+```powershell
+vkit compute analyze-dependencies --project . --path src --query cycles --json
+vkit compute analyze-dependencies --project . --path src --query affected --sources '["src/model.ts"]' --json
+```
+
+`ANALYZED` describes the extracted static graph. It does not prove runtime reachability, runtime
+absence, or that a file is safe to delete. Literal dynamic edges are identified separately. Unresolved
+local imports, computed import targets, and incomplete parsing produce `UNKNOWN` with a partial graph.
+Bare package imports are external; their internal graphs are outside this model. TypeScript path aliases
+and project-specific resolution are not inferred from candidate configuration. Bare aliases are therefore
+external references too. The model covers ESM import/export syntax and direct CommonJS imports;
+JSDoc references and other runtime loading mechanisms are outside it.
+
+The snapshot contains supported source files only. It excludes dependency, build, and environment
+directories and does not execute project code, scripts, or configuration. Source and backend identities
+bind each answer to the captured bytes and configured helper. Requests cannot change extraction rules.
+
+Install the trusted helper and pinned packages under the service owner's control:
+
+```powershell
+npm ci --prefix tools/dependencies --ignore-scripts
+$runtimeDirectory = (Resolve-Path tools/dependencies).Path
+$env:VKIT_NODE_BIN = (Get-Command node).Source
+$env:VKIT_DEPENDENCY_HELPER = Join-Path $runtimeDirectory 'dependency_helper.mjs'
+$env:VKIT_DEPENDENCY_SHA256 = (Get-FileHash -Algorithm SHA256 $env:VKIT_DEPENDENCY_HELPER).Hash.ToLowerInvariant()
+$env:VKIT_DEPENDENCY_LOCKFILE = Join-Path $runtimeDirectory 'package-lock.json'
+$env:VKIT_DEPENDENCY_LOCK_SHA256 = (Get-FileHash -Algorithm SHA256 $env:VKIT_DEPENDENCY_LOCKFILE).Hash.ToLowerInvariant()
+```
+
+The helper requires Node 24.16.0 and TypeScript 5.9.3. A lockfile digest identifies the installation
+manifest; it does not attest the bytes of installed packages. Protect the whole installed runtime.
+`UNAVAILABLE` reports a missing or mismatched runtime; `UNSUPPORTED` rejects inputs outside the bounded
+source model. The current limits are 1,000 source files, 1 MiB per file, 16 MiB total, 20,000 scanned
+entries, and 8 MiB of helper output. Snapshotting checks the deadline between operations; filesystem
+reads, parsing, and executable hashing are synchronous.
+
+## Compare API contracts
+
+`compare_contracts` asks whether the new declared API violates a fixed compatibility profile relative
+to the old API. The required `profile` selects `openapi`, `protobuf-file`, `protobuf-package`,
+`protobuf-wire-json`, or `protobuf-wire`. Inputs are repository-relative paths. `timeout_seconds`
+defaults to 20 and is bounded to 1 through 60. Results do not change check or gate evidence.
+
+The previous public `check_proto_compatibility` operation and CLI command have been replaced by this
+operation. Select `protobuf-wire-json` to retain the previous default category. Saved disabling of the
+previous tool disables `compare_contracts` after migration.
+
+### OpenAPI
+
+```powershell
+vkit compute compare-contracts --project . --old-path api-before/openapi.yaml --new-path api-after/openapi.yaml --profile openapi --json
+```
+
+The service captures each document and its transitive local `$ref` closure before comparison. It rejects
+remote references, path escapes, symlinks, and ambiguous duplicate keys. Candidate configuration cannot
+change the compatibility rules. The initial model admits OpenAPI 3.0.0–3.0.4 and 3.1.0–3.1.2.
+Pinned oasdiff 1.33.0 validates both snapshots and rejects validation errors or warnings before checking changes
+in old-to-new order under a fixed ERR/WARN breaking-change policy. Diagnostics preserve rule IDs,
+severity, operation paths, and source locations returned by the engine.
+
+`COMPATIBLE` means no protected rule reported a violation in the validated documents. `BREAKING`
+means the fixed policy reported findings; diagnostic severity distinguishes errors from warnings.
+Neither result establishes that a server implements its schema or satisfies an original user prompt.
+`UNSUPPORTED` rejects uncheckable input, `UNKNOWN` preserves unfinished work or an invalid backend
+response, and `UNAVAILABLE` reports a missing or untrusted runtime. Snapshot digests identify the inputs.
+
+Each reference closure admits 256 files, 2 MiB per file, and 16 MiB total. Backend output is limited to
+8 MiB per stream. JSON Schema `$id` rebasing, `$dynamicRef`, `$dynamicAnchor`, `$recursiveRef`, custom
+dialects, and reusable `components.pathItems` are unsupported. The accepted schema dialect URIs are
+the OpenAPI 3.1 base dialect and JSON Schema 2020-12. These restrictions account for
+[the pinned parser's documented limitations](https://github.com/oasdiff/oasdiff/blob/v1.33.0/docs/OPENAPI-31.md#caveats).
+YAML parsing bounds nesting, values, and aliases, and rejects recursive aliases and merge keys. The common deadline
+covers snapshotting and native processes; synchronous filesystem reads, parsing, and binary hashing
+can delay deadline checks.
+
+Install an owner-controlled binary from the [oasdiff 1.33.0 release](https://github.com/oasdiff/oasdiff/releases/tag/v1.33.0),
+verify the archive against its checksums, and configure the executable's SHA-256. For example:
+
+```powershell
+$env:VKIT_OASDIFF_BIN = 'C:/vkit-runtime/oasdiff.exe'
+$env:VKIT_OASDIFF_SHA256 = (Get-FileHash -Algorithm SHA256 $env:VKIT_OASDIFF_BIN).Hash.ToLowerInvariant()
+```
+
+The digest identifies the already verified, operator-installed binary. Request arguments cannot select
+its path or policy. YAML parsing uses the optional pinned PyYAML dependency. CI installs verified release
+archives and exercises the backend on Linux, Windows, and macOS.
+
+### Protobuf
+
+The Protobuf profiles capture local `.proto` source trees and run Buf 1.73.0 under one fixed
 built-in compatibility category. It ignores repository Buf configuration, ignore rules, and plugins.
 Imports must resolve within each captured source tree or Buf's built-in well-known types.
 
 ```powershell
-vkit compute check-proto-compatibility --project . --old-path api-before --new-path api-after --category WIRE_JSON --json
+vkit compute compare-contracts --project . --old-path api-before --new-path api-after --profile protobuf-wire-json --json
 ```
 
-The MCP tool accepts `old_path`, `new_path`, optional `category`, and optional `timeout_seconds`.
-The category defaults to `WIRE_JSON`. Buf defines these categories in its
+The MCP tool accepts `old_path`, `new_path`, required `profile`, and optional `timeout_seconds`.
+The `protobuf-*` profile fixes the corresponding category. Buf defines these categories in its
 [breaking rule reference](https://buf.build/docs/breaking/rules/).
 
 | Category | Compatibility checked |
@@ -370,16 +475,71 @@ $env:VKIT_CBMC_SHA256 = 'e2f6a110906b7c5998f31617c89220f9840735250333c90c56ef467
 
 CI exercises release binaries on Linux and Windows. macOS CI checks the unavailable-runtime behavior.
 
+## Find mutations that tests do not detect
+
+`mutation_survivors` asks which generated edits still pass the tests from an approved `node_test` run.
+It accepts a completed passing `run_id` and a repository-relative JavaScript subject `path`.
+The check definition must remain approved and unchanged, and its recorded inputs must still match.
+The operation captures those inputs before execution and changes only the selected subject in temporary
+workspaces. It does not create check runs or update gate evidence.
+
+```powershell
+vkit compute mutation-survivors --project . --run-id RUN_ID --path src/permission.mjs --max-mutants 20 --timeout-seconds 60 --json
+```
+
+Stryker's pinned instrumenter generates literal edits under installed configuration. Vkit runs the
+unmodified baseline first, then starts each edited variant in a fresh workspace. A passing mutation must
+pass again in another fresh workspace to count as `SURVIVED`. An observed assertion failure counts as
+`DETECTED`. Load errors, missing required tests, timeouts, and inconsistent replays are inconclusive.
+A survivor can be behaviorally equivalent. The result does not establish a defect or overall test quality.
+Coverage is not collected, so a survivor does not establish that its changed expression executed.
+
+The initial execution profile supports self-contained `.js`, `.mjs`, and `.cjs` files with approved native
+Node tests run from the repository root, using exactly the `--test` base arguments. Required test files
+cannot be mutation subjects. Package configurations that affect captured JavaScript files must be included
+in the recorded inputs. The operation does not install project dependencies, invoke package scripts, or load mutation configuration
+from the candidate repository. `max_mutants` ranges from 1 to 100 and defaults to 20.
+`timeout_seconds` ranges from 1 to 300 and defaults to 60. Unexamined mutations remain explicit when either
+bound stops the campaign. `ANALYZED` means the generated campaign completed under this execution model.
+`UNKNOWN` preserves incomplete work or inconclusive observations. `UNSUPPORTED` rejects an unsupported
+request, and `UNAVAILABLE` means the configured pinned runtime cannot run.
+
+Snapshots admit at most 1,000 files, 1 MiB per file, and 16 MiB in total. Initial file capture precedes
+the campaign deadline. During the campaign, runtime probes, generation, trials, replays, and freshness
+checks share the remaining budget. Synchronous file reads check the deadline between files, so an
+individual read can overrun it.
+
+The service executes approved candidate tests with its operating-system permissions. Fresh workspaces
+prevent edits to the original checkout by vkit itself; they are not an operating-system security sandbox.
+Tests, external services, and the host environment can still have effects. Deploy the service with the
+permissions and isolation appropriate to the approved tests.
+
+Install [StrykerJS](https://github.com/stryker-mutator/stryker-js) instrumenter 10.0.0 from the committed
+lockfile with Node 24.16.0, then configure the helper under the service owner's control.
+
+```powershell
+npm ci --prefix tools/mutation --ignore-scripts
+$env:VKIT_NODE_BIN = (Get-Command node).Source
+$env:VKIT_MUTATION_HELPER = (Resolve-Path tools/mutation/helper.mjs).Path
+$env:VKIT_MUTATION_SHA256 = (Get-FileHash $env:VKIT_MUTATION_HELPER -Algorithm SHA256).Hash.ToLower()
+$env:VKIT_MUTATION_LOCKFILE = (Resolve-Path tools/mutation/package-lock.json).Path
+$env:VKIT_MUTATION_LOCK_SHA256 = (Get-FileHash $env:VKIT_MUTATION_LOCKFILE -Algorithm SHA256).Hash.ToLower()
+```
+
+Configure these paths and digests when deploying trusted artifacts, before giving the agent access.
+Recomputing a digest from agent-writable files at request time does not protect verifier ownership.
+CI configures this runtime on Linux, Windows, and macOS.
+
 ## Protect the service
 
 These APIs expose fixed operations. They contain no method for changing the parser, solver translation,
 rewrite rules, or failure predicate. To enforce that boundary against an agent with a shell, install vkit,
-its dependencies, the Perses JAR, Buf and CBMC binaries, and the history helper under a separate owner or in a service container
+its dependencies, the Perses JAR, Buf, oasdiff and CBMC binaries, and the dependency, mutation, and history helpers under a separate owner or in a service container
 the agent cannot write.
 Give the service access to candidate repository files. Keep its interpreter, working directory, import path, and environment
 under the service owner's control. Running an editable vkit checkout as the same operating-system user as
 the agent does not enforce immutability. This release does not provision that deployment isolation.
 
-CLI exit codes are 0 for `PROVED`, `REDUCED`, `EQUIVALENT`, `LINEARIZABLE`, `OPTIMAL`, `COMPATIBLE`, or `SAFE`;
+CLI exit codes are 0 for `PROVED`, `REDUCED`, `EQUIVALENT`, `LINEARIZABLE`, `OPTIMAL`, `COMPATIBLE`, `ANALYZED`, or `SAFE`;
 1 for `COUNTEREXAMPLE`, `NOT_LINEARIZABLE`, `INFEASIBLE`, or `BREAKING`; 2 for invalid or unsupported requests;
 3 for `UNKNOWN`, `UNRESOLVED`, or `FEASIBLE`; 4 for an internal operation contract error; and 5 for `UNAVAILABLE`.

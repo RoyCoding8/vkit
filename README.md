@@ -63,26 +63,32 @@ fails only on findings outside its pinned baseline, so existing debt does not bl
 
 ## Connect an agent
 
-Configure a stdio MCP server with command `vkit` and arguments `mcp serve --project <repository>`. The tools
-are:
+Configure a stdio MCP server with command `vkit` and arguments `mcp serve --project <repository>`.
+Put this short pointer in your repository's `AGENTS.md` or `CLAUDE.md`:
 
-- `status`: freshness of every check, or only the checks that read the paths you pass.
-- `features`: the feature map, including what users can do, how they reach it, and the known gaps.
-- `check_run`: runs checks by id, or with `needed: true` runs every stale or missing one.
-- `run_get`: reads one run's outcome and log.
-- `run_cancel`: stops a run.
-- `gate`: returns READY, REJECTED or BLOCKED.
-- `propose`: suggests a check, a feature entry, or a new file. Nothing changes until a human runs
-  `vkit accept --proposal <digest>`.
-- `check_rewrite`: prove equivalent return values or produce a counterexample for a supported Python function.
-- `simplify_function`: derive a replacement with egglog and independently verify it with cvc5.
-- `reduce_failure`: use Perses to shrink a source file while preserving a recorded failure.
-- `compare_matchsets`: compare complete regex languages and return shortest distinguishing strings.
-- `check_history`: check a recorded concurrent history against a built-in register or FIFO queue model.
-- `minimize_cover`: find a minimum-cost selection covering the required IDs in a supplied matrix.
-- `check_proto_compatibility`: check captured Protobuf schemas under protected Buf compatibility rules.
-- `compare_iteration_sets`: compare the yielded coordinate sets of supported affine integer generators.
-- `check_c_safety`: check a restricted standalone C function for fixed array and integer safety properties.
+> Call vkit's `help` tool to discover currently enabled tools and their input schemas.
+> Pass `query` to search for a question you need answered. Use each result within its stated scope.
+
+An empty `help` request lists every enabled tool. A request such as `{"query": "regex alphabet"}`
+finds matching tools with their descriptions and complete JSON input schemas. The catalog is generated
+from installed contracts, so onboarding instructions need no manually maintained tool inventory.
+
+Use **Setup** in `vkit console` to enable or disable individual tools, then save settings.
+The same controls are available from the CLI:
+
+```powershell
+vkit tools --project . --json
+vkit tools --project . --query "regex alphabet" --json
+vkit tools --project . --disable compare_matchsets
+vkit tools --project . --enable compare_matchsets
+```
+
+Settings live in `<git common directory>/vkit/config.json`, outside tracked source and shared by worktrees.
+Disabled tools disappear from MCP discovery and `help`, and calls to them are refused.
+Reconnect an agent after changing settings because clients may cache tool lists. `help` always remains
+available. Enable/disable controls belong to the operator console and CLI; MCP exposes no such control.
+Enabling an engine does not install its runtime. These switches control MCP exposure, not a shell agent's
+ability to inspect installed software or edit local configuration.
 
 The computation tools use fixed algorithms and do not change the gate. Install their Python
 engines with `uv sync --extra mcp --extra engines`. See [built-in computations](docs/computations.md)
@@ -124,15 +130,8 @@ Frontend development and asset rebuild instructions are in [tools/console](tools
 | `vkit project inspect` | Find the test commands a repository already declares |
 | `vkit console` | Browse evidence, run checks and computations, and save console settings |
 | `vkit mcp serve` | Serve MCP over stdio |
-| `vkit compute check-rewrite` | Check equivalence of two supported Python functions |
-| `vkit compute simplify-function` | Suggest a replacement and prove its equivalence |
-| `vkit compute reduce-failure` | Reduce a recorded failure with its approved predicate |
-| `vkit compute compare-matchsets` | Compare complete regex languages over a supplied alphabet |
-| `vkit compute check-history` | Check linearizability of a completed concurrent history |
-| `vkit compute minimize-cover` | Optimize coverage selection under supplied integer costs |
-| `vkit compute check-proto-compatibility` | Check a fixed Protobuf compatibility category |
-| `vkit compute compare-iteration-sets` | Compare affine coordinate sets for all integer parameters |
-| `vkit compute check-c-safety` | Check fixed C safety properties with loop-completeness assertions |
+| `vkit tools [--query TEXT]` | Discover enabled tools, or change availability with `--enable` / `--disable` |
+| `vkit compute --help` | List installed computations; each command has generated input help |
 
 Every command takes `--project` (default `.`) and `--json`.
 
@@ -151,6 +150,9 @@ Every command takes `--project` (default `.`) and `--json`.
 
 To add a verifier operation, follow [Add a built-in operation](docs/adding-operations.md).
 One trusted contract supplies the CLI and MCP wiring.
+
+See the [engine integration status](docs/engine-roadmap.md) and the
+[ranked tool backlog](docs/tool-backlog.md) for implemented operations and researched additions.
 
 ```powershell
 uv sync --extra test --extra engines

@@ -13,8 +13,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__, query
-from .console_settings import (DEFAULT_SETTINGS, SETTINGS_SCHEMA, ConsoleSettingsFileError, load_settings,
-                               parse_settings, save_settings, settings_path)
+from .settings import (DEFAULT_SETTINGS, SETTINGS_SCHEMA, SettingsFileError, load_settings,
+                       parse_settings, save_settings, settings_path)
 from .mcp import BY_NAME, Server, tool_definitions
 from .operations.catalog import OPERATIONS
 from .paths import Project
@@ -136,10 +136,13 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                                 "settings": settings.as_json(), "settings_path": str(settings_path(project)),
                                 "settings_defaults": DEFAULT_SETTINGS.as_json(),
                                 "settings_schema": SETTINGS_SCHEMA, "csrf_token": csrf_token,
-                                "operations": _OPERATION_DESCRIPTORS})
+                                "operations": [tool for tool in _OPERATION_DESCRIPTORS
+                                               if tool["name"] not in settings.disabled_tools],
+                                "managed_tools": [{"name": tool.name, "description": tool.description}
+                                                  for tool in BY_NAME.values() if tool.name != "help"]})
                 else:
                     self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
-            except ConsoleSettingsFileError as exc:
+            except SettingsFileError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             except ValueError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -167,7 +170,7 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                     self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                     return
                 except OSError as exc:
-                    self._json({"error": f"cannot save console settings: {exc}"},
+                    self._json({"error": f"cannot save settings: {exc}"},
                                HTTPStatus.INTERNAL_SERVER_ERROR)
                     return
                 self._json({"settings": settings.as_json(), "settings_path": str(settings_path(project))})

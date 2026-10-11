@@ -112,9 +112,9 @@ def test_console_settings_default_save_restart_and_git_status(make_project):
     project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
     settings_path = project / ".git" / "vkit" / "config.json"
     defaults = {"version": 1, "theme": "system", "sidebar_collapsed": False,
-                "refresh_seconds": 2, "history_limit": 50}
+                "refresh_seconds": 2, "history_limit": 50, "disabled_tools": []}
     saved = {"version": 1, "theme": "dark", "sidebar_collapsed": True,
-             "refresh_seconds": 11, "history_limit": 120}
+             "refresh_seconds": 11, "history_limit": 120, "disabled_tools": []}
     with _serve(project) as port:
         config = _config(port)
         assert config["settings"] == defaults
@@ -150,8 +150,34 @@ def test_invalid_console_settings_are_reported_without_rewriting(make_project):
         malformed = b"{not-json"
         settings_path.write_bytes(malformed)
         status, raw = _get(port, "/api/config")
-        assert status == 500 and b"invalid console settings" in raw
+        assert status == 500 and b"invalid settings" in raw
         assert settings_path.read_bytes() == malformed
+
+
+def test_console_tool_switches_filter_operations_and_dispatch_after_restart(make_project):
+    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    with _serve(project) as port:
+        config = _config(port)
+        assert "help" not in {tool["name"] for tool in config["managed_tools"]}
+        assert "compare_matchsets" in {tool["name"] for tool in config["managed_tools"]}
+        saved = {**config["settings"], "theme": "dark", "disabled_tools": ["compare_matchsets", "check_run"]}
+        status, raw, _ = _post(port, "/api/settings", saved, config["csrf_token"])
+        assert status == 200 and json.loads(raw)["settings"] == saved
+        for name in saved["disabled_tools"]:
+            status, raw, _ = _post(port, "/api/call", {"name": name, "arguments": {}}, config["csrf_token"])
+            assert status == 200 and json.loads(raw) == {
+                "is_error": True, "result": {"error": "unknown or unavailable tool"}}
+        invalid = {**saved, "disabled_tools": ["help"]}
+        status, _, _ = _post(port, "/api/settings", invalid, config["csrf_token"])
+        assert status == 400
+    with _serve(project) as port:
+        config = _config(port)
+        assert config["settings"] == saved
+        assert "compare_matchsets" not in {tool["name"] for tool in config["operations"]}
+        assert "compare_matchsets" in {tool["name"] for tool in config["managed_tools"]}
+        status, raw, _ = _post(port, "/api/settings", {**saved, "disabled_tools": []}, config["csrf_token"])
+        assert status == 200
+        assert "compare_matchsets" in {tool["name"] for tool in _config(port)["operations"]}
 
 
 def test_mutating_routes_reject_untrusted_or_incomplete_requests(make_project):
@@ -187,9 +213,9 @@ def test_console_lists_only_catalog_operations_and_uses_the_shared_dispatcher(ma
     with _serve(project) as port:
         config = _config(port)
         names = {operation["name"] for operation in config["operations"]}
-        assert names == {"check_c_safety", "compare_iteration_sets", "minimize_cover",
-                         "check_proto_compatibility", "check_history", "compare_matchsets",
-                         "check_rewrite", "simplify_function", "reduce_failure"}
+        assert names == {"analyze_dependencies", "check_c_safety", "compare_iteration_sets", "minimize_cover",
+                         "compare_contracts", "check_history", "compare_matchsets",
+                         "check_rewrite", "simplify_function", "reduce_failure", "mutation_survivors"}
         assert not names & {"status", "features", "check_run", "run_get", "run_cancel", "gate", "propose"}
         assert all("input_schema" in operation for operation in config["operations"])
         status, raw, _ = _post(port, "/api/call", {

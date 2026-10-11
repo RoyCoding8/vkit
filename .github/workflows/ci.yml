@@ -23,7 +23,64 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24.16.0"
+      - name: Install pinned dependency engine
+        run: npm ci --prefix tools/dependencies --ignore-scripts
+      - name: Install pinned mutation engine
+        run: npm ci --prefix tools/mutation --ignore-scripts
+      - name: Configure trusted Node helpers
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import shutil
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_NODE_BIN={shutil.which('node')}\n")
+              for name, folder, filename in (("DEPENDENCY", "dependencies", "dependency_helper.mjs"),
+                                             ("MUTATION", "mutation", "helper.mjs")):
+                  directory = pathlib.Path("tools") / folder
+                  helper = (directory / filename).resolve()
+                  lock = (directory / "package-lock.json").resolve()
+                  output.write(f"VKIT_{name}_HELPER={helper}\n")
+                  output.write(f"VKIT_{name}_SHA256={hashlib.sha256(helper.read_bytes()).hexdigest()}\n")
+                  output.write(f"VKIT_{name}_LOCKFILE={lock}\n")
+                  output.write(f"VKIT_{name}_LOCK_SHA256={hashlib.sha256(lock.read_bytes()).hexdigest()}\n")
+      - name: Install pinned OpenAPI engine
+        shell: python
+        run: |
+          import hashlib
+          import io
+          import os
+          import pathlib
+          import platform
+          import tarfile
+          import urllib.request
+          assets = {
+              "Linux": ("linux_amd64", "43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247"),
+              "Darwin": ("darwin_all", "2a479337c15afdcbf0b1e89c0b4d0cf0176472dbc11483358fed1f831d1e46c5"),
+              "Windows": ("windows_amd64", "22f98c7247075f8a446e783595802d6d38637de1760df264f3d4b3309f766c5b"),
+          }
+          asset, digest = assets[platform.system()]
+          url = f"https://github.com/oasdiff/oasdiff/releases/download/v1.33.0/oasdiff_1.33.0_{asset}.tar.gz"
+          with urllib.request.urlopen(url, timeout=60) as source:
+              archive = source.read(100_000_001)
+          if len(archive) > 100_000_000 or hashlib.sha256(archive).hexdigest() != digest:
+              raise RuntimeError("oasdiff release digest mismatch")
+          name = "oasdiff.exe" if os.name == "nt" else "oasdiff"
+          with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
+              members = [member for member in bundle.getmembers() if pathlib.PurePosixPath(member.name).name == name and member.isfile()]
+              if len(members) != 1:
+                  raise RuntimeError("oasdiff archive must contain exactly one executable")
+              content = bundle.extractfile(members[0]).read(100_000_001)
+          if len(content) > 100_000_000:
+              raise RuntimeError("oasdiff executable exceeds size limit")
+          binary = pathlib.Path(os.environ["RUNNER_TEMP"]) / name
+          binary.write_bytes(content)
+          binary.chmod(0o755)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_OASDIFF_BIN={binary}\n")
+              output.write(f"VKIT_OASDIFF_SHA256={hashlib.sha256(content).hexdigest()}\n")
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"

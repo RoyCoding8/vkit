@@ -3,6 +3,34 @@
 Add an operation by implementing its fixed question and declaring its contract in the installed catalog.
 The CLI, MCP, and console derive their inputs and dispatch from that declaration.
 
+This versioned `Operation` contract is the common integration plug. Engines can have different internal
+architectures and runtimes while sharing the same installed declaration. No second plugin registry is
+needed. Adding a declaration automatically adds it to discovery and the operator's availability controls.
+
+## Discover and control operations
+
+Agents call MCP `help` with an optional text `query`. The response contains enabled tools, descriptions,
+and exact JSON input schemas. MCP `tools/list` uses the same enabled view as dispatch. Keep agent
+onboarding files limited to a pointer to `help`, rather than copying tool names and schemas.
+
+Operators change availability in the console's Setup page or with `vkit tools --disable NAME` and
+`vkit tools --enable NAME`. Names use the MCP underscore spelling. The existing Git-excluded
+`<git common directory>/vkit/config.json` stores `disabled_tools` alongside display preferences.
+Existing version 1 files without that field mean all tools are enabled. Unknown saved names remain
+disabled if a later installation introduces them. Enabling a tool does not install its backend.
+When Protobuf compatibility was consolidated into `compare_contracts`, saved disabling of
+`check_proto_compatibility` migrated to the consolidated tool. This preserves the operator's restriction.
+
+`help` cannot be disabled. Other MCP tools, including repository check tools, can be disabled.
+Saved settings apply on subsequent discovery and calls; reconnect existing clients to refresh cached
+tool lists. Disabled direct calls are refused. Already running computations and checks are not cancelled.
+The console retains the installed catalog for operator management. The CLI's installed command help
+also remains available, while disabled computation commands refuse execution.
+
+Availability is not authorization against an agent that can edit operator configuration or inspect the
+installed package through a shell. Protect service installation and settings separately when deploying
+across that trust boundary. Candidate repositories do not supply executable plugins or verifier rules.
+
 ## Define the question
 
 Write down the exact question, supported inputs, model assumptions, resource limits, and possible outcomes.

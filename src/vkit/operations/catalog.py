@@ -8,9 +8,9 @@ from . import MAX_SOURCE_BYTES, check_rewrite, reduce_failure, simplify_function
 from .affine import compare_iteration_sets
 from .c_safety import check_c_safety
 from .contract import FileInput, Operation, operation_by_name
+from .contracts import CONTRACT_PROFILES, compare_contracts
 from .cover import minimize_cover
 from .history import check_history
-from .protobuf import check_proto_compatibility
 
 _EXPRESSION = {
     "path": {"type": "string", "description": "repository-relative Python source file"},
@@ -27,7 +27,63 @@ def _compare_matchsets(root: Path, old_pattern: str, new_pattern: str, alphabet:
     return compare_matchsets(old_pattern, new_pattern, alphabet, timeout_ms).to_json()
 
 
+def _analyze_dependencies(root: Path, **arguments: Any) -> dict[str, Any]:
+    from .dependencies import analyze_dependencies
+
+    return analyze_dependencies(root, **arguments)
+
+
+def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
+    from .mutation import mutation_survivors
+
+    return mutation_survivors(root, **arguments)
+
+
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="mutation_survivors",
+        description=("Generate fixed Stryker mutations of one JavaScript source file from a current, approved "
+                     "passing node_test run. Replay the unmodified baseline, test each literal edit in a fresh "
+                     "captured workspace, and independently replay survivors. Returns observed test detection "
+                     "and exact edits, with unexamined mutations and inconclusive executions reported. "
+                     "A survivor can be equivalent and does not establish a defect. Executes approved candidate "
+                     "tests with service permissions; temporary copies are not an OS security sandbox. "
+                     "Does not modify the checkout or gate evidence."),
+        properties={
+            "run_id": {"type": "string", "minLength": 1,
+                       "description": "completed passing run of an approved node_test check"},
+            "path": {"type": "string", "minLength": 1,
+                     "description": "repository-relative JavaScript subject file in recorded inputs"},
+            "max_mutants": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300, "default": 60},
+        },
+        required=("run_id", "path"),
+        handler=_mutation_survivors,
+        read_only=False,
+        outcomes={"ANALYZED": 0, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
+        name="analyze_dependencies",
+        description=("Extract a bounded JavaScript/TypeScript repository-local dependency graph from captured "
+                     "source with fixed dependency-cruiser configuration. Query the graph, a shortest path, "
+                     "strongly connected cycles, reverse impact, or nodes unreachable from supplied entrypoints. "
+                     "Results concern extracted static edges, with unresolved and dynamic dependencies reported. "
+                     "Graph unreachability does not prove runtime unreachability or safe deletion. Does not "
+                     "execute project code/configuration or change gate evidence."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative source directory"},
+            "query": {"type": "string", "enum": ["graph", "path", "cycles", "affected", "unreachable"], "default": "graph"},
+            "sources": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": True,
+                        "maxItems": 500, "description": "repository-relative start, changed modules, or entrypoints"},
+            "target": {"type": "string", "minLength": 1, "description": "repository-relative target for a path query"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
+        },
+        required=("path",),
+        handler=_analyze_dependencies,
+        outcomes={"ANALYZED": 0, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="check_c_safety",
@@ -82,20 +138,21 @@ OPERATIONS = (
     ),
     Operation(
         version=1,
-        name="check_proto_compatibility",
-        description=("Compare captured local Protobuf source trees with protected Buf compatibility rules. "
-                     "COMPATIBLE means no violation of the selected FILE, PACKAGE, WIRE_JSON, or WIRE category. "
-                     "BREAKING returns source diagnostics. Project config and plugins cannot override the rules. "
-                     "UNSUPPORTED rejects uncheckable schemas; UNKNOWN preserves unfinished checks; "
-                     "UNAVAILABLE means the configured pinned binary cannot run. Does not establish runtime behavior."),
+        name="compare_contracts",
+        description=("Compare captured API contracts under a fixed OpenAPI or Protobuf compatibility profile. "
+                     "OpenAPI validates local document/reference closures and checks protected oasdiff rules. "
+                     "Protobuf uses protected Buf FILE, PACKAGE, WIRE_JSON, or WIRE rules. COMPATIBLE means "
+                     "no violation of that profile; BREAKING returns diagnostics. UNSUPPORTED rejects "
+                     "uncheckable schemas; UNKNOWN preserves unfinished checks; UNAVAILABLE means the pinned "
+                     "runtime cannot run. Project config cannot override rules. Does not establish server behavior."),
         properties={
-            "old_path": {"type": "string", "minLength": 1, "description": "repository-relative old .proto directory"},
-            "new_path": {"type": "string", "minLength": 1, "description": "repository-relative new .proto directory"},
-            "category": {"type": "string", "enum": ["FILE", "PACKAGE", "WIRE_JSON", "WIRE"], "default": "WIRE_JSON"},
-            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+            "old_path": {"type": "string", "minLength": 1, "description": "repository-relative old OpenAPI file or .proto directory"},
+            "new_path": {"type": "string", "minLength": 1, "description": "repository-relative new OpenAPI file or .proto directory"},
+            "profile": {"type": "string", "enum": list(CONTRACT_PROFILES)},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
         },
-        required=("old_path", "new_path"),
-        handler=check_proto_compatibility,
+        required=("old_path", "new_path", "profile"),
+        handler=compare_contracts,
         outcomes={"COMPATIBLE": 0, "BREAKING": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
     ),
     Operation(

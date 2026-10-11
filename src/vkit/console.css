@@ -448,6 +448,22 @@ p {
   grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
   gap: 24px;
 }
+
+.settings-tools {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 12px;
+}
+
+.settings-tools legend {
+  padding: 0 8px;
+  font-weight: 500;
+}
+
+.settings-tools .field-help {
+  margin-bottom: 16px;
+}
 .overview-grid + .panel {
   margin-top: 24px;
 }

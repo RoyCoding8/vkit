@@ -4,6 +4,14 @@ This queue preserves the 22-repository investigation from October 8, 2026. Integ
 fixed operation with a stated input model, bounded execution, and exercised backend behavior.
 A repository's popularity does not establish that an operation is ready.
 
+The [ranked tool backlog](tool-backlog.md) expands this queue with 43 capability proposals,
+including research-derived ideas, precise questions, integration boundaries, and consolidation plans.
+
+The shared integration plug is the versioned installed operation contract. Agents query MCP `help`
+for enabled capabilities and input schemas. Operator switches in the console or `vkit tools` persist
+in the existing Git-excluded settings file and filter discovery and dispatch. Follow
+[Add a built-in operation](adding-operations.md) rather than adding a separate registry or static tool list.
+
 ## Built operations
 
 | Engine | Operation | Exact scope |
@@ -14,7 +22,10 @@ A repository's popularity does not establish that an operation is ready.
 | [greenery](https://github.com/qntm/greenery) | `compare_matchsets` | Full-match languages in a fixed dialect and finite alphabet |
 | [Porcupine](https://github.com/anishathalye/porcupine) | `check_history` | Linearizability of one supplied register or FIFO history |
 | [OR-Tools](https://github.com/google/or-tools) | `minimize_cover` | Minimum-cost coverage of supplied required IDs, with checked selection and exact integer cost |
-| [Buf](https://github.com/bufbuild/buf) | `check_proto_compatibility` | Selected built-in compatibility category, protected configuration, captured local schemas |
+| [dependency-cruiser](https://github.com/sverweij/dependency-cruiser) | `analyze_dependencies` | Captured JavaScript/TypeScript module graph, paths, cycles, reverse impact, and entrypoint reachability with unresolved edges reported |
+| [StrykerJS](https://github.com/stryker-mutator/stryker-js) | `mutation_survivors` | Fixed JavaScript mutations tested against a fresh approved Node baseline, with survivor replay and explicit inconclusive or unexamined cases |
+| [oasdiff](https://github.com/oasdiff/oasdiff) | `compare_contracts`, `openapi` profile | Validated local OpenAPI reference closures and fixed breaking-change rules |
+| [Buf](https://github.com/bufbuild/buf) | `compare_contracts`, `protobuf-*` profiles | Selected built-in compatibility category, protected configuration, captured local schemas |
 | [isl](https://github.com/Meinersbur/isl) via [islpy](https://github.com/inducer/islpy) | `compare_iteration_sets` | Equality of yielded integer-coordinate sets extracted from supported affine generators |
 | [CBMC](https://github.com/diffblue/cbmc) | `check_c_safety` | Fixed array and integer safety checks on a restricted standalone C function, with unwinding assertions and no compiler execution |
 

@@ -1,0 +1,9 @@
+{
+  "name": "vkit-dependency-backend",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "dependency-cruiser": "18.5.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,4 +1,4 @@
-"""Validated preferences for the local console."""
+"""Saved operator settings shared by the console and agent interfaces."""
 from __future__ import annotations
 
 import json
@@ -19,6 +19,8 @@ SETTINGS_SCHEMA = {
         "sidebar_collapsed": {"type": "boolean"},
         "refresh_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
         "history_limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        "disabled_tools": {"type": "array", "uniqueItems": True,
+                           "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$", "not": {"const": "help"}}},
     },
     "required": ["version", "theme", "sidebar_collapsed", "refresh_seconds", "history_limit"],
     "additionalProperties": False,
@@ -26,12 +28,13 @@ SETTINGS_SCHEMA = {
 
 
 @dataclass(frozen=True)
-class ConsoleSettings:
+class Settings:
     version: int = 1
     theme: str = "system"
     sidebar_collapsed: bool = False
     refresh_seconds: int = 2
     history_limit: int = 50
+    disabled_tools: tuple[str, ...] = ()
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -40,45 +43,48 @@ class ConsoleSettings:
             "sidebar_collapsed": self.sidebar_collapsed,
             "refresh_seconds": self.refresh_seconds,
             "history_limit": self.history_limit,
+            "disabled_tools": list(self.disabled_tools),
         }
 
 
-class ConsoleSettingsFileError(ValueError):
-    """The saved console preferences cannot be read or validated."""
+class SettingsFileError(ValueError):
+    """The saved operator settings cannot be read or validated."""
 
 
-DEFAULT_SETTINGS = ConsoleSettings()
+DEFAULT_SETTINGS = Settings()
 
 
 def settings_path(project: Project) -> Path:
     return Store.of(project).root / "config.json"
 
 
-def parse_settings(value: Any) -> ConsoleSettings:
+def parse_settings(value: Any) -> Settings:
     try:
         validate(value, SETTINGS_SCHEMA)
     except ValidationError as exc:
-        raise ValueError(f"invalid console settings: {exc.message}") from exc
-    return ConsoleSettings(**value)
+        raise ValueError(f"invalid settings: {exc.message}") from exc
+    disabled = dict.fromkeys("compare_contracts" if name == "check_proto_compatibility" else name
+                             for name in value.get("disabled_tools", ()))
+    return Settings(**{**value, "disabled_tools": tuple(disabled)})
 
 
-def load_settings(project: Project) -> ConsoleSettings:
+def load_settings(project: Project) -> Settings:
     path = settings_path(project)
     try:
         value = read_json(path)
     except json.JSONDecodeError as exc:
-        raise ConsoleSettingsFileError(f"invalid console settings at {path}: invalid JSON: {exc}") from exc
+        raise SettingsFileError(f"invalid settings at {path}: invalid JSON: {exc}") from exc
     except (OSError, UnicodeError) as exc:
-        raise ConsoleSettingsFileError(f"cannot read console settings at {path}: {exc}") from exc
+        raise SettingsFileError(f"cannot read settings at {path}: {exc}") from exc
     if value is None:
         if path.exists():
-            raise ConsoleSettingsFileError(f"invalid console settings at {path}: expected a JSON object")
+            raise SettingsFileError(f"invalid settings at {path}: expected a JSON object")
         return DEFAULT_SETTINGS
     try:
         return parse_settings(value)
     except ValueError as exc:
-        raise ConsoleSettingsFileError(f"invalid console settings at {path}: {exc}") from exc
+        raise SettingsFileError(f"invalid settings at {path}: {exc}") from exc
 
 
-def save_settings(project: Project, settings: ConsoleSettings) -> None:
+def save_settings(project: Project, settings: Settings) -> None:
     write_json(settings_path(project), settings.as_json())

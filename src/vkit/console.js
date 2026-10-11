@@ -1169,7 +1169,7 @@ function mergeSettingsDraft(next, previous, defaults) {
   }
   const draft = { ...settingsDraft };
   for (const key of Object.keys(defaults))
-    if (draft[key] === previous?.[key]) draft[key] = next[key];
+    if (JSON.stringify(draft[key]) === JSON.stringify(previous?.[key])) draft[key] = next[key];
   settingsDraft = draft;
 }
 function setPreferenceFeedback(message) {
@@ -1225,16 +1225,16 @@ async function persistSettings(candidate, source = "form") {
     settingsDraft = Object.fromEntries(
       Object.keys(configuration.settings_defaults).map((key) => [
         key,
-        settingsDraft[key] !== draftAtRequest[key]
+        JSON.stringify(settingsDraft[key]) !== JSON.stringify(draftAtRequest[key])
           ? settingsDraft[key]
-          : source === "preference" && draftAtRequest[key] !== previous[key]
+          : source === "preference" && JSON.stringify(draftAtRequest[key]) !== JSON.stringify(previous[key])
             ? draftAtRequest[key]
             : response.settings[key],
       ]),
     );
     applySettings(settingsDraft);
     const hasUnsavedChanges = Object.keys(response.settings).some(
-      (key) => settingsDraft[key] !== response.settings[key],
+      (key) => JSON.stringify(settingsDraft[key]) !== JSON.stringify(response.settings[key]),
     );
     settingsMessage = hasUnsavedChanges
       ? "Settings saved. Unsaved changes remain."
@@ -1336,6 +1336,23 @@ function settingsForm() {
   fields.append(toggle);
   form.append(fields);
 
+  const tools = el("fieldset", null, "settings-tools");
+  tools.append(el("legend", "Tools available to agents"));
+  tools.append(el("p", "Enabled tools appear in MCP and help. Save settings, then reconnect your agent to refresh its tool list. Help always remains available.", "field-help"));
+  for (const tool of configuration.managed_tools) {
+    const checkbox = el("input");
+    checkbox.type = "checkbox";
+    checkbox.id = `settings-tool-${tool.name}`;
+    checkbox.dataset.tool = tool.name;
+    checkbox.checked = !settingsDraft.disabled_tools.includes(tool.name);
+    const label = el("label", tool.name);
+    label.htmlFor = checkbox.id;
+    const row = el("div", null, "form-checkbox");
+    row.append(checkbox, label);
+    tools.append(row, el("p", tool.description, "field-help"));
+  }
+  form.append(tools);
+
   const status = el("p", settingsMessage, "settings-message");
   status.id = "settings-message";
   status.setAttribute("role", "status");
@@ -1350,6 +1367,16 @@ function settingsForm() {
   actions.append(save, reset);
   form.append(status, actions);
   const change = (event) => {
+    const tool = event.target.dataset.tool;
+    if (tool) {
+      const disabled = new Set(settingsDraft.disabled_tools);
+      if (event.target.checked) disabled.delete(tool);
+      else disabled.add(tool);
+      settingsDraft.disabled_tools = [...disabled].sort();
+      settingsMessage = "Unsaved settings.";
+      syncSettingsForm();
+      return;
+    }
     const key = event.target.dataset.setting;
     if (!key) return;
     if (key === "sidebar_collapsed") settingsDraft[key] = event.target.checked;
@@ -1440,8 +1467,8 @@ function setup() {
   fragment.append(
     grid,
     panel(
-      "Console settings",
-      "Preferences are saved for this project.",
+      "Project settings",
+      "Preferences and tool availability are saved for this project.",
       [settingsForm()],
     ),
     el("h2", "Connect an agent", "section-label"),

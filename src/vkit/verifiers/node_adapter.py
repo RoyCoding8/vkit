@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -150,6 +151,7 @@ def _major_version(executable: str) -> int:
         done = subprocess.run(
             [executable, "--version"], capture_output=True,
             encoding="utf-8", errors="replace",
+            env={key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP") if key in os.environ},
             timeout=VERSION_PROBE_SECONDS, **hidden_window(),
         )
     except (OSError, subprocess.SubprocessError):

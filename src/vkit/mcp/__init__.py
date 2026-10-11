@@ -15,17 +15,17 @@ from .. import __version__, query
 from ..manifest import ManifestError
 from ..operations.catalog import OPERATIONS
 from ..operations.contract import Operation, OperationContractError, OperationInputError, invoke
+from ..paths import open_project
+from ..settings import load_settings
 from ..store import new_run_id
 
 MAX_WAIT_SECONDS = 60
 INSTRUCTIONS = (
-    "Verification evidence for one Git repository. Call status (optionally with the paths you changed) to see "
-    "which registered checks are fresh, stale or missing; check_run with needed=true runs exactly the stale ones; "
-    "run_get reads a run's outcome and log; gate says READY only when every check passed against the current "
-    "inputs. features describes what the application does and how a user reaches each feature. Check ids come "
-    "from the manifest; no tool accepts a command, and only a human can accept a check definition. "
-    "Each built-in computation tool describes its exact input scope and possible outcomes. "
-    "Computation results do not change the gate."
+    "Call help to discover the currently enabled tools and their exact input contracts. "
+    "Verification evidence concerns one Git repository. Registered checks come from the manifest; "
+    "no tool accepts an arbitrary command, and only a human can accept a check definition. "
+    "Each computation describes its exact scope and possible outcomes. Computation results do not "
+    "change registered check evidence. Use a result only within its stated model and assumptions."
 )
 
 
@@ -79,12 +79,16 @@ class Server:
     def context(self) -> query.Context:
         return query.open_context(self.root)
 
+    def tools(self) -> tuple[Tool | Operation, ...]:
+        disabled = load_settings(open_project(self.root)).disabled_tools
+        return tuple(tool for tool in BY_NAME.values() if tool.name not in disabled)
+
     def call(self, name: str, arguments: dict[str, Any] | None) -> tuple[Any, bool]:
-        tool = BY_NAME.get(name)
-        if tool is None:
-            return {"error": f"unknown tool {name!r}"}, True
         arguments = {} if arguments is None else arguments
         try:
+            tool = next((tool for tool in self.tools() if tool.name == name), None)
+            if tool is None:
+                return {"error": "unknown or unavailable tool"}, True
             if isinstance(tool, Operation):
                 return invoke(tool, self.root, arguments), False
             _check(arguments, tool.input_schema)
@@ -124,6 +128,13 @@ def _features(server: Server, args: dict[str, Any]) -> Any:
     words = str(args.get("query", "")).lower().split()
     return {"features": [f for f in report["features"]
                          if all(w in json.dumps(f).lower() for w in words)]}
+
+
+def _help(server: Server, args: dict[str, Any]) -> Any:
+    words = args.get("query", "").lower().split()
+    definitions = tool_definitions(server.tools())
+    return {"contract_version": 1, "tools": [tool for tool in definitions
+            if all(word in json.dumps(tool).lower() for word in words)]}
 
 
 def _summary(ctx: query.Context, run_id: str) -> dict[str, Any]:
@@ -195,6 +206,8 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
 _STR = {"type": "string"}
 _PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
 _BASE_TOOLS = (
+    Tool("help", "Discover enabled tools with descriptions and exact input schemas. Filter by words in a name, "
+         "description, or schema. An empty query lists all enabled tools.", {"query": _STR}, _help),
     Tool("status", "Freshness of every registered check (fresh_pass, fresh_fail, fresh_blocked, stale, missing, "
          "not_approved), what each kind of evidence establishes and does not, the gate, and the features. Pass "
          "paths to see only the checks and features that read them, and which paths no check reads.",
@@ -244,7 +257,7 @@ def serve_stdio(root: str | Path) -> int:
         return types.ListToolsResult(tools=[
             types.Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"],
                        annotations=types.ToolAnnotations(readOnlyHint=t["annotations"]["readOnlyHint"]))
-            for t in tool_definitions()])
+            for t in tool_definitions(server.tools())])
 
     async def call_tool(_ctx: Any, params: Any) -> Any:
         body, is_error = await anyio.to_thread.run_sync(server.call, params.name, params.arguments)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from typing import Any, Sequence
 
 from . import query
@@ -15,6 +16,7 @@ from .operations.catalog import OPERATIONS
 from .operations.contract import (Operation, OperationContractError, OperationInputError, cli_arguments, cli_value,
                                   invoke)
 from .paths import ProjectError
+from .settings import SettingsFileError, load_settings, save_settings
 from .store import now
 
 EXIT_OK = 0
@@ -257,17 +259,39 @@ def cmd_project_inspect(args: argparse.Namespace) -> int:
 
 
 def cmd_mcp_serve(args: argparse.Namespace) -> int:
-    from .mcp import MCPUnavailable, serve_stdio, tool_definitions
+    from .mcp import MCPUnavailable, Server, serve_stdio, tool_definitions
 
     project = _context(args).project
     if args.json:
-        catalogue = tool_definitions()
+        catalogue = tool_definitions(Server(project.root).tools())
         _emit({"project": str(project.root), "tools": catalogue}, True, "")
         return EXIT_OK
     try:
         return serve_stdio(project.root)
     except MCPUnavailable as exc:
         raise Refused(str(exc), EXIT_UNAVAILABLE) from exc
+
+
+def cmd_tools(args: argparse.Namespace) -> int:
+    from .mcp import BY_NAME, Server
+
+    project = _context(args).project
+    name = args.enable or args.disable
+    if name:
+        if name not in BY_NAME or name == "help":
+            raise Refused("choose an installed tool other than help", EXIT_INVALID)
+        settings = load_settings(project)
+        disabled = set(settings.disabled_tools)
+        if args.disable:
+            disabled.add(name)
+        else:
+            disabled.discard(name)
+        save_settings(project, replace(settings, disabled_tools=tuple(sorted(disabled))))
+    body, is_error = Server(project.root).call("help", {"query": args.query})
+    if is_error:
+        raise Refused(body["error"], EXIT_INVALID)
+    _emit(body, args.json, "\n\n".join(f"{tool['name']}\n{tool['description']}" for tool in body["tools"]))
+    return EXIT_OK
 
 
 def cmd_console(args: argparse.Namespace) -> int:
@@ -278,8 +302,11 @@ def cmd_console(args: argparse.Namespace) -> int:
 
 def cmd_compute(args: argparse.Namespace) -> int:
     operation = args._vkit_operation
+    project = _context(args).project
+    if operation.name in load_settings(project).disabled_tools:
+        raise Refused("unknown or unavailable tool", EXIT_INVALID)
     try:
-        body = invoke(operation, _context(args).project.root, cli_arguments(operation, vars(args)))
+        body = invoke(operation, project.root, cli_arguments(operation, vars(args)))
     except OperationInputError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
     except OperationContractError as exc:
@@ -334,6 +361,11 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--path", action="append", help="only checks that read this path (repeatable)")
     command(sub, "gate", "READY only if every check passed against the current inputs")
     command(sub, "features", "show the feature map and which features are verified now")
+    tools = command(sub, "tools", "discover enabled tools or change their saved availability")
+    tools.add_argument("--query", default="", help="filter enabled tools by words")
+    availability = tools.add_mutually_exclusive_group()
+    availability.add_argument("--enable", metavar="NAME", help="enable an installed tool by its MCP name")
+    availability.add_argument("--disable", metavar="NAME", help="disable an installed tool by its MCP name")
     accept = command(sub, "accept", "review and accept check definitions so they may run")
     accept.add_argument("--check", action="append", help="a check id (repeatable); default every check")
     accept.add_argument("--proposal", help="apply a pending proposal by digest prefix instead")
@@ -385,6 +417,7 @@ _DISPATCH = {
     ("project", "inspect"): cmd_project_inspect,
     ("proposals", None): cmd_proposals, ("reject", None): cmd_reject,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
+    ("tools", None): cmd_tools,
 }
 
 
@@ -401,6 +434,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(str(exc), file=sys.stderr)
         return exc.code
+    except SettingsFileError as exc:
+        _emit({"error": str(exc), "exit_code": EXIT_INVALID}, args.json, str(exc))
+        return EXIT_INVALID
     except Exception as exc:  # noqa: BLE001
         print(f"internal error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_INTERNAL

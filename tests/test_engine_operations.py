@@ -47,17 +47,89 @@ def test_protobuf_cli_and_mcp_cannot_disable_wire_rules(make_project):
         "new/api.proto": 'syntax = "proto3"; package api; message Item { int32 value = 1; }',
         "new/buf.yaml": "version: v2\nbreaking:\n  use: []\n  except: [FIELD_SAME_TYPE]\n",
     })
-    code, result = vkit(project, "compute", "check-proto-compatibility", "--old-path", "old", "--new-path", "new")
+    code, result = vkit(project, "compute", "compare-contracts", "--old-path", "old", "--new-path", "new",
+                        "--profile", "protobuf-wire-json")
     assert (code, result["status"], result["category"]) == (1, "BREAKING", "WIRE_JSON")
     assert result["diagnostics"]
     client = McpClient(project)
     try:
         gate_before, _ = client.call("gate")
-        result, error = client.call("check_proto_compatibility", old_path="old", new_path="new")
+        result, error = client.call("compare_contracts", old_path="old", new_path="new", profile="protobuf-wire-json")
         assert not error and result["status"] == "BREAKING"
         assert client.call("gate")[0] == gate_before
-        refused, error = client.call("check_proto_compatibility", old_path="old", new_path="new", ignore=["api.proto"])
+        refused, error = client.call("compare_contracts", old_path="old", new_path="new", profile="protobuf-wire-json",
+                                    ignore=["api.proto"])
         assert error and "ignore" in refused["error"]
+    finally:
+        client.close()
+
+
+def test_openapi_contracts_are_discoverable_scoped_and_switchable(make_project):
+    if not os.environ.get("VKIT_OASDIFF_BIN"):
+        pytest.skip("pinned oasdiff binary is not configured")
+    old = {"openapi": "3.0.3", "info": {"title": "items", "version": "1"}, "paths": {
+        "/items": {"post": {"requestBody": {"content": {"application/json": {"schema": {
+            "type": "object", "properties": {"name": {"type": "string"}}}}}},
+            "responses": {"200": {"description": "ok"}}}}}}
+    new = json.loads(json.dumps(old))
+    new["paths"]["/items"]["post"]["requestBody"]["content"]["application/json"]["schema"]["required"] = ["name"]
+    project = _project(make_project, {"old.json": json.dumps(old), "new.json": json.dumps(new)})
+    code, result = vkit(project, "compute", "compare-contracts", "--old-path", "old.json",
+                        "--new-path", "new.json", "--profile", "openapi")
+    assert (code, result["status"], result["profile"], result["operation"]) == (
+        1, "BREAKING", "openapi", "compare_contracts")
+    assert result["diagnostics"]
+    client = McpClient(project)
+    try:
+        before, _ = client.call("gate")
+        found, error = client.call("help", query="OpenAPI")
+        assert not error and [tool["name"] for tool in found["tools"]] == ["compare_contracts"]
+        result, error = client.call("compare_contracts", old_path="old.json", new_path="new.json", profile="openapi")
+        assert not error and result["status"] == "BREAKING"
+        assert client.call("gate")[0] == before
+        result, error = client.call("compare_contracts", old_path="old.json", new_path="new.json",
+                                    profile="openapi", ignore=["request-property-became-required"])
+        assert error and "ignore" in result["error"]
+        code, _ = vkit(project, "tools", "--disable", "compare_contracts")
+        assert code == 0
+        found, error = client.call("help", query="OpenAPI")
+        assert not error and found["tools"] == []
+        result, error = client.call("compare_contracts", old_path="old.json", new_path="new.json", profile="openapi")
+        assert error and result["error"] == "unknown or unavailable tool"
+    finally:
+        client.close()
+
+
+def test_dependency_queries_use_shared_cli_mcp_and_do_not_change_gate(make_project):
+    if not os.environ.get("VKIT_DEPENDENCY_HELPER"):
+        pytest.skip("pinned dependency-cruiser helper is not configured")
+    project = _project(make_project, {
+        "src/entry.js": "import { value } from './model.js'; export const result = value;\n",
+        "src/model.js": "export const value = 1;\n",
+        "src/unused.js": "export const spare = 2;\n",
+    })
+    code, result = vkit(project, "compute", "analyze-dependencies", "--path", "src", "--query", "path",
+                        "--sources", '["src/entry.js"]', "--target", "src/model.js")
+    assert (code, result["status"]) == (0, "ANALYZED")
+    assert result["result"] == {"source": "src/entry.js", "target": "src/model.js",
+                                "witness": ["src/entry.js", "src/model.js"]}
+    client = McpClient(project)
+    try:
+        before, _ = client.call("gate")
+        found, error = client.call("help", query="dependency graph")
+        assert not error and [tool["name"] for tool in found["tools"]] == ["analyze_dependencies"]
+        result, error = client.call("analyze_dependencies", path="src", query="unreachable", sources=["src/entry.js"])
+        assert not error and result["status"] == "ANALYZED"
+        assert result["result"] == {"entrypoints": ["src/entry.js"],
+                                    "reachable": ["src/entry.js", "src/model.js"],
+                                    "unreachable": ["src/unused.js"]}
+        result, error = client.call("analyze_dependencies", path="src", query="path",
+                                    sources=["src/unused.js"], target="src/model.js")
+        assert not error and result["status"] == "ANALYZED"
+        assert result["result"]["witness"] is None
+        assert client.call("gate")[0] == before
+        result, error = client.call("analyze_dependencies", path="src", query="graph", config=".dependency-cruiser.cjs")
+        assert error and "config" in result["error"]
     finally:
         client.close()
 

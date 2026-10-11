@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.metadata
+
 import pytest
 
 from vkit.operations.traces import (
@@ -186,11 +188,14 @@ def test_trace_analysis_refuses_absent_or_mismatched_pinned_processor(
     trace = tmp_path / "captured.trace"
     raw = _scheduler_trace()
     trace.write_bytes(raw)
-    monkeypatch.setattr(
-        "vkit.operations.traces._processor_binary",
-        lambda: (None, None, "pinned engine absent" if installed_version is None else
-                 f"perfetto package must be exactly 0.58.2, found {installed_version}"),
-    )
+
+    def reported_version(package: str) -> str:
+        assert package == "perfetto"
+        if installed_version is None:
+            raise importlib.metadata.PackageNotFoundError(package)
+        return installed_version
+
+    monkeypatch.setattr("vkit.operations.traces.importlib.metadata.version", reported_version)
 
     result = _analyze({
         "trace_path": str(trace),
@@ -202,5 +207,7 @@ def test_trace_analysis_refuses_absent_or_mismatched_pinned_processor(
     })
 
     assert result["status"] == "UNAVAILABLE"
-    assert result["reason"] == ("pinned engine absent" if installed_version is None else
-                                 f"perfetto package must be exactly 0.58.2, found {installed_version}")
+    if installed_version is None:
+        assert result["reason"] == "optional perfetto package is not installed"
+    else:
+        assert result["reason"] == f"perfetto package must be exactly 0.58.2, found {installed_version}"

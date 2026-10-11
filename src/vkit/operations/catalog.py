@@ -18,6 +18,7 @@ from .configurations import generate_configurations
 from .grammar import find_grammar_ambiguity
 from .dependency_resolution import resolve_dependencies
 from .history import check_history
+from .invariants import infer_trace_relations
 from .migrations import compare_migrations
 from .policies import compare_authorization_policies
 from .protocols import check_protocol_model
@@ -57,6 +58,21 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="infer_trace_relations",
+        description=("Discover relations in captured typed observations using pinned Daikon, then independently "
+                     "check supported integer comparisons against every corresponding supplied sample. Supports "
+                     "per-point states and consecutive same-trace pairs. Returns sample counts, checked proposals, "
+                     "contradicting rows and unsupported engine expressions. Supplied trace provenance and "
+                     "representativeness are assumptions; observed relations are not universal invariants."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 typed trace bundle"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
+        },
+        required=("path",), handler=infer_trace_relations,
+        outcomes={"ANALYZED_SAMPLES": 0, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="find_cache_key_collision",

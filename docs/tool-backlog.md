@@ -645,6 +645,8 @@ Source: [Coccinelle semantic patch examples](https://coccinelle.gitlabpages.inri
 
 ### 39. Candidate invariants supported by supplied execution traces
 
+Implemented: [`infer_trace_relations`](invariant-model.md) uses pinned Daikon to propose relations from typed state or consecutive-pair observations, then checks supported integer comparisons against every corresponding supplied sample. These are sample-supported candidates, not universal program invariants.
+
 Proposed call: `infer_candidate_invariants(traces, variable_profile)`.
 
 Ask which predicates from a fixed candidate family hold on the supplied recorded observations. Return each predicate, its observation coverage, and counterobservations for rejected candidates where useful.

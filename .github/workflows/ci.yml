@@ -127,6 +127,17 @@ jobs:
           jar.write_bytes(content)
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
               output.write(f"VKIT_TLA2TOOLS_JAR={jar}\nVKIT_REQUIRE_PROTOCOL_ENGINE=1\n")
+      - name: Install pinned trace relation engine
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          jar = pathlib.Path(os.environ["RUNNER_TEMP"]) / "daikon.jar"
+          subprocess.run([sys.executable, "scripts/install_daikon_engine.py", "--output", str(jar)], check=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_DAIKON_JAR={jar}\nVKIT_REQUIRE_DAIKON_ENGINE=1\n")
       - name: Install pinned Perses
         if: runner.os == 'Linux'
         shell: bash

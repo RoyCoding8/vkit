@@ -14,6 +14,8 @@ from vkit.operations.network_paths import (
     _capture_snapshot,
     _compare_network_paths_direct,
     _parse_selector,
+    BATFISH_VERSION,
+    _reported_version,
     _scan_bounded,
     _witnesses,
     compare_network_paths,
@@ -135,6 +137,13 @@ def test_worker_rejects_unusable_operator_host_without_service_access(tmp_path: 
 
     assert result["status"] == "UNSUPPORTED"
     assert "VKIT_BATFISH_HOST" in result["detail"]
+
+
+def test_batfish_version_pin_is_exact_and_diagnostic_is_bounded() -> None:
+    assert _reported_version(BATFISH_VERSION) == (True, BATFISH_VERSION, False)
+    assert _reported_version("2026.08.27") == (False, "2026.08.27", False)
+    assert _reported_version("x" * 1000) == (False, "x" * 128, True)
+    assert _reported_version(None) == (False, "<missing or non-string>", False)
 
 
 def test_differential_trace_columns_are_normalized_to_snapshot_names() -> None:

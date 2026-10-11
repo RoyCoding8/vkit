@@ -28,13 +28,12 @@ MAX_TRACE_CHARS = 8192
 MAX_WORKER_REQUEST_BYTES = 16 * 1024
 MAX_WORKER_RESULT_BYTES = 256 * 1024
 PYBATFISH_VERSION = "2026.9.17.3748"
-BATFISH_VERSION = "2026.08.27"
+BATFISH_VERSION = "2026.08.27.3685"
 BATFISH_IMAGE_DIGEST = "sha256:7909378197c5a3974f2e8180af58cef0ca17b74d1cd9ba39f2d1fddb64737e55"
 _HOST_ENV = "VKIT_BATFISH_HOST"
 _NODE = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
 _INTERFACE = re.compile(r"[A-Za-z0-9_.:/-]{1,64}\Z")
 _SNAPSHOT_PART = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
-_ENGINE_VERSION = re.compile(r"v?2026\.08\.27(?:[-+][A-Za-z0-9_.-]+)?\Z")
 
 
 @dataclass(frozen=True)
@@ -57,6 +56,12 @@ class _Unsupported(ValueError):
 
 class _DeadlineExpired(TimeoutError):
     pass
+
+
+def _reported_version(value: Any) -> tuple[bool, str, bool]:
+    if not isinstance(value, str):
+        return False, "<missing or non-string>", False
+    return value == BATFISH_VERSION, value[:128], len(value) > 128
 
 
 def compare_network_paths(root: Path, base_path: str, candidate_path: str,
@@ -196,11 +201,13 @@ def _compare_network_paths_direct(root: Path, base_path: str, candidate_path: st
                           timeout=min(5, max(0.05, analysis_deadline - time.monotonic())))
         _set_request_timeout(session, analysis_deadline)
         versions = session.get_component_versions()
-        server_version = str(versions.get("Batfish", ""))
-        if not _ENGINE_VERSION.fullmatch(server_version):
+        server_version = versions.get("Batfish")
+        version_matches, actual_version, version_truncated = _reported_version(server_version)
+        if not version_matches:
             final = {**base_result, "status": "UNAVAILABLE",
                      "detail": "the connected service is not the pinned Batfish release",
-                     "engine": {**base_result["engine"], "actual_batfish_version": server_version}}
+                     "engine": {**base_result["engine"], "actual_batfish_version": actual_version,
+                                "actual_batfish_version_truncated": version_truncated}}
         else:
             base_result["engine"] = {**base_result["engine"],
                                       "actual_batfish_version": server_version}

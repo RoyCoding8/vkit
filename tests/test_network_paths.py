@@ -11,7 +11,9 @@ from vkit.operations.network_paths import (
     BATFISH_IMAGE_DIGEST,
     PYBATFISH_VERSION,
     _capture_snapshot,
+    _compare_network_paths_direct,
     _parse_selector,
+    _scan_bounded,
     _witnesses,
     compare_network_paths,
 )
@@ -74,6 +76,9 @@ def test_selector_is_concrete_and_rejects_engine_query_language() -> None:
     invalid = {**_selector(), "query": "SELECT * FROM answers"}
     with pytest.raises(ValueError, match="selector must contain"):
         _parse_selector(invalid)
+    invalid = {**_selector(), "destination_ip": "2001:db8::1"}
+    with pytest.raises(ValueError, match="IPv4"):
+        _parse_selector(invalid)
 
 
 def test_snapshot_capture_is_exact_bounded_and_manifest_stable(tmp_path: Path) -> None:
@@ -85,7 +90,7 @@ def test_snapshot_capture_is_exact_bounded_and_manifest_stable(tmp_path: Path) -
         "configs/dist.cfg", "configs/edge.cfg", "hosts/host-www.json",
     }
     (base / "unexpected.txt").write_text("not captured", encoding="utf-8")
-    with pytest.raises(ValueError, match="configs/ and may contain hosts/ only"):
+    with pytest.raises(ValueError, match="exceeds its entry limit"):
         _capture_snapshot(tmp_path, "base")
 
 
@@ -98,6 +103,13 @@ def test_snapshot_rejects_parent_traversal_and_duplicate_host_json_keys(tmp_path
         _capture_snapshot(tmp_path, "bad")
 
 
+def test_directory_scan_stops_at_limit_before_collecting_unbounded_entries(tmp_path: Path) -> None:
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / name).touch()
+    with pytest.raises(ValueError, match="exceeds its entry limit"):
+        _scan_bounded(tmp_path, 2)
+
+
 def test_missing_engine_returns_unavailable_after_input_validation(tmp_path: Path, monkeypatch) -> None:
     base = _snapshot(tmp_path, "base", route=False)
     candidate = _snapshot(tmp_path, "candidate", route=True)
@@ -105,17 +117,32 @@ def test_missing_engine_returns_unavailable_after_input_validation(tmp_path: Pat
     def missing_package(name: str) -> str:
         raise importlib.metadata.PackageNotFoundError(name)
     monkeypatch.setattr("vkit.operations.network_paths.importlib.metadata.version", missing_package)
-    result = compare_network_paths(tmp_path, base.name, candidate.name, _selector())
+    result = _compare_network_paths_direct(tmp_path, base.name, candidate.name,
+                                           _selector(), timeout_seconds=3)
     assert result["operation"] == "compare_network_paths"
     assert result["status"] == "UNAVAILABLE"
     assert result["engine"]["expected_image_digest"] == BATFISH_IMAGE_DIGEST
     assert result["engine"]["pybatfish_version"] == PYBATFISH_VERSION
 
 
+def test_worker_rejects_unusable_operator_host_without_service_access(tmp_path: Path, monkeypatch) -> None:
+    _snapshot(tmp_path, "base", route=False)
+    _snapshot(tmp_path, "candidate", route=True)
+    monkeypatch.setenv("VKIT_BATFISH_HOST", "not a valid host")
+
+    result = compare_network_paths(tmp_path, "base", "candidate", _selector(), timeout_seconds=10)
+
+    assert result["status"] == "UNSUPPORTED"
+    assert "VKIT_BATFISH_HOST" in result["detail"]
+
+
 def test_differential_trace_columns_are_normalized_to_snapshot_names() -> None:
     class Answer:
         def frame(self):
             class Frame:
+                def __len__(self):
+                    return 1
+
                 def to_dict(self, *, orient: str):
                     assert orient == "records"
                     return [{

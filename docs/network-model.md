@@ -36,17 +36,25 @@ and at most one returned trace per direction.
 
 The engine is `pybatfish==2026.9.17.3748` connected to port 9996 at the operator-configured
 `VKIT_BATFISH_HOST` (default `127.0.0.1`). The expected Batfish release is `2026.08.27`; the
-expected multi-platform image index is
-`batfish/allinone@sha256:54cb0ed94fd9a3c1ca0985f73e5be479e955cee9b9f6a6799b66be3364fd8e5c`.
+expected multi-platform service-only image index is
+`batfish/batfish@sha256:7909378197c5a3974f2e8180af58cef0ca17b74d1cd9ba39f2d1fddb64737e55`.
 The operation checks the backend's reported Batfish release. The API does not attest the container
 digest, so the digest field is a deployment pin that CI must enforce, not a runtime measurement.
-The operation creates a uniquely named network and deletes it after analysis. It polls background
-work under a shared deadline of at most 60 seconds and bounds every client request by the remaining
-time.
+The official image index includes Linux amd64 and arm64 images. Its `2026.08.27.3685` tag resolves
+to this index, and its amd64 child manifest was confirmed from the registry. The service-only image
+omits the built-in Jupyter server from the `allinone` image. The operation creates a uniquely named
+network and deletes it after analysis. It runs the synchronous Batfish client in a fixed, isolated
+worker process that the parent kills at a shared deadline of at most 300 seconds (default 120).
+Each HTTP request is bounded by the remaining analysis time; the outer process deadline also covers
+client polling and snapshot initialization.
 
 For each snapshot, the operation checks `initIssues`, `fileParseStatus`, and `parseWarning`. Any
-initialization/conversion issue, parse warning, non-`PASSED` file, missing file status, or diagnostic
-limit makes the result `UNKNOWN`. Only clean diagnostics permit a reachability conclusion. It then
+initialization/conversion issue, parse warning, non-`PASSED` file, missing file status, or more than
+64 diagnostic rows makes the result `UNKNOWN`. The fixed differential question requests one trace
+per direction and rejects more than four witness rows before converting a response frame to Python
+records. Batfish may still materialize the full diagnostic dataframe before that row check; the
+worker and wall deadline bound elapsed time and serialized output, not backend query memory. Only
+clean diagnostics permit a reachability conclusion. It then
 runs `differentialReachability` once with candidate as `snapshot` and base as `reference_snapshot`,
 and once in the opposite order. This makes new and lost successful reachability visible without
 assuming the question reports both directions. Each witness preserves the concrete flow and both
@@ -74,6 +82,12 @@ successful-flow witness. A second fixture uses identical snapshots and expects z
 both query directions. These tests are skipped in ordinary local runs. Set
 `VKIT_BATFISH_REQUIRED=1` in CI after starting the digest-pinned service; the flag makes missing or
 incompatible engine setup fail the assertions instead of treating a skipped or mocked test as proof.
+
+The public call copies validated captures into an internal temporary directory and invokes only the
+fixed worker module with closed JSON arguments. It accepts no caller-supplied command or worker
+source path. Snapshot enumeration stops as soon as a fixed directory-entry cap is exceeded, before
+sorting or collecting the rest. IP selectors are IPv4-only; the fixed ICMP question therefore uses
+Batfish's IPv4 protocol semantics.
 
 This checkout has no Docker runtime in Windows or WSL, so the real Batfish fixture has not yet run
 locally. Linux CI must exercise both fixtures before this operation is treated as engine-verified.

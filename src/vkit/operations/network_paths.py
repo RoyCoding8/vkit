@@ -8,6 +8,7 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 import time
 import uuid
@@ -15,16 +16,20 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-MAX_TIMEOUT_SECONDS = 60
+from .. import proc
+
+MAX_TIMEOUT_SECONDS = 300
 MAX_FILES_PER_SNAPSHOT = 128
 MAX_FILE_BYTES = 256 * 1024
 MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 MAX_DIAGNOSTIC_ROWS = 64
 MAX_WITNESS_ROWS = 4
 MAX_TRACE_CHARS = 8192
+MAX_WORKER_REQUEST_BYTES = 16 * 1024
+MAX_WORKER_RESULT_BYTES = 256 * 1024
 PYBATFISH_VERSION = "2026.9.17.3748"
 BATFISH_VERSION = "2026.08.27"
-BATFISH_IMAGE_DIGEST = "sha256:54cb0ed94fd9a3c1ca0985f73e5be479e955cee9b9f6a6799b66be3364fd8e5c"
+BATFISH_IMAGE_DIGEST = "sha256:7909378197c5a3974f2e8180af58cef0ca17b74d1cd9ba39f2d1fddb64737e55"
 _HOST_ENV = "VKIT_BATFISH_HOST"
 _NODE = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
 _INTERFACE = re.compile(r"[A-Za-z0-9_.:/-]{1,64}\Z")
@@ -56,14 +61,82 @@ class _DeadlineExpired(TimeoutError):
 
 def compare_network_paths(root: Path, base_path: str, candidate_path: str,
                           selector: dict[str, Any],
-                          timeout_seconds: int = 45) -> dict[str, Any]:
+                          timeout_seconds: int = 120) -> dict[str, Any]:
+    """Compare two bounded snapshots in a killable worker process."""
+    if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= MAX_TIMEOUT_SECONDS:
+        return _result("UNSUPPORTED", f"timeout_seconds must be an integer in [1, {MAX_TIMEOUT_SECONDS}]")
+    try:
+        query = _parse_selector(selector)
+        base = _capture_snapshot(root, base_path)
+        candidate = _capture_snapshot(root, candidate_path)
+    except (OSError, TypeError, ValueError) as exc:
+        return _result("UNSUPPORTED", str(exc))
+
+    deadline = time.monotonic() + timeout_seconds
+    with tempfile.TemporaryDirectory(prefix="vkit-batfish-worker-") as raw_workdir:
+        workdir = Path(raw_workdir)
+        _write_snapshot(workdir / "base", base)
+        _write_snapshot(workdir / "candidate", candidate)
+        request_path = workdir / "request.json"
+        result_path = workdir / "result.json"
+        request = {
+            "schema_version": 1,
+            "selector": query,
+            "timeout_seconds": timeout_seconds,
+            "snapshot_sha256": {"base": base.sha256, "candidate": candidate.sha256},
+            "snapshot_bytes": {"base": base.byte_count, "candidate": candidate.byte_count},
+        }
+        request_bytes = json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+        if len(request_bytes) > MAX_WORKER_REQUEST_BYTES:
+            return _result("UNKNOWN", "internal Batfish worker request exceeded its limit")
+        request_path.write_bytes(request_bytes)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return _result("UNKNOWN", "capturing network snapshots exceeded the analysis deadline")
+        child_env = {key: value for key, value in os.environ.items()
+                     if key in {"PATH", "SYSTEMROOT", "WINDIR", "VKIT_BATFISH_HOST",
+                                "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"}}
+        worker = proc.run(
+            [sys.executable, "-I", "-m", "vkit.operations.network_paths",
+             "--worker", str(request_path), str(result_path)],
+            cwd=workdir,
+            env=child_env,
+            stdout_path=Path(os.devnull),
+            stderr_path=Path(os.devnull),
+            timeout_seconds=remaining,
+        )
+        if worker.launch_error:
+            return _result("UNAVAILABLE", "the isolated Batfish worker could not be started")
+        if worker.timed_out or worker.cancelled:
+            return _result("UNKNOWN", f"Batfish analysis exceeded the {timeout_seconds}-second deadline")
+        if worker.code != 0:
+            return _result("UNKNOWN", "the isolated Batfish worker failed")
+        try:
+            if result_path.stat().st_size > MAX_WORKER_RESULT_BYTES:
+                raise ValueError("Batfish worker result exceeded its size limit")
+            result = json.loads(result_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+            if (not isinstance(result, dict)
+                    or result.get("status") not in {"DIFFERENT", "NO_DIFFERENCE", "UNAVAILABLE", "UNKNOWN", "UNSUPPORTED"}
+                    or result.get("snapshot_sha256") != request["snapshot_sha256"]
+                    or result.get("snapshot_bytes") != request["snapshot_bytes"]):
+                raise ValueError("Batfish worker result did not match the captured request")
+            if time.monotonic() > deadline:
+                return _result("UNKNOWN", f"Batfish analysis exceeded the {timeout_seconds}-second deadline")
+            return result
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return _result("UNKNOWN", "the isolated Batfish worker returned an invalid or oversized result")
+
+
+def _compare_network_paths_direct(root: Path, base_path: str, candidate_path: str,
+                                  selector: dict[str, Any],
+                                  timeout_seconds: int) -> dict[str, Any]:
     """Compare successful reachability for one fixed header/path selector.
 
     The result concerns only the captured configuration files and Batfish's model.
     It is not evidence about a live network or unmodeled configuration inputs.
     """
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= MAX_TIMEOUT_SECONDS:
-        return _result("UNSUPPORTED", "timeout_seconds must be an integer in [1, 60]")
+        return _result("UNSUPPORTED", f"timeout_seconds must be an integer in [1, {MAX_TIMEOUT_SECONDS}]")
     try:
         query = _parse_selector(selector)
         base = _capture_snapshot(root, base_path)
@@ -89,6 +162,10 @@ def compare_network_paths(root: Path, base_path: str, candidate_path: str,
         "directional_results": None,
         "detail": None,
     }
+    host = os.environ.get(_HOST_ENV, "127.0.0.1")
+    if not _valid_host(host):
+        return {**base_result, "status": "UNSUPPORTED",
+                "detail": f"{_HOST_ENV} must be an operator-configured hostname or IP address"}
     try:
         actual_pybatfish = importlib.metadata.version("pybatfish")
     except importlib.metadata.PackageNotFoundError:
@@ -98,11 +175,6 @@ def compare_network_paths(root: Path, base_path: str, candidate_path: str,
         return {**base_result, "status": "UNAVAILABLE",
                 "detail": "installed pybatfish does not match its version pin",
                 "engine": {**base_result["engine"], "actual_pybatfish_version": actual_pybatfish}}
-    host = os.environ.get(_HOST_ENV, "127.0.0.1")
-    if not _valid_host(host):
-        return {**base_result, "status": "UNSUPPORTED",
-                "detail": f"{_HOST_ENV} must be an operator-configured hostname or IP address"}
-
     try:
         from pybatfish.client.consts import CoordConsts, WorkStatusCode
         from pybatfish.client.session import Session
@@ -246,6 +318,8 @@ def _parse_selector(raw: Any) -> dict[str, Any]:
             query[key] = str(ipaddress.ip_network(raw[key], strict=False))
         except ValueError as exc:
             raise _Unsupported(f"selector.{key} must be an IP address or CIDR string") from exc
+        if ipaddress.ip_network(query[key]).version != 4:
+            raise _Unsupported("this operation currently supports IPv4 selectors only")
     if "destination_ip" not in query:
         raise _Unsupported("selector.destination_ip is required")
     if "source_ip" in query and ipaddress.ip_network(query["source_ip"]).version != ipaddress.ip_network(query["destination_ip"]).version:
@@ -284,7 +358,7 @@ def _capture_snapshot(root: Path, relative: str) -> _Snapshot:
     _reject_reparse_path(root_path, snapshot_path)
     if not snapshot_path.is_dir():
         raise _Unsupported("snapshot path must name a directory")
-    entries = list(os.scandir(snapshot_path))
+    entries = _scan_bounded(snapshot_path, 2)
     if any(entry.name not in {"configs", "hosts"} for entry in entries) or "configs" not in {entry.name for entry in entries}:
         raise _Unsupported("snapshot must contain configs/ and may contain hosts/ only")
     files: list[_CapturedFile] = []
@@ -296,7 +370,7 @@ def _capture_snapshot(root: Path, relative: str) -> _Snapshot:
         _reject_reparse_path(root_path, folder_path)
         if not folder_path.is_dir():
             raise _Unsupported(f"snapshot {folder}/ must be a directory")
-        for entry in sorted(os.scandir(folder_path), key=lambda item: item.name):
+        for entry in _scan_bounded(folder_path, MAX_FILES_PER_SNAPSHOT - len(files)):
             if (not _SNAPSHOT_PART.fullmatch(entry.name) or entry.name.startswith(".")
                     or entry.name in {".", ".."}):
                 raise _Unsupported(f"snapshot contains an unsupported filename in {folder}/")
@@ -343,6 +417,16 @@ def _capture_snapshot(root: Path, relative: str) -> _Snapshot:
                 for item in files]
     digest = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return _Snapshot(tuple(files), digest, total)
+
+
+def _scan_bounded(directory: Path, limit: int) -> list[os.DirEntry[str]]:
+    entries = []
+    with os.scandir(directory) as scan:
+        for entry in scan:
+            if len(entries) >= limit:
+                raise _Unsupported(f"directory {directory.name}/ exceeds its entry limit")
+            entries.append(entry)
+    return sorted(entries, key=lambda item: item.name)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -421,8 +505,6 @@ def _snapshot_diagnostics(session: Any, name: str, snapshot: _Snapshot,
                                                 deadline, None, consts, statuses))
     warnings = _frame_records(_run_question(session, session.q.parseWarning(), name, deadline,
                                             None, consts, statuses))
-    if max(len(issues), len(parse_status), len(warnings)) > MAX_DIAGNOSTIC_ROWS:
-        raise ValueError("Batfish snapshot diagnostics exceed their result limit")
     expected = {item.relative for item in snapshot.files}
     observed = {str(row.get("File_Name", "")) for row in parse_status}
     complete = (not issues and not warnings and bool(parse_status)
@@ -436,10 +518,12 @@ def _snapshot_diagnostics(session: Any, name: str, snapshot: _Snapshot,
     }
 
 
-def _frame_records(answer: Any) -> list[dict[str, Any]]:
+def _frame_records(answer: Any, max_rows: int = MAX_DIAGNOSTIC_ROWS) -> list[dict[str, Any]]:
     frame = answer.frame()
     if not hasattr(frame, "to_dict"):
         raise ValueError("Batfish returned a non-tabular answer")
+    if len(frame) > max_rows:
+        raise ValueError("Batfish answer exceeds its row limit")
     records = frame.to_dict(orient="records")
     if not isinstance(records, list):
         raise ValueError("Batfish returned an invalid table")
@@ -468,9 +552,7 @@ def _safe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _witnesses(answer: Any, snapshot: str, reference: str) -> list[dict[str, Any]]:
-    rows = _frame_records(answer)
-    if len(rows) > MAX_WITNESS_ROWS:
-        raise ValueError("Batfish returned more reachability witnesses than allowed")
+    rows = _frame_records(answer, MAX_WITNESS_ROWS)
     required = {"Flow", "Snapshot_Traces", "Snapshot_TraceCount",
                 "Reference_Traces", "Reference_TraceCount"}
     output = []
@@ -480,30 +562,9 @@ def _witnesses(answer: Any, snapshot: str, reference: str) -> list[dict[str, Any
         flow = str(row["Flow"])
         if not flow or len(flow) > 2048:
             raise ValueError("Batfish returned an invalid flow witness")
-        traces = {}
-        # The first field belongs to the snapshot= argument and the second to
-        # reference_snapshot=. Preserve those API roles while naming the files.
-        for key in ("Snapshot_Traces", "Reference_Traces"):
-            value = row[key]
-            if value is None:
-                values = []
-            elif isinstance(value, (str, bytes)):
-                raise ValueError("Batfish returned malformed trace evidence")
-            else:
-                try:
-                    values = list(value)
-                except TypeError as exc:
-                    raise ValueError("Batfish returned malformed trace evidence") from exc
-            if len(values) > 4:
-                raise ValueError("Batfish trace count exceeds the witness limit")
-            rendered = sorted(str(item) for item in values)
-            if any(len(item) > MAX_TRACE_CHARS for item in rendered):
-                raise ValueError("Batfish trace exceeds the result size limit")
-            traces[key] = rendered
-        by_snapshot = {
-            snapshot: traces["Snapshot_Traces"],
-            reference: traces["Reference_Traces"],
-        }
+        snapshot_traces = _trace_values(row["Snapshot_Traces"])
+        reference_traces = _trace_values(row["Reference_Traces"])
+        by_snapshot = {snapshot: snapshot_traces, reference: reference_traces}
         counts = {
             snapshot: _count(row["Snapshot_TraceCount"]),
             reference: _count(row["Reference_TraceCount"]),
@@ -518,6 +579,24 @@ def _witnesses(answer: Any, snapshot: str, reference: str) -> list[dict[str, Any
     return output
 
 
+def _trace_values(value: Any) -> list[str]:
+    if value is None:
+        values = []
+    elif isinstance(value, (str, bytes)):
+        raise ValueError("Batfish returned malformed trace evidence")
+    else:
+        try:
+            values = list(value)
+        except TypeError as exc:
+            raise ValueError("Batfish returned malformed trace evidence") from exc
+    if len(values) > 4:
+        raise ValueError("Batfish trace count exceeds the witness limit")
+    rendered = sorted(str(item) for item in values)
+    if any(len(item) > MAX_TRACE_CHARS for item in rendered):
+        raise ValueError("Batfish trace exceeds the result size limit")
+    return rendered
+
+
 def _count(value: Any) -> int:
     if isinstance(value, bool):
         raise ValueError("Batfish returned an invalid trace count")
@@ -528,3 +607,57 @@ def _count(value: Any) -> int:
     if result < 0 or result != value:
         raise ValueError("Batfish returned an invalid trace count")
     return result
+
+
+def _worker_main(arguments: list[str]) -> int:
+    if len(arguments) != 3 or arguments[0] != "--worker":
+        return 2
+    try:
+        request_path = Path(arguments[1]).resolve(strict=True)
+        result_path = Path(arguments[2]).resolve(strict=False)
+        if (request_path.name != "request.json" or result_path.name != "result.json"
+                or request_path.parent != result_path.parent
+                or request_path.is_symlink()):
+            return 2
+        request_bytes = request_path.read_bytes()
+        if len(request_bytes) > MAX_WORKER_REQUEST_BYTES:
+            return 2
+        request = json.loads(request_bytes, object_pairs_hook=_unique_object)
+        expected = {"schema_version", "selector", "timeout_seconds", "snapshot_sha256", "snapshot_bytes"}
+        if not isinstance(request, dict) or set(request) != expected or request["schema_version"] != 1:
+            return 2
+        timeout = request["timeout_seconds"]
+        if type(timeout) is not int or not 1 <= timeout <= MAX_TIMEOUT_SECONDS:
+            return 2
+        selector = _parse_selector(request["selector"])
+        expected_hashes = request["snapshot_sha256"]
+        expected_bytes = request["snapshot_bytes"]
+        if (not isinstance(expected_hashes, dict) or set(expected_hashes) != {"base", "candidate"}
+                or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                       for value in expected_hashes.values())
+                or not isinstance(expected_bytes, dict) or set(expected_bytes) != {"base", "candidate"}
+                or any(type(value) is not int or not 0 <= value <= MAX_SNAPSHOT_BYTES
+                       for value in expected_bytes.values())):
+            return 2
+        base = _capture_snapshot(request_path.parent, "base")
+        candidate = _capture_snapshot(request_path.parent, "candidate")
+        if ({"base": base.sha256, "candidate": candidate.sha256} != expected_hashes
+                or {"base": base.byte_count, "candidate": candidate.byte_count} != expected_bytes):
+            return 2
+        result = _compare_network_paths_direct(request_path.parent, "base", "candidate",
+                                               selector, timeout)
+        encoded = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+        if len(encoded) > MAX_WORKER_RESULT_BYTES:
+            result = {"operation": "compare_network_paths", "status": "UNKNOWN",
+                      "claim_scope": "supplied network configuration model only",
+                      "snapshot_sha256": expected_hashes, "snapshot_bytes": expected_bytes,
+                      "detail": "Batfish worker result exceeded its size limit"}
+            encoded = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+        result_path.write_bytes(encoded)
+        return 0
+    except Exception:
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_worker_main(sys.argv[1:]))

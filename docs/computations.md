@@ -40,6 +40,8 @@ and resource limits.
 and cvc5 executables. It validates the schema and independently replays authorization witnesses.
 [Wheel artifact comparison](wheel-model.md) statically validates archive integrity and compares
 abstract installation mappings and metadata without importing or installing package code.
+[Semantic merge preservation](merge-model.md) checks a captured quartet of supported pure
+functions and independently replays every violating input against their return-value models.
 
 ## Check a replacement
 

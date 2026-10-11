@@ -303,6 +303,12 @@ Sources: [API Extractor model](https://api.rushstack.io/pages/api-extractor-mode
 
 Proposed call: `check_semantic_merge(base, left, right, merged, profile)`.
 
+Implemented scalar-return profile: `check_semantic_merge(path)`. Captured base/left/right/merged
+pure integer/boolean function ASTs are checked with cvc5. Each branch's changed return must be
+preserved; inputs unchanged by both branches retain base. SAT witnesses are independently
+replayed in the installed IR evaluator. See [semantic merge preservation](merge-model.md).
+This is not general state/effect reasoning or a whole-repository merge guarantee.
+
 Ask whether a candidate merge satisfies a defined relation to the two independent edits. Textually disjoint edits can interact when one changes a condition and the other changes an action controlled by that condition.
 
 SafeMerge research demonstrates relational reasoning about three-way Java merges. A vkit implementation needs supported source extraction, correspondence between versions, a precise conflict-freedom relation, and either discharged obligations or a validated distinguishing execution.

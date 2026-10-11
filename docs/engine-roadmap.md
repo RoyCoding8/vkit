@@ -40,6 +40,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | [packaging](https://github.com/pypa/packaging) and wheel inspection | `compare_wheels` | Validated static installation scheme/payload mapping, metadata and executable-bit differences; no runtime installation claim |
 | [CrossHair](https://github.com/pschanely/CrossHair) | `find_behavioral_difference` | Concrete differences in a closed Python language, confirmed by two fresh CPython replays; no equivalence claim |
 | [SymPy](https://github.com/sympy/sympy) | `compare_rational_expressions` | Rational-function identity over exact coefficients, independently checked by sparse polynomial arithmetic with original division guards |
+| cvc5 and vkit's pure function frontend | `check_semantic_merge` | All-input scalar return preservation across captured base/left/right/merged functions, with independent witness evaluation |
 
 These operations use the existing catalog contract. Adding an engine does not justify
 another transport, plugin loader, or command executor. Native Windows has no islpy wheel in the pinned

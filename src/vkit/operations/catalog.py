@@ -19,6 +19,7 @@ from .history import check_history
 from .migrations import compare_migrations
 from .policies import compare_authorization_policies
 from .regex_cost import analyze_regex_cost
+from .semantic_merge import check_semantic_merge
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
 from .sql_equivalence import compare_sql_queries
 from .wheel_artifacts import compare_wheels
@@ -51,6 +52,21 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="check_semantic_merge",
+        description=("Check a captured base/left/right/merged pure Python function quartet with pinned cvc5. "
+                     "For every mathematical integer/boolean input, retain each branch's changed scalar return "
+                     "and retain base where neither branch changed. Counterexamples are independently replayed "
+                     "in the installed IR evaluator. Covers supported function return models, not effects, "
+                     "source-edit intent or whole-repository merge safety. Never executes project code."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 merge bundle"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path",), handler=check_semantic_merge,
+        outcomes=_PROOF_OUTCOMES,
+    ),
     Operation(
         version=1,
         name="compare_wheels",

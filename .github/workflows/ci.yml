@@ -107,10 +107,26 @@ jobs:
               output.write(f"VKIT_HISTORY_BIN={binary}\n")
               output.write(f"VKIT_HISTORY_SHA256={hashlib.sha256(binary.read_bytes()).hexdigest()}\n")
       - uses: actions/setup-java@v4
-        if: runner.os == 'Linux'
         with:
           distribution: temurin
           java-version: "17"
+      - name: Install pinned finite protocol engine
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import urllib.request
+          digest = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+          url = "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar"
+          with urllib.request.urlopen(url, timeout=60) as response:
+              content = response.read(10_000_001)
+          if len(content) > 10_000_000 or hashlib.sha256(content).hexdigest() != digest:
+              raise RuntimeError("TLC release digest mismatch")
+          jar = pathlib.Path(os.environ["RUNNER_TEMP"]) / "tla2tools.jar"
+          jar.write_bytes(content)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_TLA2TOOLS_JAR={jar}\nVKIT_REQUIRE_PROTOCOL_ENGINE=1\n")
       - name: Install pinned Perses
         if: runner.os == 'Linux'
         shell: bash

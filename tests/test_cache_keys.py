@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from vkit.operations.cache_keys import find_cache_key_collision
+from vkit.operations.cache_keys import _solve, find_cache_key_collision
 
 
 pytest.importorskip("cvc5", reason="optional pinned cvc5 backend is not installed")
@@ -70,7 +72,7 @@ def key(x: int) -> int:
     assert not marker.exists()
 
 
-def test_cache_key_collision_requires_same_argument_sorts_and_result_sort(tmp_path) -> None:
+def test_cache_key_collision_requires_same_argument_sorts(tmp_path) -> None:
     source = """
 def value(x: int) -> int:
     return x
@@ -83,6 +85,24 @@ def key(x: bool) -> int:
 
     assert result["status"] == "UNSUPPORTED"
     assert "same positional parameter sorts" in result["reason"]
+
+
+def test_cache_key_collision_maps_differently_named_parameters_by_position(tmp_path) -> None:
+    source = """
+def value(x: int) -> int:
+    return x
+
+def key(y: int) -> int:
+    return y * y
+"""
+
+    result = _run(tmp_path, source)
+
+    assert result["status"] == "COLLISION"
+    left, right = result["collision"]["left"], result["collision"]["right"]
+    assert left["arguments"] != right["arguments"]
+    assert left["key"] == right["key"]
+    assert left["value"] != right["value"]
 
 
 def test_cache_key_collision_models_boolean_inputs(tmp_path) -> None:
@@ -104,7 +124,7 @@ def key(enabled: bool) -> int:
     assert left["value"] != right["value"]
 
 
-def test_cache_key_collision_requires_matching_key_return_sort(tmp_path) -> None:
+def test_cache_key_collision_supports_different_key_and_value_return_sorts(tmp_path) -> None:
     source = """
 def value(x: int) -> int:
     return x
@@ -115,5 +135,39 @@ def key(x: int) -> bool:
 
     result = _run(tmp_path, source)
 
-    assert result["status"] == "UNSUPPORTED"
-    assert "same positional parameter sorts and return sort" in result["reason"]
+    assert result["status"] == "COLLISION"
+    left, right = result["collision"]["left"], result["collision"]["right"]
+    assert type(left["key"]) is bool
+    assert left["key"] == right["key"]
+    assert left["value"] != right["value"]
+
+
+def test_cache_key_collision_rejects_solver_witness_that_fails_ir_replay(monkeypatch) -> None:
+    import vkit.operations.cache_keys as cache_keys
+
+    source = """
+def value(x: int) -> int:
+    return x
+
+def key(x: int) -> int:
+    return x * x
+"""
+    monkeypatch.setattr(cache_keys, "_evaluate", lambda _term, _values: 0)
+
+    result = _solve(source, "value", "key", 2_000)
+
+    assert result["status"] == "UNKNOWN"
+    assert "did not replay" in result["reason"]
+
+
+def test_cache_key_collision_classifies_bad_worker_output_as_unknown(tmp_path, monkeypatch) -> None:
+    import vkit.operations.cache_keys as cache_keys
+
+    (tmp_path / "cache.py").write_text("def value(x: int) -> int:\n    return x\n", encoding="utf-8")
+    monkeypatch.setattr(cache_keys.subprocess, "run",
+                        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=""))
+
+    result = find_cache_key_collision(tmp_path, "cache.py", "value", "missing")
+
+    assert result["status"] == "UNKNOWN"
+    assert "no bounded result" in result["reason"]

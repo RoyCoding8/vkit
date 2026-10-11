@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .expressions import MODEL_SCOPE, FunctionModel, ParseFailure, ResourceLimits, parse_function
+from ..nowindow import hidden_window
 from .rewrites import _evaluate, _to_solver
 from .synthesis import BACKEND, BACKEND_VERSION, _load_cvc5
 
@@ -27,8 +28,7 @@ def _result(status: str, digest: str | None, **extra: Any) -> dict[str, Any]:
 
 def _same_domain(value: FunctionModel, key: FunctionModel) -> bool:
     return (tuple(parameter.sort for parameter in value.parameters)
-            == tuple(parameter.sort for parameter in key.parameters)
-            and value.return_sort == key.return_sort)
+            == tuple(parameter.sort for parameter in key.parameters))
 
 
 def _solve(source: str, function: str, key_function: str, timeout_ms: int) -> dict[str, Any]:
@@ -43,7 +43,7 @@ def _solve(source: str, function: str, key_function: str, timeout_ms: int) -> di
         return _result(key_model.status, digest, reason=f"key function: {key_model.reason}")
     if not _same_domain(value_model, key_model):
         return _result("UNSUPPORTED", digest,
-                       reason="key and value functions need the same positional parameter sorts and return sort")
+                       reason="key and value functions need the same positional parameter sorts")
 
     cvc5, unavailable = _load_cvc5()
     if cvc5 is None:
@@ -55,20 +55,24 @@ def _solve(source: str, function: str, key_function: str, timeout_ms: int) -> di
         solver.setOption("produce-models", "true")
         solver.setOption("tlimit-per", str(timeout_ms))
         sorts = {"int": solver.getIntegerSort(), "bool": solver.getBooleanSort()}
-        left = {parameter.name: solver.mkConst(sorts[parameter.sort], f"left_{index}_{parameter.name}")
-                for index, parameter in enumerate(value_model.parameters)}
-        right = {parameter.name: solver.mkConst(sorts[parameter.sort], f"right_{index}_{parameter.name}")
-                 for index, parameter in enumerate(value_model.parameters)}
+        left_terms = [solver.mkConst(sorts[parameter.sort], f"left_{index}_{parameter.name}")
+                      for index, parameter in enumerate(value_model.parameters)]
+        right_terms = [solver.mkConst(sorts[parameter.sort], f"right_{index}_{parameter.name}")
+                       for index, parameter in enumerate(value_model.parameters)]
+        left_value = {parameter.name: term for parameter, term in zip(value_model.parameters, left_terms)}
+        right_value = {parameter.name: term for parameter, term in zip(value_model.parameters, right_terms)}
+        left_key = {parameter.name: term for parameter, term in zip(key_model.parameters, left_terms)}
+        right_key = {parameter.name: term for parameter, term in zip(key_model.parameters, right_terms)}
         key_equal = solver.mkTerm(
             cvc5.Kind.EQUAL,
-            _to_solver(key_model.body, left, solver, cvc5),
-            _to_solver(key_model.body, right, solver, cvc5),
+            _to_solver(key_model.body, left_key, solver, cvc5),
+            _to_solver(key_model.body, right_key, solver, cvc5),
         )
         values_differ = solver.mkTerm(
             cvc5.Kind.NOT,
             solver.mkTerm(cvc5.Kind.EQUAL,
-                          _to_solver(value_model.body, left, solver, cvc5),
-                          _to_solver(value_model.body, right, solver, cvc5)),
+                          _to_solver(value_model.body, left_value, solver, cvc5),
+                          _to_solver(value_model.body, right_value, solver, cvc5)),
         )
         solver.assertFormula(solver.mkTerm(cvc5.Kind.AND, key_equal, values_differ))
         checked = solver.checkSat()
@@ -77,25 +81,29 @@ def _solve(source: str, function: str, key_function: str, timeout_ms: int) -> di
         if checked.isUnknown():
             return _result("UNKNOWN", digest, backend_version=version, reason=str(checked))
 
-        def arguments(variables: dict[str, Any]) -> dict[str, int | bool]:
+        def arguments(model: FunctionModel, variables: dict[str, Any]) -> dict[str, int | bool]:
             result: dict[str, int | bool] = {}
-            for parameter in value_model.parameters:
+            for parameter in model.parameters:
                 term = solver.getValue(variables[parameter.name])
                 result[parameter.name] = (bool(term.getBooleanValue()) if parameter.sort == "bool"
                                            else int(term.getIntegerValue()))
             return result
 
-        left_values, right_values = arguments(left), arguments(right)
-        left_key, right_key = _evaluate(key_model.body, left_values), _evaluate(key_model.body, right_values)
-        left_value = _evaluate(value_model.body, left_values)
-        right_value = _evaluate(value_model.body, right_values)
-        if left_key != right_key or left_value == right_value:
+        left_arguments = arguments(value_model, left_value)
+        right_arguments = arguments(value_model, right_value)
+        left_key_arguments = arguments(key_model, left_key)
+        right_key_arguments = arguments(key_model, right_key)
+        left_key_value = _evaluate(key_model.body, left_key_arguments)
+        right_key_value = _evaluate(key_model.body, right_key_arguments)
+        left_result = _evaluate(value_model.body, left_arguments)
+        right_result = _evaluate(value_model.body, right_arguments)
+        if left_key_value != right_key_value or left_result == right_result:
             return _result("UNKNOWN", digest, backend_version=version,
                            reason="cvc5 model did not replay as a key collision with different values")
         return _result("COLLISION", digest, backend_version=version,
                        collision={
-                           "left": {"arguments": left_values, "key": left_key, "value": left_value},
-                           "right": {"arguments": right_values, "key": right_key, "value": right_value},
+                           "left": {"arguments": left_arguments, "key": left_key_value, "value": left_result},
+                           "right": {"arguments": right_arguments, "key": right_key_value, "value": right_result},
                        })
     except Exception as exc:
         return _result("UNKNOWN", digest, backend_version=version,
@@ -135,10 +143,10 @@ def find_cache_key_collision(root: Path, path: str, function: str, key_function:
     """Search the full supported input domain for equal keys with different values."""
     if type(timeout_ms) is not int or not 1 <= timeout_ms <= MAX_TIMEOUT_MS:
         raise ValueError(f"timeout_ms must be an integer from 1 to {MAX_TIMEOUT_MS}")
-    from . import MAX_SOURCE_BYTES as OPERATION_SOURCE_BYTES, _source
+    from . import _source
 
     source = _source(root, path)
-    if len(source.encode("utf-8")) > MAX_SOURCE_BYTES or MAX_SOURCE_BYTES != OPERATION_SOURCE_BYTES:
+    if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
         return _result("UNSUPPORTED", None, reason="source exceeds the cache-key analysis byte limit",
                        operation="find_cache_key_collision", path=path,
                        function=function, key_function=key_function)
@@ -150,13 +158,10 @@ def find_cache_key_collision(root: Path, path: str, function: str, key_function:
                        reason="worker request exceeds its byte limit", operation="find_cache_key_collision",
                        path=path, function=function, key_function=key_function)
     try:
-        source_root = str(Path(__file__).resolve().parents[2])
-        bootstrap = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
-                     "from vkit.operations.cache_keys import _worker; raise SystemExit(_worker())")
         completed = subprocess.run(
-            [sys.executable, "-I", "-c", bootstrap, source_root], input=request,
+            [sys.executable, "-I", "-m", "vkit.operations.cache_keys", "--worker"], input=request,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8",
-            timeout=timeout_ms / 1_000, check=False,
+            timeout=timeout_ms / 1_000, check=False, **hidden_window(),
         )
     except subprocess.TimeoutExpired:
         result = _result("UNKNOWN", hashlib.sha256(source.encode("utf-8")).hexdigest(),
@@ -166,16 +171,16 @@ def find_cache_key_collision(root: Path, path: str, function: str, key_function:
                          reason=f"cannot start isolated cache-key worker: {exc}")
     else:
         if completed.returncode != 0 or len(completed.stdout.encode("utf-8")) > MAX_WORKER_OUTPUT_BYTES:
-            result = _result("UNAVAILABLE", hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            result = _result("UNKNOWN", hashlib.sha256(source.encode("utf-8")).hexdigest(),
                              reason="isolated cache-key worker returned no bounded result")
         else:
             try:
                 result = json.loads(completed.stdout)
             except json.JSONDecodeError:
-                result = _result("UNAVAILABLE", hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                result = _result("UNKNOWN", hashlib.sha256(source.encode("utf-8")).hexdigest(),
                                  reason="isolated cache-key worker returned invalid JSON")
             if not isinstance(result, dict) or result.get("status") not in _STATUSES:
-                result = _result("UNAVAILABLE", hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                result = _result("UNKNOWN", hashlib.sha256(source.encode("utf-8")).hexdigest(),
                                  reason="isolated cache-key worker returned an invalid result")
     return {"operation": "find_cache_key_collision", "path": path, "function": function,
             "key_function": key_function, **result}

@@ -10,6 +10,7 @@ from .affine_accesses import analyze_affine_accesses
 from .algebra import compare_rational_expressions
 from .behavior import find_behavioral_difference
 from .c_safety import check_c_safety
+from .cache_keys import find_cache_key_collision
 from .contract import FileInput, Operation, operation_by_name
 from .contracts import CONTRACT_PROFILES, compare_contracts
 from .cover import minimize_cover
@@ -56,6 +57,23 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="find_cache_key_collision",
+        description=("Search two independent input vectors for equal modeled cache keys and different "
+                     "modeled results with pinned cvc5. Captures pure integer/boolean functions from one "
+                     "Python source, binds key/value parameters positionally, and independently replays "
+                     "collisions. NO_COLLISION_WITHIN_MODEL covers the full supported mathematical domain. "
+                     "Does not model effects, hidden state, serialization or application caches."),
+        properties={
+            "path": {"type": "string", "minLength": 1},
+            "function": {"type": "string", "minLength": 1},
+            "key_function": {"type": "string", "minLength": 1},
+            "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60_000, "default": 2_000},
+        },
+        required=("path", "function", "key_function"), handler=find_cache_key_collision,
+        outcomes={"NO_COLLISION_WITHIN_MODEL": 0, "COLLISION": 1, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="check_protocol_model",

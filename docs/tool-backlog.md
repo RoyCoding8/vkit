@@ -657,6 +657,8 @@ Source: [Daikon dynamic invariant detector](https://plse.cs.washington.edu/daiko
 
 ### 40. Cache-key collisions that change observable results
 
+Implemented: [`find_cache_key_collision`](cache-model.md) searches supported pure integer/boolean key and result functions over two independent input vectors. Equal-key/different-result witnesses are replayed. The model excludes hidden state, effects and application cache implementations.
+
 Proposed call: `find_cache_key_collision(function, key_function, domain, profile)`.
 
 Ask whether two supported inputs can produce the same cache key but different results. A witness is a pair `x` and `y` with equal keys and unequal specified outputs.

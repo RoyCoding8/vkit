@@ -45,6 +45,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | Approved scenario drivers and paired bootstrap analysis | `compare_workload_cost` | Alternating before/candidate campaigns in fresh workspaces with captured harness bytes, raw measurements and uncertainty intervals |
 | ISL named-array access relations | `analyze_affine_accesses` | Exact ordered RAW, WAR, WAW and read/read relations under explicit alias assumptions, with replayed iteration witnesses |
 | TLC 2.19 and exact finite state saturation | `check_protocol_model` | All reachable states of a closed supplied protocol model, checked invariants/deadlocks, explicit crash/restart and replayed counterexamples |
+| cvc5 relational function queries | `find_cache_key_collision` | Equal keys with different results over two independent pure-function input vectors, with replayed witnesses |
 
 These operations use the existing catalog contract. Adding an engine does not justify
 another transport, plugin loader, or command executor. Native Windows has no islpy wheel in the pinned

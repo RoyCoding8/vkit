@@ -14,7 +14,7 @@ def test_an_agent_sees_staleness_runs_what_is_needed_and_reaches_ready(make_proj
         assert tools == ["analyze_affine_accesses", "analyze_dependencies", "analyze_loop_termination", "analyze_regex_cost", "check_c_safety", "check_history",
                          "check_protocol_model", "check_rewrite", "check_run", "check_semantic_merge", "compare_authorization_policies", "compare_contracts", "compare_iteration_sets",
                          "compare_matchsets", "compare_migrations", "compare_rational_expressions", "compare_sql_queries", "compare_wheels", "compare_workload_cost", "features",
-                         "find_behavioral_difference", "find_grammar_ambiguity",
+                         "find_behavioral_difference", "find_cache_key_collision", "find_grammar_ambiguity",
                          "gate", "generate_configurations", "help", "minimize_cover", "mutation_survivors",
                          "propose", "reduce_failure", "resolve_dependencies", "run_cancel", "run_get",
                          "simplify_function", "status", "synthesize_function"]

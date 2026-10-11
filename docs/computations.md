@@ -51,6 +51,8 @@ and replayed witnesses under explicit distinct-array assumptions.
 [Finite protocol models](protocol-model.md) combines pinned TLC with independent exact state
 saturation for invariants, deadlocks and declared crash/restart semantics. Configure
 `VKIT_TLA2TOOLS_JAR` with the pinned TLA+ Tools v1.7.4 release JAR, which reports TLC 2.19.
+[Cache-key collision analysis](cache-model.md) checks whether two independent supported inputs
+can have equal modeled keys and different modeled results, with independent witness replay.
 
 ## Check a replacement
 

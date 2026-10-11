@@ -36,6 +36,10 @@ The engine extra also installs SymPy 1.14.0, CrossHair 0.0.111 and SQLGlot 30.22
 [exact rational expressions](algebra-model.md), [concrete Python differences](behavior-model.md)
 and [bounded SQL equivalence](sql-model.md) for their closed input languages, checked results,
 and resource limits.
+[Cedar policy comparison](policy-model.md) uses separately installed release-pinned Cedar SymCC
+and cvc5 executables. It validates the schema and independently replays authorization witnesses.
+[Wheel artifact comparison](wheel-model.md) statically validates archive integrity and compares
+abstract installation mappings and metadata without importing or installing package code.
 
 ## Check a replacement
 

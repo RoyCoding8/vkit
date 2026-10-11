@@ -17,9 +17,11 @@ from .grammar import find_grammar_ambiguity
 from .dependency_resolution import resolve_dependencies
 from .history import check_history
 from .migrations import compare_migrations
+from .policies import compare_authorization_policies
 from .regex_cost import analyze_regex_cost
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
 from .sql_equivalence import compare_sql_queries
+from .wheel_artifacts import compare_wheels
 
 _EXPRESSION = {
     "path": {"type": "string", "description": "repository-relative Python source file"},
@@ -49,6 +51,37 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="compare_wheels",
+        description=("Validate captured Python wheel archives and compare their static install scheme/path "
+                     "mapping, file content, executable bits and package metadata. Checks RECORD integrity, "
+                     "filename/metadata agreement, tags, unsafe paths and collisions before comparison. "
+                     "Ignores ZIP timestamps/compression and normalized RECORD ordering. Never installs or "
+                     "imports package code. Abstract install schemes may alias on a real host; this is not "
+                     "a clean-install, runtime or reproducible-build proof."),
+        properties={
+            "before": {"type": "string", "minLength": 1, "description": "repository-relative before .whl artifact"},
+            "after": {"type": "string", "minLength": 1, "description": "repository-relative after .whl artifact"},
+        },
+        required=("before", "after"), handler=compare_wheels,
+        outcomes={"SAME_INSTALL_MAPPING": 0, "DIFFERENT_INSTALL_MAPPING": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
+        name="compare_authorization_policies",
+        description=("Compare captured Cedar policy sets for every well-formed request in one supplied schema, "
+                     "action UID, principal type and resource type. Uses release-pinned Cedar SymCC and cvc5, "
+                     "then independently replays concrete authorization differences with Cedar's authorizer. "
+                     "EQUIVALENT concerns this schema/request family; application routes are outside the model. "
+                     "Unknown output or unsupported witness values remain inconclusive."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 Cedar policy comparison bundle"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
+        },
+        required=("path",), handler=compare_authorization_policies,
+        outcomes={"EQUIVALENT": 0, "COUNTEREXAMPLE": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="compare_sql_queries",

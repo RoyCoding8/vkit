@@ -171,6 +171,22 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
               output.write(f"VKIT_CBMC_BIN={binary}\n")
               output.write(f"VKIT_CBMC_SHA256={hashlib.sha256(binary.read_bytes()).hexdigest()}\n")
+      - name: Install and require pinned Cedar policy engines
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          destination = pathlib.Path(os.environ["RUNNER_TEMP"]) / "policy-engine"
+          completed = subprocess.run([sys.executable, "scripts/install_policy_engine.py", "--dest", str(destination)],
+                                     check=True, capture_output=True, text=True)
+          engines = json.loads(completed.stdout)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              for name, value in engines.items():
+                  output.write(f"{name}={value}\n")
+              output.write("VKIT_REQUIRE_POLICY_ENGINE=1\n")
       - run: uv sync --python 3.11 --extra test --extra engines
       - run: uv run pytest -ra
       - run: uv run python scripts/e2e.py

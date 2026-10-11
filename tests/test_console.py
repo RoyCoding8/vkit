@@ -227,8 +227,8 @@ def test_console_lists_only_catalog_operations_and_uses_the_shared_dispatcher(ma
         assert names == {"analyze_dependencies", "analyze_regex_cost", "check_c_safety",
                          "compare_iteration_sets", "minimize_cover", "compare_migrations",
                          "find_grammar_ambiguity", "generate_configurations", "resolve_dependencies",
-                         "synthesize_function", "compare_rational_expressions", "find_behavioral_difference", "compare_sql_queries",
-                         "compare_contracts", "check_history", "compare_matchsets",
+                         "synthesize_function", "compare_rational_expressions", "find_behavioral_difference", "compare_sql_queries", "compare_wheels",
+                         "compare_contracts", "check_history", "compare_matchsets", "compare_authorization_policies",
                          "check_rewrite", "simplify_function", "reduce_failure", "mutation_survivors"}
         assert not names & {"status", "features", "check_run", "run_get", "run_cancel", "gate", "propose"}
         assert all("input_schema" in operation for operation in config["operations"])

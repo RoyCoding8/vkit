@@ -35,6 +35,11 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | [Lark](https://github.com/lark-parser/lark) | `find_grammar_ambiguity` | Two checked derivation trees for a supplied string, or absence of ambiguity only in the supplied corpus |
 | [cvc5 SyGuS](https://github.com/cvc5/cvc5) | `synthesize_function` | Candidate in a fixed linear integer grammar, returned only after independent full-domain equivalence proof |
 | [Recheck](https://github.com/makenowjust-labs/recheck) | `analyze_regex_cost` | Completed automaton backtracking-model complexity estimates and theoretical attack descriptions, with no target runtime replay claim |
+| [Cedar SymCC](https://github.com/cedar-policy/cedar) | `compare_authorization_policies` | Schema-scoped authorization equivalence, with concrete authorizer replay of distinguishing requests |
+| [SQLGlot](https://github.com/tobymao/sqlglot), cvc5 and SQLite | `compare_sql_queries` | Exact SELECT bag equivalence within declared finite row/value bounds, with SQLite counterexample replay |
+| [packaging](https://github.com/pypa/packaging) and wheel inspection | `compare_wheels` | Validated static installation scheme/payload mapping, metadata and executable-bit differences; no runtime installation claim |
+| [CrossHair](https://github.com/pschanely/CrossHair) | `find_behavioral_difference` | Concrete differences in a closed Python language, confirmed by two fresh CPython replays; no equivalence claim |
+| [SymPy](https://github.com/sympy/sympy) | `compare_rational_expressions` | Rational-function identity over exact coefficients, independently checked by sparse polynomial arithmetic with original division guards |
 
 These operations use the existing catalog contract. Adding an engine does not justify
 another transport, plugin loader, or command executor. Native Windows has no islpy wheel in the pinned
@@ -46,7 +51,6 @@ another transport, plugin loader, or command executor. Native Windows has no isl
 | --- | --- |
 | [Alive2](https://github.com/AliveToolkit/alive2) | Does this supported LLVM transformation refine the original? First establish a reproducible matching LLVM build and exclude unsupported interprocedural transformations. |
 | [Souffle](https://github.com/souffle-lang/souffle) | Which nodes are reachable under a protected dependency relation? First define a useful source extractor and its completeness boundary. |
-| [SymPy](https://github.com/sympy/sympy) | Are two exact symbolic expressions equal under a declared mathematical domain? Avoid duplicating the existing integer rewrite operation. |
 | [rr](https://github.com/rr-debugger/rr) | Which write preceded this point in a recorded execution? Requires a Linux host with supported performance counters and captured traces. |
 | [KLEE](https://github.com/klee/klee) | Which inputs reach a selected supported native-code path? Requires a pinned LLVM runtime and explicit environment model. |
 | [LLVM/Clang](https://github.com/llvm/llvm-project) | Reusable source frontend for native-code operations. Compilation alone is not a behavioral proof. |

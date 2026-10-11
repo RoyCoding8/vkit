@@ -232,6 +232,11 @@ Sources: [Atlas migration testing](https://www.atlasgo.io/testing/migrate), [Atl
 
 ### 9. Clean installation and reproducibility of release artifacts
 
+Implemented static artifact subset: `compare_wheels(before, after)` validates wheel integrity,
+metadata and portable scheme/path mappings, then compares payloads without extraction or execution.
+See [wheel artifact comparison](wheel-model.md). Clean builds, installation smoke tests and
+reproducibility campaigns remain future work; the static result does not establish them.
+
 Proposed call: `check_release_artifact(snapshot, build_profile, runtime_profile)`.
 
 Ask whether the produced package installs and completes specified entrypoint checks outside its source checkout. Optionally ask whether two builds under the declared conditions produce identical artifacts, and which files differ.
@@ -256,7 +261,11 @@ Sources: [Coyote](https://github.com/microsoft/coyote), [Loom and its unsupporte
 
 ### 11. Concrete behavioral differences between Python functions
 
-Proposed call: `find_behavior_difference(before, after, domain, profile)`.
+Implemented closed-language profile: `find_behavioral_difference(path)`. CrossHair searches typed
+local Python computation including strings, integer lists and loops. Two fresh stock-CPython replays
+must confirm returned values, exceptions or mutated arguments before `COUNTEREXAMPLE`. Imports,
+global access and arbitrary calls are rejected before execution. No witness remains `UNKNOWN`.
+See [behavioral differences](behavior-model.md). Arbitrary application functions remain outside this profile.
 
 Ask for an input that makes two supported functions differ in return value, exception, or allowed mutation of input state. A useful result includes the input and both concrete outcomes.
 
@@ -304,7 +313,10 @@ Source: [Verified three-way program merge, author-hosted paper](https://www.cs.u
 
 ### 15. SQL query equivalence and validated disagreement cases
 
-Proposed call: `compare_sql_queries(query_a, query_b, schema, profile)`.
+Implemented finite profile: `compare_sql_queries(path)`. SQLGlot parses an allowlisted SELECT/WHERE/
+INNER JOIN fragment. cvc5 proves bag equivalence over every database within supplied row/value
+bounds, with nullable integer columns and SQL three-valued logic. Counterexamples must replay in
+SQLite. See [bounded SQL equivalence](sql-model.md). Unbounded SQLSolver integration remains queued.
 
 Ask whether two supported queries have the same result under a declared SQL model, or obtain a database instance on which their real results differ. The profile must define nulls, duplicates, ordering, constraints, and supported operators.
 
@@ -328,13 +340,18 @@ Sources: [Atheris](https://github.com/google/atheris), [ISLa](https://github.com
 
 ### 17. Authorization-policy equivalence and permission expansion
 
-Proposed call: `compare_authorization_policies(before, after, schema, profile)`.
+Implemented: `compare_authorization_policies(path)` uses release-pinned Cedar CLI 4.13.0 experimental
+SymCC and cvc5 1.3.1 for one supplied schema/action/principal/resource family. Each counterexample
+must replay through the concrete Cedar authorizer. See [policy comparison](policy-model.md).
 
 Ask whether two policies authorize the same modeled requests, or whether the new policy admits a request denied by the old policy. Return a principal, action, resource, and context that distinguish them when available.
 
 Cedar's formal development includes symbolic compilation and verification properties for equivalence and implication. This is a stronger foundation than comparing policy text or running a few example identities.
 
-Vkit still needs a usable analysis interface, supported extensions, captured entity assumptions, and witness evaluation with the concrete authorizer. The answer concerns Cedar's declared authorization model. It does not establish that every application route invokes the authorizer correctly.
+The installed profile captures its schema and policies, checks engine identities, and rejects
+unsupported witness encodings as `UNKNOWN`. Broader request families and additional Cedar extensions
+remain future work. The answer concerns Cedar's declared authorization model. It does not establish
+that every application route invokes the authorizer correctly.
 
 Source: [Cedar Lean definitions and verified symbolic-analysis properties](https://github.com/cedar-policy/cedar-spec/blob/main/cedar-lean/README.md).
 
@@ -663,7 +680,9 @@ Sources: [IEEE and ACM paper on the oracle problem](https://ieeexplore.ieee.org/
 
 ### 43. Exact symbolic algebra in a declared mathematical domain
 
-Proposed call: `compare_symbolic_expressions(expression_a, expression_b, domain_profile)`.
+Implemented: `compare_rational_expressions(path)` uses SymPy 1.14.0 over `Q(x1,...,xn)` and a
+separate exact sparse coefficient checker. Original division guards remain explicit; identities
+do not claim equal domains at removed poles. See [exact rational expressions](algebra-model.md).
 
 Ask whether two supported polynomial or rational expressions denote the same function on the declared domain. Return a checked normal-form identity or a domain-qualified disagreement result.
 

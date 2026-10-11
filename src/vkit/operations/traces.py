@@ -22,7 +22,7 @@ MAX_TRACE_BYTES = 32 * 1024 * 1024
 MAX_TIMEOUT_SECONDS = 120
 MAX_INTERVAL_NS = 3_600_000_000_000
 MAX_SQL_INT = (1 << 63) - 1
-MIN_SQL_INT = -(1 << 63)
+MAX_EXACT_TS = 1 << 61
 MAX_WORKER_INPUT_BYTES = 4_096
 MAX_WORKER_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_EVENT_SAMPLES = 100
@@ -137,7 +137,14 @@ def _analyze(request: dict[str, Any]) -> dict[str, Any]:
             bounds = _rows(processor, "SELECT start_ts, end_ts FROM trace_bounds LIMIT 1")
             if not bounds or bounds[0]["start_ts"] is None or bounds[0]["end_ts"] is None:
                 return _result("UNSUPPORTED", trace_sha256, reason="trace has no bounded timestamp interval")
-            trace_start, trace_end = int(bounds[0]["start_ts"]), int(bounds[0]["end_ts"])
+            raw_trace_start, raw_trace_end = bounds[0]["start_ts"], bounds[0]["end_ts"]
+            if (type(raw_trace_start) is not int or type(raw_trace_end) is not int
+                    or not -MAX_EXACT_TS <= raw_trace_start <= MAX_EXACT_TS
+                    or not -MAX_EXACT_TS <= raw_trace_end <= MAX_EXACT_TS
+                    or raw_trace_end <= raw_trace_start):
+                return _result("UNKNOWN", trace_sha256,
+                               reason="trace bounds exceed the exact scheduler arithmetic range")
+            trace_start, trace_end = raw_trace_start, raw_trace_end
             if start_ns < trace_start or end_ns > trace_end:
                 return _result("UNSUPPORTED", trace_sha256, reason="requested interval is outside trace bounds",
                                trace_bounds_ns={"start": trace_start, "end": trace_end})
@@ -156,6 +163,15 @@ def _analyze(request: dict[str, Any]) -> dict[str, Any]:
                                processor_sha256=binary_sha256)
             thread = threads[0]
             utid = int(thread["utid"])
+            unsafe_states = _rows(processor,
+                "SELECT COUNT(*) AS row_count FROM thread_state "
+                f"WHERE utid = {utid} AND (ts < {-MAX_EXACT_TS} OR ts > {MAX_EXACT_TS} "
+                f"OR dur < {-MAX_EXACT_TS} OR dur > {MAX_EXACT_TS} OR (dur < 0 AND dur != -1))")
+            if (len(unsafe_states) != 1 or type(unsafe_states[0]["row_count"]) is not int
+                    or unsafe_states[0]["row_count"] != 0):
+                return _result("UNKNOWN", trace_sha256,
+                               reason="thread states exceed the exact scheduler arithmetic range",
+                               processor_package=PERFETTO_VERSION, processor_sha256=binary_sha256)
             state_filter = (f"utid = {utid} AND ts < {end_ns} "
                             f"AND (dur < 0 OR ts + dur > {start_ns})")
             state_totals = _rows(processor,
@@ -200,17 +216,33 @@ def _analyze(request: dict[str, Any]) -> dict[str, Any]:
                        processor_package=PERFETTO_VERSION, processor_sha256=binary_sha256)
 
     interval_ns = end_ns - start_ns
-    unobserved_ns = int(coverage["unobserved_ns"])
-    overlap_ns = int(coverage["overlap_ns"])
+    if (set(coverage) != {"unobserved_ns", "overlap_ns"}
+            or type(coverage["unobserved_ns"]) is not int
+            or type(coverage["overlap_ns"]) is not int
+            or any(type(row["row_count"]) is not int or type(row["duration_ns"]) is not int
+                   or row["row_count"] < 0 or row["duration_ns"] < 0 for row in state_totals)):
+        return _result("UNKNOWN", trace_sha256, reason="Trace Processor returned non-integer scheduler aggregates",
+                       processor_package=PERFETTO_VERSION, processor_sha256=binary_sha256)
+    unobserved_ns = coverage["unobserved_ns"]
+    overlap_ns = coverage["overlap_ns"]
+    if (unobserved_ns < 0 or unobserved_ns > interval_ns or overlap_ns < 0
+            or sum(row["duration_ns"] for row in state_totals)
+            != interval_ns - unobserved_ns + overlap_ns):
+        return _result("UNKNOWN", trace_sha256, reason="scheduler aggregates violate interval arithmetic",
+                       processor_package=PERFETTO_VERSION, processor_sha256=binary_sha256)
     covered_ns = interval_ns - unobserved_ns
-    totals = {str(row["state"]): int(row["duration_ns"]) for row in state_totals}
+    totals = {str(row["state"]): row["duration_ns"] for row in state_totals}
     running_ns = totals.get("Running", 0)
     runnable_ns = totals.get("R", 0)
     blocked_ns = totals.get("S", 0) + totals.get("D", 0)
     other_ns = sum(duration for state, duration in totals.items()
                    if state not in {"Running", "R", "S", "D"})
-    segments = [{"start_ns": int(row["start_ns"]), "end_ns": int(row["end_ns"]),
-                 "duration_ns": int(row["end_ns"]) - int(row["start_ns"]),
+    if any(type(row["start_ns"]) is not int or type(row["end_ns"]) is not int
+           or row["end_ns"] <= row["start_ns"] for row in sample_rows):
+        return _result("UNKNOWN", trace_sha256, reason="Trace Processor returned impossible scheduler segments",
+                       processor_package=PERFETTO_VERSION, processor_sha256=binary_sha256)
+    segments = [{"start_ns": row["start_ns"], "end_ns": row["end_ns"],
+                 "duration_ns": row["end_ns"] - row["start_ns"],
                  "state": row["state"], "cpu": row["cpu"], "io_wait": row["io_wait"],
                  "blocked_function": row["blocked_function"], "waker_utid": row["waker_utid"]}
                 for row in sample_rows[:MAX_EVENT_SAMPLES]]
@@ -249,8 +281,8 @@ def _worker() -> int:
                 or (request["upid"] is not None and type(request["upid"]) is not int)):
             raise ValueError("worker request has invalid fields")
         if (any(character not in "0123456789abcdef" for character in request["trace_sha256"])
-                or not MIN_SQL_INT <= request["start_ns"] <= MAX_SQL_INT
-                or not MIN_SQL_INT <= request["end_ns"] <= MAX_SQL_INT
+                or not -MAX_EXACT_TS <= request["start_ns"] <= MAX_EXACT_TS
+                or not -MAX_EXACT_TS <= request["end_ns"] <= MAX_EXACT_TS
                 or request["end_ns"] <= request["start_ns"]
                 or request["end_ns"] - request["start_ns"] > MAX_INTERVAL_NS
                 or not 0 <= request["tid"] <= MAX_SQL_INT
@@ -320,10 +352,11 @@ def explain_trace_interval(root: Path, path: str, start_ns: int, end_ns: int, ti
                            upid: int | None = None, timeout_seconds: int = 30) -> dict[str, Any]:
     """Report bounded scheduling state facts for one thread and trace-clock interval."""
     if (type(start_ns) is not int or type(end_ns) is not int
-            or not MIN_SQL_INT <= start_ns <= MAX_SQL_INT or not MIN_SQL_INT <= end_ns <= MAX_SQL_INT
-            or end_ns <= start_ns
+            or not -MAX_EXACT_TS <= start_ns <= MAX_EXACT_TS
+            or not -MAX_EXACT_TS <= end_ns <= MAX_EXACT_TS
+        or end_ns <= start_ns
             or end_ns - start_ns > MAX_INTERVAL_NS):
-        raise ValueError("interval must be non-empty and at most one hour, in integer nanoseconds")
+        raise ValueError("interval must be non-empty, at most one hour, and inside the exact nanosecond range")
     if type(tid) is not int or not 0 <= tid <= MAX_SQL_INT:
         raise ValueError("tid must be a non-negative integer")
     if upid is not None and (type(upid) is not int or not 0 <= upid <= MAX_SQL_INT):

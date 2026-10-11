@@ -46,6 +46,8 @@ functions and independently replays every violating input against their return-v
 guarded states and independently replays fixed-point nontermination witnesses.
 [Paired workload comparison](workload-model.md) reruns an approved scenario driver against
 captured current and committed subject bytes, reporting measurements and statistical uncertainty.
+[Affine memory accesses](access-model.md) extends the ISL family with exact ordered overlap relations
+and replayed witnesses under explicit distinct-array assumptions.
 
 ## Check a replacement
 

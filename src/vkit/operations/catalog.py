@@ -6,6 +6,7 @@ from typing import Any
 
 from . import MAX_SOURCE_BYTES, check_rewrite, reduce_failure, simplify_function
 from .affine import compare_iteration_sets
+from .affine_accesses import analyze_affine_accesses
 from .algebra import compare_rational_expressions
 from .behavior import find_behavioral_difference
 from .c_safety import check_c_safety
@@ -54,6 +55,21 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="analyze_affine_accesses",
+        description=("Build exact ordered memory-access relations for one captured Python affine loop nest "
+                     "using pinned ISL. Reports RAW, WAR, WAW and read/read overlaps with independently "
+                     "replayed iteration witnesses. Named arrays are distinct abstract allocations by assumption. "
+                     "Does not model aliasing, bounds, object effects or establish parallel safety."),
+        properties={
+            "path": {"type": "string", "minLength": 1},
+            "function": {"type": "string", "minLength": 1},
+            "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60_000, "default": 2_000},
+        },
+        required=("path", "function"), handler=analyze_affine_accesses,
+        outcomes={"ANALYZED": 0, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="compare_workload_cost",

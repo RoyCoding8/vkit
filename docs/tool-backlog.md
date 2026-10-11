@@ -546,6 +546,8 @@ Source: [Frama-C WP](https://www.frama-c.com/fc-plugins/wp.html).
 
 ### 32. Affine memory-access overlap and loop dependencies
 
+Implemented: [`analyze_affine_accesses`](access-model.md) models one affine Python loop nest with distinct named abstract arrays. It returns exact ordered access relations and replayed overlap witnesses. Aliasing, array bounds and application parallel safety remain outside the model.
+
 Proposed call: `find_access_overlap(loop_a, loop_b, access_profile)`.
 
 Ask which iterations can access the same modeled memory coordinate, and whether a supplied ordering creates a dependency. Return a pair of iterations or an exact relation over supported parameters.

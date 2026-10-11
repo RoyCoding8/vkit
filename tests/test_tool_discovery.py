@@ -52,7 +52,7 @@ def test_help_search_and_saved_visibility_across_real_mcp_sessions(make_project)
     finally:
         client.close()
 
-    code, body = vkit(project, "tools", "--enable", "compare_matchsets", "--query", "regex")
+    code, body = vkit(project, "tools", "--enable", "compare_matchsets", "--query", "compare_matchsets")
     assert code == 0 and [tool["name"] for tool in body["tools"]] == ["compare_matchsets"]
     client = McpClient(project)
     try:

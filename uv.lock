@@ -689,6 +689,15 @@ wheels = [
 ]
 
 [[package]]
+name = "jsonref"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/0d/c1f3277e90ccdb50d33ed5ba1ec5b3f0a242ed8c1b1a85d3afeb68464dca/jsonref-1.1.0.tar.gz", hash = "sha256:32fe8e1d85af0fdefbebce950af85590b22b60f9e95443176adbde4e1ecea552", size = 8814, upload-time = "2023-01-16T16:10:04.455Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0c/ec/e1db9922bceb168197a558a2b8c03a7963f1afe93517ddd3cf99f202f996/jsonref-1.1.0-py3-none-any.whl", hash = "sha256:590dc7773df6c21cbf948b5dac07a72a251db28b0238ceecce0a2abfa8ec30a9", size = 9425, upload-time = "2023-01-16T16:10:02.255Z" },
+]
+
+[[package]]
 name = "jsonschema"
 version = "4.26.0"
 source = { registry = "https://pypi.org/simple" }
@@ -716,12 +725,36 @@ wheels = [
 ]
 
 [[package]]
+name = "jsonsubschema"
+version = "0.0.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "greenery" },
+    { name = "jsonref" },
+    { name = "jsonschema" },
+    { name = "portion" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6b/b2/0e2b7fca010d39789e0394170e0ef814ff29fcdc1639ee0db595f3b3ba94/jsonsubschema-0.0.8.tar.gz", hash = "sha256:39846ece264fe62aae5dd86e71bef8899a5d0869b8be03ab582066acbee7f9d9", size = 44518, upload-time = "2026-06-12T14:28:33.589Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/e3/c4721c54f2f28b4b263a007dafe5916ed352af28f44bbd7dcdf676c9b31a/jsonsubschema-0.0.8-py3-none-any.whl", hash = "sha256:4ab42ad1de7795f5b2abe9842cc797a135a18b24d9ff6b09e4d7ad4a8d2ea4a5", size = 28549, upload-time = "2026-06-12T14:28:32.281Z" },
+]
+
+[[package]]
 name = "jupyterlab-widgets"
 version = "3.0.17"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/21/8b/e739cf9066ad5037a2d4b0a403f06da374fdccb9748221661c8b492d3dbc/jupyterlab_widgets-3.0.17.tar.gz", hash = "sha256:6e61fe21ca8a66039180a5cc52a433e07279d2fee79c8be963e00d55193f17a8", size = 213919, upload-time = "2026-08-18T08:52:17.511Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/33/ef/6d27fc118f58cb24886da413545a7efb0853d405fddbfd8b2d9ac09fbed4/jupyterlab_widgets-3.0.17-py3-none-any.whl", hash = "sha256:40ac1e9955acf116c4d995d9bfa082d86ad9ec6d91c4f134827cf5e0a5eb75e0", size = 217292, upload-time = "2026-08-18T08:52:15.47Z" },
+]
+
+[[package]]
+name = "lark"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/34/28fff3ab31ccff1fd4f6c7c7b0ceb2b6968d8ea4950663eadcb5720591a0/lark-1.3.1.tar.gz", hash = "sha256:b426a7a6d6d53189d318f2b6236ab5d6429eaf09259f1ca33eb716eed10d2905", size = 382732, upload-time = "2025-10-27T18:25:56.653Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/3d/14ce75ef66813643812f3093ab17e46d3a206942ce7376d31ec2d36229e7/lark-1.3.1-py3-none-any.whl", hash = "sha256:c629b661023a014c37da873b4ff58a817398d12635d3bbb2c5a03be7fe5d1e12", size = 113151, upload-time = "2025-10-27T18:25:54.882Z" },
 ]
 
 [[package]]
@@ -1125,6 +1158,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
+name = "portion"
+version = "2.6.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sortedcontainers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f1/5a/1a1529cfded038731348db1fdbe444c9bf24dcdaf7428449dbb1e8d918c1/portion-2.6.3.tar.gz", hash = "sha256:4dd6a68bb1cd7a553d9b1f556818708b973c4a8855244e0af79e2586bba5794e", size = 125019, upload-time = "2026-09-29T10:07:02.741Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/85/8d/09471f7a9f322366cf8c20d375139239489a39352cf4630b1c39f1979f82/portion-2.6.3-py3-none-any.whl", hash = "sha256:9f5a26de92ff1241c7ba7ab23da0b544e67308187100681512871a50d6d206f1", size = 28491, upload-time = "2026-09-29T10:07:01.694Z" },
 ]
 
 [[package]]
@@ -1546,6 +1591,15 @@ wheels = [
 ]
 
 [[package]]
+name = "resolvelib"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1d/14/4669927e06631070edb968c78fdb6ce8992e27c9ab2cde4b3993e22ac7af/resolvelib-1.2.1.tar.gz", hash = "sha256:7d08a2022f6e16ce405d60b68c390f054efcfd0477d4b9bd019cc941c28fad1c", size = 24575, upload-time = "2025-10-11T01:07:44.582Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e2/23/c941a0d0353681ca138489983c4309e0f5095dfd902e1357004f2357ddf2/resolvelib-1.2.1-py3-none-any.whl", hash = "sha256:fb06b66c8da04172d9e72a21d7d06186d8919e32ae5ab5cdf5b9d920be805ac2", size = 18737, upload-time = "2025-10-11T01:07:43.081Z" },
+]
+
+[[package]]
 name = "rpds-py"
 version = "2026.9.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1814,9 +1868,16 @@ engines = [
     { name = "egglog" },
     { name = "greenery" },
     { name = "islpy", marker = "sys_platform != 'win32'" },
+    { name = "jsonref" },
+    { name = "jsonschema" },
+    { name = "jsonsubschema" },
+    { name = "lark" },
     { name = "ortools" },
+    { name = "packaging" },
+    { name = "portion" },
     { name = "pycparser" },
     { name = "pyyaml" },
+    { name = "resolvelib" },
 ]
 mcp = [
     { name = "mcp" },
@@ -1836,14 +1897,21 @@ requires-dist = [
     { name = "greenery", marker = "extra == 'engines'", specifier = "==4.2.2" },
     { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.100" },
     { name = "islpy", marker = "sys_platform != 'win32' and extra == 'engines'", specifier = "==2026.2.2" },
+    { name = "jsonref", marker = "extra == 'engines'", specifier = "==1.1.0" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "jsonschema", marker = "extra == 'engines'", specifier = "==4.26.0" },
+    { name = "jsonsubschema", marker = "extra == 'engines'", specifier = "==0.0.8" },
+    { name = "lark", marker = "extra == 'engines'", specifier = "==1.3.1" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.2,<3" },
     { name = "mcp", marker = "extra == 'test'", specifier = ">=2.2,<3" },
     { name = "ortools", marker = "extra == 'engines'", specifier = "==9.15.6755" },
+    { name = "packaging", marker = "extra == 'engines'", specifier = "==26.3" },
+    { name = "portion", marker = "extra == 'engines'", specifier = "==2.6.3" },
     { name = "pycparser", marker = "extra == 'engines'", specifier = "==3.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
     { name = "pyyaml", marker = "extra == 'engines'", specifier = "==6.0.3" },
+    { name = "resolvelib", marker = "extra == 'engines'", specifier = "==1.2.1" },
 ]
 provides-extras = ["mcp", "engines", "test"]
 

@@ -30,6 +30,20 @@ def _op(operation_id: str, call: int, returned: int, action: str,
             "input": input_, "output": output}
 
 
+def _tx(operation_id: str, call: int, returned: int, actions: list[dict],
+        output: list[int], client_id: int = 0) -> dict:
+    return {"id": operation_id, "client_id": client_id, "call": call, "return": returned,
+            "input": {"actions": actions}, "output": output}
+
+
+def _read(key: str) -> dict:
+    return {"op": "read", "key": key}
+
+
+def _write(key: str, value: int) -> dict:
+    return {"op": "write", "key": key, "value": value}
+
+
 @pytest.fixture
 def configured_helper(monkeypatch: pytest.MonkeyPatch) -> Path:
     binary = os.environ.get("VKIT_HISTORY_BIN")
@@ -246,3 +260,134 @@ def test_long_unicode_ids_fit_the_helper_request_and_complete_witness(tmp_path, 
     assert result["status"] == "LINEARIZABLE"
     assert len(result["linearization"]) == len(operations)
     assert result["linearization"] == [operation["id"] for operation in operations]
+
+
+def test_transaction_reads_its_writes_and_commits_multiple_keys(tmp_path, configured_helper):
+    trace = _write_trace(tmp_path, [
+        _tx("transfer", 1, 2,
+            [_read("x"), _write("x", 7), _read("x"), _read("y"), _write("y", 9), _read("y")],
+            [0, 7, 0, 9]),
+    ])
+
+    result = check_history(tmp_path, trace.name, "transaction")
+
+    assert result["status"] == "LINEARIZABLE"
+    assert result["linearization"] == ["transfer"]
+    assert result["model"] == "transaction"
+
+
+def test_atomic_multi_key_commit_rejects_a_mixed_snapshot(tmp_path, configured_helper):
+    trace = _write_trace(tmp_path, [
+        _tx("commit", 1, 4, [_write("x", 1), _write("y", 1)], []),
+        _tx("mixed-read", 2, 3, [_read("x"), _read("y")], [1, 0], client_id=1),
+    ])
+
+    result = check_history(tmp_path, trace.name, "transaction")
+
+    assert result["status"] == "NOT_LINEARIZABLE"
+    assert result["linearization"] is None
+
+
+def test_transaction_write_skew_cycle_has_no_serial_order(tmp_path, configured_helper):
+    trace = _write_trace(tmp_path, [
+        _tx("write-x", 1, 4, [_read("x"), _read("y"), _write("x", 1)], [0, 0]),
+        _tx("write-y", 2, 3, [_read("y"), _read("x"), _write("y", 1)], [0, 0], client_id=1),
+    ])
+
+    result = check_history(tmp_path, trace.name, "transaction")
+
+    assert result["status"] == "NOT_LINEARIZABLE"
+    assert result["linearization"] is None
+
+
+def test_transaction_lost_update_reads_cannot_both_see_initial_value(tmp_path, configured_helper):
+    trace = _write_trace(tmp_path, [
+        _tx("write-one", 1, 4, [_read("balance"), _write("balance", 1)], [0]),
+        _tx("write-two", 2, 3, [_read("balance"), _write("balance", 2)], [0], client_id=1),
+    ])
+
+    result = check_history(tmp_path, trace.name, "transaction")
+
+    assert result["status"] == "NOT_LINEARIZABLE"
+    assert result["linearization"] is None
+
+
+def test_completed_transaction_write_precedes_realtime_stale_read(tmp_path, configured_helper):
+    trace = _write_trace(tmp_path, [
+        _tx("write", 1, 2, [_write("x", 7)], []),
+        _tx("stale-read", 3, 4, [_read("x")], [0], client_id=1),
+    ])
+
+    result = check_history(tmp_path, trace.name, "transaction")
+
+    assert result["status"] == "NOT_LINEARIZABLE"
+    assert result["linearization"] is None
+
+
+def test_overlapping_transaction_read_can_linearize_before_write(tmp_path, configured_helper):
+    trace = _write_trace(tmp_path, [
+        _tx("write", 1, 4, [_write("x", 7)], []),
+        _tx("overlap-read", 2, 3, [_read("x")], [0], client_id=1),
+    ])
+
+    result = check_history(tmp_path, trace.name, "transaction")
+
+    assert result["status"] == "LINEARIZABLE"
+    assert result["linearization"] == ["overlap-read", "write"]
+
+
+@pytest.mark.parametrize("transaction, message", [
+    (_tx("missing-read", 1, 2, [_read("x")], []), "one integer per read"),
+    (_tx("missing-value", 1, 2, [{"op": "write", "key": "x"}], []), "missing value"),
+    (_tx("pending", 1, 1, [_write("x", 1)], []), "call < return"),
+    (_tx("unknown", 1, 2, [{"op": "scan", "key": "x"}], []), "read' or 'write"),
+])
+def test_invalid_transaction_shapes_are_rejected_before_backend(tmp_path, monkeypatch,
+                                                               transaction, message):
+    trace = _write_trace(tmp_path, [transaction])
+    monkeypatch.delenv("VKIT_HISTORY_BIN", raising=False)
+    monkeypatch.delenv("VKIT_HISTORY_SHA256", raising=False)
+
+    with pytest.raises(ValueError, match=message):
+        check_history(tmp_path, trace.name, "transaction")
+
+
+def test_transaction_action_and_key_limits_are_enforced(tmp_path, monkeypatch):
+    monkeypatch.delenv("VKIT_HISTORY_BIN", raising=False)
+    monkeypatch.delenv("VKIT_HISTORY_SHA256", raising=False)
+    too_many_actions = _write_trace(tmp_path, [
+        _tx("many-actions", 1, 2, [_read("x") for _ in range(65)], [0] * 65),
+    ], name="actions.json")
+    too_many_keys = _write_trace(tmp_path, [
+        _tx(f"many-keys-{batch}", 2 * batch + 1, 2 * batch + 2,
+            [_read(f"k{batch * 43 + index}") for index in range(43)], [0] * 43)
+        for batch in range(3)
+    ], name="keys.json")
+
+    with pytest.raises(ValueError, match="1 to 64 actions"):
+        check_history(tmp_path, too_many_actions.name, "transaction")
+    with pytest.raises(ValueError, match="at most 128 distinct transaction keys"):
+        check_history(tmp_path, too_many_keys.name, "transaction")
+
+
+def test_transaction_rejects_backend_witness_that_fails_independent_replay(tmp_path, monkeypatch):
+    trace = _write_trace(tmp_path, [
+        _tx("write-x", 1, 4, [_read("x"), _read("y"), _write("x", 1)], [0, 0]),
+        _tx("write-y", 2, 3, [_read("y"), _read("x"), _write("y", 1)], [0, 0], client_id=1),
+    ])
+    binary = tmp_path / "trusted-helper"
+    binary.write_bytes(b"trusted by test seam")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    monkeypatch.setenv("VKIT_HISTORY_BIN", str(binary))
+    monkeypatch.setenv("VKIT_HISTORY_SHA256", digest)
+    monkeypatch.setattr("vkit.operations.history.subprocess.run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0,
+        stdout=b'{"protocol_version":1,"backend_version":"1.3.1","status":"OK",'
+               b'"linearization":["write-x","write-y"]}',
+        stderr=b"",
+    ))
+
+    result = check_history(tmp_path, trace.name, "transaction")
+
+    assert result["status"] == "UNKNOWN"
+    assert result["detail"] == "the helper did not return a complete independently replayable witness"

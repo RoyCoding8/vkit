@@ -10,7 +10,13 @@ from .c_safety import check_c_safety
 from .contract import FileInput, Operation, operation_by_name
 from .contracts import CONTRACT_PROFILES, compare_contracts
 from .cover import minimize_cover
+from .configurations import generate_configurations
+from .grammar import find_grammar_ambiguity
+from .dependency_resolution import resolve_dependencies
 from .history import check_history
+from .migrations import compare_migrations
+from .regex_cost import analyze_regex_cost
+from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
 
 _EXPRESSION = {
     "path": {"type": "string", "description": "repository-relative Python source file"},
@@ -40,6 +46,104 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="analyze_regex_cost",
+        description=("Classify a bounded regular expression using pinned Recheck's fixed automaton checker. "
+                     "Returns completed non-fuzz matching-complexity estimates and theoretical attack pumps "
+                     "and hotspots for vulnerable models. SAFE_MODEL concerns this backtracking model only; "
+                     "it is not an absolute security guarantee. No target runtime timing or attack replay "
+                     "is claimed. Unsupported syntax and unfinished work remain explicit outcomes."),
+        properties={
+            "pattern": {"type": "string", "maxLength": 2048},
+            "flags": {"type": "string", "maxLength": 6, "default": ""},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("pattern",),
+        handler=analyze_regex_cost,
+        outcomes={"SAFE_MODEL": 0, "VULNERABLE_MODEL": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
+        name="synthesize_function",
+        description=("Synthesize an equivalent pure integer function within an installed linear expression "
+                     "grammar using pinned cvc5 SyGuS. Reuses the source AST model, validates grammar membership, "
+                     "then independently proves complete-domain equivalence before SYNTHESIZED. Returns a "
+                     "complete candidate function without editing source. NO_SOLUTION concerns the fixed "
+                     "grammar; unfinished search is UNKNOWN. Does not claim minimum size or runtime speed."),
+        properties={
+            **_EXPRESSION,
+            "profile": {"type": "string", "enum": [SYNTHESIS_PROFILE], "default": SYNTHESIS_PROFILE},
+        },
+        required=("path", "function"),
+        handler=synthesize_function,
+        outcomes={"SYNTHESIZED": 0, "NO_SOLUTION": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
+        name="generate_configurations",
+        description=("Generate a minimum-cardinality suite covering every feasible strength-t interaction "
+                     "in a captured finite factor model. Enumerates legal configurations under forbidden partial "
+                     "assignments, derives feasible interactions, and reuses the pinned set-cover solver. "
+                     "Checks legality and coverage independently of solver selection. OPTIMAL proves minimum "
+                     "cardinality; FEASIBLE does not. Enumeration limits return UNKNOWN. No tests execute."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 factor model"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path",),
+        handler=generate_configurations,
+        outcomes={"OPTIMAL": 0, "FEASIBLE": 3, "INFEASIBLE": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
+        name="find_grammar_ambiguity",
+        description=("Find two distinct derivation trees for a supplied string in a captured literal context-free "
+                     "grammar using pinned Earley parsing. Independently checks both trees against productions "
+                     "and string before AMBIGUOUS. NO_AMBIGUITY_IN_CORPUS concerns only the supplied samples; "
+                     "it is not global grammar unambiguity. Rejects zero-yield cycles and other unsupported "
+                     "input. Grammar imports, regex terminals, callbacks, and project code are not accepted."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 grammar/corpus bundle"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path",),
+        handler=find_grammar_ambiguity,
+        outcomes={"AMBIGUOUS": 1, "NO_AMBIGUITY_IN_CORPUS": 0, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
+        name="resolve_dependencies",
+        description=("Resolve PEP 440/508 Python requirements within a captured finite candidate universe "
+                     "and explicit target marker environment. Backtracks with pinned resolvelib, then checks "
+                     "every reachable selected requirement independently. RESOLVED returns versions and edges; "
+                     "CONFLICT concerns only the supplied universe and is not a minimal conflict core. "
+                     "Extras and direct URLs are unsupported. Performs no index access or installation."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 dependency bundle"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
+        },
+        required=("path",),
+        handler=resolve_dependencies,
+        outcomes={"RESOLVED": 0, "CONFLICT": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
+        name="compare_migrations",
+        description=("Replay captured SQLite upgrade SQL and compare it with fresh-install SQL in bounded "
+                     "in-memory databases. Compares exact SQLite-stored catalog SQL and metadata, excluding "
+                     "physical rootpages, plus ordered rows from supplied read-only observations. MATCH concerns "
+                     "those snapshots only; DIFFERENT returns catalog or observation differences. SQL functions "
+                     "and operations are restricted by installed rules. No repository code or external database "
+                     "is opened. Does not prove production data preservation or semantic schema equivalence."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 SQL bundle"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path",),
+        handler=compare_migrations,
+        outcomes={"MATCH": 0, "DIFFERENT": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="mutation_survivors",
@@ -139,15 +243,17 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_contracts",
-        description=("Compare captured API contracts under a fixed OpenAPI or Protobuf compatibility profile. "
+        description=("Compare captured contracts under a fixed OpenAPI, Protobuf, or JSON containment profile. "
                      "OpenAPI validates local document/reference closures and checks protected oasdiff rules. "
-                     "Protobuf uses protected Buf FILE, PACKAGE, WIRE_JSON, or WIRE rules. COMPATIBLE means "
+                     "Protobuf uses protected Buf FILE, PACKAGE, WIRE_JSON, or WIRE rules. JSON containment "
+                     "asks whether every old instance is accepted by new, in a fixed Draft 4 type/object/array "
+                     "fragment; it does not generate counterexamples. COMPATIBLE means "
                      "no violation of that profile; BREAKING returns diagnostics. UNSUPPORTED rejects "
                      "uncheckable schemas; UNKNOWN preserves unfinished checks; UNAVAILABLE means the pinned "
                      "runtime cannot run. Project config cannot override rules. Does not establish server behavior."),
         properties={
-            "old_path": {"type": "string", "minLength": 1, "description": "repository-relative old OpenAPI file or .proto directory"},
-            "new_path": {"type": "string", "minLength": 1, "description": "repository-relative new OpenAPI file or .proto directory"},
+            "old_path": {"type": "string", "minLength": 1, "description": "repository-relative old contract file or .proto directory"},
+            "new_path": {"type": "string", "minLength": 1, "description": "repository-relative new contract file or .proto directory"},
             "profile": {"type": "string", "enum": list(CONTRACT_PROFILES)},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
         },
@@ -159,13 +265,15 @@ OPERATIONS = (
         version=1,
         name="check_history",
         description=("Decide whether a completed concurrent history can be ordered under the built-in "
-                     "register-zero or initially-empty FIFO queue model. LINEARIZABLE includes an "
+                     "register-zero, initially-empty FIFO queue, or atomic multi-key transaction model. "
+                     "Transaction keys start at zero; only completed committed transactions are supported. "
+                     "LINEARIZABLE includes an "
                      "independently replayed ordering; NOT_LINEARIZABLE concerns this trace only. "
                      "UNKNOWN preserves timeouts; UNAVAILABLE means the configured pinned helper cannot run. "
                      "Does not change gate evidence."),
         properties={
             "path": {"type": "string", "minLength": 1, "description": "repository-relative JSON history file"},
-            "model": {"type": "string", "enum": ["register", "queue"]},
+            "model": {"type": "string", "enum": ["register", "queue", "transaction"]},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
         },
         required=("path", "model"),

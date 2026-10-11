@@ -188,7 +188,9 @@ Source: [Schemathesis stateful testing](https://schemathesis.readthedocs.io/en/s
 
 ### 6. JSON Schema containment and compatibility direction
 
-Proposed call: `compare_contracts(schema_a, schema_b, profile="json-containment")`.
+Implemented: `compare_contracts(old_path, new_path, profile="json-containment")`. The fixed Draft 4
+type/object/homogeneous-array fragment, directional result, rejected constructs, and absence of
+generated witnesses are documented in [captured model tools](captured-models.md#json-schema-containment).
 
 Ask whether every JSON instance accepted by schema A is also accepted by schema B within a supported schema fragment. This gives an exact direction for producer and consumer compatibility. Request acceptance and response acceptance require different containment directions.
 
@@ -200,7 +202,10 @@ Source: [IBM jsonsubschema and its ISSTA research reference](https://github.com/
 
 ### 7. Dependency constraint resolution and conflict explanations
 
-Proposed call: `resolve_dependency_change(lock, request, platform, profile)`.
+Implemented Python profile: `resolve_dependencies(path)`. Resolves only captured candidates under
+an explicit marker environment, independently checks the assignment, and reports finite-universe
+conflicts without a minimal-core claim. Extras and direct URLs are outside this initial profile.
+See [captured model tools](captured-models.md#captured-python-dependency-resolution).
 
 Ask for a version assignment satisfying the supplied package constraints, or a conflict explanation. A defined optimization profile could minimize changed locked packages. Never describe a heuristic preference as a proved minimum.
 
@@ -212,7 +217,10 @@ Sources: [libsolv](https://github.com/openSUSE/libsolv), [Spack concretization s
 
 ### 8. Database upgrade-path and fresh-install comparison
 
-Proposed call: `compare_migration_paths(migrations, old_version, fixtures, profile)`.
+Implemented SQLite profile: `compare_migrations(path)`. Compares exact stored catalog SQL and
+metadata plus supplied ordered observations after migration and fresh installation. This deliberately
+does not claim normalized semantic schema equivalence or production data preservation.
+See [captured model tools](captured-models.md#sqlite-migration-comparison).
 
 Ask whether an upgraded database and a fresh database have the same normalized schema, and which supplied data assertions fail after upgrading. This catches migrations that work on an empty database but destroy or misinterpret existing records.
 
@@ -404,6 +412,12 @@ Source: [Alive2](https://github.com/AliveToolkit/alive2).
 
 ### 24. Transaction-history isolation violations
 
+Implemented scope: `check_history(path, model="transaction")` checks completed, committed, atomic
+multi-key read/write transactions with real-time precedence. Porcupine searches for an ordering;
+the adapter independently replays successful witnesses. See [transaction inputs](captured-models.md#atomic-transaction-histories).
+Elle anomaly explanations, weaker isolation levels, aborted transactions, and incomplete histories
+remain future work.
+
 Proposed call: `check_history(history, profile="transaction-isolation")`.
 
 Ask which dependency cycles or anomalies in a supported observed transaction history violate the selected isolation model. Return the involved transactions, observed reads and writes, and anomaly explanation.
@@ -428,7 +442,9 @@ Source: [CrashMonkey, USENIX HotStorage 2017](https://www.usenix.org/conference/
 
 ### 26. Constrained configuration combination coverage
 
-Proposed call: `generate_configuration_cover(factors, constraints, strength, profile)`.
+Implemented: `generate_configurations(path)`. Enumerates a bounded finite factor model with forbidden
+partial assignments, derives all feasible strength-t projections, and reuses the existing set-cover
+solver with independently checked coverage. See [captured model tools](captured-models.md#configuration-interaction-coverage).
 
 Ask for configurations that cover every valid t-way interaction, plus a checked coverage report. Factors can include runtime version, database backend, feature flags, and deployment mode.
 
@@ -463,6 +479,11 @@ This is distinct from the current mathematical integer rewrite checker. A failed
 Source: [FPTaylor](https://github.com/soarlab/FPTaylor).
 
 ### 29. Regular-expression backtracking cost and attack witnesses
+
+Implemented: `analyze_regex_cost(pattern, flags)`, using pinned Recheck automaton classification.
+Theoretical attack pumps and hotspots are returned for vulnerable models; runtime replay is not
+claimed. Completed safe model classifications stay distinct from unsupported and unfinished work.
+See [captured model tools](captured-models.md#regex-backtracking-complexity).
 
 Proposed call: `analyze_regex_cost(pattern, engine_profile, bounds)`.
 
@@ -536,6 +557,11 @@ Source: [PerfettoSQL and Trace Processor](https://perfetto.dev/docs/analysis/per
 
 ### 35. Expression synthesis under a fixed grammar and specification
 
+Implemented: `synthesize_function(path, function, profile="linear-int-v1")`. Native cvc5 SyGuS
+searches the installed integer expression grammar, then the existing independent equivalence
+checker must prove the rendered candidate before it is returned. No minimality claim is made.
+See [captured model tools](captured-models.md#grammar-constrained-function-synthesis).
+
 Proposed call: `synthesize_expression(specification, grammar_profile, bounds)`.
 
 Ask for an expression from a supported grammar that satisfies the supplied formal relation. Examples include a boundary predicate or a small pure arithmetic expression. Return the expression and an independent validation result where supported.
@@ -607,6 +633,11 @@ The tool is especially relevant to memoization, build caches, and request cachin
 Sources: [Rosette solver-aided programming](https://github.com/emina/rosette), [vkit's current computations](computations.md).
 
 ### 41. Grammar ambiguity witnesses and parser conflicts
+
+Implemented corpus profile: `find_grammar_ambiguity(path)`. Captured literal CFG productions and
+sample strings are parsed with pinned Lark Earley parsing. Positive results include two independently
+checked derivation trees; negative results concern only the supplied corpus. Imports, regex terminals,
+callbacks, and zero-yield cycles are unsupported. See [captured model tools](captured-models.md#grammar-ambiguity-witnesses).
 
 Proposed call: `find_grammar_ambiguity(grammar, parser_profile, bounds)`.
 

@@ -11,9 +11,12 @@ def test_an_agent_sees_staleness_runs_what_is_needed_and_reaches_ready(make_proj
     client = McpClient(project)
     try:
         tools = sorted(t["name"] for t in client.request("tools/list", {})["tools"])
-        assert tools == ["analyze_dependencies", "check_c_safety", "check_history", "check_rewrite", "check_run",
-                         "compare_contracts", "compare_iteration_sets", "compare_matchsets", "features", "gate", "help", "minimize_cover", "mutation_survivors", "propose", "reduce_failure",
-                         "run_cancel", "run_get", "simplify_function", "status"]
+        assert tools == ["analyze_dependencies", "analyze_regex_cost", "check_c_safety", "check_history",
+                         "check_rewrite", "check_run", "compare_contracts", "compare_iteration_sets",
+                         "compare_matchsets", "compare_migrations", "features", "find_grammar_ambiguity",
+                         "gate", "generate_configurations", "help", "minimize_cover", "mutation_survivors",
+                         "propose", "reduce_failure", "resolve_dependencies", "run_cancel", "run_get",
+                         "simplify_function", "status", "synthesize_function"]
 
         body, error = client.call("gate")
         assert (error, body["verdict"], body["checks"][0]["state"]) == (False, "BLOCKED", "missing")

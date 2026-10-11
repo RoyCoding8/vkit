@@ -1,12 +1,13 @@
 """Minimum-cost set cover over a bounded repository JSON matrix."""
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Any, Literal
+
+from ._data import _object_without_duplicates, _reject_constant, read_json
 
 BACKEND = "ortools"
 BACKEND_VERSION = "9.15.6755"
@@ -27,19 +28,6 @@ MODEL_SCOPE = (
 Status = Literal["OPTIMAL", "FEASIBLE", "INFEASIBLE", "UNKNOWN", "UNAVAILABLE"]
 
 
-def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key {key!r}")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> None:
-    raise ValueError(f"non-finite JSON number {value!r} is not allowed")
-
-
 def _valid_id(value: object, label: str) -> str:
     if not isinstance(value, str) or not value or "\0" in value:
         raise ValueError(f"{label} must be a non-empty string without NUL")
@@ -53,39 +41,7 @@ def _valid_id(value: object, label: str) -> str:
 
 
 def _read_matrix(root: Path, path: str) -> tuple[dict[str, Any], str]:
-    if (not isinstance(path, str) or not path or Path(path).is_absolute()
-            or PurePosixPath(path).is_absolute() or PureWindowsPath(path).drive):
-        raise ValueError("path must be a non-empty repository-relative path")
-    parts = path.replace("\\", "/").split("/")
-    if any(part in ("", ".", "..") for part in parts):
-        raise ValueError("path must not contain empty, '.' or '..' segments")
-    try:
-        resolved_root = Path(root).resolve(strict=True)
-        if not resolved_root.is_dir():
-            raise ValueError("root must identify a directory")
-        target = (resolved_root.joinpath(*parts)).resolve(strict=True)
-        if not target.is_relative_to(resolved_root):
-            raise ValueError("matrix path must remain inside the repository root")
-        if not target.is_file():
-            raise ValueError("path must identify a regular file")
-        with target.open("rb") as handle:
-            raw = handle.read(MAX_MATRIX_BYTES + 1)
-    except ValueError:
-        raise
-    except (OSError, RuntimeError) as exc:
-        raise ValueError(f"cannot read repository-relative matrix {path!r}: {exc}") from exc
-    if len(raw) > MAX_MATRIX_BYTES:
-        raise ValueError(f"coverage matrix must be at most {MAX_MATRIX_BYTES} bytes")
-    try:
-        matrix = json.loads(
-            raw.decode("utf-8"),
-            object_pairs_hook=_object_without_duplicates,
-            parse_constant=_reject_constant,
-        )
-    except RecursionError as exc:
-        raise ValueError("coverage matrix nesting exceeds parser limits") from exc
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"coverage matrix must be valid UTF-8 JSON: {exc}") from exc
+    matrix, digest = read_json(root, path, max_bytes=MAX_MATRIX_BYTES)
     if not isinstance(matrix, dict) or set(matrix) != {"version", "required", "candidates"}:
         raise ValueError("matrix must contain exactly 'version', 'required' and 'candidates'")
     if type(matrix["version"]) is not int or matrix["version"] != 1:
@@ -129,7 +85,7 @@ def _read_matrix(root: Path, path: str) -> tuple[dict[str, Any], str]:
             raise ValueError(f"matrix must contain at most {MAX_COVERAGE_PAIRS} coverage pairs")
         candidates.append({"id": candidate_id, "cost": cost, "covers": covers})
 
-    return {"required": required, "candidates": candidates}, hashlib.sha256(raw).hexdigest()
+    return {"required": required, "candidates": candidates}, digest
 
 
 def _load_backend() -> tuple[Any | None, str | None, str | None]:
@@ -221,7 +177,7 @@ def minimize_cover(root: Path, path: str, timeout_seconds: int = 10) -> dict[str
     )
     try:
         completed = subprocess.run(
-            [sys.executable, "-I", str(Path(__file__).resolve()), "--worker"],
+            [sys.executable, "-I", "-m", "vkit.operations.cover", "--worker"],
             input=request, capture_output=True, encoding="utf-8", timeout=timeout_seconds,
             check=False,
         )

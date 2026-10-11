@@ -28,6 +28,10 @@ jobs:
         run: npm ci --prefix tools/dependencies --ignore-scripts
       - name: Install pinned mutation engine
         run: npm ci --prefix tools/mutation --ignore-scripts
+      - name: Install and test pinned regex engine
+        run: |
+          npm ci --prefix tools/regex --ignore-scripts
+          node tools/regex/helper.test.cjs
       - name: Configure trusted Node helpers
         shell: python
         run: |
@@ -38,7 +42,8 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
               output.write(f"VKIT_NODE_BIN={shutil.which('node')}\n")
               for name, folder, filename in (("DEPENDENCY", "dependencies", "dependency_helper.mjs"),
-                                             ("MUTATION", "mutation", "helper.mjs")):
+                                             ("MUTATION", "mutation", "helper.mjs"),
+                                             ("REGEX", "regex", "helper.cjs")):
                   directory = pathlib.Path("tools") / folder
                   helper = (directory / filename).resolve()
                   lock = (directory / "package-lock.json").resolve()

@@ -21,6 +21,9 @@ const (
 	maxRequestBytes = 1_048_576
 	maxOperations   = 1_000
 	maxIDChars      = 128
+	maxActions      = 64
+	maxKeys         = 128
+	maxKeyChars     = 128
 )
 
 type request struct {
@@ -42,9 +45,20 @@ type operationInput struct {
 	Value *int64 `json:"value"`
 }
 
+type transactionAction struct {
+	Op    string `json:"op"`
+	Key   string `json:"key"`
+	Value *int64 `json:"value"`
+}
+
+type transactionInput struct {
+	Actions []transactionAction `json:"actions"`
+}
+
 type modelOperation struct {
-	Op    string
-	Value *int64
+	Op      string
+	Value   *int64
+	Actions []transactionAction
 }
 
 type response struct {
@@ -63,10 +77,10 @@ func main() {
 
 func run(args []string, input io.Reader, output io.Writer) error {
 	if len(args) != 4 || args[0] != "--model" || args[2] != "--timeout-seconds" {
-		return errors.New("expected --model register|queue --timeout-seconds N")
+		return errors.New("expected --model register|queue|transaction --timeout-seconds N")
 	}
 	modelName := args[1]
-	if modelName != "register" && modelName != "queue" {
+	if modelName != "register" && modelName != "queue" && modelName != "transaction" {
 		return errors.New("unsupported model")
 	}
 	timeoutSeconds, err := strconv.Atoi(args[3])
@@ -94,7 +108,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		return errors.New("unsupported request version or operation count")
 	}
 	var rawOperations []requestOperation
-	if err := json.Unmarshal(raw.Operations, &rawOperations); err != nil {
+	if err := strictUnmarshal(raw.Operations, &rawOperations); err != nil {
 		return fmt.Errorf("invalid operations: %w", err)
 	}
 	if len(rawOperations) > maxOperations {
@@ -103,6 +117,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 
 	operations := make([]porcupine.Operation, 0, len(rawOperations))
 	ids := make(map[string]struct{}, len(rawOperations))
+	keys := make(map[string]struct{})
 	for i, item := range rawOperations {
 		if item.ID == "" || utf8.RuneCountInString(item.ID) > maxIDChars || item.ClientID < 0 || item.ClientID > 2_147_483_647 || item.Call >= item.Return {
 			return fmt.Errorf("invalid operation at index %d", i)
@@ -111,29 +126,58 @@ func run(args []string, input io.Reader, output io.Writer) error {
 			return fmt.Errorf("duplicate operation id %q", item.ID)
 		}
 		ids[item.ID] = struct{}{}
-		var in operationInput
-		if err := strictUnmarshal(item.Input, &in); err != nil {
-			return fmt.Errorf("invalid operation input at index %d", i)
-		}
-		var out *int64
-		if len(item.Output) == 0 {
-			return fmt.Errorf("missing operation output at index %d", i)
-		}
-		if string(item.Output) != "null" {
-			var value int64
-			if err := json.Unmarshal(item.Output, &value); err != nil {
-				return fmt.Errorf("invalid operation output at index %d", i)
+		var modelInput modelOperation
+		var outputValue any
+		if modelName == "transaction" {
+			var in transactionInput
+			if err := strictUnmarshal(item.Input, &in); err != nil {
+				return fmt.Errorf("invalid transaction input at index %d", i)
 			}
-			out = &value
-		}
-		if err := validateOperation(modelName, in, out); err != nil {
-			return fmt.Errorf("invalid operation at index %d: %w", i, err)
+			var observed []int64
+			if len(item.Output) == 0 || item.Output[0] != '[' {
+				return fmt.Errorf("transaction output at index %d must be an integer array", i)
+			}
+			if err := json.Unmarshal(item.Output, &observed); err != nil {
+				return fmt.Errorf("invalid transaction output at index %d", i)
+			}
+			if err := validateTransaction(in, observed); err != nil {
+				return fmt.Errorf("invalid transaction at index %d: %w", i, err)
+			}
+			for _, action := range in.Actions {
+				keys[action.Key] = struct{}{}
+			}
+			if len(keys) > maxKeys {
+				return fmt.Errorf("transaction key count exceeds limit")
+			}
+			modelInput = modelOperation{Actions: in.Actions}
+			outputValue = observed
+		} else {
+			var in operationInput
+			if err := strictUnmarshal(item.Input, &in); err != nil {
+				return fmt.Errorf("invalid operation input at index %d", i)
+			}
+			var out *int64
+			if len(item.Output) == 0 {
+				return fmt.Errorf("missing operation output at index %d", i)
+			}
+			if string(item.Output) != "null" {
+				var value int64
+				if err := json.Unmarshal(item.Output, &value); err != nil {
+					return fmt.Errorf("invalid operation output at index %d", i)
+				}
+				out = &value
+			}
+			if err := validateOperation(modelName, in, out); err != nil {
+				return fmt.Errorf("invalid operation at index %d: %w", i, err)
+			}
+			modelInput = modelOperation{Op: in.Op, Value: in.Value}
+			outputValue = out
 		}
 		operations = append(operations, porcupine.Operation{
 			ClientId: item.ClientID,
-			Input:    modelOperation{Op: in.Op, Value: in.Value},
+			Input:    modelInput,
 			Call:     item.Call,
-			Output:   out,
+			Output:   outputValue,
 			Return:   item.Return,
 			Metadata: item.ID,
 		})
@@ -223,7 +267,62 @@ func validateOperation(modelName string, input operationInput, output *int64) er
 	return nil
 }
 
+func validateTransaction(input transactionInput, observed []int64) error {
+	if len(input.Actions) == 0 || len(input.Actions) > maxActions {
+		return fmt.Errorf("action count must be in [1, %d]", maxActions)
+	}
+	readCount := 0
+	for index, action := range input.Actions {
+		if action.Key == "" || !utf8.ValidString(action.Key) || utf8.RuneCountInString(action.Key) > maxKeyChars {
+			return fmt.Errorf("action %d has an invalid key", index)
+		}
+		switch action.Op {
+		case "read":
+			if action.Value != nil {
+				return fmt.Errorf("read action %d cannot have a value", index)
+			}
+			readCount++
+		case "write":
+			if action.Value == nil {
+				return fmt.Errorf("write action %d requires a value", index)
+			}
+		default:
+			return fmt.Errorf("action %d has an unsupported operation", index)
+		}
+	}
+	if len(observed) != readCount {
+		return fmt.Errorf("output must contain one value per read action")
+	}
+	return nil
+}
+
 func fixedModel(name string) porcupine.Model {
+	if name == "transaction" {
+		return porcupine.Model{
+			Init: func() interface{} { return map[string]int64{} },
+			StepContext: func(ctx context.Context, state, input, output interface{}) (bool, interface{}) {
+				if ctx.Err() != nil {
+					return false, state
+				}
+				return transactionStep(state.(map[string]int64), input.(modelOperation).Actions,
+					output.([]int64))
+			},
+			Equal: func(left, right interface{}) bool {
+				a, b := left.(map[string]int64), right.(map[string]int64)
+				for key, value := range a {
+					if b[key] != value {
+						return false
+					}
+				}
+				for key, value := range b {
+					if a[key] != value {
+						return false
+					}
+				}
+				return true
+			},
+		}
+	}
 	if name == "register" {
 		return porcupine.Model{
 			Init: func() interface{} { return int64(0) },
@@ -285,4 +384,32 @@ func fixedModel(name string) porcupine.Model {
 			return true
 		},
 	}
+}
+
+func transactionStep(state map[string]int64, actions []transactionAction, observed []int64) (bool, interface{}) {
+	next := make(map[string]int64, len(state))
+	for key, value := range state {
+		next[key] = value
+	}
+	readIndex := 0
+	for _, action := range actions {
+		switch action.Op {
+		case "read":
+			if readIndex >= len(observed) || observed[readIndex] != next[action.Key] {
+				return false, state
+			}
+			readIndex++
+		case "write":
+			if action.Value == nil {
+				return false, state
+			}
+			next[action.Key] = *action.Value
+		default:
+			return false, state
+		}
+	}
+	if readIndex != len(observed) {
+		return false, state
+	}
+	return true, next
 }

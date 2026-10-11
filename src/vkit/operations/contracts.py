@@ -10,7 +10,7 @@ PROTOBUF_PROFILES = {
     "protobuf-wire-json": "WIRE_JSON",
     "protobuf-wire": "WIRE",
 }
-CONTRACT_PROFILES = ("openapi", *PROTOBUF_PROFILES)
+CONTRACT_PROFILES = ("openapi", *PROTOBUF_PROFILES, "json-containment")
 
 
 def compare_contracts(root: Path, old_path: str, new_path: str, profile: str,
@@ -23,6 +23,10 @@ def compare_contracts(root: Path, old_path: str, new_path: str, profile: str,
         from .protobuf import check_proto_compatibility
 
         result = check_proto_compatibility(root, old_path, new_path, PROTOBUF_PROFILES[profile], timeout_seconds)
+    elif profile == "json-containment":
+        from .json_containment import compare_json_containment
+
+        result = compare_json_containment(root, old_path, new_path, timeout_seconds)
     else:
         raise ValueError(f"profile must be one of {', '.join(CONTRACT_PROFILES)}")
     return {**result, "operation": "compare_contracts", "profile": profile}

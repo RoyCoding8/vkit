@@ -22,6 +22,16 @@ the pinned release has no native Windows wheel. PyYAML 6.0.3 supports protected 
 Perses, Buf, CBMC, oasdiff, dependency-cruiser, Stryker, and the compiled Porcupine helper are
 configured separately. The [engine queue](engine-roadmap.md) records the remaining integration candidates.
 
+The engine extra also pins jsonsubschema 0.0.8 with jsonref 1.1.0, portion 2.6.3, and jsonschema
+4.26.0; resolvelib 1.2.1 with packaging 26.3; and Lark 1.3.1. These power JSON Schema containment,
+captured Python dependency resolution, and checked grammar ambiguity witnesses.
+SQLite migration comparison uses the service Python's SQLite runtime. Configuration generation
+reuses the existing OR-Tools set-cover backend. See [captured model tools](captured-models.md) for
+their exact input bundles, limits, and interpretation. All use the same installed operation contract.
+Grammar-constrained synthesis also reuses cvc5 and the existing expression frontend and proof checker.
+Recheck 4.5.0 is installed separately with a protected Node helper; its setup and scope appear in
+[regex backtracking complexity](captured-models.md#regex-backtracking-complexity).
+
 ## Check a replacement
 
 `check_rewrite` compares one top-level function from a repository file with the same function in supplied
@@ -162,6 +172,10 @@ executable, or helper path. These are the supported models.
 | --- | --- | --- |
 | `register` | Integer zero | `write` takes integer `value` and returns `null`; `read` takes no value and returns the current integer |
 | `queue` | Empty FIFO queue | `enqueue` takes integer `value` and returns `null`; `dequeue` takes no value and returns the oldest integer, or `null` when empty |
+| `transaction` | Every key is integer zero | Ordered reads and writes commit atomically; `output` contains one observed integer per read |
+
+See [atomic transaction inputs and limits](captured-models.md#atomic-transaction-histories) for the
+multi-key model. This profile checks completed committed transactions, with real-time precedence.
 
 A trace contains exactly `schema_version` and `operations`. This completed register trace is linearizable.
 

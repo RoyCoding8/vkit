@@ -20,7 +20,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | [egglog](https://github.com/egraphs-good/egglog) | `simplify_function` | Fixed rewrite rules, fixed expression cost, independent cvc5 check |
 | [Perses](https://github.com/uw-pluverse/perses) | `reduce_failure` | Smaller input that still reproduces a recorded approved failure |
 | [greenery](https://github.com/qntm/greenery) | `compare_matchsets` | Full-match languages in a fixed dialect and finite alphabet |
-| [Porcupine](https://github.com/anishathalye/porcupine) | `check_history` | Linearizability of one supplied register or FIFO history |
+| [Porcupine](https://github.com/anishathalye/porcupine) | `check_history` | Linearizability of one supplied register, FIFO, or atomic multi-key transaction history |
 | [OR-Tools](https://github.com/google/or-tools) | `minimize_cover` | Minimum-cost coverage of supplied required IDs, with checked selection and exact integer cost |
 | [dependency-cruiser](https://github.com/sverweij/dependency-cruiser) | `analyze_dependencies` | Captured JavaScript/TypeScript module graph, paths, cycles, reverse impact, and entrypoint reachability with unresolved edges reported |
 | [StrykerJS](https://github.com/stryker-mutator/stryker-js) | `mutation_survivors` | Fixed JavaScript mutations tested against a fresh approved Node baseline, with survivor replay and explicit inconclusive or unexamined cases |
@@ -28,6 +28,13 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | [Buf](https://github.com/bufbuild/buf) | `compare_contracts`, `protobuf-*` profiles | Selected built-in compatibility category, protected configuration, captured local schemas |
 | [isl](https://github.com/Meinersbur/isl) via [islpy](https://github.com/inducer/islpy) | `compare_iteration_sets` | Equality of yielded integer-coordinate sets extracted from supported affine generators |
 | [CBMC](https://github.com/diffblue/cbmc) | `check_c_safety` | Fixed array and integer safety checks on a restricted standalone C function, with unwinding assertions and no compiler execution |
+| [jsonsubschema](https://github.com/IBM/jsonsubschema) | `compare_contracts`, `json-containment` profile | Directional containment in a fixed Draft 4 type/object/array fragment, with unsupported constructs rejected and no generated witness |
+| [resolvelib](https://github.com/sarugaku/resolvelib) and packaging | `resolve_dependencies` | Independently checked Python constraint assignment within captured candidates and explicit target marker environment |
+| SQLite | `compare_migrations` | Exact stored catalog SQL and supplied ordered observations after captured upgrade and fresh-install SQL |
+| [OR-Tools](https://github.com/google/or-tools) | `generate_configurations` | Minimum-cardinality coverage of feasible bounded t-way factor interactions under forbidden partial assignments |
+| [Lark](https://github.com/lark-parser/lark) | `find_grammar_ambiguity` | Two checked derivation trees for a supplied string, or absence of ambiguity only in the supplied corpus |
+| [cvc5 SyGuS](https://github.com/cvc5/cvc5) | `synthesize_function` | Candidate in a fixed linear integer grammar, returned only after independent full-domain equivalence proof |
+| [Recheck](https://github.com/makenowjust-labs/recheck) | `analyze_regex_cost` | Completed automaton backtracking-model complexity estimates and theoretical attack descriptions, with no target runtime replay claim |
 
 These operations use the existing catalog contract. Adding an engine does not justify
 another transport, plugin loader, or command executor. Native Windows has no islpy wheel in the pinned

@@ -20,6 +20,7 @@ from .dependency_resolution import resolve_dependencies
 from .history import check_history
 from .invariants import infer_trace_relations
 from .migrations import compare_migrations
+from .network_paths import compare_network_paths
 from .policies import compare_authorization_policies
 from .protocols import check_protocol_model
 from .regex_cost import analyze_regex_cost
@@ -60,6 +61,22 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="compare_network_paths",
+        description=("Compare successful modeled network reachability in two captured configuration snapshots "
+                     "with pinned Batfish. Uses fixed differential questions in both directions for concrete "
+                     "ingress/egress nodes and an IP/protocol selector. Parsing and conversion diagnostics gate "
+                     "completed claims. Returns modeled flow traces; does not establish live network behavior."),
+        properties={
+            "base_path": {"type": "string", "minLength": 1},
+            "candidate_path": {"type": "string", "minLength": 1},
+            "selector": {"type": "object", "description": "Concrete start_node, start_interface, end_node, destination_ip, protocol; optional source_ip and destination_port"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300, "default": 120},
+        },
+        required=("base_path", "candidate_path", "selector"), handler=compare_network_paths,
+        outcomes={"NO_DIFFERENCE": 0, "DIFFERENT": 1, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="explain_trace_interval",

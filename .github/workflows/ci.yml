@@ -11,6 +11,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  network:
+    name: Batfish service acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VKIT_BATFISH_HOST: "127.0.0.1"
+      VKIT_BATFISH_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --python 3.11 --extra test --extra engines
+      - name: Start the digest-pinned Batfish service
+        run: docker run --detach --name vkit-batfish --memory=4g --publish 127.0.0.1:9996:9996 batfish/batfish@sha256:7909378197c5a3974f2e8180af58cef0ca17b74d1cd9ba39f2d1fddb64737e55
+      - name: Wait for the service API
+        shell: python
+        run: |
+          import subprocess
+          import time
+          deadline = time.monotonic() + 180
+          while time.monotonic() < deadline:
+              result = subprocess.run(["uv", "run", "python", "-c", "from pybatfish.client.session import Session; print(Session(host='127.0.0.1', port=9996, timeout=2).get_component_versions())"], capture_output=True, timeout=10)
+              if result.returncode == 0:
+                  print(result.stdout.decode())
+                  break
+              time.sleep(2)
+          else:
+              raise RuntimeError("the pinned Batfish API did not become ready")
+      - run: uv run pytest -ra tests/test_network_paths.py
+      - name: Stop the service
+        if: always()
+        run: docker rm --force vkit-batfish
   suite:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

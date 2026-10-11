@@ -14,6 +14,8 @@ The [`typescript-api` compatibility profile](typescript-api-model.md) extends `c
 
 For scheduler facts in a supplied recording, see the [Perfetto trace model](trace-model.md) and its preinstalled native processor requirement.
 
+The [network model](network-model.md) describes fixed Batfish differential reachability, snapshot capture and the operator-managed service. Live-service acceptance runs separately from the cross-platform suite.
+
 Install the optional Python engines in the environment that runs vkit.
 
 ```powershell

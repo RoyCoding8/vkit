@@ -6,9 +6,10 @@ from vkit.manifest import parse_manifest
 from vkit.operations.workloads import compare_workload_cost
 from vkit.paths import open_project
 from vkit.runner import run_check
+from vkit.store import Store
 
 
-def _check() -> dict:
+def _check(subject_paths: list[str] | None = None) -> dict:
     return {
         "id": "workload",
         "kind": "scenario",
@@ -18,7 +19,7 @@ def _check() -> dict:
         "required_scenarios": ["workload-ran"],
         "budgets": [{"name": "latency", "max_regression_pct": 25}],
         "inputs": ["src/product.py", "verification/driver.py"],
-        "subject": {"paths": ["src/product.py"], "digest": None},
+        "subject": {"paths": subject_paths or ["src/product.py"], "digest": None},
         "claim_id": "workload",
     }
 
@@ -105,3 +106,134 @@ def test_workload_comparison_keeps_failed_baseline_out_of_completed_pairs(make_p
     assert result["completed_pairs"] == 0
     assert result["samples"] == []
     assert "scenario failed" in result["detail"]
+
+
+def test_workload_comparison_refuses_a_revoked_approval(make_project):
+    project = make_project({
+        "src/product.py": "VALUE = 1\n",
+        "verification/driver.py": (
+            "import json, pathlib, sys\n"
+            "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+            "'schema_version': 1, 'scenarios': [{'id': 'workload-ran', 'result': 'PASS', 'observation': 'ran'}],"
+            "'measurements': [{'name': 'latency', 'value': 1, 'unit': 'ms', 'better': 'lower'}]}))\n"
+        ),
+    }, [_check()])
+    before_ref = _commit(project)
+    run_id = _record(project)
+    approval_file = Store.of(open_project(project)).root / "approved.json"
+    approval_file.write_text("{}\n", encoding="utf-8")
+
+    result = compare_workload_cost(project, run_id, before_ref, pairs=10, timeout_seconds=30)
+
+    assert result["status"] == "UNSUPPORTED"
+    assert "no longer approved" in result["detail"]
+
+
+def test_workload_comparison_rejects_subject_that_is_the_scenario_driver(make_project):
+    project = make_project({
+        "src/product.py": "VALUE = 1\n",
+        "verification/driver.py": (
+            "import json, pathlib, sys\n"
+            "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+            "'schema_version': 1, 'scenarios': [{'id': 'workload-ran', 'result': 'PASS', 'observation': 'ran'}],"
+            "'measurements': [{'name': 'latency', 'value': 1, 'unit': 'ms', 'better': 'lower'}]}))\n"
+        ),
+    }, [_check(["src/product.py", "verification/driver.py"])])
+    before_ref = _commit(project)
+    run_id = _record(project)
+
+    result = compare_workload_cost(project, run_id, before_ref, pairs=10, timeout_seconds=30)
+
+    assert result["status"] == "UNSUPPORTED"
+    assert "command input" in result["detail"]
+
+
+def test_workload_comparison_rejects_symlink_mode_in_before_commit(make_project):
+    project = make_project({
+        "src/product.py": "VALUE = 1\n",
+        "verification/driver.py": (
+            "import json, pathlib, sys\n"
+            "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+            "'schema_version': 1, 'scenarios': [{'id': 'workload-ran', 'result': 'PASS', 'observation': 'ran'}],"
+            "'measurements': [{'name': 'latency', 'value': 1, 'unit': 'ms', 'better': 'lower'}]}))\n"
+        ),
+    }, [_check()])
+    run_id = _record(project)
+    target = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=project, input=b"target",
+                            check=True, capture_output=True).stdout.decode("ascii").strip()
+    subprocess.run(["git", "update-index", "--cacheinfo", f"120000,{target},src/product.py"],
+                   cwd=project, check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@vkit", "-c", "user.name=test", "commit", "-qm", "symlink mode"],
+                   cwd=project, check=True, capture_output=True)
+    before_ref = _commit(project)
+
+    result = compare_workload_cost(project, run_id, before_ref, pairs=10, timeout_seconds=30)
+
+    assert result["status"] == "UNSUPPORTED"
+    assert "symlink" in result["detail"]
+
+
+def test_workload_comparison_rejects_measurement_unit_mismatch(make_project):
+    project = make_project({
+        "src/product.py": "VALUE = 0\n",
+        "verification/driver.py": (
+            "import json, pathlib, runpy, sys\n"
+            "value = runpy.run_path(str(pathlib.Path(__file__).resolve().parents[1] / 'src/product.py'))['VALUE']\n"
+            "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+            "'schema_version': 1, 'scenarios': [{'id': 'workload-ran', 'result': 'PASS', 'observation': 'ran'}],"
+            "'measurements': [{'name': 'latency', 'value': 1 + value, 'unit': 'ms' if value else 's', 'better': 'lower'}]}))\n"
+        ),
+    }, [_check()])
+    before_ref = _commit(project)
+    (project / "src/product.py").write_text("VALUE = 1\n", encoding="utf-8")
+    run_id = _record(project)
+
+    result = compare_workload_cost(project, run_id, before_ref, pairs=10, timeout_seconds=30)
+
+    assert result["status"] == "INCONCLUSIVE"
+    assert result["completed_pairs"] == 0
+    assert "units" in result["detail"]
+
+
+def test_workload_comparison_rejects_zero_baseline_for_relative_regression(make_project):
+    project = make_project({
+        "src/product.py": "VALUE = 0\n",
+        "verification/driver.py": (
+            "import json, pathlib, runpy, sys\n"
+            "value = runpy.run_path(str(pathlib.Path(__file__).resolve().parents[1] / 'src/product.py'))['VALUE']\n"
+            "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+            "'schema_version': 1, 'scenarios': [{'id': 'workload-ran', 'result': 'PASS', 'observation': 'ran'}],"
+            "'measurements': [{'name': 'latency', 'value': 0 if value == 0 else 3, 'unit': 'ms', 'better': 'lower'}]}))\n"
+        ),
+    }, [_check()])
+    before_ref = _commit(project)
+    (project / "src/product.py").write_text("VALUE = 1\n", encoding="utf-8")
+    run_id = _record(project)
+
+    result = compare_workload_cost(project, run_id, before_ref, pairs=10, timeout_seconds=30)
+
+    assert result["status"] == "INCONCLUSIVE"
+    assert result["completed_pairs"] == 0
+    assert "nonpositive baseline" in result["detail"]
+
+
+def test_workload_comparison_refuses_nonfinite_regression_ratio(make_project):
+    project = make_project({
+        "src/product.py": "VALUE = 0\n",
+        "verification/driver.py": (
+            "import json, pathlib, runpy, sys\n"
+            "value = runpy.run_path(str(pathlib.Path(__file__).resolve().parents[1] / 'src/product.py'))['VALUE']\n"
+            "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+            "'schema_version': 1, 'scenarios': [{'id': 'workload-ran', 'result': 'PASS', 'observation': 'ran'}],"
+            "'measurements': [{'name': 'latency', 'value': 1e-300 if value == 0 else 1e300, 'unit': 'ms', 'better': 'lower'}]}))\n"
+        ),
+    }, [_check()])
+    before_ref = _commit(project)
+    (project / "src/product.py").write_text("VALUE = 1\n", encoding="utf-8")
+    run_id = _record(project)
+
+    result = compare_workload_cost(project, run_id, before_ref, pairs=10, timeout_seconds=30)
+
+    assert result["status"] == "INCONCLUSIVE"
+    assert result["completed_pairs"] == 0
+    assert "non-finite paired regression" in result["detail"]

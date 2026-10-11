@@ -151,9 +151,10 @@ def _capture_inputs(project: Project, check: ScenarioCheck, record: dict[str, An
 
 
 def _git(project: Project, *argv: str, timeout: float = 10) -> bytes:
+    env = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
     try:
         result = subprocess.run(["git", "--literal-pathspecs", *argv], cwd=project.root, stdin=subprocess.DEVNULL,
-                                capture_output=True, timeout=timeout, check=False, **hidden_window())
+                                capture_output=True, timeout=timeout, check=False, env=env, **hidden_window())
     except (OSError, subprocess.TimeoutExpired):
         raise _Unsupported("the local Git object could not be read within the limit") from None
     if result.returncode != 0:
@@ -239,6 +240,13 @@ def _prepare(root: Path, run_id: Any, before_ref: Any) -> _Request:
     subjects = tuple(sorted(path for path in names if any(matches(path, pattern) for pattern in check.subject.paths)))
     if not subjects:
         raise _Unsupported("approved subject paths match no captured check inputs")
+    command_inputs = {
+        PurePosixPath(argument.replace("\\", "/")).as_posix()
+        for argument in check.command if "{{" not in argument and not argument.startswith("-")
+    }
+    overlapping_harness = sorted(set(subjects) & command_inputs)
+    if overlapping_harness:
+        raise _Unsupported("measured subject includes a check command input: " + ", ".join(overlapping_harness))
     budget_names = [budget.name for budget in check.budgets]
     if len(set(budget_names)) != len(budget_names):
         raise _Unsupported("check contains duplicate budget names")
@@ -310,10 +318,6 @@ def _read_sample(request: _Request, side: str, deadline: float) -> tuple[dict[st
     if time.monotonic() >= deadline:
         return None, "campaign exceeded its total time budget"
     replacements = {item.path: item for item in request.before_files} if side == "before" else {}
-    remaining = deadline - time.monotonic()
-    timeout = min(request.check.timeout_seconds, remaining)
-    if timeout <= 0:
-        return None, "campaign exceeded its total time budget"
     with tempfile.TemporaryDirectory(prefix="vkit-workload-") as raw_workspace:
         workspace = Path(raw_workspace)
         _write_workspace(request.files, workspace, replacements)
@@ -325,6 +329,9 @@ def _read_sample(request: _Request, side: str, deadline: float) -> tuple[dict[st
         artifact.parent.mkdir(parents=True, exist_ok=True)
         check = replace(request.check, cwd=cwd)
         argv = dispatch.argv_for(check, run_dir, None)
+        timeout = min(request.check.timeout_seconds, deadline - time.monotonic())
+        if timeout <= 0:
+            return None, "campaign exceeded its total time budget"
         result = run_process(argv, cwd=cwd, env=request.environment,
                              stdout_path=run_dir / "stdout.log", stderr_path=run_dir / "stderr.log",
                              timeout_seconds=timeout)
@@ -475,10 +482,14 @@ def compare_workload_cost(root: Path, run_id: str, before_ref: str, *, pairs: in
             if base_value <= 0:
                 failure = f"measurement {name!r} has a nonpositive baseline, so relative regression is undefined"
                 break
-            change_pct = (candidate_value - base_value) / abs(base_value) * 100
+            delta = candidate_value - base_value
+            change_pct = delta / abs(base_value) * 100
             regression_pct = change_pct if before["better"] == "lower" else -change_pct
+            if not all(math.isfinite(value) for value in (delta, change_pct, regression_pct)):
+                failure = f"measurement {name!r} produced a non-finite paired regression"
+                break
             row = {"pair": pair_index + 1, "before": base_value, "candidate": candidate_value,
-                   "delta": candidate_value - base_value, "change_pct": change_pct,
+                   "delta": delta, "change_pct": change_pct,
                    "regression_pct": regression_pct, "unit": before["unit"], "better": before["better"]}
             collected[name].append(row)
             pair_result.setdefault("measurements", {})[name] = row

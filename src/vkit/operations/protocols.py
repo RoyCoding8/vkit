@@ -4,14 +4,16 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import Any
 
+from .. import proc
 from ..verifiers.obligation import PropertyObligation
 from ..verifiers.spec import (
     DomainBounds,
@@ -32,6 +34,8 @@ MAX_INVARIANTS = 32
 MAX_EXPRESSION_NODES = 256
 MAX_EXPRESSION_DEPTH = 32
 MAX_MODEL_STATES = 1_000_000
+MAX_REACHABLE_STATES = 50_000
+MAX_TRANSITION_VISITS = 1_000_000
 MAX_TIMEOUT_SECONDS = 60
 MIN_INTEGER = -(2**63)
 MAX_INTEGER = 2**63 - 1
@@ -100,8 +104,12 @@ def check_protocol_model(root: Path, path: str,
     """
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= MAX_TIMEOUT_SECONDS:
         raise ValueError(f"timeout_seconds must be an integer in [1, {MAX_TIMEOUT_SECONDS}]")
-    raw, digest = read_json(root, path, max_bytes=MAX_MODEL_BYTES, reject_symlinks=True)
-    model = _parse_model(raw, digest)
+    try:
+        raw, digest = read_json(root, path, max_bytes=MAX_MODEL_BYTES, reject_symlinks=True)
+        model = _parse_model(raw, digest)
+    except (OSError, TypeError, ValueError) as exc:
+        return {"operation": "check_protocol_model", "path": path,
+                "status": "UNSUPPORTED", "detail": str(exc)}
     base: dict[str, Any] = {
         "operation": "check_protocol_model",
         "path": path,
@@ -127,6 +135,21 @@ def check_protocol_model(root: Path, path: str,
         return {**base, "status": "UNAVAILABLE",
                 "detail": "the configured TLC jar does not match the pinned SHA-256"}
 
+    deadline = time.monotonic() + timeout_seconds
+    saturation = _saturate(model, deadline)
+    if saturation["status"] == "UNKNOWN":
+        return {**base, **saturation}
+    if saturation["status"] == "COUNTEREXAMPLE":
+        failed = saturation.pop("_failed_property")
+        if not _replay_counterexample(model, saturation["trace"], failed):
+            return {**base, "status": "UNKNOWN",
+                    "detail": "reference saturation counterexample failed independent replay"}
+        # The exact reference evaluator can establish a witness even when TLC cannot start.
+        # Still run TLC when time remains so the installed engine is exercised and compared.
+        enum_counterexample = saturation
+    else:
+        enum_counterexample = None
+
     with tempfile.TemporaryDirectory(prefix="vkit-protocol-") as temporary:
         directory = Path(temporary)
         (directory / "Protocol.tla").write_text(_module_text(model), encoding="utf-8")
@@ -150,14 +173,23 @@ def check_protocol_model(root: Path, path: str,
             "--report", str(report_path),
         ]
         try:
-            process = _run_tree(argv, timeout_seconds)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout_seconds)
+            process = _run_tree(argv, remaining, directory)
         except subprocess.TimeoutExpired:
+            if enum_counterexample is not None:
+                return {**base, **enum_counterexample}
             return {**base, "status": "UNKNOWN",
                     "detail": f"TLC did not finish within {timeout_seconds} seconds"}
         except OSError:
+            if enum_counterexample is not None:
+                return {**base, **enum_counterexample}
             return {**base, "status": "UNAVAILABLE",
                     "detail": "the pinned TLC runner could not be started"}
         if not report_path.is_file():
+            if enum_counterexample is not None:
+                return {**base, **enum_counterexample}
             return {**base, "status": "UNKNOWN",
                     "detail": "the TLC runner returned no validated report",
                     "runner_exit_code": process.returncode}
@@ -173,12 +205,16 @@ def check_protocol_model(root: Path, path: str,
                             "kind": _failure_kind(model, failed_name),
                             "property": _property_label(model, failed_name),
                             "trace": trace, "states": 1, "depth": 1}
+            if enum_counterexample is not None:
+                return {**base, **enum_counterexample}
             return {**base, "status": "UNKNOWN", "detail": result.detail,
                     "runner_exit_code": process.returncode}
         if result.counterexamples:
             failed, rendered_trace = result.counterexamples[0]
             trace = _parse_trace(rendered_trace, model)
             if trace is None or not _replay_counterexample(model, trace, failed.property_name):
+                if enum_counterexample is not None:
+                    return {**base, **enum_counterexample}
                 return {**base, "status": "UNKNOWN",
                         "detail": "TLC's counterexample failed independent replay",
                         "property": failed.property_name}
@@ -193,11 +229,21 @@ def check_protocol_model(root: Path, path: str,
         if expected != observed or not result.exploration.exhaustive:
             return {**base, "status": "UNKNOWN",
                     "detail": "TLC did not establish every requested property exhaustively"}
+        if enum_counterexample is not None:
+            return {**base, "status": "UNKNOWN",
+                    "detail": "TLC reported exhaustive success but independent saturation found a violation"}
+        if result.exploration.distinct != saturation["states"]:
+            return {**base, "status": "UNKNOWN",
+                    "detail": "TLC and exact independent saturation disagree on reachable state count",
+                    "tlc_states": result.exploration.distinct,
+                    "reference_states": saturation["states"]}
         return {**base, "status": "EXHAUSTIVE",
                 "properties": [_property_label(model, name) for name in sorted(expected)],
-                "states": result.exploration.distinct,
-                "generated": result.exploration.generated,
-                "depth": result.exploration.depth}
+                "states": saturation["states"],
+                "generated": saturation["generated"],
+                "depth": saturation["depth"],
+                "tlc_states": result.exploration.distinct,
+                "reference_saturation": "exact"}
 
 
 def _parse_model(raw: Any, digest: str) -> _Model:
@@ -379,10 +425,10 @@ def _scalar_list(value: Any, label: str) -> tuple[Any, ...]:
     if not isinstance(value, list) or not value:
         raise ValueError(f"{label} must be a nonempty array")
     result = tuple(value)
-    if len({_scalar_key(item) for item in result}) != len(result):
-        raise ValueError(f"{label} must not contain duplicate values")
     for item in result:
         _scalar_kind(item)
+    if len({_scalar_key(item) for item in result}) != len(result):
+        raise ValueError(f"{label} must not contain duplicate values")
     return result
 
 
@@ -512,38 +558,19 @@ def _check_spec(directory: Path, model: _Model) -> TlcCheck:
     )
 
 
-def _run_tree(argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    options: dict[str, Any] = {
-        "args": argv,
-        "cwd": Path(argv[argv.index("--root") + 1]),
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-    }
-    if os.name == "nt":
-        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        options["start_new_session"] = True
-    process = subprocess.Popen(**options)
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            try:
-                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                               capture_output=True, check=False)
-            except OSError:
-                process.kill()
-        else:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        process.communicate()
-        raise
-    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+def _run_tree(argv: list[str], timeout: float, directory: Path) -> subprocess.CompletedProcess[str]:
+    completed = proc.run(
+        argv,
+        cwd=directory,
+        stdout_path=directory / "runner.stdout",
+        stderr_path=directory / "runner.stderr",
+        timeout_seconds=timeout,
+    )
+    if completed.timed_out:
+        raise subprocess.TimeoutExpired(argv, timeout)
+    if completed.launch_error:
+        raise OSError(completed.launch_error)
+    return subprocess.CompletedProcess(argv, completed.code, "", "")
 
 
 def _parse_trace(rendered: str, model: _Model) -> list[dict[str, Any]] | None:
@@ -603,6 +630,130 @@ def _initial_counterexample(raw: bytes, detail: str, model: _Model,
     return match.group(1), trace
 
 
+def _saturate(model: _Model, deadline: float) -> dict[str, Any]:
+    """Enumerate the finite reference semantics with collision-safe tuple equality."""
+    initial = product(*(variable.initial for variable in model.variables))
+    reached: dict[tuple[tuple[Any, ...], bool | None], tuple[tuple[Any, ...], bool | None] | None] = {}
+    depths: dict[tuple[tuple[Any, ...], bool | None], int] = {}
+    pending: list[tuple[tuple[Any, ...], bool | None]] = []
+    for values in initial:
+        if time.monotonic() >= deadline:
+            return {"status": "UNKNOWN", "detail": "exact saturation exceeded the shared time budget"}
+        state = (tuple(values), True if model.crash_recovery else None)
+        if state not in reached:
+            reached[state] = None
+            depths[state] = 0
+            pending.append(state)
+            if len(reached) > MAX_REACHABLE_STATES:
+                return {"status": "UNKNOWN", "detail":
+                        f"exact saturation exceeds {MAX_REACHABLE_STATES} reachable states"}
+
+    cursor = 0
+    visits = 0
+    generated = 0
+    max_depth = 0
+    while cursor < len(pending):
+        if time.monotonic() >= deadline:
+            return {"status": "UNKNOWN", "detail": "exact saturation exceeded the shared time budget"}
+        state = pending[cursor]
+        cursor += 1
+        values, running = state
+        visit_cost = (len(model.transitions) if running is not False else 0)
+        visit_cost += 1 if model.crash_recovery else 0
+        visits += visit_cost
+        if visits > MAX_TRANSITION_VISITS:
+            return {"status": "UNKNOWN", "detail":
+                    f"exact saturation exceeds {MAX_TRANSITION_VISITS} transition visits"}
+        successors, user_enabled = _successors(model, values, running)
+        failed = _state_failure(model, values, running, user_enabled)
+        if failed is not None:
+            trace = _path_to(state, reached, model)
+            return {"status": "COUNTEREXAMPLE", "kind": _failure_kind(model, failed),
+                    "property": _property_label(model, failed), "trace": trace,
+                    "states": len(reached), "depth": depths[state],
+                    "_failed_property": failed}
+        for next_values, next_running in successors:
+            if time.monotonic() >= deadline:
+                return {"status": "UNKNOWN", "detail": "exact saturation exceeded the shared time budget"}
+            generated += 1
+            next_state = (tuple(next_values), next_running)
+            next_depth = depths[state] + 1
+            max_depth = max(max_depth, next_depth)
+            if any(not _contains(variable.domain, next_values[variable.index])
+                   for variable in model.variables):
+                trace = _path_to(state, reached, model)
+                trace.append(_state_record(model, next_state))
+                return {"status": "COUNTEREXAMPLE", "kind": "DOMAIN_ESCAPE",
+                        "property": "declared variable domains", "trace": trace,
+                        "states": len(reached), "depth": next_depth,
+                        "_failed_property": "Inv_Domain"}
+            if next_state not in reached:
+                reached[next_state] = state
+                depths[next_state] = next_depth
+                pending.append(next_state)
+                if len(reached) > MAX_REACHABLE_STATES:
+                    return {"status": "UNKNOWN", "detail":
+                            f"exact saturation exceeds {MAX_REACHABLE_STATES} reachable states"}
+    return {"status": "EXHAUSTIVE", "states": len(reached),
+            "generated": generated, "depth": max_depth}
+
+
+def _successors(model: _Model, values: tuple[Any, ...], running: bool | None
+                ) -> tuple[list[tuple[list[Any], bool | None]], bool]:
+    user_enabled = False
+    successors: list[tuple[list[Any], bool | None]] = []
+    if model.crash_recovery and running is False:
+        restarted = [values[variable.index] if variable.durability == "durable" else variable.restart
+                     for variable in model.variables]
+        successors.append((restarted, True))
+        return successors, user_enabled
+    for transition in model.transitions:
+        if _eval(transition.guard, list(values)):
+            user_enabled = True
+            updated = list(values)
+            for index, expression in transition.updates:
+                updated[index] = _eval(expression, list(values))
+            successors.append((updated, running))
+    if model.crash_recovery:
+        successors.append((list(values), False))
+    return successors, user_enabled
+
+
+def _state_failure(model: _Model, values: tuple[Any, ...], running: bool | None,
+                   user_enabled: bool) -> str | None:
+    if any(not _contains(variable.domain, values[variable.index]) for variable in model.variables):
+        return "Inv_Domain"
+    for invariant in model.invariants:
+        if not _eval(invariant.expression, list(values)):
+            return invariant.generated
+    if model.check_deadlock and running is not False and not user_enabled:
+        return "Inv_Deadlock"
+    return None
+
+
+def _path_to(state: tuple[tuple[Any, ...], bool | None],
+             parents: dict[tuple[tuple[Any, ...], bool | None],
+                           tuple[tuple[Any, ...], bool | None] | None],
+             model: _Model) -> list[dict[str, Any]]:
+    reverse = []
+    current = state
+    while True:
+        reverse.append(_state_record(model, current))
+        parent = parents[current]
+        if parent is None:
+            break
+        current = parent
+    reverse.reverse()
+    return reverse
+
+
+def _state_record(model: _Model,
+                  state: tuple[tuple[Any, ...], bool | None]) -> dict[str, Any]:
+    values, running = state
+    return {"variables": {variable.name: values[variable.index] for variable in model.variables},
+            **({"process_running": running} if model.crash_recovery else {})}
+
+
 def _parse_tlc_value(text: str) -> Any:
     if not _VALUE.fullmatch(text):
         return None
@@ -625,43 +776,27 @@ def _replay_counterexample(model: _Model, trace: list[dict[str, Any]], failed: s
         return False
     if model.crash_recovery and trace[0].get("process_running") is not True:
         return False
-    for before_state, after_state in zip(trace, trace[1:]):
+    for index, before_state in enumerate(trace):
         before = before_state["variables"]
-        after = after_state["variables"]
-        old = [before[variable.name] for variable in model.variables]
-        running = before_state.get("process_running", True)
-        successors: list[tuple[list[Any], bool]] = []
-        if model.crash_recovery and running:
-            successors.append((old.copy(), False))
-        if model.crash_recovery and not running:
-            restarted = [
-                old[variable.index] if variable.durability == "durable" else variable.restart
-                for variable in model.variables
-            ]
-            successors.append((restarted, True))
-        if running:
-            for transition in model.transitions:
-                if _eval(transition.guard, old):
-                    updated = old.copy()
-                    for index, expression in transition.updates:
-                        updated[index] = _eval(expression, old)
-                    successors.append((updated, running))
-        next_values = [after[variable.name] for variable in model.variables]
-        if not any(values == next_values and is_running == after_state.get("process_running", True)
-                   for values, is_running in successors):
+        values = [before[variable.name] for variable in model.variables]
+        running = before_state.get("process_running", None)
+        if index == len(trace) - 1:
+            if any(not _contains(variable.domain, values[variable.index])
+                   for variable in model.variables):
+                return failed == "Inv_Domain"
+            _, user_enabled = _successors(model, values, running)
+            return _state_failure(model, tuple(values), running, user_enabled) == failed
+        _, user_enabled = _successors(model, values, running)
+        if _state_failure(model, tuple(values), running, user_enabled) is not None:
             return False
-    final_record = trace[-1]
-    final_map = final_record["variables"]
-    final = [final_map[variable.name] for variable in model.variables]
-    if failed == "Inv_Domain":
-        return any(not _contains(variable.domain, final[variable.index])
-                   for variable in model.variables)
-    if failed == "Inv_Deadlock":
-        if model.crash_recovery and not final_record["process_running"]:
+        after_state = trace[index + 1]
+        next_values = [after_state["variables"][variable.name] for variable in model.variables]
+        successors, _ = _successors(model, values, running)
+        next_running = after_state.get("process_running", None)
+        if not any(candidate == next_values and candidate_running == next_running
+                   for candidate, candidate_running in successors):
             return False
-        return not any(_eval(transition.guard, final) for transition in model.transitions)
-    invariant = next((item for item in model.invariants if item.generated == failed), None)
-    return invariant is not None and not _eval(invariant.expression, final)
+    return False
 
 
 def _eval(expression: _Expr, state: list[Any]) -> Any:

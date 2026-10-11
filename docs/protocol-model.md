@@ -40,8 +40,9 @@ Variables have a nonempty finite domain and a nonempty initial subset. Values ar
 integers, booleans, or short ASCII strings containing letters, digits, `_`, `.`, `:`, `/`, or `-`.
 There are at most 12 variables, 16 values per domain, 32 transitions, and 32 invariants. The product
 of domain sizes, including the process-running bit when crash recovery is enabled, may not exceed
-1,000,000 states. These are input limits, not claims that a model within them will finish before its
-time budget.
+1,000,000 states. Exact independent saturation is limited to 50,000 reachable states and 1,000,000
+transition visits. The requested time limit is shared by saturation and TLC. Exceeding any limit
+returns `UNKNOWN`; it cannot silently remove a state or transition.
 
 Expressions use one-key JSON objects. A variable is `{"var":"seen"}`. Literals use `int`, `bool`,
 or `string`. Operators are `not` with one expression, and `add`, `sub`, `mul`, `eq`, `ne`, `lt`,
@@ -71,10 +72,15 @@ transition and state. The service checks only state invariants and this optional
 property. It does not check fairness, liveness, timing, message loss probabilities, or unbounded
 execution.
 
-`EXHAUSTIVE` means the pinned TLC run checked every reachable state of this finite model and its
-requested invariants. `COUNTEREXAMPLE` includes a trace that the Python model evaluator independently
-replays. `DOMAIN_ESCAPE` identifies an enabled update outside a declared domain. `UNKNOWN` covers
-timeouts, incomplete exploration, malformed engine reports, and traces that fail replay. `UNAVAILABLE`
-means the configured `VKIT_TLA2TOOLS_JAR` is missing or does not match the engine SHA-256 pin. The
-operation records the model digest, TLC version, jar digest, reachable-state count, and depth for a
+`EXHAUSTIVE` requires both the pinned TLC run and an exact independent breadth-first saturation of
+the same generated finite model to complete. The reference saturation stores full typed state tuples
+and checks equality after hashing; it does not rely on TLC's probabilistic state fingerprints. Every
+reachable state is checked for the domain invariant, each caller invariant, and optional deadlock
+condition. TLC's distinct reachable-state count must match the reference count. `COUNTEREXAMPLE`
+includes a trace independently replayed against the declared transition semantics. `DOMAIN_ESCAPE`
+identifies an enabled update outside a declared domain. `UNKNOWN` covers either engine/reference
+disagreement, state or transition limits, timeouts, incomplete exploration, malformed reports, and
+traces that fail replay. `UNAVAILABLE` means the configured `VKIT_TLA2TOOLS_JAR` is missing or does
+not match the engine SHA-256 pin. Unsupported input shapes return `UNSUPPORTED`. The operation
+records the model digest, TLC version, jar digest, exact reachable-state count, and depth for a
 completed run.

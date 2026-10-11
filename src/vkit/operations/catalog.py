@@ -457,7 +457,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_contracts",
-        description=("Compare captured contracts under a fixed OpenAPI, Protobuf, or JSON containment profile. "
+        description=("Compare captured contracts under a fixed OpenAPI, Protobuf, JSON containment or TypeScript declaration profile. "
                      "OpenAPI validates local document/reference closures and checks protected oasdiff rules. "
                      "Protobuf uses protected Buf FILE, PACKAGE, WIRE_JSON, or WIRE rules. JSON containment "
                      "asks whether every old instance is accepted by new, in a fixed Draft 4 type/object/array "

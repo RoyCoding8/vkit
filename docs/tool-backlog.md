@@ -58,6 +58,8 @@ separate deployment boundary. See [the operation integration guide](adding-opera
 
 ## Ranked index
 
+See the [implementation status map](backlog-status.md) for the exact shipped subset and substantial remaining scope of every entry.
+
 | Rank | Capability | Basis |
 | --- | --- | --- |
 | 1 | Repository dependency paths, cycles, and affected components | Engine |
@@ -290,6 +292,8 @@ This can analyze relationships across functions rather than checking one isolate
 Source: [Infer Pulse](https://fbinfer.com/docs/next/checker-pulse/).
 
 ### 13. Public source API and native ABI change analysis
+
+Implemented TypeScript declaration profile through [`compare_contracts`](typescript-api-model.md), using pinned TypeScript 5.9.3 strict assignability and explicit checked export/type probes. Runtime compatibility, arbitrary TypeScript consumers and native ABI comparison remain open.
 
 Proposed call: `compare_contracts(before, after, profile="typescript-api" | "native-abi")`.
 

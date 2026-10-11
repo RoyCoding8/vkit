@@ -10,6 +10,8 @@ See [Add a built-in operation](adding-operations.md) for the extension contract 
 For round-off bounds and uniform precision feasibility, see the [Gappa arithmetic model](roundoff-model.md).
 Both questions share `analyze_roundoff` and its exact rational DAG input.
 
+The [`typescript-api` compatibility profile](typescript-api-model.md) extends `compare_contracts` with pinned compiler checks over captured local declaration files.
+
 Install the optional Python engines in the environment that runs vkit.
 
 ```powershell

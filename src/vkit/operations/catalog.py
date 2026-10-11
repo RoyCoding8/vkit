@@ -23,6 +23,7 @@ from .migrations import compare_migrations
 from .policies import compare_authorization_policies
 from .protocols import check_protocol_model
 from .regex_cost import analyze_regex_cost
+from .roundoff import analyze_roundoff
 from .semantic_merge import check_semantic_merge
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
 from .sql_equivalence import compare_sql_queries
@@ -58,6 +59,22 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="analyze_roundoff",
+        description=("Prove an absolute round-off bound for a closed arithmetic DAG with pinned Gappa, "
+                     "or certify a feasible binary32/binary64 uniform format from a supplied finite grid. "
+                     "Uses exact rational input intervals and nearest-even operations with gradual subnormals; "
+                     "overflow and zero denominators are proof obligations. Failed proofs are UNKNOWN. "
+                     "Does not establish source/compiler correspondence, optimal precision or runtime speed."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 arithmetic model"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path",), handler=analyze_roundoff,
+        outcomes={"PROVED_BY_GAPPA": 0, "CERTIFIED_FEASIBLE_FORMAT": 0, "UNKNOWN": 3,
+                  "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="infer_trace_relations",

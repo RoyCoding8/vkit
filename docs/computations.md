@@ -7,6 +7,9 @@ predicate through these APIs. Results do not create check evidence, accept defin
 Each operation has one trusted declaration shared by the CLI and MCP.
 See [Add a built-in operation](adding-operations.md) for the extension contract and addition procedure.
 
+For round-off bounds and uniform precision feasibility, see the [Gappa arithmetic model](roundoff-model.md).
+Both questions share `analyze_roundoff` and its exact rational DAG input.
+
 Install the optional Python engines in the environment that runs vkit.
 
 ```powershell

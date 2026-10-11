@@ -499,6 +499,8 @@ Source: [Maelstrom design and workloads](https://github.com/jepsen-io/maelstrom)
 
 ### 28. Rigorous floating-point round-off bounds
 
+Implemented restricted model profile: [`analyze_roundoff`](roundoff-model.md) proves an absolute error budget for an explicit arithmetic DAG with pinned Gappa 1.8.3. Exact rational inputs, nearest-even binary32/binary64 operations, overflow and denominator obligations are explicit. Source extraction and broader numerical frontends remain open.
+
 Proposed call: `bound_roundoff(expression, input_domain, arithmetic_profile)`.
 
 Ask for a justified bound on the difference between a supported floating-point computation and its mathematical counterpart over the declared domain. This can catch numerical rewrites that look algebraically sound but lose precision.
@@ -620,6 +622,8 @@ This can address accidental nontermination or a proved complexity regression. Un
 Source: [AProVE input and result documentation](https://aprove.informatik.rwth-aachen.de/usage).
 
 ### 37. Floating-point precision selection under an error budget
+
+Implemented uniform-format profile through [`analyze_roundoff`](roundoff-model.md): the same proof obligations certify a feasible member of a supplied binary32/binary64 grid. Failed lower-precision proofs remain inconclusive; this does not claim minimality, mixed-precision optimization or performance improvement.
 
 Proposed call: `tune_float_precision(expression, domain, error_budget, profile)`.
 

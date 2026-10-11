@@ -16,6 +16,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 
 | Engine | Operation | Exact scope |
 | --- | --- | --- |
+| [Gappa](https://gappa.gitlabpages.inria.fr/) | `analyze_roundoff` | Round-off budget and feasible uniform-format certification for an explicit arithmetic DAG; trusted engine result without a separate proof-kernel check |
 | [cvc5](https://github.com/cvc5/cvc5) | `check_rewrite` | Equal return values of supported pure integer/boolean functions |
 | [egglog](https://github.com/egraphs-good/egglog) | `simplify_function` | Fixed rewrite rules, fixed expression cost, independent cvc5 check |
 | [Perses](https://github.com/uw-pluverse/perses) | `reduce_failure` | Smaller input that still reproduces a recorded approved failure |

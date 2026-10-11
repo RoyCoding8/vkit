@@ -214,6 +214,15 @@ jobs:
               for name, value in engines.items():
                   output.write(f"{name}={value}\n")
               output.write("VKIT_REQUIRE_POLICY_ENGINE=1\n")
+      - name: Build pinned Gappa engine
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential libgmp-dev libmpfr-dev libboost-dev flex bison
+          python scripts/install_roundoff_engine.py --output "$RUNNER_TEMP/gappa"
+          echo "VKIT_GAPPA_BIN=$RUNNER_TEMP/gappa" >> "$GITHUB_ENV"
+          echo "VKIT_GAPPA_SHA256=$(sha256sum "$RUNNER_TEMP/gappa" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          echo "VKIT_REQUIRE_GAPPA_ENGINE=1" >> "$GITHUB_ENV"
       - run: uv sync --python 3.11 --extra test --extra engines
       - run: uv run pytest -ra
       - run: uv run python scripts/e2e.py

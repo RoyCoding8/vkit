@@ -19,6 +19,7 @@ from .dependency_resolution import resolve_dependencies
 from .history import check_history
 from .migrations import compare_migrations
 from .policies import compare_authorization_policies
+from .protocols import check_protocol_model
 from .regex_cost import analyze_regex_cost
 from .semantic_merge import check_semantic_merge
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
@@ -55,6 +56,21 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="check_protocol_model",
+        description=("Check every reachable state of a closed finite protocol model with pinned TLC and "
+                     "independent exact saturation. Supports guarded simultaneous updates, invariants, "
+                     "deadlock checking and explicit crash/restart of durable/volatile state. Counterexamples "
+                     "are replayed. Results concern only the supplied finite model, not application code, "
+                     "OS power loss, fairness or liveness. Limits and disagreement return UNKNOWN."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 finite model JSON"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path",), handler=check_protocol_model,
+        outcomes={"EXHAUSTIVE": 0, "COUNTEREXAMPLE": 1, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="analyze_affine_accesses",

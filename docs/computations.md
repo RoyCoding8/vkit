@@ -48,6 +48,9 @@ guarded states and independently replays fixed-point nontermination witnesses.
 captured current and committed subject bytes, reporting measurements and statistical uncertainty.
 [Affine memory accesses](access-model.md) extends the ISL family with exact ordered overlap relations
 and replayed witnesses under explicit distinct-array assumptions.
+[Finite protocol models](protocol-model.md) combines pinned TLC with independent exact state
+saturation for invariants, deadlocks and declared crash/restart semantics. Configure
+`VKIT_TLA2TOOLS_JAR` with the pinned TLA+ Tools v1.7.4 release JAR, which reports TLC 2.19.
 
 ## Check a replacement
 

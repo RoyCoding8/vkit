@@ -229,7 +229,7 @@ def test_console_lists_only_catalog_operations_and_uses_the_shared_dispatcher(ma
                          "find_grammar_ambiguity", "generate_configurations", "resolve_dependencies",
                          "synthesize_function", "compare_rational_expressions", "find_behavioral_difference", "compare_sql_queries", "compare_wheels", "compare_workload_cost",
                          "compare_contracts", "check_history", "compare_matchsets", "compare_authorization_policies",
-                         "check_rewrite", "check_semantic_merge", "simplify_function", "reduce_failure", "mutation_survivors"}
+                         "check_protocol_model", "check_rewrite", "check_semantic_merge", "simplify_function", "reduce_failure", "mutation_survivors"}
         assert not names & {"status", "features", "check_run", "run_get", "run_cancel", "gate", "propose"}
         assert all("input_schema" in operation for operation in config["operations"])
         status, raw, _ = _post(port, "/api/call", {

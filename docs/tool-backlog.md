@@ -249,6 +249,8 @@ Sources: [diffoscope](https://diffoscope.org/), [Bazel hermeticity](https://baze
 
 ### 10. Controlled exploration of concurrent schedules
 
+Implemented model profile: [`check_protocol_model`](protocol-model.md) explores all atomic interleavings encoded by a supplied finite transition system and checks invariants/deadlocks with TLC plus exact saturation. Instrumented schedules of application threads remain a separate open integration.
+
 Proposed call: `explore_schedules(snapshot, scenario, profile, bounds)`.
 
 Ask whether any explored schedule reaches an assertion failure, deadlock, or other specified violation. Return a schedule that can reproduce the finding and the explored-state boundary.
@@ -455,6 +457,8 @@ Source: [Elle](https://github.com/jepsen-io/elle).
 
 ### 25. Crash-recovery violations for persistent state
 
+Implemented model profile: [`check_protocol_model`](protocol-model.md) provides explicit crash/restart transitions preserving durable variables and resetting volatile variables at restart. Application crash injection and storage power-loss behavior remain open; this model does not test either.
+
 Proposed call: `check_crash_recovery(snapshot, storage_profile, workload, bounds)`.
 
 Ask whether any tested crash point produces recovered state that violates the declared persistence contract. Return the workload, crash point, durable writes or storage image, recovery procedure, and observed violation.
@@ -480,6 +484,8 @@ The result guarantees a defined coverage relation, not absence of interaction bu
 Source: [NIST Automated Combinatorial Testing for Software](https://csrc.nist.gov/projects/automated-combinatorial-testing-for-software).
 
 ### 27. Retry, duplicate-delivery, and interruption counterexamples
+
+Implemented model profile: [`check_protocol_model`](protocol-model.md) can check retries and duplicate deliveries represented as guarded atomic steps over finite state. Live API adapters, resettable application state and fault-injection campaigns remain open.
 
 Proposed call: `exercise_api_sequences(snapshot, operation_profile, delivery_profile, bounds)`.
 

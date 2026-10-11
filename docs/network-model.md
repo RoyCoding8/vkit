@@ -35,7 +35,8 @@ constraint. The question searches successful flows with filters applied, no inve
 and at most one returned trace per direction.
 
 The engine is `pybatfish==2026.9.17.3748` connected to port 9996 at the operator-configured
-`VKIT_BATFISH_HOST` (default `127.0.0.1`). The expected Batfish release is `2026.08.27`; the
+`VKIT_BATFISH_HOST` (default `127.0.0.1`). The API must report the exact Batfish build
+`2026.08.27.3685` from the pinned image tag; the
 expected multi-platform service-only image index is
 `batfish/batfish@sha256:7909378197c5a3974f2e8180af58cef0ca17b74d1cd9ba39f2d1fddb64737e55`.
 The operation checks the backend's reported Batfish release. The API does not attest the container

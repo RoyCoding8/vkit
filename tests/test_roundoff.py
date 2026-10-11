@@ -133,7 +133,7 @@ def test_real_gappa_does_not_turn_failed_goal_into_counterexample(
     result = analyze_roundoff(tmp_path, _write_model(tmp_path, model))
     assert result["status"] == "UNKNOWN"
     assert "counterexample" not in result["status"].lower()
-    assert result["attempts"][0]["engine_exit_code"] != 0
+    assert result["attempts"][0]["status"] == "UNKNOWN"
 
 
 def test_real_gappa_proves_tie_to_even_explicit_conversion(tmp_path: Path) -> None:

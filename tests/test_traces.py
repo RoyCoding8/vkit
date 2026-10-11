@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import os
 
@@ -57,7 +58,7 @@ def _process(pid: int, tid: int, name: str) -> bytes:
 
 
 def _scheduler_trace(*, lost_events: bool = False, late_thread: bool = False,
-                     duplicate_tid: bool = False) -> bytes:
+                     duplicate_tid: bool = False, offset_ns: int = 0) -> bytes:
     # Minimal public Perfetto Trace/TracePacket/FtraceEventBundle schema:
     # sched_switch at 1, 5, 8, and 10 seconds; worker TID 100 sleeps from 5 to 8.
     packets = bytearray()
@@ -68,13 +69,13 @@ def _scheduler_trace(*, lost_events: bool = False, late_thread: bool = False,
     if lost_events:
         bundle += _integer(3, 1)
     if late_thread:
-        bundle += _sched_switch(1_000_000_000, "idle", 0, 0, "other", 200)
-        bundle += _sched_switch(2_000_000_000, "other", 200, 0, "worker", 100)
+        bundle += _sched_switch(offset_ns + 1_000_000_000, "idle", 0, 0, "other", 200)
+        bundle += _sched_switch(offset_ns + 2_000_000_000, "other", 200, 0, "worker", 100)
     else:
-        bundle += _sched_switch(1_000_000_000, "idle", 0, 0, "worker", 100)
-    bundle += _sched_switch(5_000_000_000, "worker", 100, 1, "idle", 0)
-    bundle += _sched_switch(8_000_000_000, "idle", 0, 0, "worker", 100)
-    bundle += _sched_switch(10_000_000_000, "worker", 100, 0, "idle", 0)
+        bundle += _sched_switch(offset_ns + 1_000_000_000, "idle", 0, 0, "worker", 100)
+    bundle += _sched_switch(offset_ns + 5_000_000_000, "worker", 100, 1, "idle", 0)
+    bundle += _sched_switch(offset_ns + 8_000_000_000, "idle", 0, 0, "worker", 100)
+    bundle += _sched_switch(offset_ns + 10_000_000_000, "worker", 100, 0, "idle", 0)
     packet = _bytes(1, bundle)  # TracePacket.ftrace_events
     packets += _bytes(1, packet)
     return bytes(packets)      # Trace.packet (repeated)
@@ -201,6 +202,26 @@ def test_explain_trace_interval_rejects_capture_over_limit(tmp_path) -> None:
         handle.truncate(MAX_TRACE_BYTES + 1)
     with pytest.raises(ValueError, match="at most"):
         explain_trace_interval(tmp_path, "oversized.trace", 0, 1, 100)
+
+
+def test_trace_analysis_rejects_bounds_outside_exact_integer_arithmetic(tmp_path) -> None:
+    _require_preinstalled_engine()
+    offset = 1 << 61
+    raw = _scheduler_trace(offset_ns=offset)
+    trace = tmp_path / "wide-timestamps.trace"
+    trace.write_bytes(raw)
+
+    result = _analyze({
+        "trace_path": str(trace),
+        "trace_sha256": hashlib.sha256(raw).hexdigest(),
+        "start_ns": offset + 1_500_000_000,
+        "end_ns": offset + 9_500_000_000,
+        "tid": 100,
+        "upid": None,
+    })
+
+    assert result["status"] == "UNKNOWN"
+    assert result["reason"] == "trace bounds exceed the exact scheduler arithmetic range"
 
 
 @pytest.mark.parametrize("installed_version", [None, "0.58.1"])

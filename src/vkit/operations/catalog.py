@@ -6,6 +6,8 @@ from typing import Any
 
 from . import MAX_SOURCE_BYTES, check_rewrite, reduce_failure, simplify_function
 from .affine import compare_iteration_sets
+from .algebra import compare_rational_expressions
+from .behavior import find_behavioral_difference
 from .c_safety import check_c_safety
 from .contract import FileInput, Operation, operation_by_name
 from .contracts import CONTRACT_PROFILES, compare_contracts
@@ -46,6 +48,35 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="compare_rational_expressions",
+        description=("Compare exact rational expressions in Q(x1,...,xn) using pinned SymPy and a separate "
+                     "sparse coefficient checker. Returns exact nonidentity evidence and original nonzero "
+                     "denominator guards. An identity does not imply equal domains at cancelled poles. "
+                     "Accepts a closed JSON AST, never Python evaluation or symbolic assumptions."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 rational expression bundle"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path",), handler=compare_rational_expressions,
+        outcomes={"IDENTICAL": 0, "NOT_IDENTICAL": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
+        name="find_behavioral_difference",
+        description=("Find a concrete CPython behavior difference with pinned CrossHair, then replay it twice "
+                     "in fresh CPython processes. Observes returns, exceptions and mutated integer-list arguments. "
+                     "Accepts only the installed closed language of typed local computation, branches and loops; "
+                     "imports, global access, arbitrary calls and attributes are rejected before execution. "
+                     "No witness is UNKNOWN, never equivalence. Deadlines are not an OS sandbox."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 closed Python function pair"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path",), handler=find_behavioral_difference,
+        outcomes={"COUNTEREXAMPLE": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="analyze_regex_cost",

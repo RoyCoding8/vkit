@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -24,6 +25,7 @@ from .nowindow import is_windows
 from .paths import Project
 
 STATE_DIR = "vkit"
+_RUN_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def now() -> str:
@@ -99,6 +101,8 @@ class Store:
         return cls(project.git_common_dir / STATE_DIR)
 
     def run_dir(self, run_id: str) -> Path:
+        if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
+            raise ValueError("run_id must contain only letters, digits, underscores, or hyphens")
         return self.root / "runs" / run_id
 
     def record(self, run_id: str) -> dict[str, Any] | None:

@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import re
 import subprocess
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from ._runtime import pinned_binary
 
 MAX_TRACE_BYTES = 1_048_576
 MAX_OPERATIONS = 1_000
@@ -166,22 +166,6 @@ def _load_trace(root: Path, path: str, model: str) -> tuple[list[_Operation], st
     return operations, hashlib.sha256(raw).hexdigest()
 
 
-def _runtime() -> tuple[Path, str] | None:
-    raw_path = os.environ.get(_BACKEND_ENV)
-    expected = os.environ.get(_BACKEND_SHA_ENV, "").lower()
-    if not raw_path or not re.fullmatch(r"[0-9a-f]{64}", expected):
-        return None
-    binary = Path(raw_path).expanduser().resolve()
-    try:
-        if not binary.is_file():
-            return None
-        with binary.open("rb") as source:
-            digest = hashlib.file_digest(source, "sha256").hexdigest()
-    except OSError:
-        return None
-    return (binary, digest) if digest == expected else None
-
-
 def _replay(operations: list[_Operation], witness: list[str], model: str) -> bool:
     by_id = {operation.id: operation for operation in operations}
     if len(witness) != len(operations) or set(witness) != set(by_id):
@@ -232,7 +216,7 @@ def check_history(root: Path, path: str, model: str, timeout_seconds: int = 10) 
         "trace_sha256": trace_sha256,
         "backend": "porcupine/" + _BACKEND_VERSION,
     }
-    runtime = _runtime()
+    runtime = pinned_binary(_BACKEND_ENV, _BACKEND_SHA_ENV)
     if runtime is None:
         return {**base, "status": "UNAVAILABLE", "backend_sha256": None,
                 "detail": "the configured Porcupine helper is unavailable or failed its SHA-256 check"}

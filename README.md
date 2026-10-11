@@ -148,6 +148,8 @@ Every command takes `--project` (default `.`) and `--json`.
 
 ## Development
 
+The [repository architecture](docs/architecture.md) maps code ownership and execution paths.
+
 To add a verifier operation, follow [Add a built-in operation](docs/adding-operations.md).
 One trusted contract supplies the CLI and MCP wiring.
 

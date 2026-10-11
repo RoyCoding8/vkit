@@ -12,6 +12,8 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from ._runtime import pinned_binary
+
 _BACKEND_ENV = "VKIT_CBMC_BIN"
 _BACKEND_SHA_ENV = "VKIT_CBMC_SHA256"
 _BACKEND_VERSION = "6.11.0"
@@ -27,7 +29,6 @@ _MAX_ARRAY_ELEMENTS = 1_024
 _MAX_ARRAY_LENGTH = 256
 _MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
-_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _MODEL = "C11 x86_64 Linux LP64 little-endian, 32-bit int"
 _CHECK_SCOPE = "bounds, pointer, division-by-zero, signed-overflow, undefined-shift"
 _SAFETY_RULES = {
@@ -267,22 +268,6 @@ def _validate_and_generate(source: bytes, function: str, parser: Any) -> bytes:
     return generated
 
 
-def _runtime() -> tuple[Path, str] | None:
-    raw_path = os.environ.get(_BACKEND_ENV)
-    expected = os.environ.get(_BACKEND_SHA_ENV, "").lower()
-    if not raw_path or not _SHA256.fullmatch(expected):
-        return None
-    try:
-        binary = Path(raw_path).expanduser().resolve()
-        if not binary.is_file():
-            return None
-        with binary.open("rb") as source:
-            digest = hashlib.file_digest(source, "sha256").hexdigest()
-    except (OSError, RuntimeError, ValueError):
-        return None
-    return (binary, digest) if digest == expected else None
-
-
 def _process_env(workdir: Path) -> dict[str, str]:
     env = {"PATH": "", "HOME": str(workdir), "TMPDIR": str(workdir), "LC_ALL": "C", "LANG": "C"}
     if os.name == "nt":
@@ -428,7 +413,7 @@ def check_c_safety(
         return {**base, "status": "UNKNOWN", "backend_sha256": None,
                 "detail": "source validation exceeded the time budget"}
 
-    runtime = _runtime()
+    runtime = pinned_binary(_BACKEND_ENV, _BACKEND_SHA_ENV)
     if runtime is None:
         return {**base, "status": "UNAVAILABLE", "backend_sha256": None,
                 "detail": "the configured CBMC binary is unavailable or failed its SHA-256 check"}

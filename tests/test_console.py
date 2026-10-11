@@ -27,6 +27,17 @@ def _get(port: int, path: str, host: str | None = None) -> tuple[int, bytes]:
         connection.close()
 
 
+def test_console_rejects_run_path_fragments(make_project):
+    project = make_project({"README.md": "run lookup\n"}, [], accept=False)
+    with _serve(project) as port:
+        status, raw = _get(port, "/api/run?id=..%2Fforeign")
+
+    assert status == 400
+    assert json.loads(raw) == {
+        "error": "run_id must contain only letters, digits, underscores, or hyphens",
+    }
+
+
 @contextmanager
 def _serve(project: Path):
     server = bind(open_project(project), 0)

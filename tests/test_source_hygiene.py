@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 
 from helpers import ROOT
@@ -14,4 +15,16 @@ def test_source_describes_what_the_code_does_now_not_how_it_got_here():
             if path.suffix in {".py", ".md", ".json", ".html"}
             for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
             if NARRATION.search(line)]
+    assert hits == []
+
+
+def test_tests_do_not_directly_write_sys_path():
+    hits = []
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.Call, ast.Assign, ast.AugAssign)):
+                expression = ast.unparse(node)
+                if expression.startswith(("sys.path.insert(", "sys.path.append(", "sys.path.extend(",
+                                          "sys.path =", "sys.path[", "sys.path +=")):
+                    hits.append(f"{path.relative_to(ROOT)}:{node.lineno}: {expression}")
     assert hits == []

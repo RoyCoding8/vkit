@@ -48,7 +48,9 @@ The root comes from vkit, not from an operation argument.
 
 Import optional engines inside the handler or its execution process.
 Listing tools and displaying CLI help must work without those engines installed.
-Keep timeout enforcement and backend identity checks inside the operation that owns them.
+Keep timeout enforcement, version checks, and backend protocols inside the operation that owns them.
+Reuse `operations._runtime.pinned_binary` for a configured binary path and SHA-256 pin.
+Multi-file toolchains retain their own identity checks.
 The common contract does not implement a solver or impose one subprocess protocol on every backend.
 
 Return a `status` together with the operation's evidence, model scope, and limitations.

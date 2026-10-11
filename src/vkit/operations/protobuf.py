@@ -11,6 +11,8 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ._runtime import pinned_binary
+
 MAX_PROTO_FILES = 500
 MAX_TREE_ENTRIES = 10_000
 MAX_PROTO_FILE_BYTES = 1_048_576
@@ -26,22 +28,6 @@ _MODEL_SCOPE = (
     "Buf breaking rules in the selected category only; this does not establish "
     "runtime or application behavior compatibility."
 )
-
-
-def _runtime() -> tuple[Path, str] | None:
-    raw_path = os.environ.get(_BUF_BIN_ENV)
-    expected = os.environ.get(_BUF_SHA_ENV, "").lower()
-    if not raw_path or not re.fullmatch(r"[0-9a-f]{64}", expected):
-        return None
-    binary = Path(raw_path).expanduser().resolve()
-    try:
-        if not binary.is_file():
-            return None
-        with binary.open("rb") as source:
-            digest = hashlib.file_digest(source, "sha256").hexdigest()
-    except OSError:
-        return None
-    return (binary, digest) if digest == expected else None
 
 
 def _source_directory(root: Path, path: str) -> tuple[Path, str]:
@@ -194,7 +180,7 @@ def check_proto_compatibility(root: Path, old_path: str, new_path: str,
             new_digest, new_count = _snapshot(new_source, new_snapshot, deadline)
             base.update({"old_proto_sha256": old_digest, "new_proto_sha256": new_digest,
                          "old_proto_file_count": old_count, "new_proto_file_count": new_count})
-            runtime = _runtime()
+            runtime = pinned_binary(_BUF_BIN_ENV, _BUF_SHA_ENV)
             if runtime is None:
                 return {**base, "status": "UNAVAILABLE", "backend_sha256": None,
                         "detail": "the configured Buf 1.73.0 binary is unavailable or failed its SHA-256 check"}

@@ -1,6 +1,7 @@
 """Answers about a project: what is known, what is stale, what ran. Every view renders these."""
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,10 +101,17 @@ def run_view(ctx: Context, run_id: str, *, log: str = "stdout", offset: int = 0,
     if log not in ("stdout", "stderr"):
         raise ValueError("log must be stdout or stderr")
     path = ctx.store.run_dir(run_id) / f"{log}.log"
-    data = path.read_bytes() if path.is_file() else b""
-    start = max(0, len(data) + offset) if offset < 0 else offset
-    window = data[start:start + max(0, limit)]
-    return {**record, "log": {"stream": log, "offset": start, "size": len(data),
+    size, start, window = 0, max(0, offset), b""
+    if path.is_file():
+        try:
+            with path.open("rb") as handle:
+                size = handle.seek(0, os.SEEK_END)
+                start = max(0, size + offset) if offset < 0 else offset
+                handle.seek(start)
+                window = handle.read(max(0, limit))
+        except FileNotFoundError:
+            pass
+    return {**record, "log": {"stream": log, "offset": start, "size": size,
                               "text": window.decode("utf-8", "replace")}}
 
 

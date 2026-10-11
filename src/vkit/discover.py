@@ -123,6 +123,26 @@ class ToolVersion:
         }
 
 
+@dataclass(frozen=True)
+class PythonTestConfig:
+    file: str
+    runner: str
+
+
+@dataclass(frozen=True)
+class PythonTestConfigs:
+    declarations: tuple[PythonTestConfig, ...]
+    failures: tuple[tuple[str, str], ...]
+
+    @property
+    def runners(self) -> set[str]:
+        return {config.runner for config in self.declarations}
+
+    @property
+    def failed_files(self) -> set[str]:
+        return {name for name, _ in self.failures}
+
+
 @dataclass
 class Inspection:
     """Everything found in one repository, with `gaps` for what could not be determined."""
@@ -186,13 +206,13 @@ class Inspection:
 
 
 def _read_text(root: Path, relative: str) -> str | None:
-    """Read a repository file, or None if absent or over 1 MiB."""
+    """Read a repository file, or None if absent."""
     path = root / relative
     if not path.is_file():
         return None
     try:
         if path.stat().st_size > 1_048_576:
-            return None
+            raise DiscoveryError(f"{relative} exceeds 1 MiB")
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise DiscoveryError(f"cannot read {relative}: {exc}") from exc
@@ -226,15 +246,16 @@ def _probe_version(executable: str, args: tuple[str, ...] = ("--version",)) -> s
 
 
 def _executable_prerequisites(names: Iterable[str]) -> tuple[Prerequisite, ...]:
-    return tuple(
-        Prerequisite(
+    prerequisites = []
+    for name in names:
+        executable = shutil.which(name)
+        prerequisites.append(Prerequisite(
             name=name,
             executable=name,
-            satisfied=shutil.which(name) is not None,
-            detail=shutil.which(name) or f"{name!r} is not on PATH",
-        )
-        for name in names
-    )
+            satisfied=executable is not None,
+            detail=executable or f"{name!r} is not on PATH",
+        ))
+    return tuple(prerequisites)
 
 
 INSTALL_SCRIPT_NAMES = frozenset(
@@ -260,7 +281,7 @@ def _npm_script_kind(name: str) -> str | None:
     return None
 
 
-def _read_package_json(root: Path, inspection: Inspection) -> None:
+def _read_package_json(root: Path, inspection: Inspection, test_configs: PythonTestConfigs) -> None:
     text = _read_text(root, "package.json")
     if text is None:
         return
@@ -280,13 +301,14 @@ def _read_package_json(root: Path, inspection: Inspection) -> None:
     engines = document.get("engines")
     if isinstance(engines, dict) and isinstance(engines.get("node"), str):
         declared = engines["node"]
+        measured = _probe_version("node")
         inspection.tools.append(
             ToolVersion(
                 name="node",
                 declared=declared,
-                measured=_probe_version("node"),
+                measured=measured,
                 source="package.json:engines.node",
-                satisfied=_node_range_satisfied(declared),
+                satisfied=_node_range_satisfied(declared, measured),
             )
         )
 
@@ -295,7 +317,7 @@ def _read_package_json(root: Path, inspection: Inspection) -> None:
         inspection.gaps.append("package.json declares no scripts, so no node command is discoverable")
         return
 
-    runners = _declared_test_runners(root)
+    runners = test_configs.runners
     found_test = False
     for name, command in scripts.items():
         if not isinstance(name, str) or not isinstance(command, str):
@@ -352,16 +374,15 @@ def _read_package_json(root: Path, inspection: Inspection) -> None:
                 runner="npm",
             )
         )
-    if not found_test and not _has_test_configuration(root):
+    if not found_test and not runners and not test_configs.failures:
         inspection.gaps.append(
             "package.json has scripts but none of them is a test entry point, "
             "and no test configuration file was found; the repository declares no test command"
         )
 
 
-def _node_range_satisfied(declared: str) -> bool | None:
+def _node_range_satisfied(declared: str, measured: str | None) -> bool | None:
     """Whether this node meets a `>=X` or `X` major range; None for anything else."""
-    measured = _probe_version("node")
     if measured is None:
         return None
     match = re.search(r"v?(\d+)\.", measured)
@@ -377,24 +398,14 @@ def _node_range_satisfied(declared: str) -> bool | None:
     return None
 
 
-def _has_test_configuration(root: Path) -> bool:
-    """Whether a Python test-runner config file exists (checked directly: the Python reader has not
-    run yet).
-    """
-    if (root / "pytest.ini").is_file() or (root / "tox.ini").is_file():
-        return True
-    for name in ("pyproject.toml", "setup.cfg"):
-        text = _read_text(root, name)
-        if text and _PYTEST_SECTION.search(text):
-            return True
-    return False
+_PYTEST_SECTION = re.compile(r"^\[(?:tool:pytest|pytest)\]", re.MULTILINE)
+_TOX_TESTENV = re.compile(r"^\[testenv(?:\s*:[^\]]+)?\]", re.MULTILINE)
 
 
-_PYTEST_SECTION = re.compile(r"^\[(?:tool:pytest|tool\.pytest|pytest)\]", re.MULTILINE)
-
-
-def _read_python_config(root: Path, inspection: Inspection) -> None:
-    pyproject = _read_text(root, "pyproject.toml")
+def _read_python_config(root: Path, inspection: Inspection, test_configs: PythonTestConfigs) -> None:
+    pyproject = None
+    if "pyproject.toml" not in test_configs.failed_files:
+        pyproject = _read_text(root, "pyproject.toml")
     if pyproject is not None:
         try:
             document = tomllib.loads(pyproject)
@@ -402,7 +413,7 @@ def _read_python_config(root: Path, inspection: Inspection) -> None:
             inspection.gaps.append(f"pyproject.toml is not valid TOML: {exc}")
             document = {}
         if document:
-            if "ecosystem" not in inspection.ecosystem:
+            if "python" not in inspection.ecosystem:
                 inspection.ecosystem.append("python")
             inspection.files_read.append("pyproject.toml")
             project = document.get("project")
@@ -418,64 +429,47 @@ def _read_python_config(root: Path, inspection: Inspection) -> None:
                             satisfied=_python_spec_satisfied(requires),
                         )
                     )
-            if _PYTEST_SECTION.search(pyproject):
-                inspection.commands.append(
-                    DiscoveredCommand(
-                        id="pytest:configured",
-                        kind="test",
-                        argv=("python", "-m", "pytest"),
-                        summary="pytest configured by pyproject.toml; no testpaths key found",
-                        provenance=Provenance("pyproject.toml", _line_of(pyproject, "[tool.pytest"), "tool.pytest"),
-                        ambiguity=(),
-                        prerequisites=_executable_prerequisites(("python",)),
-                        runner="pytest",
-                    )
-                )
             tool_table = document.get("tool")
-            if isinstance(tool_table, dict):
-                if "pytest" in tool_table:
-                    inspection.test_configuration.append("pyproject.toml [tool.pytest.ini_options]")
-                if "tox" in tool_table:
-                    inspection.test_configuration.append("pyproject.toml [tool.tox]")
+            if isinstance(tool_table, dict) and "tox" in tool_table:
+                inspection.test_configuration.append("pyproject.toml [tool.tox]")
 
-    for name, label in (
-        ("pytest.ini", "pytest.ini"),
-        ("tox.ini", "tox.ini"),
-        ("setup.cfg", "setup.cfg [tool:pytest]"),
-    ):
+    labels = {
+        "pyproject.toml": "pyproject.toml [tool.pytest.ini_options]",
+        "pytest.ini": "pytest.ini",
+        "tox.ini": "tox.ini",
+        "setup.cfg": "setup.cfg [tool:pytest]",
+    }
+    for config in test_configs.declarations:
+        name = config.file
         text = _read_text(root, name)
         if text is None:
             continue
-        if "ecosystem" not in inspection.ecosystem:
+        if "python" not in inspection.ecosystem:
             inspection.ecosystem.append("python")
-        if name == "setup.cfg" and not _PYTEST_SECTION.search(text):
-            continue
-        if not _PYTEST_SECTION.search(text) and name != "tox.ini":
-            continue
         inspection.files_read.append(name)
+        label = labels[name]
         inspection.test_configuration.append(label)
-        if name == "tox.ini" and "[testenv" in text:
-            runner = "tox"
-            argv = ("tox", "-e", "py")
+        if config.runner == "tox":
+            argv = ("tox",)
             line = _line_of(text, "[testenv")
+            prerequisites = ("python", "tox")
         else:
-            runner = "pytest"
             argv = ("python", "-m", "pytest")
-            line = _line_of(text, "[tool:pytest]") or _line_of(text, "[pytest]")
+            needle = "[tool.pytest.ini_options]" if name == "pyproject.toml" else (
+                "[tool:pytest]" if "[tool:pytest]" in text else "[pytest]"
+            )
+            line = _line_of(text, needle)
+            prerequisites = ("python", "pytest")
         inspection.commands.append(
             DiscoveredCommand(
-                id=f"{runner}:configured",
+                id=f"{config.runner}:configured",
                 kind="test",
                 argv=argv,
                 summary=f"test configuration present in {name}",
                 provenance=Provenance(name, line, label),
-                ambiguity=(
-                    ("tox.ini also configures environments; `tox -e py` picks one of them "
-                     "and the choice is not written in the file",)
-                    if runner == "tox" and (root / "pytest.ini").exists() else ()
-                ),
-                prerequisites=_executable_prerequisites(("python", "pytest" if runner == "pytest" else "tox")),
-                runner=runner,
+                ambiguity=(),
+                prerequisites=_executable_prerequisites(prerequisites),
+                runner=config.runner,
             )
         )
 
@@ -641,20 +635,35 @@ def _tools_named_in(command: str) -> tuple[str, ...]:
     return tuple(sorted(words & known))
 
 
-def _declared_test_runners(root: Path) -> set[str]:
-    """Test runners configured on disk, beyond npm; several spellings of one runner count once."""
-    runners: set[str] = set()
-    if (root / "pytest.ini").is_file():
-        runners.add("pytest")
-    if (root / "tox.ini").is_file():
-        runners.add("tox")
-    for name in ("pyproject.toml", "setup.cfg"):
-        text = _read_text(root, name)
-        if text and _PYTEST_SECTION.search(text):
-            runners.add("pytest")
-        if text and re.search(r"^\[testenv", text, re.MULTILINE):
-            runners.add("tox")
-    return runners
+def _python_test_configs(root: Path) -> PythonTestConfigs:
+    configs = []
+    failures = []
+    for name in ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg"):
+        try:
+            text = _read_text(root, name)
+        except DiscoveryError as exc:
+            failures.append((name, str(exc)))
+            continue
+        if not text:
+            continue
+        if name == "pyproject.toml":
+            try:
+                document = tomllib.loads(text)
+            except tomllib.TOMLDecodeError:
+                continue
+            tool = document.get("tool")
+            pytest = tool.get("pytest") if isinstance(tool, dict) else None
+            if isinstance(pytest, dict) and isinstance(pytest.get("ini_options"), dict):
+                configs.append(PythonTestConfig(name, "pytest"))
+        elif name in ("pytest.ini", "setup.cfg"):
+            if _PYTEST_SECTION.search(text):
+                configs.append(PythonTestConfig(name, "pytest"))
+        elif name == "tox.ini":
+            if _PYTEST_SECTION.search(text):
+                configs.append(PythonTestConfig(name, "pytest"))
+            if _TOX_TESTENV.search(text):
+                configs.append(PythonTestConfig(name, "tox"))
+    return PythonTestConfigs(tuple(configs), tuple(failures))
 
 
 def inspect_repository(project: Project) -> Inspection:
@@ -663,9 +672,12 @@ def inspect_repository(project: Project) -> Inspection:
     """
     inspection = Inspection(project=project, ecosystem=[])
 
+    test_configs = _python_test_configs(project.root)
+    inspection.gaps.extend(message for _, message in test_configs.failures)
+
     for step in (
-        lambda: _read_package_json(project.root, inspection),
-        lambda: _read_python_config(project.root, inspection),
+        lambda: _read_package_json(project.root, inspection, test_configs),
+        lambda: _read_python_config(project.root, inspection, test_configs),
         lambda: _read_workflows(project.root, inspection),
     ):
         try:

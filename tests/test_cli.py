@@ -115,6 +115,20 @@ def test_run_cancel_stops_a_running_check(make_project):
     assert (runner.returncode, outcome["result"], outcome["reason"]) == (3, "BLOCKED", "cancelled")
 
 
+def test_run_commands_reject_path_fragment_ids_as_invalid_input(make_project):
+    project = make_project({"ok.py": DRIVER + 'report([("ok", True, "ok")])\n'},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+
+    for command in ("show", "cancel"):
+        code, body = vkit(project, "run", command, "--run", "../outside")
+
+        assert code == 2
+        assert body == {
+            "error": "run_id must contain only letters, digits, underscores, or hyphens",
+            "exit_code": 2,
+        }
+
+
 def test_a_run_whose_runner_died_reads_as_interrupted(make_project):
     project = make_project({"slow.py": SLOW_TREE},
                            [scenario_check("slow", "slow.py", scenarios=["never"], inputs=["slow.py"], timeout=120)])

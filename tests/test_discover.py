@@ -114,6 +114,97 @@ def test_inspect_reports_ambiguity_is_absent_when_only_one_runner_exists(
     assert command.ambiguous is False
 
 
+@pytest.mark.parametrize("name,contents,runner", [
+    ("pytest.ini", "[pytest]\ntestpaths = tests\n", "pytest"),
+    ("pyproject.toml", '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', "pytest"),
+    ("tox.ini", "[testenv]\ncommands = pytest\n", "tox"),
+])
+def test_inspect_reports_declared_python_test_configurations(repo, name, contents, runner) -> None:
+    report = inspect_repository(repo({name: contents}))
+
+    command = {command.runner: command for command in report.by_kind("test")}[runner]
+    assert command.provenance.file == name
+
+
+@pytest.mark.parametrize("contents", ["", "[tox]\nenvlist = py\n"])
+def test_unrelated_tox_ini_does_not_create_a_test_command(repo, contents) -> None:
+    report = inspect_repository(repo({
+        "package.json": json.dumps({"scripts": {"build": "vite build"}}),
+        "tox.ini": contents,
+    }))
+
+    assert report.by_kind("test") == []
+    assert any("declares no test command" in gap for gap in report.gaps)
+
+
+def test_pytest_only_tox_ini_reports_pytest_and_drives_npm_ambiguity(repo) -> None:
+    project = repo({
+        "package.json": json.dumps({"scripts": {"test": "vitest run"}}),
+        "tox.ini": "[pytest]\ntestpaths = tests\n",
+    })
+
+    report = inspect_repository(project)
+
+    python_test = next(command for command in report.by_kind("test") if command.runner == "pytest")
+    npm_test = next(command for command in report.by_kind("test") if command.runner == "npm")
+    assert python_test.argv == ("python", "-m", "pytest")
+    assert npm_test.ambiguous and "pytest" in " ".join(npm_test.ambiguity)
+    assert not any(command.runner == "tox" for command in report.commands)
+
+
+def test_tox_ini_with_pytest_and_testenv_reports_both_runners(repo) -> None:
+    project = repo({
+        "tox.ini": "[pytest]\ntestpaths = tests\n\n[testenv]\ncommands = pytest\n",
+    })
+
+    commands = inspect_repository(project).by_kind("test")
+
+    by_runner = {command.runner: command for command in commands}
+    assert by_runner["pytest"].argv == ("python", "-m", "pytest")
+    assert by_runner["tox"].argv == ("tox",)
+    assert by_runner["tox"].ambiguity == ()
+
+
+def test_unrelated_toml_tables_do_not_create_python_test_runners(repo) -> None:
+    project = repo({
+        "package.json": json.dumps({"scripts": {"test": "vitest run"}}),
+        "pyproject.toml": '[pytest]\ntestpaths = ["tests"]\n\n[testenv]\ncommands = ["pytest"]\n',
+    })
+
+    report = inspect_repository(project)
+
+    npm_test = next(command for command in report.by_kind("test") if command.runner == "npm")
+    assert npm_test.ambiguity == ()
+    assert [command.runner for command in report.by_kind("test")] == ["npm"]
+
+
+def test_python_ecosystem_is_reported_once_for_multiple_config_files(repo) -> None:
+    report = inspect_repository(repo({
+        "pyproject.toml": '[project]\nrequires-python = ">=3.11"\n\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+        "pytest.ini": "[pytest]\ntestpaths = tests\n",
+        "tox.ini": "[testenv]\ncommands = pytest\n",
+    }))
+
+    assert report.ecosystem.count("python") == 1
+
+
+def test_node_engine_uses_one_version_probe(repo, monkeypatch) -> None:
+    project = repo({"package.json": json.dumps({"engines": {"node": ">=20"}})})
+    probes = []
+
+    def probe(executable):
+        probes.append(executable)
+        return "v22.0.0"
+
+    monkeypatch.setattr("vkit.discover._probe_version", probe)
+
+    report = inspect_repository(project)
+
+    node = next(tool for tool in report.tools if tool.name == "node")
+    assert probes == ["node"]
+    assert (node.measured, node.satisfied) == ("v22.0.0", True)
+
+
 def test_inspect_measures_prerequisites_against_this_host(repo: ProjectBuilder) -> None:
     """A missing tool is a BLOCKED reason later, so inspection has to see it now.
 
@@ -217,6 +308,40 @@ def test_inspect_reads_make_targets_and_ci_workflow_commands(
     assert only.provenance.line == 5
     assert only.ambiguous, "a CI shell line was reported as an unambiguous local command"
     assert "npm ci" not in json.dumps(only.to_json()), "an install line was reported as a runnable command"
+
+
+def test_oversized_python_config_is_a_gap_without_stopping_other_discovery(
+    repo: ProjectBuilder,
+) -> None:
+    project = repo({
+        "setup.cfg": "x" * (1_048_576 + 1),
+        "package.json": json.dumps({"scripts": {"test": "vitest run"}}),
+        ".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n      - run: npm test\n",
+    })
+
+    report = inspect_repository(project)
+
+    assert any("setup.cfg exceeds 1 MiB" in gap for gap in report.gaps)
+    assert not any("no test configuration file was found" in gap for gap in report.gaps)
+    assert any(command.id == "npm:test" for command in report.commands)
+    assert any(command.provenance.file == ".github/workflows/ci.yml" for command in report.ci_commands)
+
+
+def test_oversized_pyproject_does_not_hide_other_python_test_facts(
+    repo: ProjectBuilder,
+) -> None:
+    project = repo({
+        "pyproject.toml": "x" * (1_048_576 + 1),
+        "pytest.ini": "[pytest]\naddopts = -q\n",
+        "Makefile": "test:\n\tpython -m unittest\n",
+    })
+
+    report = inspect_repository(project)
+
+    gaps = [gap for gap in report.gaps if "pyproject.toml exceeds 1 MiB" in gap]
+    assert gaps == ["pyproject.toml exceeds 1 MiB"]
+    assert any(command.id == "pytest:configured" for command in report.commands)
+    assert any(command.id == "make:test" for command in report.commands)
 
 
 def test_inspect_reports_a_declared_node_engine_separately_from_a_measured_one(

@@ -16,7 +16,7 @@ from .operations.catalog import OPERATIONS
 from .operations.contract import (Operation, OperationContractError, OperationInputError, cli_arguments, cli_value,
                                   invoke)
 from .paths import ProjectError
-from .settings import SettingsFileError, load_settings, save_settings
+from .settings import load_settings, save_settings
 from .store import now
 
 EXIT_OK = 0
@@ -434,7 +434,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(str(exc), file=sys.stderr)
         return exc.code
-    except SettingsFileError as exc:
+    except ValueError as exc:
         _emit({"error": str(exc), "exit_code": EXIT_INVALID}, args.json, str(exc))
         return EXIT_INVALID
     except Exception as exc:  # noqa: BLE001

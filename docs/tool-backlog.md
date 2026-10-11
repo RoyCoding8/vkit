@@ -597,6 +597,8 @@ Sources: [cvc5 SyGuS example](https://cvc5.github.io/docs/cvc5-1.3.1/examples/sy
 
 ### 36. Termination and complexity bounds for supported programs
 
+Implemented restricted integer-loop profile: [`analyze_loop_termination`](termination-model.md) synthesizes a linear ranking and checks its decrease over all guarded mathematical integer states. It also replays guarded fixed points. Broader program frontends and complexity inference remain open; this does not integrate AProVE.
+
 Proposed call: `prove_termination_bound(program, domain, profile)`.
 
 Ask whether a supported transition system terminates and what established step-complexity bounds apply. Return the model, assumptions, proof status, and available certificate or witness.

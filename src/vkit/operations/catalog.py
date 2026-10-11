@@ -22,6 +22,7 @@ from .regex_cost import analyze_regex_cost
 from .semantic_merge import check_semantic_merge
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
 from .sql_equivalence import compare_sql_queries
+from .termination import analyze_loop_termination
 from .wheel_artifacts import compare_wheels
 
 _EXPRESSION = {
@@ -52,6 +53,22 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="analyze_loop_termination",
+        description=("Synthesize and check a linear ranking for one captured Python integer while loop. "
+                     "Checks nonnegative strict decrease over all guarded mathematical integer states with "
+                     "pinned cvc5; independently replays guarded fixed points before reporting nontermination. "
+                     "Bounded synthesis may return UNKNOWN. Covers the supported loop model, not whole "
+                     "applications, machine overflow or resource exhaustion. Never executes project code."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative Python source"},
+            "function": {"type": "string", "minLength": 1},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("path", "function"), handler=analyze_loop_termination,
+        outcomes={"TERMINATES": 0, "NONTERMINATING": 1, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="check_semantic_merge",

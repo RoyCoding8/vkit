@@ -11,7 +11,7 @@ def test_an_agent_sees_staleness_runs_what_is_needed_and_reaches_ready(make_proj
     client = McpClient(project)
     try:
         tools = sorted(t["name"] for t in client.request("tools/list", {})["tools"])
-        assert tools == ["analyze_dependencies", "analyze_regex_cost", "check_c_safety", "check_history",
+        assert tools == ["analyze_dependencies", "analyze_loop_termination", "analyze_regex_cost", "check_c_safety", "check_history",
                          "check_rewrite", "check_run", "check_semantic_merge", "compare_authorization_policies", "compare_contracts", "compare_iteration_sets",
                          "compare_matchsets", "compare_migrations", "compare_rational_expressions", "compare_sql_queries", "compare_wheels", "features",
                          "find_behavioral_difference", "find_grammar_ambiguity",

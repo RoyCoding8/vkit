@@ -42,6 +42,8 @@ and cvc5 executables. It validates the schema and independently replays authoriz
 abstract installation mappings and metadata without importing or installing package code.
 [Semantic merge preservation](merge-model.md) checks a captured quartet of supported pure
 functions and independently replays every violating input against their return-value models.
+[Integer loop termination](termination-model.md) checks synthesized rankings over all supported
+guarded states and independently replays fixed-point nontermination witnesses.
 
 ## Check a replacement
 

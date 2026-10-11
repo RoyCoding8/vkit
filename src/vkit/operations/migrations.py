@@ -178,7 +178,6 @@ def _authorizer(readonly: bool, state: dict[str, Any]):
 
 def _connection(deadline: float, state: dict[str, Any]) -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:")
-    connection.enable_load_extension(False)
     limits = (
         ("SQLITE_LIMIT_LENGTH", 1_000_000),
         ("SQLITE_LIMIT_SQL_LENGTH", MAX_SQL_BYTES),

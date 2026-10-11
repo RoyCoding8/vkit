@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import subprocess
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,24 @@ def _bundle(old_sql: str, migrations: list[str], fresh_sql: str,
 
 def _compare(bundle: dict[str, Any], timeout: int = 2) -> dict[str, Any]:
     return _compare_bundle(bundle, timeout)
+
+
+def test_runtime_without_extension_loading_api_compares_and_rejects_extensions(monkeypatch) -> None:
+    class NoExtensionConnection(sqlite3.Connection):
+        @property
+        def enable_load_extension(self):
+            raise AttributeError("extension loading is not compiled in")
+
+    connect = sqlite3.connect
+    monkeypatch.setattr(migrations.sqlite3, "connect", lambda *args, **kwargs: connect(
+        *args, **kwargs, factory=NoExtensionConnection))
+
+    matching = _compare(_bundle("CREATE TABLE t(x);", [], "CREATE TABLE t(x);"))
+    extension = _compare(_bundle("SELECT load_extension('external');", [], ""))
+
+    assert matching["status"] == "MATCH", matching
+    assert extension["status"] == "UNSUPPORTED", extension
+    assert "deterministic allowlist" in extension["reason"]
 
 
 def test_added_column_with_default_matches_fresh_schema_and_rows() -> None:

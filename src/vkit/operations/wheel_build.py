@@ -144,10 +144,6 @@ def _record_command(
     return result, stdout, stderr
 
 
-def _log_evidence(raw: bytes) -> dict[str, Any]:
-    return {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
-
-
 def _assertion(
     identifier: str, expected: Any, observed: Any, passed: bool
 ) -> dict[str, Any]:
@@ -290,9 +286,6 @@ def _baseline_inputs(project: Project, check: BuildCheck, current_files):
                     max_output_bytes=MAX_BASELINE_TREE_BYTES)
     except _Unsupported as exc:
         raise _Blocked(BlockedReason.INPUT_MISSING, str(exc)) from None
-    if len(tree) > MAX_BASELINE_TREE_BYTES:
-        raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline tree exceeds its byte limit")
-
     paths: list[str] = []
     total_bytes = 0
     for row in tree.split(b"\0"):
@@ -451,12 +444,7 @@ def _build_once(
         "wheel": None,
     }
     attempts.append(row)
-    if result.timed_out:
-        raise _Blocked(BlockedReason.TIMEOUT, f"{label} exceeded the check timeout")
-    if result.cancelled:
-        raise _Blocked(BlockedReason.CANCELLED, f"{label} was cancelled")
-    if result.launch_error:
-        raise _Blocked(BlockedReason.LAUNCH_FAILED, f"{label} could not start: {result.launch_error}")
+    _require_command(result, label)
     if result.code != 0:
         raise _Blocked(
             BlockedReason.INTERNAL_ERROR,
@@ -570,7 +558,7 @@ def _run_incremental(
         _write_workspace(baseline_files, source, {})
         output_baseline = temp / "baseline-dist"
         cache = temp / "uv-cache"
-        baseline_wheel = _build_once(
+        _build_once(
             project,
             check,
             source,
@@ -586,7 +574,7 @@ def _run_incremental(
         _verify_workspace_files(source, baseline_files)
         deleted = _apply_overlay(source, baseline_files, current_files)
         output_overlay = temp / "overlay-dist"
-        overlay_wheel = _build_once(
+        _build_once(
             project,
             check,
             source,
@@ -600,7 +588,6 @@ def _run_incremental(
             overlay_attempts,
         )
         _verify_workspace_files(source, current_files)
-    del baseline_wheel
     observed = overlay_attempts[0]["wheel"]
     passed = observed == clean_wheel
     return {
@@ -633,9 +620,8 @@ def _require_command(result: Any, step: str) -> None:
 
 def _smoke(check: BuildCheck, files, run_dir: Path, uv: Path) -> list[dict[str, Any]]:
     assertions: list[dict[str, Any]] = []
-    artifact_dir = run_dir / "artifacts"
-    wheel_paths = [artifact_dir / f"build-{index}" / "*.whl" for index in (1, 2)]
-    for index, matches in enumerate((tuple(path.parent.glob(path.name)) for path in wheel_paths), 1):
+    for index in (1, 2):
+        matches = tuple((run_dir / "artifacts" / f"build-{index}").glob("*.whl"))
         if len(matches) != 1:
             raise _Blocked(BlockedReason.ARTIFACT_MISSING, f"clean build {index} did not retain exactly one wheel")
         wheel_path = matches[0]

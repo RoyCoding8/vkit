@@ -1,4 +1,4 @@
-"""The six check kinds. A parsed manifest entry is exactly one of these."""
+"""Typed check kinds; a parsed manifest entry is exactly one variant."""
 from __future__ import annotations
 
 import enum

@@ -70,22 +70,22 @@ class BuildReading:
         return [], list(self.counterexamples)
 
 
-def _incremental_problem(check: BuildCheck, document: dict[str, Any], assertions: dict[str, dict]) -> Blocked | None:
+def _incremental_problem(check: BuildCheck, document: dict[str, Any], assertions: dict[str, dict]) -> str | None:
     incremental = document.get("incremental")
     if check.incremental_baseline_sha is None:
         if incremental is not None:
-            return Blocked(BlockedReason.ARTIFACT_MALFORMED, "unapproved incremental evidence is present")
+            return 'unapproved incremental evidence is present'
         return None
     if not isinstance(incremental, dict) or incremental.get("baseline_sha") != check.incremental_baseline_sha:
-        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline does not match the approved SHA")
+        return 'incremental baseline does not match the approved SHA'
     baseline = incremental["baseline_inputs"]
     overlay = incremental["overlay_inputs"]
     baseline_paths = [item["path"] for item in baseline]
     overlay_paths = [item["path"] for item in overlay]
     if baseline_paths != sorted(set(baseline_paths)) or overlay_paths != sorted(set(overlay_paths)):
-        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental input paths are duplicated or unordered")
+        return 'incremental input paths are duplicated or unordered'
     if incremental["deleted_inputs"] != sorted(set(baseline_paths) - set(overlay_paths)):
-        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental deletion list disagrees with captured input sets")
+        return 'incremental deletion list disagrees with captured input sets'
     baseline_build = incremental["baseline_build"]
     overlay_build = incremental["overlay_build"]
     if (
@@ -96,12 +96,12 @@ def _incremental_problem(check: BuildCheck, document: dict[str, Any], assertions
         or baseline_build["wheel"] is None
         or overlay_build["wheel"] is None
     ):
-        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental report is missing completed baseline and overlay builds")
+        return 'incremental report is missing completed baseline and overlay builds'
     clean_wheel = document["builds"][0]["wheel"]
     warm_wheel = overlay_build["wheel"]
     matches_clean = clean_wheel == warm_wheel
     if incremental["wheel_matches_clean"] is not matches_clean:
-        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental wheel comparison disagrees with recorded wheel identities")
+        return 'incremental wheel comparison disagrees with recorded wheel identities'
     assertion = assertions.get("incremental:wheel-matches-clean")
     if (
         assertion is None
@@ -109,7 +109,75 @@ def _incremental_problem(check: BuildCheck, document: dict[str, Any], assertions
         or assertion["observed"] != warm_wheel
         or (assertion["result"] == "PASS") != matches_clean
     ):
-        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental wheel assertion is missing or inconsistent")
+        return 'incremental wheel assertion is missing or inconsistent'
+    return None
+
+
+def _build_problem(check: BuildCheck, document: dict[str, Any]) -> str | None:
+    expected_toolchain = {
+        "uv_version": check.uv_version,
+        "uv_sha256": check.uv_sha256,
+        "python_version": check.python_version,
+        "python_sha256": check.python_sha256,
+    }
+    if document["toolchain"] != expected_toolchain:
+        return 'build report toolchain does not match its approved profile'
+    assertions = document["assertions"]
+    names = [item["id"] for item in assertions]
+    if len(names) != len(set(names)) or not assertions:
+        return 'build report has duplicate or missing assertion ids'
+    expected_names = {
+        "builds:wheel-bytes-identical",
+        "builds:wheel-filename-identical",
+        *(f"install-{index}:imports" for index in (1, 2)),
+        *(
+            f"install-{index}:entrypoint:{entry.name}"
+            for index in (1, 2)
+            for entry in check.entry_points
+        ),
+    }
+    if check.incremental_baseline_sha is not None:
+        expected_names.add("incremental:wheel-matches-clean")
+    if set(names) != expected_names:
+        return 'build report assertions do not match the approved install smoke profile'
+    if len(document["builds"]) != 2 or any(
+        item["exit_code"] != 0 or item["wheel"] is None for item in document["builds"]
+    ):
+        return 'completed build report does not contain two successful wheel builds'
+    if [item["index"] for item in document["builds"]] != [1, 2]:
+        return 'build report does not identify both independent builds'
+    if document["same_wheel_bytes"] != (
+        document["builds"][0]["wheel"]["sha256"]
+        == document["builds"][1]["wheel"]["sha256"]
+        and document["builds"][0]["wheel"]["bytes"]
+        == document["builds"][1]["wheel"]["bytes"]
+    ):
+        return 'build report byte-equality assertion disagrees with wheel digests'
+    by_id = {item["id"]: item for item in assertions}
+    incremental_problem = _incremental_problem(check, document, by_id)
+    if incremental_problem is not None:
+        return incremental_problem
+    identical = by_id["builds:wheel-bytes-identical"]
+    if (
+        identical["expected"] is not True
+        or identical["observed"] is not document["same_wheel_bytes"]
+        or (identical["result"] == "PASS") != document["same_wheel_bytes"]
+    ):
+        return 'build report byte-equality assertion is inconsistent'
+    filenames_match = (
+        document["builds"][0]["wheel"]["filename"]
+        == document["builds"][1]["wheel"]["filename"]
+    )
+    filename_assertion = by_id["builds:wheel-filename-identical"]
+    if (
+        filename_assertion["expected"] != document["builds"][0]["wheel"]["filename"]
+        or filename_assertion["observed"] != document["builds"][1]["wheel"]["filename"]
+        or (filename_assertion["result"] == "PASS") != filenames_match
+    ):
+        return 'build report filename assertion is inconsistent'
+    passed = all(item["result"] == "PASS" for item in assertions)
+    if (document["status"] == "PASS") != (passed and document["same_wheel_bytes"]):
+        return 'build report status disagrees with its assertions'
     return None
 
 
@@ -131,133 +199,10 @@ def read_build(check: BuildCheck, raw: bytes) -> BuildReading:
                 ),
             )
         return BuildReading((), Blocked(reason, document["problem"]["detail"]))
-    expected_toolchain = {
-        "uv_version": check.uv_version,
-        "uv_sha256": check.uv_sha256,
-        "python_version": check.python_version,
-        "python_sha256": check.python_sha256,
-    }
-    if document["toolchain"] != expected_toolchain:
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "build report toolchain does not match its approved profile",
-            ),
-        )
-    assertions = document["assertions"]
-    names = [item["id"] for item in assertions]
-    if len(names) != len(set(names)) or not assertions:
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "build report has duplicate or missing assertion ids",
-            ),
-        )
-    expected_names = {
-        "builds:wheel-bytes-identical",
-        "builds:wheel-filename-identical",
-        *(f"install-{index}:imports" for index in (1, 2)),
-        *(
-            f"install-{index}:entrypoint:{entry.name}"
-            for index in (1, 2)
-            for entry in check.entry_points
-        ),
-    }
-    if check.incremental_baseline_sha is not None:
-        expected_names.add("incremental:wheel-matches-clean")
-    if set(names) != expected_names:
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "build report assertions do not match the approved install smoke profile",
-            ),
-        )
-    if len(document["builds"]) != 2 or any(
-        item["exit_code"] != 0 or item["wheel"] is None for item in document["builds"]
-    ):
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "completed build report does not contain two successful wheel builds",
-            ),
-        )
-    if [item["index"] for item in document["builds"]] != [1, 2]:
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "build report does not identify both independent builds",
-            ),
-        )
-    if document["same_wheel_bytes"] != (
-        document["builds"][0]["wheel"]["sha256"]
-        == document["builds"][1]["wheel"]["sha256"]
-        and document["builds"][0]["wheel"]["bytes"]
-        == document["builds"][1]["wheel"]["bytes"]
-    ):
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "build report byte-equality assertion disagrees with wheel digests",
-            ),
-        )
-    by_id = {item["id"]: item for item in assertions}
-    incremental_problem = _incremental_problem(check, document, by_id)
-    if incremental_problem is not None:
-        return BuildReading((), incremental_problem)
-    identical = by_id["builds:wheel-bytes-identical"]
-    if (
-        identical["expected"] is not True
-        or identical["observed"] is not document["same_wheel_bytes"]
-        or (identical["result"] == "PASS") != document["same_wheel_bytes"]
-    ):
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "build report byte-equality assertion is inconsistent",
-            ),
-        )
-    filenames_match = (
-        document["builds"][0]["wheel"]["filename"]
-        == document["builds"][1]["wheel"]["filename"]
-    )
-    filename_assertion = by_id["builds:wheel-filename-identical"]
-    if (
-        filename_assertion["expected"] != document["builds"][0]["wheel"]["filename"]
-        or filename_assertion["observed"] != document["builds"][1]["wheel"]["filename"]
-        or (filename_assertion["result"] == "PASS") != filenames_match
-    ):
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "build report filename assertion is inconsistent",
-            ),
-        )
-    passed = all(item["result"] == "PASS" for item in assertions)
-    if (document["status"] == "PASS") != (passed and document["same_wheel_bytes"]):
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "build report status disagrees with its assertions",
-            ),
-        )
-    if document["status"] == "FAIL" and passed and document["same_wheel_bytes"]:
-        return BuildReading(
-            (),
-            Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "failed build report contains no failed assertion",
-            ),
-        )
-    return BuildReading(tuple(assertions))
+    problem = _build_problem(check, document)
+    if problem is not None:
+        return BuildReading((), Blocked(BlockedReason.ARTIFACT_MALFORMED, problem))
+    return BuildReading(tuple(document["assertions"]))
 
 
 
@@ -411,10 +356,7 @@ def outcome_from_reading(reading: Any, baseline: dict[str, Any] | None = None) -
         if reading.problem is not None:
             return reading.problem
         return Failed(reading.scenarios) if reading.failing else Passed(reading.scenarios)
-    if isinstance(reading, BuildReading):
-        if reading.problem is not None:
-            return reading.problem
-        scenarios = reading.scenarios()
-        return Failed(scenarios) if reading.counterexamples else Passed(scenarios)
+    if isinstance(reading, BuildReading) and reading.problem is not None:
+        return reading.problem
     scenarios = reading.scenarios()
     return Failed(scenarios) if reading.counterexamples else Passed(scenarios)

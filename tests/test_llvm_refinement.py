@@ -154,6 +154,19 @@ entry:
     assert result["status"] == "UNSUPPORTED"
 
 
+def test_real_llvm_validator_rejects_nneg_cast_flag(tmp_path: Path, real_engine: None) -> None:
+    flagged_cast = """define i16 @f(i8 %x) {
+entry:
+  %wide = zext nneg i8 %x to i16
+  ret i16 %wide
+}
+"""
+    _write_pair(tmp_path, before=flagged_cast)
+    result = check_llvm_refinement(tmp_path, "before.ll", "after.ll", "f")
+    assert result["status"] == "UNSUPPORTED"
+    assert "unsupported instruction" in result["detail"]
+
+
 def test_real_llvm_validator_rejects_non_dominating_ssa(tmp_path: Path, real_engine: None) -> None:
     invalid_ssa = """define i8 @f(i1 %condition, i8 %x) {
 entry:

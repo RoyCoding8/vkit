@@ -1,7 +1,6 @@
 """Exhaustively check a closed finite transition system with the pinned TLC runner."""
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess

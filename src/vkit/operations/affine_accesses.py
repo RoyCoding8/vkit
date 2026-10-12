@@ -29,7 +29,6 @@ from .affine import (
     _dnf,
     _extend_paths,
     _find_function,
-    _integer_constant,
     _parse_module,
     _parameters,
     _range,

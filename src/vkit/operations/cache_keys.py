@@ -11,7 +11,7 @@ from typing import Any
 from .expressions import MODEL_SCOPE, FunctionModel, ParseFailure, ResourceLimits, parse_function
 from ..nowindow import hidden_window
 from .rewrites import _evaluate, _to_solver
-from .synthesis import BACKEND, BACKEND_VERSION, _load_cvc5
+from .synthesis import BACKEND, _load_cvc5
 
 MAX_SOURCE_BYTES = 65_536
 MAX_AST_NODES = 1_000

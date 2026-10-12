@@ -143,9 +143,7 @@ class _Candidate:
 def _worker_result(bundle: object, bundle_sha256: str) -> dict[str, Any]:
     try:
         from importlib.metadata import PackageNotFoundError, version
-        import packaging
-        import resolvelib
-        from packaging.markers import Marker, UndefinedComparison, UndefinedEnvironmentName
+        from packaging.markers import UndefinedComparison, UndefinedEnvironmentName
         from packaging.requirements import InvalidRequirement, Requirement
         from packaging.specifiers import InvalidSpecifier, SpecifierSet
         from packaging.utils import InvalidName, canonicalize_name

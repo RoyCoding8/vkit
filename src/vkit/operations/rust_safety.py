@@ -237,7 +237,6 @@ def check_rust_safety(root: Path, path: str, function: str,
             should_cancel=lambda: _output_over_limit(workdir / "version.out", workdir / "version.err"),
         )
         version_out = _read_output(workdir / "version.out")
-        version_err = _read_output(workdir / "version.err")
         if version_run.timed_out or version_run.cancelled:
             return {**base, "status": "UNKNOWN", "detail": "Kani version check exceeded its time or output budget"}
         if version_run.launch_error:
@@ -874,7 +873,6 @@ def _parse_result(document: Any, function: str) -> list[dict[str, Any]]:
                 or not isinstance(description, str) or len(description) > 256:
             raise ValueError("Kani returned an unsupported check record")
         output.append({"description": description, "status": status, "category": category})
-    successful = sum(item["status"] == "Success" for item in output)
     failed = sum(item["status"] == "Failure" for item in output)
     if harness.get("status") != ("Failure" if failed else "Success") \
             or summary.get("successful") != (0 if failed else 1) \

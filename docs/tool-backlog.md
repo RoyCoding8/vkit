@@ -166,6 +166,11 @@ Sources: [StrykerJS](https://github.com/stryker-mutator/stryker-js), [incrementa
 
 ### 4. Interprocedural source-to-sink data-flow paths
 
+Implemented: `find_data_flows` captures a bounded C source tree and runs Joern 4.0.653 with a fixed
+query. It checks captured-file coverage and parser UNKNOWN nodes before reporting model-local
+absence, and returns endpoint counts and tracked path code. See [data-flow model](data-flow-model.md).
+Preprocessing, additional languages and broader library semantics remain open.
+
 Proposed call: `find_data_flows(snapshot, sources, sinks, profile)`.
 
 Ask whether the extracted model contains a data-flow path from specified sources to specified sinks. Examples include request input reaching a shell command or a secret reaching a logging call. Return each reported path with assignments, calls, and source locations.

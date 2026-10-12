@@ -18,6 +18,7 @@ from .cover import minimize_cover
 from .configurations import generate_configurations
 from .grammar import find_grammar_ambiguity
 from .dependency_resolution import resolve_dependencies
+from .data_flows import find_data_flows
 from .history import check_history
 from .invariants import infer_trace_relations
 from .migrations import compare_migrations
@@ -63,6 +64,26 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="find_data_flows",
+        description=("Find interprocedural C data-flow paths from one method parameter to one call argument "
+                     "using the pinned Joern frontend and a protected query. Captures a bounded source tree; "
+                     "preprocessing is unsupported. Negative results require all captured translation units "
+                     "represented and no parser UNKNOWN nodes. Returns endpoint counts and tracked path code. "
+                     "NO_PATH_IN_MODEL is scoped to Joern semantics, not absence of vulnerabilities."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative C source directory"},
+            "source_method": {"type": "string", "minLength": 1, "maxLength": 128},
+            "source_parameter": {"type": "integer", "minimum": 1, "maximum": 128},
+            "sink_method": {"type": "string", "minLength": 1, "maxLength": 128},
+            "sink_argument": {"type": "integer", "minimum": 1, "maximum": 128},
+            "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000, "default": 30000},
+        },
+        required=("path", "source_method", "source_parameter", "sink_method", "sink_argument"),
+        handler=find_data_flows,
+        outcomes={"PATH_FOUND": 1, "NO_PATH_IN_MODEL": 0, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="prove_c_contract",

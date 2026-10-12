@@ -15,7 +15,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 9 | Static wheel validation and payload comparison | Clean builds, installation and reproducibility campaigns |
 | 10 | Exact finite protocol-model exploration | Instrumented application schedule exploration |
 | 11 | Closed Python behavior-difference witnesses | Broader effects and execution models |
-| 12 | Open | Interprocedural lifetime analysis with captured compilation |
+| 12 | Closed acyclic C heap/call-graph profile in `check_c_safety` | Captured real project compilation, structs and broader native lifetime analysis |
 | 13 | TypeScript declaration profile integrated | Native ABI analysis and additional languages |
 | 14 | Pure integer/boolean three-way relational merge checks | Effects and broader language frontends |
 | 15 | Bounded SQL bag-query comparison | Broader SQL semantics and unbounded equivalence |
@@ -23,7 +23,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 17 | Cedar policy comparison and replay | Additional policy languages |
 | 18 | Open | Observed undeclared inputs and incremental/clean disagreement |
 | 19 | Retained-case replay implementation in progress | Protected old assertions, current subject and baseline control |
-| 20 | Batfish differential reachability implementation in progress | Real Linux service acceptance remains required |
+| 20 | Batfish differential reachability, real Linux service and CLI/MCP acceptance passed | Additional address families and broader deployment models |
 | 21 | Approved paired workload campaign with baseline capture | Additional measurement protocols |
 | 22 | Open | Bounded Rust verification with a protected harness |
 | 23 | Open | Pinned LLVM/Alive2 directional refinement |
@@ -37,7 +37,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 31 | Open | Deductive C contract proof with checked obligation completion |
 | 32 | Exact affine access relations and replayed overlaps | Alias, bounds and broader loop frontends |
 | 33 | Open | Fixed queries over supported rr recordings |
-| 34 | Perfetto trace operation awaiting integration | Independent real-engine transport and platform acceptance |
+| 34 | Perfetto scheduler-state interval facts; real CLI/MCP and three-platform CI passed | Additional trace questions and recording provenance |
 | 35 | Fixed-grammar integer expression synthesis and proof | Additional grammars and domains |
 | 36 | Checked linear rankings and fixed-point witnesses | Broader termination frontends and complexity bounds |
 | 37 | Feasible uniform binary32/binary64 format certification | Mixed precision and optimality proof |

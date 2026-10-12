@@ -442,15 +442,17 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_c_safety",
-        description=("Check a supported standalone C function for fixed bounds, pointer, division-by-zero, "
+        description=("Check a supported C source profile for fixed bounds, pointer, division-by-zero, "
                      "signed-overflow, and undefined-shift violations with CBMC under a fixed C11 LP64 model. "
                      "SAFE requires completed checks and sufficient unwinding. COUNTEREXAMPLE returns a model "
                      "trace. UNKNOWN preserves insufficient unwinding or unfinished work. UNSUPPORTED rejects "
                      "other source; UNAVAILABLE means a pinned runtime cannot run. No project compiler executes. "
-                     "Does not check every form of C undefined behavior or change gate evidence."),
+                     "The heap-callgraph profile adds captured acyclic helper functions, fixed-size malloc/free "
+                     "and memory leak checks. Does not check every form of C undefined behavior or change gate evidence."),
         properties={
             "path": {"type": "string", "minLength": 1, "description": "repository-relative standalone C source"},
             "function": {"type": "string", "minLength": 1},
+            "profile": {"type": "string", "enum": ["standalone", "heap-callgraph"], "default": "standalone"},
             "unwind": {"type": "integer", "minimum": 1, "maximum": 256, "default": 16},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
         },

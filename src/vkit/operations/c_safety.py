@@ -12,6 +12,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from ..proc import run as run_process
 from ._runtime import pinned_binary
 
 _BACKEND_ENV = "VKIT_CBMC_BIN"
@@ -40,6 +41,9 @@ _SAFETY_RULES = {
     "overflow": "signed-overflow-check",
     "pointer dereference": "pointer-check",
     "pointer": "pointer-check",
+    "memory-leak": "memory-leak-check",
+    "memory leak": "memory-leak-check",
+    "precondition_instance": "library-precondition-check",
 }
 _SELECTED_CHECKS = [
     "bounds-check", "pointer-check", "div-by-zero-check", "signed-overflow-check",
@@ -254,7 +258,7 @@ def _validate_ast(c_ast: Any, tree: Any, function: str) -> None:
 def _validate_and_generate(source: bytes, function: str, parser: Any) -> bytes:
     c_ast, c_generator, c_parser = parser
     try:
-        text = source.decode("utf-8")
+        text = source.decode("utf-8").replace("\r\n", "\n")
         tree = c_parser.CParser().parse(text, filename="candidate.c")
     except (c_parser.ParseError, RecursionError) as exc:
         raise _UnsupportedSource("source is not valid in the supported C subset") from exc
@@ -268,8 +272,10 @@ def _validate_and_generate(source: bytes, function: str, parser: Any) -> bytes:
     return generated
 
 
-def _process_env(workdir: Path) -> dict[str, str]:
+def _process_env(workdir: Path, preprocessor: Path | None = None) -> dict[str, str]:
     env = {"PATH": "", "HOME": str(workdir), "TMPDIR": str(workdir), "LC_ALL": "C", "LANG": "C"}
+    if preprocessor is not None:
+        env["PATH"] = str(preprocessor.parent)
     if os.name == "nt":
         for key in ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE"):
             if value := os.environ.get(key):
@@ -349,19 +355,19 @@ def _classify(document: Any, source_path: str) -> tuple[str, list[dict[str, Any]
             return "UNSUPPORTED", properties, "; ".join(errors[:4])
         return "UNKNOWN", properties, "; ".join(errors[:4])
     cprover = next((record.get("cProverStatus") for record in messages if "cProverStatus" in record), None)
-    if any(prop.get("status") in {"UNKNOWN", "NOT_CHECKED"} for prop in properties):
-        return "UNKNOWN", properties, "one or more safety checks were unfinished"
     failures = [prop for prop in properties if prop.get("status") == "FAILURE"]
+    verified = [
+        prop for prop in failures
+        if prop.get("property_class") in _SAFETY_RULES
+        and not _is_unwinding(prop) and _has_failure_trace(prop)
+    ]
+    if verified and cprover == "failure":
+        return "COUNTEREXAMPLE", properties, None
     if any(_is_unwinding(prop) for prop in failures):
         return "UNKNOWN", properties, "the requested loop unwind was insufficient"
+    if any(prop.get("status") in {"UNKNOWN", "NOT_CHECKED"} for prop in properties):
+        return "UNKNOWN", properties, "one or more safety checks were unfinished"
     if failures:
-        verified = [
-            prop for prop in failures
-            if prop.get("property_class") in _SAFETY_RULES
-            and _has_failure_trace(prop)
-        ]
-        if verified and cprover == "failure":
-            return "COUNTEREXAMPLE", properties, None
         return "UNKNOWN", properties, "CBMC reported a failure without a recognized safety trace"
     if cprover == "success" and all(prop.get("status") == "SUCCESS" for prop in properties):
         return "SAFE", properties, None
@@ -374,8 +380,11 @@ def check_c_safety(
     function: str,
     unwind: int = 16,
     timeout_seconds: int = 10,
+    profile: str = "standalone",
 ) -> dict[str, Any]:
-    """Check one standalone C function with fixed, bounded CBMC safety properties."""
+    """Check captured C source with fixed CBMC properties and a closed source profile."""
+    if profile not in {"standalone", "heap-callgraph"}:
+        raise ValueError("profile must be standalone or heap-callgraph")
     if not isinstance(function, str) or not _IDENTIFIER.fullmatch(function) or "__CPROVER" in function:
         raise ValueError("function must be a C identifier")
     if type(unwind) is not int or not 1 <= unwind <= 256:
@@ -391,12 +400,23 @@ def check_c_safety(
         f"uninitialized reads are not checked; checks: {_CHECK_SCOPE}; "
         f"loops bounded to {unwind} iterations with unwinding assertions"
     )
+    validator = _validate_and_generate
+    selected_checks = _SELECTED_CHECKS.copy()
+    library_flags = ["--no-library"]
+    if profile == "heap-callgraph":
+        from .c_heap import MODEL_SCOPE, validate_and_generate
+
+        model_scope = f"{MODEL_SCOPE} Loops unwind {unwind} times with unwinding assertions."
+        validator = validate_and_generate
+        selected_checks.extend(["memory-leak-check", "library-precondition-check"])
+        library_flags = ["--memory-leak-check", "--malloc-may-fail", "--malloc-fail-null"]
     base: dict[str, Any] = {
         "operation": "check_c_safety",
         "path": path,
         "function": function,
+        "profile": profile,
         "model_scope": model_scope,
-        "selected_checks": _SELECTED_CHECKS.copy(),
+        "selected_checks": selected_checks,
         "source_sha256": source_sha256,
         "backend": f"cbmc/{_BACKEND_VERSION}",
     }
@@ -406,7 +426,7 @@ def check_c_safety(
                 "detail": "the pinned pycparser 3.0 dependency is unavailable"}
     deadline = time.monotonic() + timeout_seconds
     try:
-        generated = _validate_and_generate(source, function, parser)
+        generated = validator(source, function, parser)
     except _UnsupportedSource as exc:
         return {**base, "status": "UNSUPPORTED", "backend_sha256": None, "detail": str(exc)}
     if _remaining(deadline) <= 0:
@@ -418,13 +438,21 @@ def check_c_safety(
         return {**base, "status": "UNAVAILABLE", "backend_sha256": None,
                 "detail": "the configured CBMC binary is unavailable or failed its SHA-256 check"}
     binary, backend_sha256 = runtime
+    preprocessor = None
+    if profile == "heap-callgraph":
+        cpp_runtime = pinned_binary("VKIT_C_PREPROCESSOR_BIN", "VKIT_C_PREPROCESSOR_SHA256")
+        if cpp_runtime is None or cpp_runtime[0].name.lower() not in {"gcc", "gcc.exe"}:
+            return {**base, "status": "UNAVAILABLE", "backend_sha256": backend_sha256,
+                    "detail": "heap library models require an operator-pinned GCC preprocessor runtime"}
+        preprocessor, cpp_sha256 = cpp_runtime
+        base["preprocessor_sha256"] = cpp_sha256
     try:
         with tempfile.TemporaryDirectory(prefix="vkit-c-safety-") as temporary:
             workdir = Path(temporary)
             snapshot = workdir / "candidate.i"
             snapshot.write_bytes(generated)
             snapshot_sha256 = hashlib.sha256(generated).hexdigest()
-            env = _process_env(workdir)
+            env = _process_env(workdir, preprocessor)
             remaining = _remaining(deadline)
             if remaining <= 0:
                 return {**base, "status": "UNKNOWN", "backend_sha256": backend_sha256,
@@ -444,15 +472,25 @@ def check_c_safety(
                         "snapshot_sha256": snapshot_sha256, "detail": "analysis exceeded the time budget"}
             command = [
                 str(binary), "--json-ui", "--trace", "--c11", "--arch", "x86_64", "--os", "linux",
-                "--LP64", "--little-endian", "--no-library", "--no-standard-checks",
+                "--LP64", "--little-endian", "--no-standard-checks", *library_flags,
                 "--bounds-check", "--pointer-check", "--div-by-zero-check", "--signed-overflow-check",
                 "--undefined-shift-check", "--unwinding-assertions", "--unwind", str(unwind),
                 "--function", function, str(snapshot),
             ]
-            result = subprocess.run(
-                command, cwd=workdir, env=env, stdin=subprocess.DEVNULL,
-                capture_output=True, timeout=remaining, check=False,
+            stdout_path, stderr_path = workdir / "stdout.json", workdir / "stderr.log"
+            result = run_process(
+                command, cwd=workdir, env=env, stdout_path=stdout_path, stderr_path=stderr_path,
+                timeout_seconds=remaining,
+                should_cancel=lambda: stdout_path.stat().st_size + stderr_path.stat().st_size > _MAX_OUTPUT_BYTES,
             )
+            if result.timed_out or result.cancelled:
+                return {**base, "status": "UNKNOWN", "backend_sha256": backend_sha256,
+                        "snapshot_sha256": snapshot_sha256,
+                        "detail": "CBMC exceeded its time or output budget"}
+            if result.launch_error:
+                raise OSError(result.launch_error)
+            with stdout_path.open("rb") as output:
+                raw_output = output.read(_MAX_OUTPUT_BYTES + 1)
     except subprocess.TimeoutExpired:
         return {**base, "status": "UNKNOWN", "backend_sha256": backend_sha256,
                 "detail": "the C safety analysis exceeded its time budget"}
@@ -460,7 +498,7 @@ def check_c_safety(
         return {**base, "status": "UNAVAILABLE", "backend_sha256": backend_sha256,
                 "detail": "the configured CBMC binary could not be started"}
     try:
-        document = _decode_json(result.stdout)
+        document = _decode_json(raw_output)
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError):
         return {**base, "status": "UNKNOWN", "backend_sha256": backend_sha256,
                 "snapshot_sha256": snapshot_sha256, "detail": "CBMC returned malformed or oversized output"}
@@ -469,9 +507,13 @@ def check_c_safety(
     except RecursionError:
         return {**base, "status": "UNKNOWN", "backend_sha256": backend_sha256,
                 "snapshot_sha256": snapshot_sha256, "detail": "CBMC output nesting exceeds parser limits"}
-    if (status == "SAFE" and result.returncode != 0) \
-            or (status == "COUNTEREXAMPLE" and result.returncode != 10):
+    if (status == "SAFE" and result.code != 0) \
+            or (status == "COUNTEREXAMPLE" and result.code != 10):
         status, detail = "UNKNOWN", "CBMC exit status did not match its reported properties"
+    if status == "SAFE" and profile == "heap-callgraph" and not any(
+        prop["property_class"] == "memory-leak" and prop["status"] == "SUCCESS" for prop in properties
+    ):
+        status, detail = "UNKNOWN", "CBMC did not complete the mandatory heap memory-leak property"
     result_record = {
         **base,
         "status": status,

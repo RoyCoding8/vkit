@@ -31,7 +31,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | [oasdiff](https://github.com/oasdiff/oasdiff) | `compare_contracts`, `openapi` profile | Validated local OpenAPI reference closures and fixed breaking-change rules |
 | [Buf](https://github.com/bufbuild/buf) | `compare_contracts`, `protobuf-*` profiles | Selected built-in compatibility category, protected configuration, captured local schemas |
 | [isl](https://github.com/Meinersbur/isl) via [islpy](https://github.com/inducer/islpy) | `compare_iteration_sets` | Equality of yielded integer-coordinate sets extracted from supported affine generators |
-| [CBMC](https://github.com/diffblue/cbmc) | `check_c_safety` | Fixed array and integer safety checks on a restricted standalone C function, with unwinding assertions and no compiler execution |
+| [CBMC](https://github.com/diffblue/cbmc) | `check_c_safety` | Standalone scalar/array safety and a [closed acyclic heap profile](c-heap-model.md) for lifetime and leak checks, with complete unwinding required |
 | [jsonsubschema](https://github.com/IBM/jsonsubschema) | `compare_contracts`, `json-containment` profile | Directional containment in a fixed Draft 4 type/object/array fragment, with unsupported constructs rejected and no generated witness |
 | [resolvelib](https://github.com/sarugaku/resolvelib) and packaging | `resolve_dependencies` | Independently checked Python constraint assignment within captured candidates and explicit target marker environment |
 | SQLite | `compare_migrations` | Exact stored catalog SQL and supplied ordered observations after captured upgrade and fresh-install SQL |

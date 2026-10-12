@@ -19,7 +19,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 13 | TypeScript declaration profile integrated | Native ABI analysis and additional languages |
 | 14 | Pure integer/boolean three-way relational merge checks | Effects and broader language frontends |
 | 15 | Bounded SQL bag-query comparison | Broader SQL semantics and unbounded equivalence |
-| 16 | Open | Parser/serializer disagreement campaigns |
+| 16 | Captured OpenAPI closure comparison between original bytes and local-parser JSON controls, with typed flattened-model differences and fresh replay | Other consumers, formats and interpretation models |
 | 17 | Cedar policy comparison and replay | Additional policy languages |
 | 18 | Open | Observed undeclared inputs and incremental/clean disagreement |
 | 19 | Retained approved scenario assertions replayed against current subject after a clean baseline | Additional case formats and assertion extraction |

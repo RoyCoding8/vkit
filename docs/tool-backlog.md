@@ -352,6 +352,12 @@ Source: [SQLSolver and its documented result limitations](https://github.com/SJT
 
 ### 16. Parser and serializer disagreement discovery
 
+Implemented: `inspect_openapi_parser_consistency` compares every captured OpenAPI closure file
+through pinned oasdiff using original bytes and same-path local-parser JSON controls. Typed canonical
+models, bounded JSON Pointer differences and fresh-process replay establish a concrete disagreement.
+Serialization enforces expanded node, depth and byte budgets. Other consumers and formats remain
+outside this profile. See [OpenAPI parser consistency](openapi-differential-model.md).
+
 Proposed call: `find_parser_disagreement(implementations, format_profile, bounds)`.
 
 Ask for an input on which specified parsers disagree, or a value whose serialization fails the specified round-trip relation. Examples include duplicate JSON keys, malformed Unicode, numeric boundaries, and inconsistent URL interpretation.

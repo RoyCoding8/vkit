@@ -83,7 +83,8 @@ def test_openapi_contracts_are_discoverable_scoped_and_switchable(make_project):
     try:
         before, _ = client.call("gate")
         found, error = client.call("help", query="OpenAPI")
-        assert not error and {tool["name"] for tool in found["tools"]} == {"check_api_sequences", "compare_contracts"}
+        assert not error and {tool["name"] for tool in found["tools"]} == {
+            "check_api_sequences", "compare_contracts", "inspect_openapi_parser_consistency"}
         result, error = client.call("compare_contracts", old_path="old.json", new_path="new.json", profile="openapi")
         assert not error and result["status"] == "BREAKING"
         assert client.call("gate")[0] == before
@@ -93,7 +94,8 @@ def test_openapi_contracts_are_discoverable_scoped_and_switchable(make_project):
         code, _ = vkit(project, "tools", "--disable", "compare_contracts")
         assert code == 0
         found, error = client.call("help", query="OpenAPI")
-        assert not error and [tool["name"] for tool in found["tools"]] == ["check_api_sequences"]
+        assert not error and {tool["name"] for tool in found["tools"]} == {
+            "check_api_sequences", "inspect_openapi_parser_consistency"}
         result, error = client.call("compare_contracts", old_path="old.json", new_path="new.json", profile="openapi")
         assert error and result["error"] == "unknown or unavailable tool"
     finally:

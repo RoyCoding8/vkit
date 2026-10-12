@@ -9,6 +9,39 @@ import pytest
 from helpers import McpClient, vkit
 
 
+def test_parser_consistency_cli_mcp_and_disabled_discovery(make_project):
+    if not os.environ.get("VKIT_OASDIFF_BIN"):
+        pytest.skip("pinned oasdiff is needed for native parser disagreement acceptance")
+    project = make_project({}, [], accept=False)
+    source = b'openapi: "3.0.3"\ninfo: {title: Probe, version: "1", x-vkit-probe: 1e3}\npaths: {}\n'
+    (project / "openapi.yaml").write_bytes(source)
+
+    code, result = vkit(project, "compute", "inspect-openapi-parser-consistency", "--path", "openapi.yaml")
+    assert (code, result["status"]) == (1, "DISAGREEMENT")
+    assert result["entry_source_sha256"] == hashlib.sha256(source).hexdigest()
+    assert result["differences"][0]["pointer"] == "/info/x-vkit-probe"
+    assert result["differences"][0]["original"] == {"type": "integer", "value": "1000"}
+    assert result["differences"][0]["local_json_control"]["preview"] == "1e3"
+    assert result["fresh_process_replay_count"] == 1
+    client = McpClient(project)
+    try:
+        result, error = client.call("inspect_openapi_parser_consistency", path="openapi.yaml")
+        assert not error and result["status"] == "DISAGREEMENT"
+        assert result["fresh_process_replay_count"] == 1
+    finally:
+        client.close()
+
+    assert vkit(project, "tools", "--disable", "inspect_openapi_parser_consistency")[0] == 0
+    fresh = McpClient(project)
+    try:
+        found, error = fresh.call("help", query="inspect_openapi_parser_consistency")
+        assert not error and found["tools"] == []
+        refused, error = fresh.call("inspect_openapi_parser_consistency", path="openapi.yaml")
+        assert error and refused["error"] == "unknown or unavailable tool"
+    finally:
+        fresh.close()
+
+
 def test_release_build_cli_mcp_use_existing_approval(make_project):
     from test_wheel_build import _make_project, _uv
 

@@ -52,6 +52,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | [Frama-C WP](https://www.frama-c.com/fc-plugins/wp.html) | `prove_c_contract` | Scalar C pre/postconditions and loop invariants beyond unwinding, with precondition feasibility, runtime guards and Qed obligation completion |
 | [Kani](https://github.com/model-checking/kani) 0.68.0 | `check_rust_safety` | Closed primitive Rust safety checks with original-source compilation, owned harnesses, completed unwind assertions and typed witness replay |
 | Pinned uv and Python with hash-locked backend dependencies | `check_release_artifact` | Approved offline paired wheel builds, exact byte comparison, clean install imports and literal entry-point outputs on one host |
+| oasdiff 1.33.0 and the local OpenAPI parser | `inspect_openapi_parser_consistency` | Typed flattened-model differences across captured source files and JSON controls, replayed in fresh processes |
 | [Joern](https://github.com/joernio/joern) | `find_data_flows` | Captured C interprocedural parameter-to-argument paths with fixed queries, parse-completion checks and modeled endpoint evidence |
 | [Schemathesis](https://github.com/schemathesis/schemathesis) | `check_api_sequences` | Bounded linked API campaigns against an operator-configured test service, reset isolation and fresh failure replay |
 | ISL named-array access relations | `analyze_affine_accesses` | Exact ordered RAW, WAR, WAW and read/read relations under explicit alias assumptions, with replayed iteration witnesses |

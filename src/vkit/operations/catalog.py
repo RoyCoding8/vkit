@@ -25,6 +25,7 @@ from .invariants import infer_trace_relations
 from .migrations import compare_migrations
 from .network_paths import compare_network_paths
 from .policies import compare_authorization_policies
+from .parser_consistency import inspect_openapi_parser_consistency
 from .protocols import check_protocol_model
 from .regex_cost import analyze_regex_cost
 from .retained_cases import replay_retained_cases
@@ -68,6 +69,22 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="inspect_openapi_parser_consistency",
+        description=("Inspect actual captured OpenAPI files for interpretation disagreements. Compares "
+                     "pinned oasdiff flattened models from original bytes and same-path JSON controls "
+                     "created by vkit's local parser, including captured local references. Preserves value "
+                     "types and returns bounded JSON Pointer differences only after fresh-process replay. "
+                     "Consistency covers this flattened model; it does not establish full parser equivalence."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative OpenAPI JSON or YAML entry"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
+        },
+        required=("path",), handler=inspect_openapi_parser_consistency,
+        outcomes={"CONSISTENT_IN_FLATTENED_MODEL": 0, "DISAGREEMENT": 1,
+                  "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="check_release_artifact",

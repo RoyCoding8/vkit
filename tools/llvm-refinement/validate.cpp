@@ -104,6 +104,10 @@ bool supportedInstruction(Instruction &instruction) {
       return false;
     }
   }
+  // LLVM stores flags such as `nneg` on casts in subclass optional data.
+  // The supported subset models no such non-binary flags.
+  if (instruction.getRawSubclassOptionalData() != 0)
+    return false;
   if (auto *compare = dyn_cast<ICmpInst>(&instruction))
     return scalarInteger(compare->getOperand(0)->getType()) &&
            compare->getOperand(0)->getType() == compare->getOperand(1)->getType() &&

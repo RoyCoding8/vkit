@@ -7,6 +7,7 @@ import math
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -16,6 +17,8 @@ from ._runtime import pinned_binary
 MAX_TIMEOUT_SECONDS = openapi.MAX_TIMEOUT_SECONDS
 MAX_CONTROL_FILE_BYTES = openapi.MAX_OPENAPI_FILE_BYTES
 MAX_CONTROL_TOTAL_BYTES = openapi.MAX_OPENAPI_TOTAL_BYTES
+MAX_MODEL_NODES = 100_000
+MAX_MODEL_DEPTH = 128
 MAX_DIFFERENCES = 32
 MAX_VALUE_PREVIEW = 160
 MAX_RESULT_BYTES = 262_144
@@ -28,48 +31,119 @@ class _UnrepresentableValue(Exception):
         self.value_type = value_type
 
 
+class _TraversalLimitExceeded(Exception):
+    pass
+
+
+class _ControlSizeExceeded(Exception):
+    pass
+
+
 def _pointer(parts: tuple[str, ...]) -> str:
     return "".join("/" + part.replace("~", "~0").replace("/", "~1") for part in parts)
 
 
-def _validate_json_value(value: Any, parts: tuple[str, ...] = ()) -> None:
-    value_type = type(value)
-    if value is None or value_type in (bool, int, str):
-        return
-    if value_type is float:
-        if not math.isfinite(value):
-            raise _UnrepresentableValue(_pointer(parts), "non-finite number")
-        return
-    if value_type is list:
+def _validate_json_value(value: Any, deadline: float) -> None:
+    stack: list[tuple[Any, tuple[str, ...], int]] = [(value, (), 0)]
+    nodes = 0
+    while stack:
+        openapi._check_deadline(deadline)
+        current, parts, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_MODEL_NODES:
+            raise _TraversalLimitExceeded("model node limit exceeded")
+        if depth > MAX_MODEL_DEPTH:
+            raise _TraversalLimitExceeded("model depth limit exceeded")
+        value_type = type(current)
+        if current is None or value_type in (bool, int, str):
+            continue
+        if value_type is float:
+            if not math.isfinite(current):
+                raise _UnrepresentableValue(_pointer(parts), "non-finite number")
+            continue
+        if value_type is list:
+            if nodes + len(stack) + len(current) > MAX_MODEL_NODES:
+                raise _TraversalLimitExceeded("model node limit exceeded")
+            for index, item in enumerate(current):
+                openapi._check_deadline(deadline)
+                stack.append((item, (*parts, str(index)), depth + 1))
+            continue
+        if value_type is dict:
+            if nodes + len(stack) + 2 * len(current) > MAX_MODEL_NODES:
+                raise _TraversalLimitExceeded("model node limit exceeded")
+            nodes += len(current)
+            for key, item in current.items():
+                openapi._check_deadline(deadline)
+                if type(key) is not str:
+                    raise _UnrepresentableValue(_pointer(parts), f"mapping key {type(key).__name__}")
+                stack.append((item, (*parts, key), depth + 1))
+            continue
+        raise _UnrepresentableValue(_pointer(parts), value_type.__name__)
+
+
+def _iter_json_ascii(value: Any, deadline: float, depth: int = 0) -> Iterator[str]:
+    openapi._check_deadline(deadline)
+    if depth > MAX_MODEL_DEPTH:
+        raise _TraversalLimitExceeded("model depth limit exceeded")
+    kind = type(value)
+    if kind is str:
+        yield '"'
+        for offset in range(0, len(value), 4096):
+            openapi._check_deadline(deadline)
+            encoded = json.dumps(value[offset:offset + 4096], ensure_ascii=True)
+            yield encoded[1:-1]
+        yield '"'
+    elif kind is list:
+        yield "["
         for index, item in enumerate(value):
-            _validate_json_value(item, (*parts, str(index)))
-        return
-    if value_type is dict:
-        for key, item in value.items():
-            if type(key) is not str:
-                raise _UnrepresentableValue(_pointer(parts), f"mapping key {type(key).__name__}")
-            _validate_json_value(item, (*parts, key))
-        return
-    raise _UnrepresentableValue(_pointer(parts), value_type.__name__)
+            openapi._check_deadline(deadline)
+            if index:
+                yield ","
+            yield from _iter_json_ascii(item, deadline, depth + 1)
+        yield "]"
+    elif kind is dict:
+        yield "{"
+        for index, key in enumerate(sorted(value)):
+            openapi._check_deadline(deadline)
+            if index:
+                yield ","
+            yield from _iter_json_ascii(key, deadline, depth)
+            yield ":"
+            yield from _iter_json_ascii(value[key], deadline, depth + 1)
+        yield "}"
+    else:
+        try:
+            yield json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+        except (OverflowError, RecursionError, ValueError) as exc:
+            raise _UnrepresentableValue("", "value rejected by the JSON encoder") from exc
 
 
-def _json_bytes(value: Any) -> bytes:
-    _validate_json_value(value)
-    return json.dumps(value, ensure_ascii=True, allow_nan=False, sort_keys=True,
-                      separators=(",", ":")).encode("utf-8")
+def _json_chunks(value: Any, deadline: float, byte_limit: int) -> Iterator[bytes]:
+    _validate_json_value(value, deadline)
+    emitted = 0
+    for chunk in _iter_json_ascii(value, deadline):
+        openapi._check_deadline(deadline)
+        if emitted + len(chunk) > byte_limit:
+            raise _ControlSizeExceeded
+        emitted += len(chunk)
+        yield chunk.encode("ascii")
 
 
-def _same(left: Any, right: Any) -> bool:
-    if type(left) is not type(right):
-        return False
-    if type(left) is dict:
-        return left.keys() == right.keys() and all(_same(left[key], right[key]) for key in left)
-    if type(left) is list:
-        return len(left) == len(right) and all(_same(a, b) for a, b in zip(left, right))
-    return left == right
+def _json_bytes(value: Any, deadline: float) -> bytearray:
+    encoded = bytearray()
+    for chunk in _json_chunks(value, deadline, MAX_CONTROL_FILE_BYTES):
+        encoded.extend(chunk)
+    return encoded
 
 
-def _value_evidence(value: Any) -> dict[str, Any]:
+def _json_sha256(value: Any, deadline: float) -> str:
+    digest = hashlib.sha256()
+    for chunk in _json_chunks(value, deadline, openapi.MAX_BACKEND_OUTPUT_BYTES):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _value_evidence(value: Any, deadline: float) -> dict[str, Any]:
     if value is _MISSING:
         return {"type": "missing"}
     kind = type(value)
@@ -88,43 +162,63 @@ def _value_evidence(value: Any) -> dict[str, Any]:
             preview += "…"
         return {"type": "string", "length": len(value),
                 "sha256": hashlib.sha256(encoded).hexdigest(), "preview": preview}
-    encoded = _json_bytes(value)
+    digest = _json_sha256(value, deadline)
     return {"type": "array" if kind is list else "object", "length": len(value),
-            "sha256": hashlib.sha256(encoded).hexdigest()}
+            "sha256": digest}
 
 
 _MISSING = object()
 
 
-def _differences(left: Any, right: Any) -> tuple[list[dict[str, Any]], bool]:
+def _differences(left: Any, right: Any, deadline: float) -> tuple[list[dict[str, Any]], bool]:
     found: list[dict[str, Any]] = []
     truncated = False
-    stack: list[tuple[Any, Any, tuple[str, ...]]] = [(left, right, ())]
+    stack: list[tuple[Any, Any, tuple[str, ...], int]] = [(left, right, (), 0)]
+    nodes = 0
     while stack:
-        before, after, parts = stack.pop()
-        if _same(before, after):
-            continue
-        if type(before) is dict and type(after) is dict:
+        openapi._check_deadline(deadline)
+        before, after, parts, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_MODEL_NODES:
+            raise _TraversalLimitExceeded("model node limit exceeded")
+        if depth > MAX_MODEL_DEPTH:
+            raise _TraversalLimitExceeded("model depth limit exceeded")
+        if before is not _MISSING and after is not _MISSING and type(before) is type(after) \
+                and type(before) is dict:
+            if nodes + len(stack) + len(before) + len(after) > MAX_MODEL_NODES:
+                raise _TraversalLimitExceeded("model node limit exceeded")
             keys = sorted(before.keys() | after.keys(), reverse=True)
+            if nodes + len(stack) + len(keys) > MAX_MODEL_NODES:
+                raise _TraversalLimitExceeded("model node limit exceeded")
             for key in keys:
-                stack.append((before.get(key, _MISSING), after.get(key, _MISSING), (*parts, key)))
+                openapi._check_deadline(deadline)
+                stack.append((before.get(key, _MISSING), after.get(key, _MISSING),
+                              (*parts, key), depth + 1))
             continue
-        if type(before) is list and type(after) is list:
+        if before is not _MISSING and after is not _MISSING and type(before) is type(after) \
+                and type(before) is list:
             max_length = max(len(before), len(after))
+            if nodes + len(stack) + max_length > MAX_MODEL_NODES:
+                raise _TraversalLimitExceeded("model node limit exceeded")
             for index in range(max_length - 1, -1, -1):
+                openapi._check_deadline(deadline)
                 stack.append((before[index] if index < len(before) else _MISSING,
                               after[index] if index < len(after) else _MISSING,
-                              (*parts, str(index))))
+                              (*parts, str(index)), depth + 1))
             continue
+        if before is not _MISSING and after is not _MISSING and type(before) is type(after):
+            same = repr(before) == repr(after) if type(before) is float else before == after
+            if same:
+                continue
         if len(found) == MAX_DIFFERENCES:
             truncated = True
             break
-        found.append({"pointer": _pointer(parts), "original": _value_evidence(before),
-                      "local_json_control": _value_evidence(after)})
+        found.append({"pointer": _pointer(parts), "original": _value_evidence(before, deadline),
+                      "local_json_control": _value_evidence(after, deadline)})
     return found, truncated
 
 
-def _parse_backend_output(result: Any) -> dict[str, Any]:
+def _parse_backend_output(result: Any, deadline: float) -> dict[str, Any]:
     if result.stderr:
         raise ValueError("oasdiff emitted unexpected error output")
     if result.returncode == 102:
@@ -134,11 +228,17 @@ def _parse_backend_output(result: Any) -> dict[str, Any]:
     try:
         output = json.loads(result.stdout, object_pairs_hook=openapi._json_object,
                             parse_constant=_reject_json_constant)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, openapi._UnsupportedDocument) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError,
+            openapi._UnsupportedDocument) as exc:
         raise ValueError("oasdiff returned malformed flattened JSON") from exc
     if type(output) is not dict:
         raise ValueError("oasdiff flattened output must be a JSON object")
+    try:
+        model_sha256 = _json_sha256(output, deadline)
+    except _UnrepresentableValue as exc:
+        raise ValueError("oasdiff flattened output contains a non-JSON value") from exc
     return {"status": "PARSED", "value": output,
+            "model_sha256": model_sha256,
             "output_sha256": hashlib.sha256(result.stdout).hexdigest()}
 
 
@@ -147,7 +247,7 @@ def _observations_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
         return False
     if left["status"] == "REJECTED":
         return left["output_sha256"] == right["output_sha256"]
-    return _same(left["value"], right["value"])
+    return left["model_sha256"] == right["model_sha256"]
 
 
 def _reject_json_constant(value: str) -> None:
@@ -162,7 +262,7 @@ def _flatten(binary: Path, entry: Path, runner: Path, env: dict[str, str],
          "--", str(entry)],
         runner, env, deadline,
     )
-    return _parse_backend_output(result)
+    return _parse_backend_output(result, deadline)
 
 
 def _within_result_limit(result: dict[str, Any]) -> bool:
@@ -219,7 +319,7 @@ def inspect_openapi_parser_consistency(root: Path, path: str,
                 raw = captured.read_bytes()
                 model = openapi._parse_document(file_relative, raw, file_relative == relative)
                 try:
-                    encoded = _json_bytes(model)
+                    encoded = _json_bytes(model, deadline)
                 except _UnrepresentableValue as exc:
                     detail = (f"the local parser produced a non-JSON {exc.value_type} value"
                               if exc.value_type in {"date", "datetime", "time"}
@@ -228,7 +328,11 @@ def inspect_openapi_parser_consistency(root: Path, path: str,
                                    "unsupported_pointer": exc.pointer, "unsupported_type": exc.value_type,
                                    "detail": detail})
                     return result
-                if len(encoded) > MAX_CONTROL_FILE_BYTES:
+                except _TraversalLimitExceeded as exc:
+                    result.update({"status": "UNSUPPORTED", "unsupported_file": file_relative,
+                                   "detail": f"the local parser JSON control {exc}"})
+                    return result
+                except _ControlSizeExceeded:
                     result.update({"status": "UNSUPPORTED", "unsupported_file": file_relative,
                                    "detail": "the local parser JSON control exceeds the per-file size limit"})
                     return result
@@ -282,13 +386,17 @@ def inspect_openapi_parser_consistency(root: Path, path: str,
                     "original_output_sha256": original_observation["output_sha256"],
                     "local_json_output_sha256": control_observation["output_sha256"],
                 })
+                if original_observation["status"] == "PARSED":
+                    file_result["original_model_sha256"] = original_observation["model_sha256"]
+                if control_observation["status"] == "PARSED":
+                    file_result["local_json_model_sha256"] = control_observation["model_sha256"]
                 if original_observation["status"] == control_observation["status"] == "REJECTED":
                     result.update({"status": "UNSUPPORTED", "file": file_relative,
                                    "detail": "oasdiff could not flatten either representation of a captured file"})
                     return result
                 differs = (original_observation["status"] != control_observation["status"]
                            or original_observation["status"] == "PARSED"
-                           and not _same(original_observation["value"], control_observation["value"]))
+                           and original_observation["model_sha256"] != control_observation["model_sha256"])
                 if not differs:
                     continue
 
@@ -307,7 +415,7 @@ def inspect_openapi_parser_consistency(root: Path, path: str,
                 truncated = False
                 if original_observation["status"] == control_observation["status"] == "PARSED":
                     diffs, truncated = _differences(original_observation["value"],
-                                                    control_observation["value"])
+                                                    control_observation["value"], deadline)
                 result.update({
                     "status": "DISAGREEMENT",
                     "file": file_relative,
@@ -321,6 +429,10 @@ def inspect_openapi_parser_consistency(root: Path, path: str,
                     "differences_truncated": truncated,
                     "fresh_process_replay_count": 1,
                 })
+                if original_observation["status"] == "PARSED":
+                    result["original_model_sha256"] = original_observation["model_sha256"]
+                if control_observation["status"] == "PARSED":
+                    result["local_json_model_sha256"] = control_observation["model_sha256"]
                 if not _within_result_limit(result):
                     result = {"operation": result["operation"], "status": "UNKNOWN", "path": relative,
                               "backend": result["backend"], "backend_sha256": backend_sha256,
@@ -343,6 +455,10 @@ def inspect_openapi_parser_consistency(root: Path, path: str,
         result.update({"status": "UNKNOWN", "detail": "parser consistency inspection exceeded its total time budget"})
     except openapi._BackendOutputExceeded:
         result.update({"status": "UNKNOWN", "detail": "oasdiff output exceeded the size limit"})
+    except _ControlSizeExceeded:
+        result.update({"status": "UNKNOWN", "detail": "flattened model evidence exceeded the size limit"})
+    except _TraversalLimitExceeded as exc:
+        result.update({"status": "UNKNOWN", "detail": f"flattened model {exc}"})
     except subprocess.TimeoutExpired:
         result.update({"status": "UNKNOWN", "detail": "parser consistency inspection exceeded its total time budget"})
     except OSError:

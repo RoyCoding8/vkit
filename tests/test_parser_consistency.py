@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -71,8 +73,10 @@ def test_native_flatten_compares_every_captured_local_reference_file(
     assert difference["local_json_control"]["type"] == "string"
     assert difference["local_json_control"]["preview"] == "1e3"
     for field in ("backend_sha256", "file_source_sha256", "local_json_sha256",
-                  "original_output_sha256", "local_json_output_sha256"):
+                  "original_output_sha256", "local_json_output_sha256",
+                  "original_model_sha256", "local_json_model_sha256"):
         assert len(result[field]) == 64
+    assert result["original_model_sha256"] != result["local_json_model_sha256"]
 
 
 def test_yaml_on_scalar_preserves_backend_parser_difference(tmp_path, configured_oasdiff):
@@ -98,6 +102,21 @@ def test_non_json_yaml_date_is_explicitly_unsupported(tmp_path):
     assert "non-JSON date" in result["detail"]
 
 
+def test_compact_alias_doubling_exceeds_control_node_limit_promptly(tmp_path):
+    lines = ["components:", "  schemas: {Probe: {type: string}}", "x0: &a0 [0]"]
+    for index in range(1, 18):
+        lines.append(f"x{index}: &a{index} [*a{index - 1}, *a{index - 1}]")
+    _write_text(tmp_path, "components.yaml", "\n".join(lines) + "\n")
+    _entry(tmp_path)
+    started = time.monotonic()
+
+    result = parser_consistency.inspect_openapi_parser_consistency(tmp_path, "openapi.yaml")
+
+    assert result["status"] == "UNSUPPORTED"
+    assert "node limit" in result["detail"]
+    assert time.monotonic() - started < 5
+
+
 def test_local_refs_and_yaml_aliases_are_captured_and_flattened(
         tmp_path, configured_oasdiff):
     _write_text(tmp_path, "components.yaml", '''components:
@@ -119,6 +138,7 @@ def test_local_refs_and_yaml_aliases_are_captured_and_flattened(
         assert item["original_backend_status"] == item["local_json_backend_status"] == "PARSED"
         assert len(item["original_output_sha256"]) == 64
         assert len(item["local_json_output_sha256"]) == 64
+        assert item["original_model_sha256"] == item["local_json_model_sha256"]
 
 
 def test_external_reference_is_rejected_by_capture(tmp_path):
@@ -174,7 +194,7 @@ def test_nondeterministic_fresh_process_replay_is_unknown(
         observation = flatten(*args, **kwargs)
         calls += 1
         if calls == 3:
-            observation = {**observation, "value": {"changed": True}}
+            observation = {**observation, "model_sha256": "f" * 64}
         return observation
 
     monkeypatch.setattr(parser_consistency, "_flatten", inconsistent_replay)
@@ -183,6 +203,45 @@ def test_nondeterministic_fresh_process_replay_is_unknown(
 
     assert result["status"] == "UNKNOWN"
     assert "fresh-process replay" in result["detail"]
+
+
+@pytest.mark.parametrize(("depth", "detail"), [(130, "depth limit"),
+                                                  (1200, "malformed flattened JSON")])
+def test_recursive_backend_json_is_unknown(tmp_path, configured_oasdiff, monkeypatch, depth, detail):
+    _scalar_closure(tmp_path, "1e3")
+    original_run = openapi._run
+    nested = b'{"value":' + b"[" * depth + b"0" + b"]" * depth + b"}"
+
+    def recursive_output(binary, args, cwd, env, deadline):
+        if args[0] == "flatten":
+            return subprocess.CompletedProcess(args, 0, nested, b"")
+        return original_run(binary, args, cwd, env, deadline)
+
+    monkeypatch.setattr(openapi, "_run", recursive_output)
+
+    result = parser_consistency.inspect_openapi_parser_consistency(tmp_path, "openapi.yaml")
+
+    assert result["status"] == "UNKNOWN"
+    assert detail in result["detail"]
+
+
+def test_flattened_model_comparison_node_limit_is_unknown(
+        tmp_path, configured_oasdiff, monkeypatch):
+    _scalar_closure(tmp_path, "1e3")
+    original_run = openapi._run
+    large_output = json.dumps({"values": [None] * parser_consistency.MAX_MODEL_NODES}).encode("ascii")
+
+    def oversized_output(binary, args, cwd, env, deadline):
+        if args[0] == "flatten":
+            return subprocess.CompletedProcess(args, 0, large_output, b"")
+        return original_run(binary, args, cwd, env, deadline)
+
+    monkeypatch.setattr(openapi, "_run", oversized_output)
+
+    result = parser_consistency.inspect_openapi_parser_consistency(tmp_path, "openapi.yaml")
+
+    assert result["status"] == "UNKNOWN"
+    assert "node limit" in result["detail"]
 
 
 @pytest.mark.parametrize("timeout_seconds", [0, 61, True, 1.0])

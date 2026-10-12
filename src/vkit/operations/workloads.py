@@ -25,7 +25,7 @@ from ..proc import run as run_process
 from ..runner import _child_env, missing_prerequisite
 from ..store import Store
 from ..verifiers import dispatch
-from ..verifiers.spec import ScenarioCheck
+from ..verifiers.spec import NativeCheckSpec, ScenarioCheck
 
 MIN_PAIRS = 10
 MAX_PAIRS = 20
@@ -89,7 +89,7 @@ def _inside(root: Path, relative: str, label: str) -> Path:
     return target
 
 
-def _read_input(project: Project, relative: str) -> tuple[_InputFile, str]:
+def _read_input(project: Project, relative: str, *, max_file_bytes: int = MAX_FILE_BYTES) -> tuple[_InputFile, str]:
     path = _inside(project.root, relative, "check input")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -98,16 +98,18 @@ def _read_input(project: Project, relative: str) -> tuple[_InputFile, str]:
         raise _Unsupported(f"check input {relative!r} changed while it was captured") from None
     with os.fdopen(descriptor, "rb") as source:
         info = os.fstat(source.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > max_file_bytes:
             raise _Unsupported(f"check input {relative!r} exceeds the per-file byte limit")
-        content = source.read(MAX_FILE_BYTES + 1)
-        if len(content) > MAX_FILE_BYTES or source.read(1):
+        content = source.read(max_file_bytes + 1)
+        if len(content) > max_file_bytes or source.read(1):
             raise _Unsupported(f"check input {relative!r} exceeds the per-file byte limit")
     normalized = hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest()
     return _InputFile(relative, content, hashlib.sha256(content).hexdigest(), stat.S_IMODE(info.st_mode)), normalized
 
 
-def _capture_inputs(project: Project, check: ScenarioCheck, record: dict[str, Any]) -> tuple[_InputFile, ...]:
+def _capture_inputs(project: Project, check: NativeCheckSpec, record: dict[str, Any], *,
+                    max_file_bytes: int = MAX_FILE_BYTES,
+                    max_total_bytes: int = MAX_INPUT_BYTES) -> tuple[_InputFile, ...]:
     available = source_files(project)
     selected = tuple(name for name in available if not check.inputs or any(matches(name, pattern)
                                                                            for pattern in check.inputs))
@@ -137,9 +139,9 @@ def _capture_inputs(project: Project, check: ScenarioCheck, record: dict[str, An
     for relative in selected:
         if is_secret(relative):
             raise _Unsupported(f"secret-like input {relative!r} cannot be captured")
-        item, normalized = _read_input(project, relative)
+        item, normalized = _read_input(project, relative, max_file_bytes=max_file_bytes)
         total += len(item.content)
-        if total > MAX_INPUT_BYTES:
+        if total > max_total_bytes:
             raise _Unsupported("check inputs exceed the total byte limit")
         actual[relative] = normalized
         files.append(item)

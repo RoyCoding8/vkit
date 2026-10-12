@@ -18,6 +18,7 @@ class CheckKind(enum.StrEnum):
     LEAN = "lean"
     TLC = "tlc"
     STATIC = "static"
+    BUILD = "build"
 
 
 class LeanProfile(enum.StrEnum):
@@ -210,12 +211,39 @@ class StaticCheck(NativeCheckSpec):
         return ()
 
 
-CheckSpec = StaticCheck | ScenarioCheck | PytestCheck | NodeTestCheck | PropertyCheck | LeanCheck | TlcCheck
+@dataclass(frozen=True)
+class BuildEntryPoint:
+    name: str
+    args: tuple[str, ...]
+    expected_exit_code: int
+    expected_stdout: str
+    expected_stderr: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class BuildCheck(NativeCheckSpec):
+    """An explicitly approved, fixed offline wheel build and installation smoke check."""
+
+    uv_executable: str
+    uv_version: str
+    uv_sha256: str
+    python_version: str
+    python_sha256: str
+    build_constraints: str
+    wheelhouse: str
+    runtime_requirements: str
+    imports: tuple[str, ...]
+    entry_points: tuple[BuildEntryPoint, ...]
+    kind: CheckKind = field(default=CheckKind.BUILD, init=False)
+
+
+CheckSpec = StaticCheck | ScenarioCheck | PytestCheck | NodeTestCheck | PropertyCheck | LeanCheck | TlcCheck | BuildCheck
 
 VARIANTS: dict[CheckKind, type] = {
     CheckKind.SCENARIO: ScenarioCheck, CheckKind.PYTEST: PytestCheck, CheckKind.NODE_TEST: NodeTestCheck,
     CheckKind.PROPERTY: PropertyCheck, CheckKind.LEAN: LeanCheck, CheckKind.TLC: TlcCheck,
     CheckKind.STATIC: StaticCheck,
+    CheckKind.BUILD: BuildCheck,
 }
 
 
@@ -230,5 +258,7 @@ def evidence_kind(check: NativeCheckSpec) -> ClaimCategory:
     if isinstance(check, StaticCheck):
         return ClaimCategory.STATIC
     if isinstance(check, (ScenarioCheck, PytestCheck, NodeTestCheck)):
+        return ClaimCategory.SCENARIO
+    if isinstance(check, BuildCheck):
         return ClaimCategory.SCENARIO
     raise TypeError(f"{type(check).__name__} is not a check variant")

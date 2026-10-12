@@ -15,6 +15,7 @@ from jsonschema.exceptions import ValidationError
 
 MANIFEST_V2 = "manifest.v2.json"
 CHECK_ARTIFACT = "check-artifact.v1.json"
+BUILD_ARTIFACT = "build-artifact.v1.json"
 
 
 class SchemaValidationError(Exception):

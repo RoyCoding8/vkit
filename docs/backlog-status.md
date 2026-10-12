@@ -25,7 +25,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 19 | Retained approved scenario assertions replayed against current subject after a clean baseline | Additional case formats and assertion extraction |
 | 20 | Batfish differential reachability, real Linux service and CLI/MCP acceptance passed | Additional address families and broader deployment models |
 | 21 | Approved paired workload campaign with baseline capture | Additional measurement protocols |
-| 22 | Open | Bounded Rust verification with a protected harness |
+| 22 | Kani checks captured standalone primitive Rust functions with owned harnesses, original-source compilation and independent counterexample replay | Heap, unsafe, calls, concurrency and captured Cargo projects |
 | 23 | Open | Pinned LLVM/Alive2 directional refinement |
 | 24 | Atomic transaction-history linearizability profile | Additional isolation semantics |
 | 25 | Crash/restart transitions over durable/volatile finite state | Instrumented persistent-storage crash testing |

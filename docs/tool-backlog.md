@@ -429,6 +429,12 @@ Source: [pyperf result analysis](https://pyperf.readthedocs.io/en/latest/analyze
 
 ### 22. Bounded Rust safety and assertion verification
 
+Implemented: `check_rust_safety` captures one standalone primitive Rust function, validates the
+original bytes with pinned rustc, and lowers a closed typed model to an owned Kani harness. Completed
+safety and unwinding checks are required for `SAFE`; counterexamples require independent typed
+replay. The Linux runtime has isolated request state. Cargo projects, heap, unsafe, calls and
+concurrency remain outside this profile. See [the model](rust-safety-model.md).
+
 Proposed call: `check_native_properties(snapshot, target, profile="rust-kani", bounds)`.
 
 Ask whether a selected Rust function violates fixed safety checks or a stated assertion within the supported model. Return the checked property, assumptions, unwinding status, and counterexample when available.

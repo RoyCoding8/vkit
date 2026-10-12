@@ -35,6 +35,8 @@ engines = [
     "pybatfish==2026.9.17.3748",
     "schemathesis==4.30.0",
     "hypothesis==6.169.0",
+    "tree-sitter==0.25.2",
+    "tree-sitter-rust==0.24.2",
     "islpy==2026.2.2; sys_platform != 'win32'",
 ]
 test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5", "hypothesis>=6.100"]

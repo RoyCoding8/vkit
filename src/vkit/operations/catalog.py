@@ -29,6 +29,7 @@ from .protocols import check_protocol_model
 from .regex_cost import analyze_regex_cost
 from .retained_cases import replay_retained_cases
 from .roundoff import analyze_roundoff
+from .rust_safety import check_rust_safety
 from .semantic_merge import check_semantic_merge
 from .source_migrations import preview_typescript_symbol_rename
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
@@ -66,6 +67,23 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="check_rust_safety",
+        description=("Check a captured standalone Rust primitive function with pinned Kani and a "
+                     "verifier-owned harness. Validates the original captured source with pinned rustc, "
+                     "then checks arithmetic, division, shifts and loop unwinding over full primitive "
+                     "input domains. SAFE requires completed safety and unwinding checks. Counterexamples "
+                     "require independent typed replay. Calls, macros, heap, unsafe and concurrency are unsupported."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative standalone Rust source"},
+            "function": {"type": "string", "minLength": 1},
+            "unwind": {"type": "integer", "minimum": 1, "maximum": 32, "default": 8},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 60},
+        },
+        required=("path", "function"), handler=check_rust_safety,
+        outcomes={"SAFE": 0, "COUNTEREXAMPLE": 1, "UNKNOWN": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="check_api_sequences",

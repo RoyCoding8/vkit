@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import os
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from jsonschema import ValidationError, validate
 
@@ -54,6 +56,62 @@ class SettingsFileError(ValueError):
 DEFAULT_SETTINGS = Settings()
 
 
+LAUNCHER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "version": {"type": "integer", "const": 1},
+        "project": {"type": ["string", "null"], "minLength": 1},
+        "port": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "open_browser": {"type": "boolean"},
+    },
+    "additionalProperties": False,
+}
+
+
+@dataclass(frozen=True)
+class LauncherSettings:
+    version: int = 1
+    project: str | None = None
+    port: int = 0
+    open_browser: bool = True
+
+    def as_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def launcher_settings_path() -> Path:
+    override = os.environ.get("VKIT_CONFIG")
+    if override:
+        return Path(override).expanduser().resolve()
+    if os.name == "nt":
+        root = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return root / "vkit" / "config.json"
+
+
+def parse_launcher_settings(value: Any) -> LauncherSettings:
+    try:
+        validate(value, LAUNCHER_SCHEMA)
+    except ValidationError as exc:
+        raise ValueError(f"invalid launch settings: {exc.message}") from exc
+    settings = LauncherSettings(**value)
+    if settings.project is not None:
+        project = Path(settings.project).expanduser()
+        if not project.is_absolute():
+            raise ValueError("default repository must be an absolute path")
+        settings = LauncherSettings(**{**value, "project": str(project)})
+    return settings
+
+
+def load_launcher_settings() -> LauncherSettings:
+    return _load(launcher_settings_path(), parse_launcher_settings, LauncherSettings())
+
+
+def save_launcher_settings(settings: LauncherSettings) -> None:
+    write_json(launcher_settings_path(), settings.as_json())
+
+
 def settings_path(project: Project) -> Path:
     return Store.of(project).root / "config.json"
 
@@ -69,7 +127,13 @@ def parse_settings(value: Any) -> Settings:
 
 
 def load_settings(project: Project) -> Settings:
-    path = settings_path(project)
+    return _load(settings_path(project), parse_settings, DEFAULT_SETTINGS)
+
+
+_T = TypeVar("_T")
+
+
+def _load(path: Path, parse: Callable[[Any], _T], default: _T) -> _T:
     try:
         value = read_json(path)
     except json.JSONDecodeError as exc:
@@ -79,9 +143,9 @@ def load_settings(project: Project) -> Settings:
     if value is None:
         if path.exists():
             raise SettingsFileError(f"invalid settings at {path}: expected a JSON object")
-        return DEFAULT_SETTINGS
+        return default
     try:
-        return parse_settings(value)
+        return parse(value)
     except ValueError as exc:
         raise SettingsFileError(f"invalid settings at {path}: {exc}") from exc
 

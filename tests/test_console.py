@@ -13,6 +13,7 @@ import pytest
 from helpers import DRIVER, scenario_check, vkit
 from vkit.console import bind
 from vkit.paths import open_project
+from vkit.settings import launcher_settings_path
 
 PASSES = DRIVER + 'report([("ok", True, "printed ok")])\n'
 
@@ -142,6 +143,34 @@ def test_console_settings_default_save_restart_and_git_status(make_project):
     status = subprocess.run(["git", "-C", str(project), "status", "--short"], capture_output=True,
                             text=True, check=True)
     assert status.stdout == ""
+
+
+def test_launch_defaults_save_restart_manual_edit_and_csrf(make_project):
+    project = make_project({"README.md": "global preferences\n"}, [], accept=False)
+    path = launcher_settings_path()
+    saved = {"version": 1, "project": str(project), "port": 9010, "open_browser": False}
+    with _serve(project) as port:
+        config = _config(port)
+        assert config["launcher_settings_path"] == str(path)
+        assert config["launcher_settings"] == {
+            "version": 1, "project": None, "port": 0, "open_browser": True,
+        }
+        assert _post(port, "/api/launcher-settings", saved, None)[0] == 403
+        assert not path.exists()
+        status, raw, _ = _post(port, "/api/launcher-settings", saved, config["csrf_token"])
+        assert status == 200
+        assert json.loads(raw) == {"settings": saved, "settings_path": str(path)}
+        assert not (project / ".git" / "vkit" / "config.json").exists()
+        assert _post(port, "/api/launcher-settings", {**saved, "port": -1}, config["csrf_token"])[0] == 400
+        assert json.loads(path.read_text(encoding="utf-8")) == saved
+    with _serve(project) as port:
+        assert _config(port)["launcher_settings"] == saved
+    edited = {**saved, "project": None, "port": 0}
+    path.write_text(json.dumps(edited), encoding="utf-8")
+    with _serve(project) as port:
+        assert _config(port)["launcher_settings"] == edited
+    assert subprocess.run(["git", "-C", str(project), "status", "--short"],
+                          capture_output=True, text=True, check=True).stdout == ""
 
 
 def test_invalid_console_settings_are_reported_without_rewriting(make_project):

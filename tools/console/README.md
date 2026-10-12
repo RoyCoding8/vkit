@@ -10,6 +10,8 @@ Built assets are checked into `src/vkit/console-assets` and ship in the Python
 package. Running the console needs neither Node nor an internet connection.
 Console preferences are saved under the repository's Git common directory in
 `vkit/config.json`, usually `.git/vkit/config.json`.
+Launch defaults use the user config directory's `vkit/config.json`, or the file selected by
+`VKIT_CONFIG`. The Setup page shows both paths and edits each file separately.
 
 To rebuild from the pinned dependencies:
 

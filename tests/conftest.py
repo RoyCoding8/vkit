@@ -10,6 +10,11 @@ import pytest
 from helpers import git, vkit
 
 
+@pytest.fixture(autouse=True)
+def isolated_launch_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("VKIT_CONFIG", str(tmp_path / "user-settings" / "config.json"))
+
+
 @pytest.fixture
 def make_project(tmp_path: Path):
     def build(files: dict[str, str], checks: list[dict[str, Any]], *, accept: bool = True) -> Path:

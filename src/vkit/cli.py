@@ -16,7 +16,7 @@ from .operations.catalog import OPERATIONS
 from .operations.contract import (Operation, OperationContractError, OperationInputError, cli_arguments, cli_value,
                                   invoke)
 from .paths import ProjectError
-from .settings import load_settings, save_settings
+from .settings import load_launcher_settings, load_settings, save_settings
 from .store import now
 
 EXIT_OK = 0
@@ -297,7 +297,7 @@ def cmd_tools(args: argparse.Namespace) -> int:
 def cmd_console(args: argparse.Namespace) -> int:
     from .console import serve
 
-    return serve(_context(args).project, port=args.port, open_browser=not args.no_browser)
+    return serve(_context(args).project, port=args.port, open_browser=args.open_browser)
 
 
 def cmd_tui(args: argparse.Namespace) -> int:
@@ -323,7 +323,7 @@ def cmd_compute(args: argparse.Namespace) -> int:
 
 def _command_parser(container: Any, name: str, help_text: str) -> argparse.ArgumentParser:
     target = container.add_parser(name, help=help_text)
-    target.add_argument("--project", default=".", help="repository root, or a directory inside it")
+    target.add_argument("--project", help="repository root; defaults to saved repository, then current directory")
     target.add_argument("--json", action="store_true", help="write one JSON object to stdout")
     return target
 
@@ -411,12 +411,13 @@ def build_parser() -> argparse.ArgumentParser:
         _add_operation_parser(compute, operation)
 
     console = command(sub, "console", "serve the interactive console on 127.0.0.1")
-    console.add_argument("--port", type=int, default=8765, help="0 lets the OS pick a free port")
-    console.add_argument("--no-browser", action="store_true")
+    console.add_argument("--port", type=int, help="override saved web port; 0 picks a free port")
+    console.add_argument("--browser", dest="open_browser", action=argparse.BooleanOptionalAction,
+                         help="override saved browser preference")
     tui = sub.add_parser("tui", help="open the terminal launcher")
     tui.set_defaults(json=False)
-    tui.add_argument("--project", default=".", help="repository root, or a directory inside it")
-    tui.add_argument("--port", type=int, default=0, help="web console port; 0 picks a free port")
+    tui.add_argument("--project", help="repository root; defaults to saved repository, then current directory")
+    tui.add_argument("--port", type=int, help="override saved web port; 0 picks a free port")
     return parser
 
 
@@ -438,6 +439,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if handler is None:
         handler = _DISPATCH[(args.command, getattr(args, f"{args.command}_command", None))]
     try:
+        if args.project is None or args.command in {"console", "tui"}:
+            defaults = load_launcher_settings()
+            if args.project is None:
+                args.project = defaults.project or "."
+            if args.command in {"console", "tui"}:
+                if args.port is None:
+                    args.port = defaults.port
+                if not 0 <= args.port <= 65535:
+                    raise Refused("port must be between 0 and 65535", EXIT_INVALID)
+                if args.command == "console" and args.open_browser is None:
+                    args.open_browser = defaults.open_browser
         return handler(args)
     except Refused as exc:
         if args.json:

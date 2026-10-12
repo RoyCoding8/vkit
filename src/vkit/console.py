@@ -14,7 +14,8 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__, query
 from .settings import (DEFAULT_SETTINGS, SETTINGS_SCHEMA, SettingsFileError, load_settings,
-                       parse_settings, save_settings, settings_path)
+                       parse_settings, save_settings, settings_path, launcher_settings_path,
+                       load_launcher_settings, parse_launcher_settings, save_launcher_settings)
 from .mcp import BY_NAME, Server, tool_definitions
 from .operations.catalog import OPERATIONS
 from .paths import Project
@@ -136,6 +137,8 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                                 "settings": settings.as_json(), "settings_path": str(settings_path(project)),
                                 "settings_defaults": DEFAULT_SETTINGS.as_json(),
                                 "settings_schema": SETTINGS_SCHEMA, "csrf_token": csrf_token,
+                                "launcher_settings": load_launcher_settings().as_json(),
+                                "launcher_settings_path": str(launcher_settings_path()),
                                 "operations": [tool for tool in _OPERATION_DESCRIPTORS
                                                if tool["name"] not in settings.disabled_tools],
                                 "managed_tools": [{"name": tool.name, "description": tool.description}
@@ -156,16 +159,21 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                            HTTPStatus.FORBIDDEN)
                 return
             path = urlparse(self.path).path
-            if path not in ("/api/settings", "/api/call"):
+            if path not in ("/api/settings", "/api/launcher-settings", "/api/call"):
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
             payload = self._post_json()
             if payload is _INVALID_BODY:
                 return
-            if path == "/api/settings":
+            if path in ("/api/settings", "/api/launcher-settings"):
+                launcher = path == "/api/launcher-settings"
                 try:
-                    settings = parse_settings(payload)
-                    save_settings(project, settings)
+                    if launcher:
+                        settings = parse_launcher_settings(payload)
+                        save_launcher_settings(settings)
+                    else:
+                        settings = parse_settings(payload)
+                        save_settings(project, settings)
                 except ValueError as exc:
                     self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                     return
@@ -173,7 +181,8 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                     self._json({"error": f"cannot save settings: {exc}"},
                                HTTPStatus.INTERNAL_SERVER_ERROR)
                     return
-                self._json({"settings": settings.as_json(), "settings_path": str(settings_path(project))})
+                self._json({"settings": settings.as_json(),
+                            "settings_path": str(launcher_settings_path() if launcher else settings_path(project))})
                 return
 
             if not isinstance(payload, dict) or set(payload) != {"name", "arguments"}:

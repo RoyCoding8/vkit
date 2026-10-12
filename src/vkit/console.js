@@ -1162,15 +1162,11 @@ function proposals() {
     );
   return list;
 }
-function mergeSettingsDraft(next, previous, defaults) {
-  if (!settingsDraft) {
-    settingsDraft = { ...next };
-    return;
-  }
-  const draft = { ...settingsDraft };
-  for (const key of Object.keys(defaults))
-    if (JSON.stringify(draft[key]) === JSON.stringify(previous?.[key])) draft[key] = next[key];
-  settingsDraft = draft;
+function mergeSettingsDraft(draft, next, previous) {
+  return Object.fromEntries(Object.keys(next).map((key) => [key,
+    !draft || JSON.stringify(draft[key]) === JSON.stringify(previous?.[key])
+      ? next[key] : draft[key],
+  ]));
 }
 function setPreferenceFeedback(message) {
   const status = $("preference-feedback");
@@ -1394,6 +1390,74 @@ function settingsForm() {
   });
   return form;
 }
+let launcherDraft = null,
+  launcherMessage = "",
+  launcherSaving = false;
+
+function launcherSettingsForm() {
+  const form = el("form", null, "settings-form"),
+    fields = el("div", null, "form-grid");
+  form.id = "launcher-settings-form";
+  form.append(el("p", configuration.launcher_settings_path, "small quiet"));
+  for (const [name, labelText, type] of [
+    ["project", "Default repository", "text"],
+    ["port", "Web console port", "number"],
+    ["open_browser", "Open browser with vkit console", "checkbox"],
+  ]) {
+    const field = el("div", null, type === "checkbox" ? "form-checkbox" : "form-field"),
+      input = el("input"),
+      label = el("label", labelText);
+    input.id = `launcher-${name}`;
+    input.type = type;
+    input.disabled = launcherSaving;
+    label.htmlFor = input.id;
+    if (type === "checkbox") input.checked = launcherDraft[name];
+    else input.value = launcherDraft[name] ?? "";
+    if (name === "port") {
+      input.min = "0";
+      input.max = "65535";
+      input.step = "1";
+      input.required = true;
+    }
+    input.addEventListener("input", () => {
+      launcherDraft[name] = type === "checkbox" ? input.checked
+        : type === "number" ? Number(input.value) : input.value.trim() || null;
+    });
+    field.append(label, input);
+    if (name === "project") field.append(el("p", "Use an absolute path. Blank uses the current directory.", "field-help"));
+    if (name === "port") field.append(el("p", "Use 0 to choose a free port. Applies when the server next starts.", "field-help"));
+    fields.append(field);
+  }
+  const status = el("p", launcherMessage, "settings-message"),
+    save = el("button", "Save launch defaults", "console-button primary");
+  status.setAttribute("role", "status");
+  save.type = "submit";
+  save.disabled = launcherSaving;
+  form.append(fields, status, save);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (launcherSaving) return;
+    const candidate = { ...launcherDraft };
+    launcherSaving = true;
+    launcherMessage = "Saving launch defaults...";
+    render();
+    try {
+      const response = await post("/api/launcher-settings", candidate);
+      launcherDraft = mergeSettingsDraft(launcherDraft, response.settings, candidate);
+      configuration.launcher_settings = response.settings;
+      settingsVersion += 1;
+      launcherMessage = "Launch defaults saved. They apply to the next command or launch.";
+    } catch (error) {
+      launcherMessage = `Could not save launch defaults: ${error.message}`;
+    } finally {
+      launcherSaving = false;
+      render();
+      refresh().catch(showError);
+    }
+  });
+  return form;
+}
+
 function setup() {
   const fragment = document.createDocumentFragment(),
     grid = el("div", null, "overview-grid"),
@@ -1466,6 +1530,11 @@ function setup() {
   );
   fragment.append(
     grid,
+    panel(
+      "Launch defaults",
+      "Saved for this user, outside repositories. Explicit CLI options override these values.",
+      [launcherSettingsForm()],
+    ),
     panel(
       "Project settings",
       "Preferences and tool availability are saved for this project.",
@@ -1766,15 +1835,11 @@ function refresh() {
       if (requestedSettingsVersion !== settingsVersion && configuration) {
         nextConfig.settings = configuration.settings;
         nextConfig.settings_path = configuration.settings_path;
+        nextConfig.launcher_settings = configuration.launcher_settings;
       }
       const previousSettings = configuration?.settings;
-      if (settingsDraft && previousSettings)
-        mergeSettingsDraft(
-          nextConfig.settings,
-          previousSettings,
-          nextConfig.settings_defaults,
-        );
-      else settingsDraft = { ...nextConfig.settings };
+      settingsDraft = mergeSettingsDraft(settingsDraft, nextConfig.settings, previousSettings);
+      launcherDraft = mergeSettingsDraft(launcherDraft, nextConfig.launcher_settings, configuration?.launcher_settings);
       report = nextReport;
       runs = nextRuns;
       configuration = nextConfig;

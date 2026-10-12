@@ -43,16 +43,40 @@ On Linux or macOS:
 ```
 
 Both wrappers launch `tui.py`. They use this checkout's virtual environment, or `uv` to create it
-if absent. Arguments and paths with spaces are supported. Without `--project`, the launcher uses
-your current directory. The selected project must be a Git repository. The installed command is
+if absent. Arguments and paths with spaces are supported. Without `--project`, CLI commands use
+your saved default repository, then your current directory if none is saved. The selected project
+must be a Git repository. The installed command is
 `vkit tui --project <repository>`, also available as `uv run --no-sync vkit tui` from this checkout.
 
 Choose **Open web console / settings** to start the local server and open your browser.
-Choose **Start web server** if you only want its URL. The default port is chosen automatically;
-pass `--port 8765` for a fixed port. Quitting, pressing Ctrl+C at the menu, or changing projects
+Choose **Start web server** if you only want its URL. The saved port is used;
+`0` chooses a free port. Pass `--port 8765` to override it. Quitting, pressing Ctrl+C at the menu, or changing projects
 stops the server owned by that launcher. Keep the terminal open while using the web console.
 
 In the web console, open **Setup & tools** to enable or disable tools and save settings.
+Its **Launch defaults** form saves the default repository, web port, and browser preference.
+You can also choose **e** in the terminal menu to edit these defaults.
+Changes apply to future launches. Explicit `--project`, `--port`, `--browser`, or `--no-browser`
+options override saved values for that invocation without changing the JSON.
+
+Launch defaults live outside repositories at `%APPDATA%\vkit\config.json` on Windows, or
+`$XDG_CONFIG_HOME/vkit/config.json` on Linux and macOS. If `XDG_CONFIG_HOME` is unset, the path is
+`~/.config/vkit/config.json`. The UI shows the exact path. You can edit the same file directly:
+
+```json
+{
+  "version": 1,
+  "project": "D:/work/my-repo",
+  "port": 8765,
+  "open_browser": true
+}
+```
+
+Use an absolute repository path, or `null` to use the current directory. The browser preference
+applies to `vkit console`; choosing **Open web console** in the TUI explicitly opens it.
+Set `VKIT_CONFIG` to select another file, such as this checkout's gitignored `settings/config.json`.
+Repository tool settings remain in the Git common directory. Neither standard settings file is committed.
+
 Open the computations catalog to select a tool, fill in its inputs, and inspect its scoped result.
 Install the Python engines with `uv sync --extra mcp --extra engines`. Native engines have
 additional setup documented in [built-in computations](docs/computations.md).
@@ -142,7 +166,7 @@ hook holds the session while a check the agent can rerun is stale or failing.
 vkit console --project .
 ```
 
-This opens a workspace on `127.0.0.1:8765`. Run registered checks, cancel active runs, and use the
+This opens a workspace on `127.0.0.1` using your saved port and browser preference. Run registered checks, cancel active runs, and use the
 built-in computations from their catalog-generated forms. The sidebar also shows check definitions,
 run outcomes and logs, verification methods, feature coverage, and pending proposals.
 
@@ -173,7 +197,8 @@ Frontend development and asset rebuild instructions are in [tools/console](tools
 | `vkit tools [--query TEXT]` | Discover enabled tools, or change availability with `--enable` / `--disable` |
 | `vkit compute --help` | List installed computations; each command has generated input help |
 
-Every command takes `--project` (default `.`). Noninteractive commands also take `--json`.
+Every command takes `--project`, defaulting to your saved repository or `.`.
+Noninteractive commands also take `--json`.
 
 ## Limits
 

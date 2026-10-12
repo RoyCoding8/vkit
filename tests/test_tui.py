@@ -25,7 +25,7 @@ def test_menu_uses_cli_and_reports_scoped_status(make_project):
         text=True, timeout=30, **NO_WINDOW,
     )
     assert done.returncode == 0, done.stderr
-    assert "Choose a number, m, p, or q." in done.stdout
+    assert "Choose a number, m, p, e, or q." in done.stdout
     assert "BLOCKED" in done.stdout
     assert "compare_matchsets" in done.stdout
     assert '"mcpServers"' in done.stdout
@@ -43,7 +43,7 @@ def test_subprocess_console_answers_while_menu_waits_for_input(make_project):
 
     def read_output():
         for line in proc.stdout:
-            lines.put(line)
+            lines.put(re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line))
 
     reader = threading.Thread(target=read_output, daemon=True)
     reader.start()

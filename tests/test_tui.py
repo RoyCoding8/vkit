@@ -65,6 +65,10 @@ def test_subprocess_console_answers_while_menu_waits_for_input(make_project, tmp
             proc.stdin.write("q\n")
             proc.stdin.flush()
             assert proc.wait(timeout=10) == 0
+        except Exception:
+            output.seek(0)
+            print(output.read())
+            raise
         finally:
             proc.stdin.close()
             if proc.poll() is None:

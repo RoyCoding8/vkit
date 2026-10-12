@@ -9,6 +9,7 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
+from socketserver import TCPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -201,8 +202,14 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
     return Handler
 
 
+class _LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def bind(project: Project, port: int) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer(("127.0.0.1", port), _handler(project, set()))
+    server = _LoopbackServer(("127.0.0.1", port), _handler(project, set()))
     bound = server.server_address[1]
     server.RequestHandlerClass = _handler(project, {f"127.0.0.1:{bound}", f"localhost:{bound}"})
     return server

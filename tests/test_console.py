@@ -86,6 +86,19 @@ def _config(port: int) -> dict:
     return json.loads(raw)
 
 
+def test_console_starts_when_reverse_dns_is_unavailable(make_project, monkeypatch):
+    project = make_project({"README.md": "loopback console\n"}, [], accept=False)
+
+    def unavailable(*args, **kwargs):
+        raise OSError("reverse DNS is unavailable")
+
+    monkeypatch.setattr("socket.getfqdn", unavailable)
+    with _serve(project) as port:
+        status, raw = _get(port, "/api/status")
+        assert status == 200
+        assert json.loads(raw)["project"] == str(project)
+
+
 def test_the_console_shows_the_gate_checks_and_a_run_log(make_project):
     project = make_project({"ok.py": PASSES + 'print("hello from the driver")\n'},
                            [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])

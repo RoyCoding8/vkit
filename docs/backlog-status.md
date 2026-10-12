@@ -33,7 +33,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 27 | Retry and duplicate-delivery finite protocol models | Live application fault-injection campaigns |
 | 28 | Gappa round-off proof for an explicit rational arithmetic DAG | Source extraction and additional operations |
 | 29 | Pinned Recheck backtracking-cost analysis | Additional regex dialects |
-| 30 | Open | Native path search and concrete witness replay |
+| 30 | Selected scalar C if-arm reachability via CBMC, with typed inputs and native GCC UBSan prefix replay | Broader paths, project builds, library/environment models and other native frontends |
 | 31 | Scalar C contracts and loop invariants checked by Frama-C WP/Qed, including completion and precondition feasibility | Heap/function summaries, broader source and additional provers |
 | 32 | Exact affine access relations and replayed overlaps | Alias, bounds and broader loop frontends |
 | 33 | Runtime feasibility blocked on the current WSL host; rr 5.9.0 starts but cannot record because hardware performance counters are unavailable | Supported Linux recording/replay host, then fixed recording queries |

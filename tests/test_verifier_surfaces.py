@@ -9,6 +9,41 @@ import pytest
 from helpers import McpClient, vkit
 
 
+def test_c_branch_cli_mcp_and_disabled_discovery(make_project):
+    project = make_project({}, [], accept=False)
+    source = b"int choose(int value) { if (value == 7) return 42; return 0; }\n"
+    (project / "choose.c").write_bytes(source)
+    native = sys.platform == "linux" and bool(os.environ.get("VKIT_C_BRANCH_GCC_BIN"))
+    expected = "REACHABLE" if native else "UNAVAILABLE"
+    arguments = {"path": "choose.c", "function": "choose", "branch_id": "if@1:25:then"}
+    code, result = vkit(project, "compute", "inspect-c-branch-reachability", "--path", "choose.c",
+                        "--function", "choose", "--branch-id", "if@1:25:then")
+    assert (code, result["status"]) == (0 if native else 5, expected)
+    assert result["source_sha256"] == hashlib.sha256(source).hexdigest()
+    if native:
+        assert result["witness"]["inputs"] == {"value": 7}
+        assert result["witness"]["observation"] == "VKIT_BRANCH_ID:if@1:25:then"
+    client = McpClient(project)
+    try:
+        before = client.call("gate")
+        result, error = client.call("inspect_c_branch_reachability", **arguments)
+        assert not error and result["status"] == expected
+        assert client.call("gate") == before
+        refused, error = client.call("inspect_c_branch_reachability", **arguments, command=["true"])
+        assert error and "command" in refused["error"]
+    finally:
+        client.close()
+    assert vkit(project, "tools", "--disable", "inspect_c_branch_reachability")[0] == 0
+    fresh = McpClient(project)
+    try:
+        found, error = fresh.call("help", query="inspect_c_branch_reachability")
+        assert not error and found["tools"] == []
+        refused, error = fresh.call("inspect_c_branch_reachability", **arguments)
+        assert error and refused["error"] == "unknown or unavailable tool"
+    finally:
+        fresh.close()
+
+
 def test_llvm_refinement_cli_mcp_and_disabled_discovery(make_project):
     project = make_project({}, [], accept=False)
     before = b"define i8 @f(i8 %x) {\n  %y = add i8 %x, 0\n  ret i8 %y\n}\n"

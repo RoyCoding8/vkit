@@ -11,6 +11,7 @@ from .algebra import compare_rational_expressions
 from .api_sequences import check_api_sequences
 from .behavior import find_behavioral_difference
 from .c_safety import check_c_safety
+from .c_branches import inspect_c_branch_reachability
 from .c_contracts import prove_c_contract
 from .cache_keys import find_cache_key_collision
 from .contract import FileInput, Operation, operation_by_name
@@ -70,6 +71,26 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="inspect_c_branch_reachability",
+        description=("Ask whether a selected if-arm in captured scalar C can execute. Reuses pinned "
+                     "CBMC under C11 Linux LP64 and returns selectable branch IDs. REACHABLE requires "
+                     "typed solver inputs and native GCC UBSan replay through protected AST instrumentation "
+                     "that stops at the arm. UNREACHABLE requires completed safety and unwind checks. "
+                     "Does not cover whole programs or every form of C undefined behavior."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative standalone C source"},
+            "function": {"type": "string", "minLength": 1},
+            "branch_id": {"type": "string", "pattern": "^if@[1-9][0-9]*:[1-9][0-9]*:(then|else)$",
+                          "description": "selected if-arm ID from the returned branches inventory"},
+            "unwind": {"type": "integer", "minimum": 1, "maximum": 256, "default": 16},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
+        },
+        required=("path", "function", "branch_id"), handler=inspect_c_branch_reachability,
+        outcomes={"REACHABLE": 0, "UNREACHABLE": 1, "UNKNOWN": 3,
+                  "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="check_llvm_refinement",

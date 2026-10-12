@@ -91,7 +91,7 @@ See the [implementation status map](backlog-status.md) for the exact shipped sub
 | 27 | Retry, duplicate-delivery, and interruption counterexamples | Design |
 | 28 | Rigorous floating-point round-off bounds | Engine |
 | 29 | Regular-expression backtracking cost and attack witnesses | Engine |
-| 30 | Inputs that reach a selected native-code path | Engine |
+| 30 | Inputs that reach a selected native-code path | Scalar C if-arm profile implemented |
 | 31 | C function contracts beyond bounded unwinding | Engine |
 | 32 | Affine memory-access overlap and loop dependencies | Engine |
 | 33 | Queries over deterministically replayed executions | Engine |
@@ -569,6 +569,12 @@ This is distinct from `compare_matchsets`, which compares accepted languages. Eq
 Sources: [recheck](https://makenowjust-labs.github.io/recheck/), [diagnostic and complexity categories](https://makenowjust-labs.github.io/recheck/docs/usage/diagnostics/).
 
 ### 30. Inputs that reach a selected native-code path
+
+`inspect_c_branch_reachability` reuses the existing captured C scalar frontend and pinned CBMC
+instead of adding a second symbolic-execution runtime. It returns selectable branch IDs, checks one
+protected assertion, reconstructs typed inputs, and requires native GCC UBSan replay of the selected
+prefix before `REACHABLE`. `UNREACHABLE` requires completed safety and unwinding checks. Broader
+KLEE-style program/environment modeling remains open. See [C branch model](c-branch-model.md).
 
 Proposed call: `find_path_input(snapshot, target, path_condition, environment_profile, bounds)`.
 

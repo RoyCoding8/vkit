@@ -68,6 +68,9 @@ integer comparisons against every supplied sample. This produces sample facts, n
 v20.0 at commit `c0f5434f402ad91714ee0952f686cd0f524920ad` and LLVM 20.1.8. Its protected LLVM
 validator verifies module validity before admitting the supported instructions. Engine witnesses
 are identified separately from independently replayed counterexamples.
+[C branch reachability](c-branch-model.md) reuses the captured scalar C frontend and CBMC 6.11.0,
+then confirms typed inputs through native GCC UBSan replay of protected AST instrumentation.
+Negative results require completed safety and unwinding checks; execution stops at the selected arm.
 
 ## Check a replacement
 

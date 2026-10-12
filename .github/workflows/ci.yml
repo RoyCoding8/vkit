@@ -324,6 +324,10 @@ jobs:
               preprocessor = pathlib.Path(gcc).absolute()
               output.write(f"VKIT_C_PREPROCESSOR_BIN={preprocessor}\n")
               output.write(f"VKIT_C_PREPROCESSOR_SHA256={hashlib.sha256(preprocessor.read_bytes()).hexdigest()}\n")
+              if not windows:
+                  output.write(f"VKIT_C_BRANCH_GCC_BIN={preprocessor}\n")
+                  output.write(f"VKIT_C_BRANCH_GCC_SHA256={hashlib.sha256(preprocessor.read_bytes()).hexdigest()}\n")
+                  output.write("VKIT_C_BRANCH_REQUIRED=1\n")
       - name: Install and require pinned Cedar policy engines
         shell: python
         run: |

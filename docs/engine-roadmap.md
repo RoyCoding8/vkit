@@ -52,6 +52,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | [Frama-C WP](https://www.frama-c.com/fc-plugins/wp.html) | `prove_c_contract` | Scalar C pre/postconditions and loop invariants beyond unwinding, with precondition feasibility, runtime guards and Qed obligation completion |
 | [Kani](https://github.com/model-checking/kani) 0.68.0 | `check_rust_safety` | Closed primitive Rust safety checks with original-source compilation, owned harnesses, completed unwind assertions and typed witness replay |
 | [Alive2](https://github.com/AliveToolkit/alive2) v20.0 and LLVM 20.1.8 | `check_llvm_refinement` | Directional refinement between captured, verified acyclic scalar integer IR functions; witnesses retain their trusted-engine scope |
+| CBMC 6.11.0 and operator-pinned native GCC | `inspect_c_branch_reachability` | Selected scalar C if-arm, completed negative checks and typed witness replay through protected AST instrumentation and UBSan |
 | Pinned uv and Python with hash-locked backend dependencies | `check_release_artifact` | Approved offline paired wheel builds, clean installs and literal outputs; optional captured historical-baseline overlay compared with a clean current wheel |
 | oasdiff 1.33.0 and the local OpenAPI parser | `inspect_openapi_parser_consistency` | Typed flattened-model differences across captured source files and JSON controls, replayed in fresh processes |
 | [Joern](https://github.com/joernio/joern) | `find_data_flows` | Captured C interprocedural parameter-to-argument paths with fixed queries, parse-completion checks and modeled endpoint evidence |
@@ -71,7 +72,7 @@ another transport, plugin loader, or command executor. Native Windows has no isl
 | --- | --- |
 | [Souffle](https://github.com/souffle-lang/souffle) | Which nodes are reachable under a protected dependency relation? First define a useful source extractor and its completeness boundary. |
 | [rr](https://github.com/rr-debugger/rr) | Which write preceded this point in a recorded execution? The actual rr 5.9.0 WSL probe cannot record because hardware performance counters are unavailable. Requires a supported Linux host and captured traces. |
-| [KLEE](https://github.com/klee/klee) | Which inputs reach a selected supported native-code path? Requires a pinned LLVM runtime and explicit environment model. |
+| [KLEE](https://github.com/klee/klee) | The selected scalar C branch question uses existing CBMC plus native replay. Broader program paths still require a pinned LLVM runtime and explicit environment model. |
 | [LLVM/Clang](https://github.com/llvm/llvm-project) | Reusable source frontend for native-code operations. Compilation alone is not a behavioral proof. |
 | [Z3](https://github.com/Z3Prover/z3) | Potential internal solver. Exposing a second generic solver would duplicate existing machinery. |
 | [egg](https://github.com/egraphs-good/egg) | Alternative equality-saturation implementation. Current egglog operation already covers the selected question. |

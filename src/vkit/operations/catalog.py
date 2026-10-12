@@ -363,9 +363,11 @@ OPERATIONS = (
                      "in fresh CPython processes. Observes returns, exceptions and mutated integer-list arguments. "
                      "Accepts only the installed closed language of typed local computation, branches and loops; "
                      "imports, global access, arbitrary calls and attributes are rejected before execution. "
+                     "Also accepts a declared integer-multiset-statistic relation bundle; the installed "
+                     "transformation compares one non-mutating statistic on a list and its sorted permutation. "
                      "No witness is UNKNOWN, never equivalence. Deadlines are not an OS sandbox."),
         properties={
-            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 closed Python function pair"},
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative version-1 closed Python function pair or multiset relation bundle"},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
         },
         required=("path",), handler=find_behavioral_difference,

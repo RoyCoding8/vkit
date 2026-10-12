@@ -49,3 +49,30 @@ sandbox or a heap limit. Unsupported syntax returns `UNSUPPORTED`; an absent or
 mismatched CrossHair installation returns `UNAVAILABLE`.
 
 The upstream search semantics and caveats are in [CrossHair's differential behavior documentation](https://crosshair.readthedocs.io/en/latest/diff_behavior.html).
+
+The same operation accepts a fixed metamorphic question for a function declared
+to compute an integer multiset statistic:
+
+```json
+{
+  "version": 1,
+  "function": "score",
+  "relation": "integer-multiset-statistic",
+  "source": "def score(xs: list[int]) -> int:\n    return xs[0] if len(xs) else 0\n"
+}
+```
+
+The installed transformation compares `score(xs)` with `score(sorted(xs))`.
+Sorting preserves the input multiset. Every permutation has the same sorted
+representative, so this relation tests the declared order-independence contract.
+The caller supplies that contract; vkit does not infer that every list function
+should be order independent. The example violates it when the first element is
+not the minimum.
+
+This profile requires exactly one `list[int]` parameter and an `int` or `bool`
+result. It rejects attribute access, subscript assignment and augmented assignment
+throughout the function, including mutation through aliases. Original and sorted
+executions run in the existing isolated replay processes. Evidence includes the
+original and transformed arguments, observed returns or exceptions, and two
+matching concrete replays. Runtime returns outside the declared result types
+remain inconclusive. Search exhaustion is `UNKNOWN`, not an invariance proof.

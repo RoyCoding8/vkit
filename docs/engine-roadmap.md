@@ -66,7 +66,7 @@ another transport, plugin loader, or command executor. Native Windows has no isl
 | --- | --- |
 | [Alive2](https://github.com/AliveToolkit/alive2) | Does this supported LLVM transformation refine the original? First establish a reproducible matching LLVM build and exclude unsupported interprocedural transformations. |
 | [Souffle](https://github.com/souffle-lang/souffle) | Which nodes are reachable under a protected dependency relation? First define a useful source extractor and its completeness boundary. |
-| [rr](https://github.com/rr-debugger/rr) | Which write preceded this point in a recorded execution? Requires a Linux host with supported performance counters and captured traces. |
+| [rr](https://github.com/rr-debugger/rr) | Which write preceded this point in a recorded execution? The actual rr 5.9.0 WSL probe cannot record because hardware performance counters are unavailable. Requires a supported Linux host and captured traces. |
 | [KLEE](https://github.com/klee/klee) | Which inputs reach a selected supported native-code path? Requires a pinned LLVM runtime and explicit environment model. |
 | [LLVM/Clang](https://github.com/llvm/llvm-project) | Reusable source frontend for native-code operations. Compilation alone is not a behavioral proof. |
 | [Z3](https://github.com/Z3Prover/z3) | Potential internal solver. Exposing a second generic solver would duplicate existing machinery. |

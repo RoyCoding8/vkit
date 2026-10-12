@@ -36,7 +36,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 30 | Open | Native path search and concrete witness replay |
 | 31 | Scalar C contracts and loop invariants checked by Frama-C WP/Qed, including completion and precondition feasibility | Heap/function summaries, broader source and additional provers |
 | 32 | Exact affine access relations and replayed overlaps | Alias, bounds and broader loop frontends |
-| 33 | Open | Fixed queries over supported rr recordings |
+| 33 | Runtime feasibility blocked on the current WSL host; rr 5.9.0 starts but cannot record because hardware performance counters are unavailable | Supported Linux recording/replay host, then fixed recording queries |
 | 34 | Perfetto scheduler-state interval facts; real CLI/MCP and three-platform CI passed | Additional trace questions and recording provenance |
 | 35 | Fixed-grammar integer expression synthesis and proof | Additional grammars and domains |
 | 36 | Checked linear rankings and fixed-point witnesses | Broader termination frontends and complexity bounds |
@@ -45,7 +45,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 39 | Daikon proposals independently checked against supplied samples | Application trace provenance and universal invariant proofs |
 | 40 | Pure-function key collisions and full modeled-domain exclusion | Hidden state, effects and real cache implementations |
 | 41 | Grammar ambiguity witnesses with independent derivation replay | General ambiguity exclusion is not claimed |
-| 42 | Open | Protected domain-specific metamorphic execution campaigns |
+| 42 | Protected multiset-statistic permutation relation in the existing behavior comparison operation | Additional domain-specific relations and broader application execution |
 | 43 | Rational-function identity over a declared mathematical field | Other algebraic domains |
 
 No substantive entry has been discarded as silly. Duplicate solver endpoints, generic shell execution, generic debugger scripting and agent-supplied verifier logic remain excluded: they do not supply a new fixed question or preserve verifier ownership. Related questions use the same operation where their models match, including contract formats, numerical bounds/format selection and finite protocol failure modes.

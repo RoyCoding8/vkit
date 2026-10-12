@@ -59,6 +59,64 @@ def test_no_difference_never_proves_equivalence(tmp_path):
     assert "arguments" not in result
 
 
+def test_declared_multiset_statistic_has_replayed_permutation_witness(tmp_path):
+    path = tmp_path / "relation.json"
+    path.write_text(json.dumps({"version": 1, "function": "f", "relation": "integer-multiset-statistic",
+                                "source": "def f(xs: list[int]) -> int:\n    if len(xs) == 0:\n        return 0\n    return xs[0]\n"}), encoding="utf-8")
+    result = find_behavioral_difference(tmp_path, path.name, timeout_seconds=25)
+    assert result["status"] == "COUNTEREXAMPLE", result
+    xs = result["arguments"]["xs"]
+    assert result["transformed_arguments"] == {"xs": sorted(xs)}
+    assert result["observations"]["before"]["return"] == xs[0]
+    assert result["observations"]["after"]["return"] == min(xs)
+    assert xs[0] != min(xs)
+    assert result["replay_count"] == 2
+
+
+def test_multiset_statistic_without_witness_is_unknown(tmp_path):
+    path = tmp_path / "relation.json"
+    path.write_text(json.dumps({"version": 1, "function": "f", "relation": "integer-multiset-statistic",
+                                "source": "def f(xs: list[int]) -> int:\n    return sum(xs)\n"}), encoding="utf-8")
+    result = find_behavioral_difference(tmp_path, path.name, timeout_seconds=12)
+    assert result["status"] == "UNKNOWN", result
+    assert "arguments" not in result
+
+
+@pytest.mark.parametrize("source", [
+    "def f(xs: list[int]) -> int:\n    alias = xs\n    alias[0] = 1\n    return 0\n",
+    "def f(xs: list[int]) -> int:\n    xs.append(1)\n    return 0\n",
+    "def f(xs: list[int]) -> int:\n    alias = xs\n    alias += [1]\n    return 0\n",
+    "def f(xs: list[int]) -> list[int]:\n    return xs\n",
+    "def f(x: int) -> int:\n    return x\n",
+])
+def test_multiset_profile_rejects_mutation_and_wrong_signatures(tmp_path, source, monkeypatch):
+    monkeypatch.setattr("vkit.operations.behavior.subprocess.run", lambda *a, **k: pytest.fail("unsupported source executed"))
+    path = tmp_path / "relation.json"
+    path.write_text(json.dumps({"version": 1, "function": "f", "relation": "integer-multiset-statistic", "source": source}), encoding="utf-8")
+    assert find_behavioral_difference(tmp_path, path.name)["status"] == "UNSUPPORTED"
+
+
+def test_multiset_relation_cli_mcp_and_help(make_project):
+    from helpers import McpClient, vkit
+
+    project = make_project({}, [], accept=False)
+    (project / "relation.json").write_text(json.dumps({
+        "version": 1, "function": "f", "relation": "integer-multiset-statistic",
+        "source": "def f(xs: list[int]) -> int:\n    if len(xs) == 0:\n        return 0\n    return xs[0]\n",
+    }), encoding="utf-8")
+    code, result = vkit(project, "compute", "find-behavioral-difference", "--path", "relation.json", "--timeout-seconds", "25")
+    assert (code, result["status"]) == (1, "COUNTEREXAMPLE"), result
+    client = McpClient(project)
+    try:
+        help_result, error = client.call("help", query="multiset")
+        assert not error and any(tool["name"] == "find_behavioral_difference" for tool in help_result["tools"])
+        result, error = client.call("find_behavioral_difference", path="relation.json", timeout_seconds=25)
+        assert not error and result["status"] == "COUNTEREXAMPLE", result
+        assert result["transformed_arguments"]["xs"] == sorted(result["arguments"]["xs"])
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize("source", [
     "import os\ndef f(x: int) -> int:\n    return x\n",
     "@print\ndef f(x: int) -> int:\n    return x\n",

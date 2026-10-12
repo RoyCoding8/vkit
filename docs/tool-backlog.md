@@ -587,6 +587,15 @@ Source: [ISL manual](https://libisl.sourceforge.io/user.html).
 
 ### 33. Queries over deterministically replayed executions
 
+Runtime probe on October 11, 2026: the Ubuntu rr 5.9.0 binary starts on the current
+WSL host, but recording `/bin/true` fails. Native CPU detection rejects model
+`0xb06d0`; a diagnostic microarchitecture override reaches `perf_event_open` and
+reports unavailable hardware performance counters, including with `record -n`.
+No successful recording or replay has been established here. This is a host
+capability blocker, not a reason to discard the operation. The next step requires
+a supported Linux recording host. See the upstream
+[hardware and VM requirements](https://github.com/rr-debugger/rr/wiki/Building-And-Installing).
+
 Proposed call: `inspect_recorded_execution(recording, event, query_profile)`.
 
 Ask a question about an actual captured execution, such as which recorded write changed a location before a selected failure. Return the recorded event, relevant state, and replay position.
@@ -714,6 +723,13 @@ A parser conflict alone does not prove grammar ambiguity. Some conflicts reflect
 Source: [GNU Bison counterexamples](https://www.gnu.org/software/bison/manual/html_node/Counterexamples.html).
 
 ### 42. Counterexamples to fixed metamorphic relations
+
+Implemented profile: `find_behavioral_difference` accepts an integer-multiset-statistic
+bundle. Its installed AST transformation compares a non-mutating function on an
+integer list and its sorted permutation. CrossHair searches for a violating input;
+two fresh CPython replays establish the reported observation. The caller declares
+order independence, and unsuccessful search remains `UNKNOWN`. See the
+[behavior model](behavior-model.md). Broader relations remain future work.
 
 Proposed call: `check_metamorphic_relation(snapshot, target, relation_profile, domain, bounds)`.
 

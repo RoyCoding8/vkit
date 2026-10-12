@@ -26,6 +26,7 @@ MODEL_SCOPE = (
 )
 _CALLS = {"abs": abs, "len": len, "range": range, "min": min, "max": max, "sum": sum, "sorted": sorted}
 _TYPES = {"int": int, "bool": bool, "str": str, "list": list}
+MULTISET_RELATION = "integer-multiset-statistic"
 _NODES = (
     ast.Module, ast.FunctionDef, ast.arguments, ast.arg, ast.Return, ast.Assign, ast.AugAssign,
     ast.If, ast.For, ast.While, ast.Break, ast.Continue, ast.Pass, ast.Expr,
@@ -108,6 +109,30 @@ def _validate(raw: Any) -> dict[str, Any]:
     if before != after or list(before) != list(after):
         raise ValueError("both functions must have identical parameter names, order and annotations")
     return raw
+
+
+def _input_bundle(raw: Any) -> tuple[dict[str, Any], str | None]:
+    if not isinstance(raw, dict) or "relation" not in raw:
+        return _validate(raw), None
+    if (set(raw) != {"version", "function", "source", "relation"}
+            or raw["relation"] != MULTISET_RELATION):
+        raise ValueError("relation bundle needs version, function, source and integer-multiset-statistic relation")
+    pair = _validate({"version": raw["version"], "function": raw["function"],
+                      "before": raw["source"], "after": raw["source"]})
+    tree, arguments = _parse(raw["source"], raw["function"])
+    function = tree.body[0]
+    if len(arguments) != 1 or list(arguments.values()) != ["list[int]"] or _annotation(function.returns) not in {"int", "bool"}:
+        raise ValueError("multiset statistic needs one list[int] argument and an int or bool return")
+    if any(isinstance(node, (ast.Attribute, ast.AugAssign))
+           or isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store)
+           for node in ast.walk(function)):
+        raise ValueError("multiset statistics cannot mutate lists or use augmented assignments")
+    name = next(iter(arguments))
+    function.body.insert(0, ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())],
+                                     value=ast.Call(func=ast.Name(id="sorted", ctx=ast.Load()),
+                                                    args=[ast.Name(id=name, ctx=ast.Load())], keywords=[])))
+    pair["after"] = ast.unparse(ast.fix_missing_locations(tree))
+    return _validate(pair), MULTISET_RELATION
 
 
 def _function(source: str, name: str):
@@ -208,9 +233,18 @@ def find_behavioral_difference(root: Path, path: str, timeout_seconds: int = 10)
         raise ValueError("timeout_seconds must be from 1 to 60")
     result = {"status": "UNSUPPORTED", "model_scope": MODEL_SCOPE}
     try:
-        bundle, digest = read_json(root, path, max_bytes=MAX_BYTES, reject_symlinks=True)
-        _validate(bundle)
+        raw, digest = read_json(root, path, max_bytes=MAX_BYTES, reject_symlinks=True)
+        bundle, relation = _input_bundle(raw)
         result["input_sha256"] = digest
+        if relation is not None:
+            result["relation"] = relation
+            result["model_scope"] = (
+                "Order independence of a declared integer multiset statistic in the installed closed Python profile. "
+                "The installed transformation compares the selected function on a list and its sorted permutation. "
+                "Only returned int/bool values and exceptions are compared; input mutation is unsupported. "
+                "A violation is replayed twice in fresh CPython processes. No witness is UNKNOWN, never a proof. "
+                "The declaration that the function is intended to be order independent is supplied by the caller."
+            )
     except (ValueError, SyntaxError, RecursionError) as exc:
         return {**result, "reason": str(exc)}
     try:
@@ -249,8 +283,15 @@ def find_behavioral_difference(root: Path, path: str, timeout_seconds: int = 10)
         if (set(first) != {"before", "after"} or first != second
                 or encode_json(first["before"], max_bytes=MAX_OUTPUT) == encode_json(first["after"], max_bytes=MAX_OUTPUT)):
             return {**result, "status": "UNKNOWN", "reason": "candidate did not reproduce a stable concrete difference"}
+        relation_evidence = {}
+        if relation is not None:
+            for observation in first.values():
+                if (observation["arguments_after"] != arguments
+                        or "return" in observation and type(observation["return"]) not in {int, bool}):
+                    return {**result, "status": "UNKNOWN", "reason": "replayed statistic violated the non-mutating int/bool profile"}
+            relation_evidence["transformed_arguments"] = {name: sorted(values) for name, values in arguments.items()}
         return {**result, "status": "COUNTEREXAMPLE", "arguments": arguments,
-                "observations": first, "replay_count": 2}
+                "observations": first, "replay_count": 2, **relation_evidence}
     except (OSError, ValueError, TypeError, KeyError, TimeoutError, subprocess.TimeoutExpired) as exc:
         return {**result, "status": "UNKNOWN", "reason": str(exc)}
 

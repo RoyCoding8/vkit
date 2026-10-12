@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from vkit.manifest import parse_manifest
-from vkit.operations.workloads import compare_workload_cost
+from vkit.operations.workloads import _Unsupported, _git, compare_workload_cost
 from vkit.paths import open_project
 from vkit.runner import run_check
 from vkit.store import Store
@@ -63,6 +65,16 @@ def test_workload_comparison_uses_committed_subject_and_paired_scenarios(make_pr
     assert all(row["measurements"]["latency"]["before"] == 1 for row in result["samples"])
     assert all(row["measurements"]["latency"]["candidate"] == 3 for row in result["samples"])
     assert (project / "src/product.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+def test_git_blob_capture_stops_at_the_shared_process_output_limit(make_project):
+    project = make_project({"payload.bin": "x" * 8192}, [], accept=False)
+    object_id = subprocess.check_output(
+        ["git", "rev-parse", "HEAD:payload.bin"], cwd=project, text=True,
+    ).strip()
+
+    with pytest.raises(_Unsupported, match="output limits"):
+        _git(open_project(project), "cat-file", "blob", object_id, max_output_bytes=1024)
 
 
 def test_workload_comparison_rejects_changed_captured_driver(make_project):

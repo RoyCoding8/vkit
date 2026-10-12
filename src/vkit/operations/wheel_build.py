@@ -29,6 +29,7 @@ from ..verifiers.spec import BuildCheck
 from ._data import encode_json
 from .workloads import (
     MAX_INPUT_FILES,
+    MAX_GIT_METADATA_BYTES,
     _capture_inputs,
     _commit_files,
     _git,
@@ -281,10 +282,12 @@ def _baseline_inputs(project: Project, check: BuildCheck, current_files):
     if baseline_sha is None:
         return None
     try:
-        resolved = _git(project, "rev-parse", "--verify", f"{baseline_sha}^{{commit}}").decode("ascii").strip()
+        resolved = _git(project, "rev-parse", "--verify", f"{baseline_sha}^{{commit}}",
+                        max_output_bytes=MAX_GIT_METADATA_BYTES).decode("ascii").strip()
         if resolved != baseline_sha:
             raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline is not the supplied full commit SHA")
-        tree = _git(project, "ls-tree", "-r", "-l", "-z", "--full-tree", baseline_sha)
+        tree = _git(project, "ls-tree", "-r", "-l", "-z", "--full-tree", baseline_sha,
+                    max_output_bytes=MAX_BASELINE_TREE_BYTES)
     except _Unsupported as exc:
         raise _Blocked(BlockedReason.INPUT_MISSING, str(exc)) from None
     if len(tree) > MAX_BASELINE_TREE_BYTES:

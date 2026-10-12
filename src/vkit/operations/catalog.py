@@ -30,6 +30,7 @@ from .regex_cost import analyze_regex_cost
 from .retained_cases import replay_retained_cases
 from .roundoff import analyze_roundoff
 from .semantic_merge import check_semantic_merge
+from .source_migrations import preview_typescript_symbol_rename
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
 from .sql_equivalence import compare_sql_queries
 from .termination import analyze_loop_termination
@@ -355,6 +356,23 @@ OPERATIONS = (
         },
         required=("path",), handler=compare_rational_expressions,
         outcomes={"IDENTICAL": 0, "NOT_IDENTICAL": 1, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
+        name="preview_typescript_symbol_rename",
+        description=("Preview a symbol rename in a captured closed TypeScript project with pinned TypeScript 5.9.3. "
+                     "Checks clean compiler diagnostics, complete rename sites and the declaration bindings of "
+                     "every captured identifier before and after the in-memory edit. Preserves import aliases "
+                     "and returns a patch without changing source. Runtime behavior, reflection and consumers "
+                     "outside the snapshot are outside this claim."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative .ts or .tsx file containing the selected declaration"},
+            "old_name": {"type": "string", "minLength": 1},
+            "new_name": {"type": "string", "minLength": 1},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
+        },
+        required=("path", "old_name", "new_name"), handler=preview_typescript_symbol_rename,
+        outcomes={"PREVIEW": 0, "UNSUPPORTED": 2, "UNKNOWN": 3, "UNAVAILABLE": 5},
     ),
     Operation(
         version=1,

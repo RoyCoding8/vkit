@@ -667,6 +667,14 @@ Source: [FPTuner](https://github.com/soarlab/FPTuner).
 
 ### 38. Protected source migrations with checked postconditions
 
+Implemented profile: `preview_typescript_symbol_rename` captures a closed TypeScript
+project, compares Language Service rename sites with compiler bindings, applies
+the edits in memory, then checks every captured identifier's declaration identity
+and clean compiler diagnostics. It returns an applicable patch, preserving aliases
+and final-newline bytes, without writing source. The result does not claim runtime
+equivalence or compatibility with uncaptured consumers. See the
+[source migration model](source-migration-model.md).
+
 Proposed call: `apply_checked_transformation(snapshot, transformation_profile)`.
 
 Ask for a patch produced by a fixed migration whose declared preconditions hold, with checked postconditions. A useful profile could replace a specific deprecated API throughout supported C code and reject sites it cannot classify.

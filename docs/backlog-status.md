@@ -41,7 +41,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 35 | Fixed-grammar integer expression synthesis and proof | Additional grammars and domains |
 | 36 | Checked linear rankings and fixed-point witnesses | Broader termination frontends and complexity bounds |
 | 37 | Feasible uniform binary32/binary64 format certification | Mixed precision and optimality proof |
-| 38 | Open | A substantive fixed source migration with defensible postconditions |
+| 38 | TypeScript symbol rename preview with complete site and captured identifier binding checks | Additional fixed source migrations and broader project configuration |
 | 39 | Daikon proposals independently checked against supplied samples | Application trace provenance and universal invariant proofs |
 | 40 | Pure-function key collisions and full modeled-domain exclusion | Hidden state, effects and real cache implementations |
 | 41 | Grammar ambiguity witnesses with independent derivation replay | General ambiguity exclusion is not claimed |

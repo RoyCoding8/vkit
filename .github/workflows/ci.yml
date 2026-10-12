@@ -99,6 +99,9 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
               output.write(f"VKIT_NODE_BIN={shutil.which('node')}\n")
               output.write("VKIT_REQUIRE_TYPESCRIPT_ENGINE=1\n")
+              rename_helper = pathlib.Path("tools/typescript/migration-helper.cjs").resolve()
+              output.write(f"VKIT_TYPESCRIPT_RENAME_HELPER={rename_helper}\n")
+              output.write(f"VKIT_TYPESCRIPT_RENAME_HELPER_SHA256={hashlib.sha256(rename_helper.read_bytes()).hexdigest()}\n")
               for name, folder, filename in (("DEPENDENCY", "dependencies", "dependency_helper.mjs"),
                                              ("MUTATION", "mutation", "helper.mjs"),
                                              ("REGEX", "regex", "helper.cjs"),

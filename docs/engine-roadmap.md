@@ -19,6 +19,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | [Batfish](https://github.com/batfish/batfish) | `compare_network_paths` | Successful reachability changes in two captured IPv4 configuration models; real service acceptance is required separately |
 | [Perfetto](https://perfetto.dev/) | `explain_trace_interval` | Exact clipped scheduler-state facts in a supplied trace, with loss and coverage limitations |
 | [TypeScript](https://github.com/microsoft/TypeScript) | `compare_contracts`, `typescript-api` profile | Strict assignability of checked exported declarations from closed local `.d.ts` inputs; no runtime or universal consumer compatibility claim |
+| TypeScript 5.9.3 Language Service and checker | `preview_typescript_symbol_rename` | Read-only rename patch with complete selected sites, preserved captured identifier declarations and clean compiler diagnostics |
 | [Gappa](https://gappa.gitlabpages.inria.fr/) | `analyze_roundoff` | Round-off budget and feasible uniform-format certification for an explicit arithmetic DAG; trusted engine result without a separate proof-kernel check |
 | [cvc5](https://github.com/cvc5/cvc5) | `check_rewrite` | Equal return values of supported pure integer/boolean functions |
 | [egglog](https://github.com/egraphs-good/egglog) | `simplify_function` | Fixed rewrite rules, fixed expression cost, independent cvc5 check |

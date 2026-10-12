@@ -8,6 +8,7 @@ from . import MAX_SOURCE_BYTES, check_rewrite, reduce_failure, simplify_function
 from .affine import compare_iteration_sets
 from .affine_accesses import analyze_affine_accesses
 from .algebra import compare_rational_expressions
+from .api_sequences import check_api_sequences
 from .behavior import find_behavioral_difference
 from .c_safety import check_c_safety
 from .c_contracts import prove_c_contract
@@ -64,6 +65,23 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="check_api_sequences",
+        description=("Generate linked OpenAPI request sequences against an operator-configured loopback test "
+                     "service with pinned Schemathesis. Resets service state before each sequence and replay. "
+                     "Returns a minimized input sequence only after the same engine failure identifiers "
+                     "recur after reset, with exact observed response evidence. NO_VIOLATION describes a "
+                     "completed sampled campaign, not universal API correctness. Requests can mutate the service."),
+        properties={
+            "schema_path": {"type": "string", "minLength": 1, "description": "repository-relative OpenAPI file"},
+            "max_examples": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            "max_steps": {"type": "integer", "minimum": 1, "maximum": 12, "default": 6},
+            "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 300, "default": 60},
+        },
+        required=("schema_path",), handler=check_api_sequences, read_only=False,
+        outcomes={"BUG_REPRODUCED": 1, "NO_VIOLATION": 0, "INCONCLUSIVE": 3, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="find_data_flows",

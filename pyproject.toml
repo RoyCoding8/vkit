@@ -33,6 +33,8 @@ engines = [
     "sqlglot==30.22.0",
     "perfetto==0.58.2",
     "pybatfish==2026.9.17.3748",
+    "schemathesis==4.30.0",
+    "hypothesis==6.169.0",
     "islpy==2026.2.2; sys_platform != 'win32'",
 ]
 test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5", "hypothesis>=6.100"]

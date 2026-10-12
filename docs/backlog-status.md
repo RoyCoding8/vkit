@@ -8,7 +8,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 2 | OpenAPI compatibility in `compare_contracts` | Broader schema dialect support |
 | 3 | Approved JavaScript mutation campaigns with survivor replay | Additional mutation frontends |
 | 4 | Joern C source-to-sink paths with captured-file and parser-completion checks | Preprocessing, additional languages and broader library semantics |
-| 5 | Open | Isolated stateful API campaigns and replay |
+| 5 | Stateful Schemathesis campaigns with same-origin reset, bounded response evidence and fresh failure replay | Application startup/authentication fixtures and broader business-rule profiles |
 | 6 | Restricted Draft 4 containment profile | Additional JSON Schema constructs |
 | 7 | Captured Python dependency constraint solving | Other package ecosystems |
 | 8 | SQLite migration path/fresh-install comparison | Other database engines |

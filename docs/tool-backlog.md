@@ -183,6 +183,11 @@ Source: [Joern data-flow steps](https://docs.joern.io/cpgql/data-flow-steps/).
 
 ### 5. Stateful API sequence counterexamples
 
+Implemented: `check_api_sequences` runs Schemathesis 4.30.0 against an operator-configured loopback
+test service, resets state between sequences and freshly replays minimized failures. It captures
+response bytes and distinguishes a completed sampled campaign from universal correctness.
+See [API sequence model](api-sequence-model.md). Application startup and authenticated fixtures remain open.
+
 Proposed call: `exercise_api_sequences(snapshot, schema, profile, bounds)`.
 
 Ask which tested operation sequence violates a fixed check. A sequence could create a resource, update it, fetch it, delete it, and fetch it again. Return the requests, relevant responses, initial state, selected check, and a replayable failure.

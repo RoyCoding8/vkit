@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21.0.12+8"
+          java-version: "21.0.12+8.0.LTS"
       - name: Configure the trusted system Java used by the fixed Joern environment
         run: |
           sudo update-alternatives --install /usr/bin/java java "$JAVA_HOME/bin/java" 100

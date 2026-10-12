@@ -7,6 +7,7 @@ import subprocess
 import sys
 import stat
 import json
+import runpy
 from pathlib import Path
 from zipfile import ZipFile, ZipInfo
 
@@ -21,7 +22,7 @@ from vkit.operations.data_flows import (
     _frontend_incomplete,
     find_data_flows,
 )
-from scripts.install_dataflow_engine import _safe_members
+_safe_members = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/install_dataflow_engine.py"))["_safe_members"]
 
 
 def _flow_marker(table: str) -> str:

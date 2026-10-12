@@ -227,7 +227,7 @@ def test_console_lists_only_catalog_operations_and_uses_the_shared_dispatcher(ma
         assert names == {"analyze_affine_accesses", "analyze_dependencies", "analyze_loop_termination", "analyze_regex_cost", "analyze_roundoff", "check_c_safety",
                          "compare_iteration_sets", "minimize_cover", "compare_migrations",
                          "compare_network_paths", "explain_trace_interval", "infer_trace_relations", "find_cache_key_collision", "find_grammar_ambiguity", "generate_configurations", "resolve_dependencies",
-                         "synthesize_function", "compare_rational_expressions", "find_behavioral_difference", "compare_sql_queries", "compare_wheels", "compare_workload_cost",
+                         "synthesize_function", "compare_rational_expressions", "find_behavioral_difference", "compare_sql_queries", "compare_wheels", "compare_workload_cost", "replay_retained_cases",
                          "compare_contracts", "check_history", "compare_matchsets", "compare_authorization_policies",
                          "check_protocol_model", "check_rewrite", "check_semantic_merge", "simplify_function", "reduce_failure", "mutation_survivors"}
         assert not names & {"status", "features", "check_run", "run_get", "run_cancel", "gate", "propose"}

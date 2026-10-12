@@ -16,7 +16,7 @@ def test_an_agent_sees_staleness_runs_what_is_needed_and_reaches_ready(make_proj
                          "compare_matchsets", "compare_migrations", "compare_network_paths", "compare_rational_expressions", "compare_sql_queries", "compare_wheels", "compare_workload_cost", "features",
                          "explain_trace_interval", "find_behavioral_difference", "find_cache_key_collision", "find_grammar_ambiguity",
                          "gate", "generate_configurations", "help", "infer_trace_relations", "minimize_cover", "mutation_survivors",
-                         "propose", "reduce_failure", "resolve_dependencies", "run_cancel", "run_get",
+                         "propose", "reduce_failure", "replay_retained_cases", "resolve_dependencies", "run_cancel", "run_get",
                          "simplify_function", "status", "synthesize_function"])
 
         body, error = client.call("gate")

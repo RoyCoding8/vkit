@@ -24,6 +24,7 @@ from .network_paths import compare_network_paths
 from .policies import compare_authorization_policies
 from .protocols import check_protocol_model
 from .regex_cost import analyze_regex_cost
+from .retained_cases import replay_retained_cases
 from .roundoff import analyze_roundoff
 from .semantic_merge import check_semantic_merge
 from .synthesis import PROFILE as SYNTHESIS_PROFILE, synthesize_function
@@ -61,6 +62,23 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="replay_retained_cases",
+        description=("Replay retained approved scenario assertions against the captured current subject. "
+                     "Uses the exact old check inputs from an immutable Git commit and replaces only approved "
+                     "subject paths. A clean retained baseline must pass first. Reports literal per-case "
+                     "observations and source digests; weakened current assertions cannot replace the retained "
+                     "driver. Scope is required scenario cases, not budget obligations or repository correctness."),
+        properties={
+            "run_id": {"type": "string", "minLength": 1},
+            "before_ref": {"type": "string", "minLength": 40, "maxLength": 64},
+            "timeout_seconds": {"type": "integer", "minimum": 30, "maximum": 600, "default": 120},
+        },
+        required=("run_id", "before_ref"), handler=replay_retained_cases,
+        outcomes={"REPLAYED_PASS": 0, "REGRESSION": 1, "BASELINE_FAILED": 3,
+                  "INCONCLUSIVE": 3, "UNSUPPORTED": 2},
+    ),
     Operation(
         version=1,
         name="compare_network_paths",

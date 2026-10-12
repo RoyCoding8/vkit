@@ -22,7 +22,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 16 | Open | Parser/serializer disagreement campaigns |
 | 17 | Cedar policy comparison and replay | Additional policy languages |
 | 18 | Open | Observed undeclared inputs and incremental/clean disagreement |
-| 19 | Retained-case replay implementation in progress | Protected old assertions, current subject and baseline control |
+| 19 | Retained approved scenario assertions replayed against current subject after a clean baseline | Additional case formats and assertion extraction |
 | 20 | Batfish differential reachability, real Linux service and CLI/MCP acceptance passed | Additional address families and broader deployment models |
 | 21 | Approved paired workload campaign with baseline capture | Additional measurement protocols |
 | 22 | Open | Bounded Rust verification with a protected harness |

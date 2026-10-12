@@ -1,6 +1,7 @@
 """Interprocedural source-to-sink paths from a pinned Joern C frontend."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -34,6 +35,10 @@ MAX_CPG_BYTES = 2_000_000_000
 MAX_CAPTURE_SECONDS = 10
 MAX_OUTPUT_LINE = 64_000
 _HOME_ENV = "VKIT_JOERN_HOME"
+_PREPROCESSOR_DIRECTIVE = re.compile(
+    rb"(?im)^[\t ]*(?:#|\?\?=)|#\s*(?:include|include_next|import)\b"
+)
+_INCOMPLETE_FRONTEND = re.compile(r"(?i)(?:\[!\]|\b(?:error|failed|failure|exception|fatal)\b)")
 _SOURCE_EXTENSIONS = {".c", ".h"}
 _SKIP_DIRECTORIES = {
     ".git", ".hg", ".svn", ".venv", "build", "coverage", "dist", "node_modules", "out", "vendor",
@@ -41,15 +46,15 @@ _SKIP_DIRECTORIES = {
 _MODEL_SCOPE = (
     "Joern 4.0.653 C frontend interprocedural data-flow paths for one captured standalone C source tree. "
     "The source is one exact method formal parameter and the sink one exact call argument. "
-    "External methods without semantics may conservatively propagate values. No path means no path in this model; "
-    "it is not evidence that a vulnerability or exploit is absent."
+    "External methods without semantics may conservatively propagate values. Parse-error UNKNOWN nodes invalidate "
+    "negative results; no path means no path in this model, not that a vulnerability or exploit is absent."
 )
 
 Status = Literal["PATH_FOUND", "NO_PATH_IN_MODEL", "UNSUPPORTED", "UNKNOWN", "UNAVAILABLE"]
 
 # This is deliberately fixed. Request data is passed as JSON parameters and can never become Scala/CPGQL.
 _QUERY = r'''@main def exec(cpgFile: String, sourceMethod: String, sourceParameter: Int,
-               sinkMethod: String, sinkArgument: Int, maxPaths: Int) = {
+               sinkMethod: String, sinkArgument: Int, maxPaths: Int, capturedFiles: String) = {
   importCpg(cpgFile)
   import scala.jdk.CollectionConverters.*
   // Materialize each endpoint once. Joern traversals are lazy and reusing one after .size
@@ -60,7 +65,13 @@ _QUERY = r'''@main def exec(cpgFile: String, sourceMethod: String, sourceParamet
   val sinkCount = sinks.size
   val paths = sinks.reachableByFlows(sources).take(maxPaths).l
   val unresolvedCallCount = cpg.call.whereNot(_.callee).size
-  println(s"VKIT_COUNTS|$sourceCount|$sinkCount|${paths.size}|$unresolvedCallCount")
+  val unknownNodeCount = cpg.unknown.size
+  val decoder = java.util.Base64.getDecoder
+  val expectedFiles = capturedFiles.split(",", -1).toList.map(name =>
+    new String(decoder.decode(name), "UTF-8")).toSet
+  val parsedFiles = cpg.file.name.l.filter(_.endsWith(".c")).toSet
+  val missingFileCount = (expectedFiles -- parsedFiles).size
+  println(s"VKIT_COUNTS|$sourceCount|$sinkCount|${paths.size}|$unresolvedCallCount|$unknownNodeCount|$missingFileCount")
   paths.foreach { path =>
     val header = "label\tline\tname\tcode"
     val rows = path.elements.map { node =>
@@ -156,6 +167,8 @@ def _snapshot(source: Path, destination: Path, deadline: float) -> tuple[str, tu
     files.sort(key=lambda item: item[0])
     if not files:
         raise _Unsupported("source tree contains no C or header files")
+    if not any(Path(relative).suffix.lower() == ".c" for relative, _ in files):
+        raise _Unsupported("source tree contains no C translation units")
     if len(files) > MAX_FILES:
         raise _Unsupported(f"source tree has more than {MAX_FILES} supported source files")
 
@@ -179,6 +192,8 @@ def _snapshot(source: Path, destination: Path, deadline: float) -> tuple[str, tu
             content.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise _Unsupported(f"source file {relative!r} is not UTF-8") from exc
+        if _PREPROCESSOR_DIRECTIVE.search(content):
+            raise _Unsupported(f"source file {relative!r} contains unsupported preprocessor directives")
         total += len(content)
         if total > MAX_TOTAL_BYTES:
             raise _Unsupported(f"source tree exceeds {MAX_TOTAL_BYTES} total source bytes")
@@ -223,7 +238,8 @@ def _quote_table(value: str) -> dict[str, Any]:
 
 
 def _run_bounded(command: list[str], *, cwd: Path, timeout_seconds: float,
-                 output_limit: int, artifact_limit: tuple[Path, int] | None = None) -> tuple[int, str, str]:
+                 output_limit: int, artifact_limit: tuple[Path, int] | None = None,
+                 env: dict[str, str] | None = None) -> tuple[int, str, str]:
     """Run via the shared process-tree boundary and bound its file-backed logs."""
     stdout_path, stderr_path = cwd / "joern.stdout", cwd / "joern.stderr"
 
@@ -243,7 +259,7 @@ def _run_bounded(command: list[str], *, cwd: Path, timeout_seconds: float,
         return False
 
     result = run_process(command, cwd=cwd, stdout_path=stdout_path, stderr_path=stderr_path,
-                         timeout_seconds=timeout_seconds, should_cancel=output_exceeded)
+                         timeout_seconds=timeout_seconds, env=env, should_cancel=output_exceeded)
     if artifact_limit is not None:
         artifact, limit = artifact_limit
         try:
@@ -265,31 +281,53 @@ def _run_bounded(command: list[str], *, cwd: Path, timeout_seconds: float,
     return result.code, stdout, stderr
 
 
+def _joern_environment(workspace: Path) -> dict[str, str]:
+    """Keep Java and Joern away from caller-controlled shell and home settings."""
+    return {"PATH": "/usr/bin:/bin", "HOME": str(workspace), "TMPDIR": str(workspace),
+            "LC_ALL": "C", "LANG": "C"}
+
+
+def _frontend_incomplete(stdout: str, stderr: str) -> bool:
+    return bool(_INCOMPLETE_FRONTEND.search(stdout) or _INCOMPLETE_FRONTEND.search(stderr))
+
+
 def _parse_query(stdout: str, *, source_method: str, source_parameter: int,
                  sink_method: str, sink_argument: int) -> tuple[Status, dict[str, Any]]:
     if len(stdout.encode("utf-8")) > MAX_OUTPUT_BYTES:
         raise ValueError("Joern query output exceeded its byte limit")
-    source_count = sink_count = flow_count = unresolved_call_count = None
+    source_count = sink_count = flow_count = unresolved_call_count = unknown_node_count = missing_file_count = None
     flows: list[dict[str, Any]] = []
     for line in stdout.splitlines():
         if line.startswith("VKIT_COUNTS|"):
             if source_count is not None:
                 raise ValueError("Joern emitted duplicate endpoint counts")
             fields = line.split("|")
-            if len(fields) != 5:
+            if len(fields) != 7:
                 raise ValueError("Joern emitted malformed endpoint counts")
-            source_count, sink_count, flow_count, unresolved_call_count = (int(field) for field in fields[1:])
+            source_count, sink_count, flow_count, unresolved_call_count, unknown_node_count, missing_file_count = (
+                int(field) for field in fields[1:]
+            )
         elif line.startswith("VKIT_FLOW_B64|"):
-            import base64
             encoded = line.removeprefix("VKIT_FLOW_B64|")
             table = base64.b64decode(encoded, validate=True).decode("utf-8")
             flows.append(_quote_table(table))
             if len(flows) > MAX_PATHS:
                 raise ValueError("Joern emitted more paths than the configured result limit")
-    if source_count is None or sink_count is None or flow_count is None or unresolved_call_count is None:
+    if (source_count is None or sink_count is None or flow_count is None or unresolved_call_count is None
+            or unknown_node_count is None or missing_file_count is None):
         raise ValueError("Joern emitted no endpoint count evidence")
-    if min(source_count, sink_count, flow_count, unresolved_call_count) < 0:
+    if min(source_count, sink_count, flow_count, unresolved_call_count, unknown_node_count, missing_file_count) < 0:
         raise ValueError("Joern emitted a negative count")
+    if missing_file_count:
+        return "UNKNOWN", {"reason": "Joern CPG omitted captured C translation units",
+                            "missing_c_file_count": missing_file_count,
+                            "endpoint_counts": {"sources": source_count, "sinks": sink_count,
+                                                "flows": flow_count}}
+    if unknown_node_count:
+        return "UNKNOWN", {"reason": "Joern retained parse-error UNKNOWN nodes in the CPG",
+                            "unknown_node_count": unknown_node_count,
+                            "endpoint_counts": {"sources": source_count, "sinks": sink_count,
+                                                "flows": flow_count}}
     if source_count != 1 or sink_count != 1:
         return "UNSUPPORTED", {"reason": "selected source and sink must each resolve to exactly one node",
                                "endpoint_counts": {"sources": source_count, "sinks": sink_count}}
@@ -301,6 +339,8 @@ def _parse_query(stdout: str, *, source_method: str, source_parameter: int,
               "sink": {"method": sink_method, "argument_index": sink_argument},
               "endpoint_counts": {"sources": source_count, "sinks": sink_count, "flows": flow_count},
               "unresolved_call_count": unresolved_call_count,
+              "unknown_node_count": unknown_node_count,
+              "missing_c_file_count": missing_file_count,
               "flows": flows}
     return ("PATH_FOUND" if flows else "NO_PATH_IN_MODEL"), result
 
@@ -343,6 +383,7 @@ def find_data_flows(root: Path, path: str, source_method: str, source_parameter:
                              "--output", str(workspace / "capture.cpg")], cwd=workspace,
                             timeout_seconds=phase_timeout, output_limit=MAX_OUTPUT_BYTES,
                             artifact_limit=(workspace / "capture.cpg", MAX_CPG_BYTES),
+                            env=_joern_environment(workspace),
                         )
                     except subprocess.TimeoutExpired:
                         status, result = "UNKNOWN", {"reason": "Joern C frontend exceeded the time limit"}
@@ -353,11 +394,21 @@ def find_data_flows(root: Path, path: str, source_method: str, source_parameter:
                             status, result = "UNKNOWN", {"reason": "Joern C frontend did not create a CPG",
                                                          "frontend_exit_code": parse_code,
                                                          "frontend_diagnostics": (parse_stdout + parse_stderr)[-MAX_OUTPUT_LINE:]}
+                        elif _frontend_incomplete(parse_stdout, parse_stderr):
+                            status, result = "UNKNOWN", {
+                                "reason": "Joern C frontend reported an incomplete or failed source parse",
+                                "frontend_diagnostics": (parse_stdout + parse_stderr)[-MAX_OUTPUT_LINE:],
+                            }
                         elif (workspace / "capture.cpg").stat().st_size > MAX_CPG_BYTES:
                             status, result = "UNKNOWN", {"reason": "Joern CPG exceeded its byte limit"}
                         else:
                             query_path = workspace / "query.sc"
                             query_path.write_text(_QUERY, encoding="utf-8", newline="\n")
+                            captured_c_files = [name for name in files if Path(name).suffix.lower() == ".c"]
+                            encoded_files = ",".join(
+                                base64.b64encode(name.encode("utf-8")).decode("ascii")
+                                for name in captured_c_files
+                            )
                             phase_timeout = max(0.001, timeout_ms / 1000 - (time.monotonic() - started))
                             try:
                                 query_code, query_stdout, query_stderr = _run_bounded(
@@ -366,8 +417,10 @@ def find_data_flows(root: Path, path: str, source_method: str, source_parameter:
                                      f"sourceMethod={source_method}", "--param",
                                      f"sourceParameter={source_parameter}", "--param",
                                      f"sinkMethod={sink_method}", "--param", f"sinkArgument={sink_argument}",
-                                     "--param", f"maxPaths={MAX_PATHS + 1}"],
+                                     "--param", f"maxPaths={MAX_PATHS + 1}", "--param",
+                                     f"capturedFiles={encoded_files}"],
                                     cwd=workspace, timeout_seconds=phase_timeout, output_limit=MAX_OUTPUT_BYTES,
+                                    env=_joern_environment(workspace),
                                 )
                             except subprocess.TimeoutExpired:
                                 status, result = "UNKNOWN", {"reason": "Joern data-flow query exceeded the time limit"}

@@ -17,6 +17,8 @@ from vkit.operations.data_flows import (
     _run_bounded,
     _parse_query,
     _snapshot,
+    _Unsupported,
+    _frontend_incomplete,
     find_data_flows,
 )
 from scripts.install_dataflow_engine import _safe_members
@@ -29,7 +31,7 @@ def _flow_marker(table: str) -> str:
 def test_parse_query_preserves_live_flow_path_table() -> None:
     table = "nodeType tracked lineNumber method file\nCall exec_sink(user_input) 4 relay flow.c"
     status, result = _parse_query(
-        "VKIT_COUNTS|1|1|1|0\n" + _flow_marker(table),
+        "VKIT_COUNTS|1|1|1|0|0|0\n" + _flow_marker(table),
         source_method="entry", source_parameter=1,
         sink_method="exec_sink", sink_argument=1,
     )
@@ -41,7 +43,7 @@ def test_parse_query_preserves_live_flow_path_table() -> None:
 
 def test_parse_query_reports_only_model_local_absence() -> None:
     status, result = _parse_query(
-        "VKIT_COUNTS|1|1|0|0", source_method="entry", source_parameter=1,
+        "VKIT_COUNTS|1|1|0|0|0|0", source_method="entry", source_parameter=1,
         sink_method="exec_sink", sink_argument=1,
     )
     assert status == "NO_PATH_IN_MODEL"
@@ -50,18 +52,32 @@ def test_parse_query_reports_only_model_local_absence() -> None:
 
 def test_parse_query_refuses_ambiguous_or_truncated_evidence() -> None:
     status, result = _parse_query(
-        "VKIT_COUNTS|2|1|0|0", source_method="entry", source_parameter=1,
+        "VKIT_COUNTS|2|1|0|0|0|0", source_method="entry", source_parameter=1,
         sink_method="exec_sink", sink_argument=1,
     )
     assert status == "UNSUPPORTED"
     assert result["endpoint_counts"]["sources"] == 2
 
     status, result = _parse_query(
-        f"VKIT_COUNTS|1|1|{MAX_PATHS + 1}|0", source_method="entry", source_parameter=1,
+        f"VKIT_COUNTS|1|1|{MAX_PATHS + 1}|0|0|0", source_method="entry", source_parameter=1,
         sink_method="exec_sink", sink_argument=1,
     )
     assert status == "UNKNOWN"
     assert "truncated" in result["reason"]
+
+    status, result = _parse_query(
+        "VKIT_COUNTS|1|1|0|0|1|0", source_method="entry", source_parameter=1,
+        sink_method="exec_sink", sink_argument=1,
+    )
+    assert status == "UNKNOWN"
+    assert result["unknown_node_count"] == 1
+
+    status, result = _parse_query(
+        "VKIT_COUNTS|1|1|0|0|0|1", source_method="entry", source_parameter=1,
+        sink_method="exec_sink", sink_argument=1,
+    )
+    assert status == "UNKNOWN"
+    assert result["missing_c_file_count"] == 1
 
 
 def test_snapshot_captures_only_c_and_header_bytes(tmp_path: Path) -> None:
@@ -81,6 +97,27 @@ def test_snapshot_captures_only_c_and_header_bytes(tmp_path: Path) -> None:
     assert size == len(b"int main(void) { return 0; }\n")
     assert (target / "flow.c").read_bytes() == (source / "flow.c").read_bytes()
     assert not (target / "notes.txt").exists()
+
+
+def test_snapshot_rejects_preprocessor_directives_and_external_includes(tmp_path: Path) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "flow.c").write_text('#include "../../outside.h"\nint main(void) { return 0; }\n',
+                                   encoding="utf-8")
+    target = tmp_path / "captured"
+    target.mkdir()
+
+    with pytest.raises(_Unsupported, match="preprocessor directives"):
+        _snapshot(source, target, deadline=10**12)
+
+
+def test_frontend_error_markers_prevent_model_local_absence() -> None:
+    assert _frontend_incomplete("[!] failed to parse flow.c", "")
+    assert _frontend_incomplete("", "ERROR: could not parse translation unit")
+    assert not _frontend_incomplete(
+        "Parsing code at: /tmp/source\nIf you are importing a large codebase and running into memory issues, try ...",
+        "",
+    )
 
 
 def test_public_operation_uses_unavailable_without_verified_joern(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,7 +186,9 @@ def test_shared_engine_runner_bounds_time_and_file_output(tmp_path: Path) -> Non
 def test_pinned_joern_live_interprocedural_positive_and_negative(tmp_path: Path) -> None:
     positive = tmp_path / "positive"
     positive.mkdir()
-    (positive / "flow.c").write_text(
+    positive_source = positive / "src"
+    positive_source.mkdir()
+    (positive_source / "flow.c").write_text(
         "void exec_sink(const char *value);\n"
         "void relay(const char *value) { exec_sink(value); }\n"
         "void entry(const char *user_input) { relay(user_input); }\n", encoding="utf-8")
@@ -159,9 +198,17 @@ def test_pinned_joern_live_interprocedural_positive_and_negative(tmp_path: Path)
         "void exec_sink(const char *value);\n"
         "void relay(const char *value) { exec_sink(value); }\n"
         "void entry(const char *user_input) { relay(\"constant\"); }\n", encoding="utf-8")
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    (partial / "flow.c").write_text(
+        "void exec_sink(const char *value);\n"
+        "void relay(const char *value) { exec_sink(value); }\n"
+        "void entry(const char *user_input) { relay(\"constant\"); }\n", encoding="utf-8")
+    (partial / "zz_bad.c").write_text("void incomplete( {\n", encoding="utf-8")
 
     found = find_data_flows(tmp_path, "positive", "entry", 1, "exec_sink", 1, timeout_ms=60_000)
     absent = find_data_flows(tmp_path, "negative", "entry", 1, "exec_sink", 1, timeout_ms=60_000)
+    incomplete = find_data_flows(tmp_path, "partial", "entry", 1, "exec_sink", 1, timeout_ms=60_000)
 
     assert found["status"] == "PATH_FOUND"
     assert found["endpoint_counts"] == {"sources": 1, "sinks": 1, "flows": 1}
@@ -169,4 +216,6 @@ def test_pinned_joern_live_interprocedural_positive_and_negative(tmp_path: Path)
     assert "value" in found["flows"][0]["table"]
     assert absent["status"] == "NO_PATH_IN_MODEL"
     assert absent["endpoint_counts"] == {"sources": 1, "sinks": 1, "flows": 0}
+    assert incomplete["status"] == "UNKNOWN"
+    assert incomplete["unknown_node_count"] > 0
     assert len(json.dumps(found).encode()) <= 256 * 1024

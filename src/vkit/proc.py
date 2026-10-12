@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ class Exit:
     timed_out: bool = False
     cancelled: bool = False
     launch_error: str | None = None
+    output_limited: bool = False
 
 
 class _Tree:
@@ -61,7 +63,10 @@ class _Tree:
 
 def run(argv: Sequence[str], *, cwd: Path, stdout_path: Path, stderr_path: Path,
         timeout_seconds: float, env: Mapping[str, str] | None = None,
-        should_cancel: Callable[[], bool] = lambda: False) -> Exit:
+        should_cancel: Callable[[], bool] = lambda: False,
+        max_output_bytes: int | None = None) -> Exit:
+    if max_output_bytes is not None and max_output_bytes < 1:
+        raise ValueError("max_output_bytes must be positive")
     options = hidden_window()
     if is_windows:
         options["creationflags"] = options.get("creationflags", 0) | CREATE_SUSPENDED
@@ -69,19 +74,56 @@ def run(argv: Sequence[str], *, cwd: Path, stdout_path: Path, stderr_path: Path,
         options["start_new_session"] = True
     with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
         try:
-            proc = subprocess.Popen(list(argv), cwd=cwd, stdin=subprocess.DEVNULL,
-                                    stdout=out, stderr=err, env=None if env is None else dict(env), **options)
+            proc = subprocess.Popen(
+                list(argv),
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE if max_output_bytes is not None else out,
+                stderr=subprocess.PIPE if max_output_bytes is not None else err,
+                env=None if env is None else dict(env),
+                **options,
+            )
         except OSError as exc:
             return Exit(None, launch_error=f"{argv[0]}: {exc}")
         tree = _Tree(proc)
         deadline = time.monotonic() + timeout_seconds
+        output_limited = threading.Event()
+        output_lock = threading.Lock()
+        captured = 0
+        readers: list[threading.Thread] = []
+
+        def drain(pipe, destination) -> None:
+            nonlocal captured
+            try:
+                while chunk := pipe.read(64 * 1024):
+                    with output_lock:
+                        room = max_output_bytes - captured
+                        if room > 0:
+                            destination.write(chunk[:room])
+                            captured += min(len(chunk), room)
+                        if len(chunk) > room:
+                            output_limited.set()
+            except OSError:
+                output_limited.set()
+            finally:
+                pipe.close()
+
+        if max_output_bytes is not None:
+            for pipe, destination in ((proc.stdout, out), (proc.stderr, err)):
+                reader = threading.Thread(target=drain, args=(pipe, destination), daemon=True)
+                reader.start()
+                readers.append(reader)
         try:
             while True:
                 try:
                     code = proc.wait(POLL_SECONDS)
-                    return Exit(code)
+                    break
                 except subprocess.TimeoutExpired:
                     pass
+                if output_limited.is_set():
+                    tree.kill()
+                    code = proc.wait()
+                    break
                 if should_cancel():
                     tree.kill()
                     proc.wait()
@@ -92,3 +134,6 @@ def run(argv: Sequence[str], *, cwd: Path, stdout_path: Path, stderr_path: Path,
                     return Exit(None, timed_out=True)
         finally:
             tree.close()
+            for reader in readers:
+                reader.join()
+        return Exit(code, output_limited=output_limited.is_set())

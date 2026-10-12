@@ -12,7 +12,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 6 | Restricted Draft 4 containment profile | Additional JSON Schema constructs |
 | 7 | Captured Python dependency constraint solving | Other package ecosystems |
 | 8 | SQLite migration path/fresh-install comparison | Other database engines |
-| 9 | Static wheel validation and payload comparison | Clean builds, installation and reproducibility campaigns |
+| 9 | Static wheel validation plus approved paired offline builds, exact wheel-byte comparison, clean installs and literal import/entry-point checks | Cross-host reproducibility and other artifact formats |
 | 10 | Exact finite protocol-model exploration | Instrumented application schedule exploration |
 | 11 | Closed Python behavior-difference witnesses | Broader effects and execution models |
 | 12 | Closed acyclic C heap/call-graph profile in `check_c_safety` | Captured real project compilation, structs and broader native lifetime analysis |

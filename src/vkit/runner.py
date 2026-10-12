@@ -116,7 +116,7 @@ def run_check(project: Project, manifest: Manifest, check_id: str, *,
             "findings": _findings(reading),
             "obligations": _obligations(reading),
             "exit_code": None if exit is None else exit.code,
-            "argv": None if exit is None else list(dispatch.argv_for(check, run_dir, None)),
+            "argv": None if exit is None else list(dispatch.argv_for(check, run_dir, None, input_digest=before.digest)),
         })
         store.publish(record)
     return record
@@ -135,7 +135,7 @@ def _execute(project: Project, manifest: Manifest, check: CheckSpec, store: Stor
         return blocked, None, None
     run_dir = store.run_dir(run_id)
     exit = proc.run(
-        dispatch.argv_for(check, run_dir, None), cwd=check.cwd, env=_child_env(),
+        dispatch.argv_for(check, run_dir, None, input_digest=before.digest), cwd=check.cwd, env=_child_env(),
         stdout_path=run_dir / "stdout.log", stderr_path=run_dir / "stderr.log",
         timeout_seconds=check.timeout_seconds,
         should_cancel=lambda: store.cancel_requested(run_id),

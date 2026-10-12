@@ -7,11 +7,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .budgets import Budget
-from .inputs import canonical_digest
+from .inputs import canonical_digest, matches
 from .paths import Project
 from .schemas import MANIFEST_V2, SchemaValidationError, validate
 from .verifiers.obligation import CaseObligation, PropertyObligation, TheoremObligation
-from .verifiers.spec import (CheckKind, CheckSpec, DomainBounds, FingerprintSpec, HypothesisSettings, LeanCheck,
+from .verifiers.spec import (BuildCheck, BuildEntryPoint, CheckKind, CheckSpec, DomainBounds, FingerprintSpec, HypothesisSettings, LeanCheck,
                              LeanProfile, ModuleRef, NodeTestCheck, PinnedRunner, Prerequisite, PropertyCheck,
                              PytestCheck, ReplaySettings, ScenarioCheck, StaticCheck, SubjectRef, TlcCheck, ToolchainRef)
 
@@ -139,6 +139,57 @@ def _build_check(entry: dict, project: Project) -> CheckSpec:
                              required_scenarios=tuple(CaseObligation(n) for n in names), budgets=budgets)
     if kind is CheckKind.STATIC:
         return StaticCheck(**common, command=_command(check_id, entry["command"]))
+    if kind is CheckKind.BUILD:
+        build = entry["build"]
+        profile_paths = (
+            build["build_constraints"],
+            build["runtime_requirements"],
+            build["wheelhouse"],
+        )
+        resolved_paths = [
+            _inside(project.root, path, "build profile input", check_id)
+            for path in profile_paths
+        ]
+        for path, resolved in zip(profile_paths, resolved_paths, strict=True):
+            relative = resolved.relative_to(project.root.resolve()).as_posix()
+            if not any(matches(relative, pattern) for pattern in inputs):
+                raise ManifestError(
+                    f"check {check_id!r}: build profile input {path!r} must also be declared in inputs"
+                )
+        if not resolved_paths[2].is_dir():
+            raise ManifestError(
+                f"check {check_id!r}: wheelhouse must name a repository directory"
+            )
+        uv = Path(build["uv_executable"])
+        if not uv.is_absolute():
+            raise ManifestError(
+                f"check {check_id!r}: uv_executable must be an absolute tool path"
+            )
+        entries = tuple(
+            BuildEntryPoint(
+                item["name"],
+                tuple(item["args"]),
+                item["expected_exit_code"],
+                item["expected_stdout"],
+                item["expected_stderr"],
+            )
+            for item in build["entry_points"]
+        )
+        if len({item.name for item in entries}) != len(entries):
+            raise ManifestError(f"check {check_id!r}: entry-point names must be unique")
+        return BuildCheck(
+            **common,
+            uv_executable=str(uv),
+            uv_version=build["uv_version"],
+            uv_sha256=build["uv_sha256"],
+            python_version=build["python_version"],
+            python_sha256=build["python_sha256"],
+            build_constraints=build["build_constraints"],
+            wheelhouse=build["wheelhouse"],
+            runtime_requirements=build["runtime_requirements"],
+            imports=tuple(build["imports"]),
+            entry_points=entries,
+        )
     if kind in (CheckKind.PYTEST, CheckKind.PROPERTY, CheckKind.NODE_TEST):
         runner = dict(
             required_tests=_distinct_nonempty(check_id, "test", tuple(entry["required_tests"])),

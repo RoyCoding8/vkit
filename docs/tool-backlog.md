@@ -246,8 +246,10 @@ Sources: [Atlas migration testing](https://www.atlasgo.io/testing/migrate), [Atl
 
 Implemented static artifact subset: `compare_wheels(before, after)` validates wheel integrity,
 metadata and portable scheme/path mappings, then compares payloads without extraction or execution.
-See [wheel artifact comparison](wheel-model.md). Clean builds, installation smoke tests and
-reproducibility campaigns remain future work; the static result does not establish them.
+`check_release_artifact` adds explicitly approved paired offline wheel builds, hash-locked backend
+dependencies, exact wheel-byte comparison, clean installs and literal import/entry-point checks.
+See [wheel artifact comparison and approved builds](wheel-model.md). Cross-host reproducibility
+and additional artifact formats remain separate work.
 
 Proposed call: `check_release_artifact(snapshot, build_profile, runtime_profile)`.
 

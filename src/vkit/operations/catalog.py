@@ -37,6 +37,7 @@ from .sql_equivalence import compare_sql_queries
 from .termination import analyze_loop_termination
 from .traces import explain_trace_interval
 from .wheel_artifacts import compare_wheels
+from .wheel_build import check_release_artifact
 from .workloads import compare_workload_cost
 
 _EXPRESSION = {
@@ -67,6 +68,19 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="check_release_artifact",
+        description=("Run an explicitly approved build check through the existing manifest and run store. "
+                     "Builds two offline wheels with pinned uv, Python and hashed backend dependencies; "
+                     "compares exact wheel bytes, installs each into a fresh environment and checks literal "
+                     "imports and console outputs. PASS covers this host and declared assertions. "
+                     "Build hooks and installed package code execute; this is not an OS sandbox."),
+        properties={"check_id": {"type": "string", "minLength": 1,
+                                 "description": "id of an explicitly declared and approved build check"}},
+        required=("check_id",), handler=check_release_artifact, read_only=False,
+        outcomes={"PASS": 0, "FAIL": 1, "BLOCKED": 3, "UNSUPPORTED": 2},
+    ),
     Operation(
         version=1,
         name="check_rust_safety",

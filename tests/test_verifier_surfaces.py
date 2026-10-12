@@ -4,7 +4,37 @@ import hashlib
 import os
 import sys
 
+import pytest
+
 from helpers import McpClient, vkit
+
+
+def test_release_build_cli_mcp_use_existing_approval(make_project):
+    from test_wheel_build import _make_project, _uv
+
+    runtime = _uv()
+    if runtime is None:
+        pytest.skip("a local uv executable is needed for the approved build profile")
+    project = _make_project(make_project, runtime, accept=False)
+    code, blocked = vkit(project, "compute", "check-release-artifact", "--check-id", "release-wheel")
+    assert (code, blocked["status"]) == (3, "BLOCKED")
+    assert blocked["run"]["outcome"]["reason"] == "not_approved"
+    assert vkit(project, "accept", "--yes")[0] == 0
+
+    code, result = vkit(project, "compute", "check-release-artifact", "--check-id", "release-wheel")
+    assert (code, result["status"]) == (0, "PASS")
+    assert result["artifact"]["same_wheel_bytes"] is True
+    assert len(result["artifact"]["assertions"]) == 6
+    client = McpClient(project)
+    try:
+        tools = client.request("tools/list", {})["tools"]
+        definition = next(tool for tool in tools if tool["name"] == "check_release_artifact")
+        assert definition["annotations"]["readOnlyHint"] is False
+        result, error = client.call("check_release_artifact", check_id="release-wheel")
+        assert not error and result["status"] == "PASS"
+        assert result["run"]["outcome"]["result"] == "PASS"
+    finally:
+        client.close()
 
 
 def test_rust_safety_cli_mcp_and_enabled_discovery(make_project):

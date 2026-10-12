@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
-import io
 import ipaddress
 import json
 import math
@@ -30,14 +30,16 @@ MAX_OPENAPI_TOTAL_BYTES = 2_097_152
 MAX_REPORT_BYTES = 262_144
 MAX_BODY_BYTES = 1_048_576
 MAX_TOTAL_REQUESTS = 2_000
+MAX_WORKER_OUTPUT_BYTES = 262_144
 MAX_STEP_BYTES = 32_768
 REQUEST_TIMEOUT_SECONDS = 3
 _BASE_ENV = "VKIT_API_SEQUENCE_BASE_URL"
 _RESET_ENV = "VKIT_API_SEQUENCE_RESET_URL"
 _MODEL_SCOPE = (
     "Schemathesis 4.30.0 bounded stateful OpenAPI checks against one operator-configured "
-    "loopback HTTP service, with exact fresh replay of a detected counterexample; a clean "
-    "sampled campaign is not proof of universal API correctness."
+    "loopback HTTP service, with exact step-input replay and matching engine failure identifiers "
+    "after reset; replay response equality is not asserted. A clean sampled campaign is not proof "
+    "of universal API correctness."
 )
 
 
@@ -449,6 +451,21 @@ def _run_worker(request: _Request) -> dict[str, Any]:
         )
         stdout_path = workspace / "worker.json"
         stderr_path = workspace / "worker.log"
+
+        output_overflow = False
+
+        def output_exceeded() -> bool:
+            nonlocal output_overflow
+            try:
+                total = stdout_path.stat().st_size + stderr_path.stat().st_size
+            except OSError:
+                output_overflow = True
+                return True
+            if total > MAX_WORKER_OUTPUT_BYTES:
+                output_overflow = True
+                return True
+            return False
+
         remaining = request.deadline - time.monotonic()
         if remaining <= 0:
             raise _WorkerFailure("API sequence campaign exceeded its wall deadline")
@@ -468,15 +485,24 @@ def _run_worker(request: _Request) -> dict[str, Any]:
             stdout_path=stdout_path,
             stderr_path=stderr_path,
             timeout_seconds=remaining,
+            should_cancel=output_exceeded,
         )
         if execution.launch_error:
             raise _EngineUnavailable("the bounded API sequence worker could not start")
         if execution.cancelled:
+            if output_overflow:
+                raise _WorkerFailure(
+                    "API sequence worker output exceeds the 256 KiB capture limit"
+                )
             raise _WorkerFailure("API sequence campaign was cancelled")
         if execution.timed_out:
             raise _WorkerFailure("API sequence campaign exceeded its wall deadline")
         if execution.code != 0:
             raise _WorkerFailure("API sequence worker exited without a trusted result")
+        if output_exceeded():
+            raise _WorkerFailure(
+                "API sequence worker output exceeds the 256 KiB capture limit"
+            )
         raw_report = _read_bounded(stdout_path)
         try:
             result = json.loads(raw_report.decode("utf-8"))
@@ -693,6 +719,48 @@ def _case_data(case: Any) -> dict[str, Any]:
     return data
 
 
+def _response_data(response: Any) -> dict[str, Any]:
+    body = response.content
+    if not isinstance(body, bytes) or len(body) > MAX_BODY_BYTES:
+        raise _LimitExceeded(
+            "API response body exceeds 1 MiB or is not captured as bytes"
+        )
+    headers: dict[str, list[str]] = {}
+    for name in ("content-type", "content-length", "location"):
+        value = response.headers.get(name)
+        if value is not None:
+            values = [value] if isinstance(value, str) else value
+            if (
+                not isinstance(values, (list, tuple))
+                or len(values) > 8
+                or not all(isinstance(item, str) for item in values)
+                or sum(len(item) for item in values) > 2048
+            ):
+                raise _LimitExceeded("API response header exceeds the evidence limit")
+            headers[name] = list(values)
+    return {
+        "body": body,
+        "body_bytes": len(body),
+        "body_sha256": hashlib.sha256(body).hexdigest(),
+        "headers": headers,
+    }
+
+
+def _public_step(row: dict[str, Any]) -> dict[str, Any]:
+    response = row["report"]["response"]
+    return {
+        "case": row["report"]["case"],
+        "status_code": row["report"]["status_code"],
+        "response": {
+            "body_base64": base64.b64encode(response["body"]).decode("ascii"),
+            "body_bytes": response["body_bytes"],
+            "body_sha256": response["body_sha256"],
+            "headers": response["headers"],
+        },
+        "operation_id": row["report"]["case"].get("operation_id"),
+    }
+
+
 def _reset(
     reset_url: str,
     origin: tuple[str, str, int],
@@ -841,7 +909,11 @@ def _worker_run(payload: dict[str, Any]) -> dict[str, Any]:
                 raise _WorkerFailure(
                     "Schemathesis did not provide a replayable step input"
                 )
-            row = {"case": _case_data(case), "status_code": response.status_code}
+            row = {
+                "case": _case_data(case),
+                "status_code": response.status_code,
+                "response": _response_data(response),
+            }
             self.sequence.append({"input": self.current_input, "report": row})
             counts["steps"] += 1
 
@@ -855,8 +927,9 @@ def _worker_run(payload: dict[str, Any]) -> dict[str, Any]:
     )
     try:
         with (
-            contextlib.redirect_stdout(io.StringIO()),
-            contextlib.redirect_stderr(io.StringIO()),
+            open(os.devnull, "w", encoding="utf-8") as quiet,
+            contextlib.redirect_stdout(quiet),
+            contextlib.redirect_stderr(quiet),
         ):
             Campaign.run(settings=run_settings)
     except (
@@ -949,10 +1022,7 @@ def _worker_run(payload: dict[str, Any]) -> dict[str, Any]:
                 "status": "INCONCLUSIVE",
                 "detail": "fresh replay did not reproduce the same engine failure",
             }
-        output_steps = [
-            {**row["report"], "operation_id": row["report"]["case"].get("operation_id")}
-            for row in sequence
-        ]
+        output_steps = [_public_step(row) for row in sequence]
         serialized = json.dumps(
             output_steps, ensure_ascii=False, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")
@@ -969,6 +1039,7 @@ def _worker_run(payload: dict[str, Any]) -> dict[str, Any]:
                 "steps": output_steps,
                 "sha256": hashlib.sha256(serialized).hexdigest(),
             },
+            "replay_scope": "same engine failure identifiers only; response equality is not asserted",
             "campaign": {
                 "state_machine_setups_before_failure": state_machine_setups_before_failure,
                 "steps_before_failure": steps_before_failure,
@@ -1005,7 +1076,10 @@ def _worker_run(payload: dict[str, Any]) -> dict[str, Any]:
             "total_requests": request_budget["count"],
             "max_total_requests": MAX_TOTAL_REQUESTS,
         },
-        "detail": "all requested sampled stateful sequences completed without a replayable failure",
+        "detail": (
+            f"Schemathesis completed the campaign: {counts['sequences']} state-machine setups "
+            f"and {counts['steps']} steps were observed without a replayable failure"
+        ),
     }
 
 

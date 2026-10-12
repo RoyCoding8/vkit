@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from vkit.operations import api_sequences
 from vkit.operations.api_sequences import SCHEMATHESIS_VERSION, check_api_sequences
 
 
@@ -199,6 +202,7 @@ def test_local_stateful_campaign_passes_when_deleted_items_return_404(
     assert result["campaign"]["state_machine_setups"] >= 12
     assert result["campaign"]["steps"] > 0
     assert server.reset_count == result["campaign"]["state_machine_setups"]
+    assert str(result["campaign"]["state_machine_setups"]) in result["detail"]
     assert "not proof of universal" in result["scope"]
 
 
@@ -229,7 +233,16 @@ def test_minimized_use_after_free_failure_must_replay_after_fresh_reset(
         (step["case"]["method"], step["case"]["operation_id"]) for step in steps[-2:]
     ] == [("DELETE", "deleteItem"), ("GET", "getItem")]
     assert [step["status_code"] for step in steps[-2:]] == [204, 200]
+    get_response = steps[-1]["response"]
+    body = base64.b64decode(get_response["body_base64"])
+    assert body == json.dumps({"id": "one", "name": "deleted"}).encode()
+    assert get_response["body_bytes"] == len(body)
+    assert get_response["body_sha256"] == hashlib.sha256(body).hexdigest()
+    assert get_response["headers"]["content-type"] == ["application/json"]
     assert result["campaign"]["replay_resets"] == 1
+    assert result["replay_scope"] == (
+        "same engine failure identifiers only; response equality is not asserted"
+    )
     assert server.reset_count == (
         result["campaign"]["resets_before_replay"] + result["campaign"]["replay_resets"]
     )
@@ -386,3 +399,17 @@ def test_local_reference_closure_is_captured_and_used_in_engine_worker(
         "openapi.json",
     ]
     assert server.reset_count == result["campaign"]["state_machine_setups"]
+
+
+def test_worker_output_overflow_cancels_or_rejects_the_worker_result(
+    tmp_path, api_service, monkeypatch
+):
+    _schema(tmp_path)
+    monkeypatch.setattr(api_sequences, "MAX_WORKER_OUTPUT_BYTES", 1)
+
+    result = check_api_sequences(tmp_path, "openapi.json", max_examples=4, max_steps=3)
+
+    assert result["status"] == "INCONCLUSIVE"
+    assert result["detail"] == (
+        "API sequence worker output exceeds the 256 KiB capture limit"
+    )

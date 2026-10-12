@@ -79,12 +79,12 @@ See the [implementation status map](backlog-status.md) for the exact shipped sub
 | 15 | SQL query equivalence and validated disagreement cases | Engine |
 | 16 | Parser and serializer disagreement discovery | Design |
 | 17 | Authorization-policy equivalence and permission expansion | Engine |
-| 18 | Undeclared build inputs and stale incremental results | Design |
+| 18 | Undeclared build inputs and stale incremental results | Historical-baseline wheel profile implemented |
 | 19 | Replay of retained cases with retained assertions | Design |
 | 20 | Network reachability changes from configuration changes | Engine |
 | 21 | Paired workload cost comparison | Design |
 | 22 | Bounded Rust safety and assertion verification | Engine |
-| 23 | LLVM transformation refinement | Engine |
+| 23 | LLVM transformation refinement | Captured acyclic scalar LLVM profile implemented |
 | 24 | Transaction-history isolation violations | Engine |
 | 25 | Crash-recovery violations for persistent state | Prototype |
 | 26 | Constrained configuration combination coverage | Engine |
@@ -387,6 +387,12 @@ Source: [Cedar Lean definitions and verified symbolic-analysis properties](https
 
 ### 18. Undeclared build inputs and stale incremental results
 
+The existing approved `check_release_artifact` check accepts an optional immutable local Git
+`build.incremental_baseline_sha`. It builds that captured baseline, overlays the current captured
+inputs and exact deletions while retaining generated state, then compares the warm wheel with a
+clean current wheel. Baseline/current locks and wheelhouse bytes must match. This checks one declared
+historical sequence; observed undeclared-input detection remains open. See [wheel model](wheel-model.md).
+
 Proposed call: `audit_build_inputs(snapshot, build_profile, perturbation_profile)`.
 
 Ask which observed reads are outside declared inputs, or which controlled change makes an incremental build disagree with a clean build. A concrete finding could identify a template file omitted from a cache key.
@@ -454,6 +460,12 @@ Share native-verification execution infrastructure with the existing C operation
 Source: [Kani Rust verifier](https://github.com/model-checking/kani).
 
 ### 23. LLVM transformation refinement
+
+`check_llvm_refinement` captures two actual `.ll` files, validates both with LLVM 20.1.8 and
+the protected scalar acyclic profile, then asks pinned Alive2 v20.0 whether the after function
+refines the before function. Completed results require the exact one-transformation summary;
+counterexamples are explicitly engine witnesses without independent replay. See
+[LLVM refinement model](llvm-refinement-model.md).
 
 Proposed call: `check_ir_refinement(before_ir, after_ir, profile)`.
 

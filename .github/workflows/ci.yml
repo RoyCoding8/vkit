@@ -11,6 +11,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  llvm-refinement:
+    name: Alive2 LLVM refinement acceptance
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install the matching LLVM development toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y llvm-20-dev=1:20.1.8-2ubuntu8 cmake ninja-build g++ re2c libz3-dev zlib1g-dev libedit-dev libcurl4-openssl-dev libzstd-dev git
+      - run: uv sync --python 3.11 --extra test --extra engines
+      - name: Build the pinned Alive2 and protected LLVM validator
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          runtime = pathlib.Path(os.environ["RUNNER_TEMP"]) / "llvm-runtime"
+          subprocess.run(["uv", "run", "python", "scripts/install_llvm_engine.py", "--root", str(runtime)], check=True)
+          configuration = json.loads((runtime / "manifest.json").read_text(encoding="utf-8"))
+          values = {
+              "VKIT_ALIVE2_BIN": configuration["alive2_binary"],
+              "VKIT_ALIVE2_SHA256": configuration["alive2_binary_sha256"],
+              "VKIT_LLVM_IR_VALIDATOR_BIN": configuration["validator_binary"],
+              "VKIT_LLVM_IR_VALIDATOR_SHA256": configuration["validator_binary_sha256"],
+              "VKIT_ALIVE2_REQUIRED": "1",
+          }
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              for name, value in values.items():
+                  output.write(f"{name}={value}\n")
+      - run: uv run pytest -ra tests/test_llvm_refinement.py tests/test_verifier_surfaces.py -k llvm
   rust-safety:
     name: Kani Rust safety acceptance
     runs-on: ubuntu-latest

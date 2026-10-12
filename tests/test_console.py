@@ -224,7 +224,7 @@ def test_console_lists_only_catalog_operations_and_uses_the_shared_dispatcher(ma
     with _serve(project) as port:
         config = _config(port)
         names = {operation["name"] for operation in config["operations"]}
-        assert names == {"analyze_affine_accesses", "analyze_dependencies", "analyze_loop_termination", "analyze_regex_cost", "analyze_roundoff", "check_api_sequences", "check_rust_safety", "check_release_artifact", "check_c_safety",
+        assert names == {"analyze_affine_accesses", "analyze_dependencies", "analyze_loop_termination", "analyze_regex_cost", "analyze_roundoff", "check_api_sequences", "check_llvm_refinement", "check_rust_safety", "check_release_artifact", "check_c_safety",
                          "compare_iteration_sets", "minimize_cover", "compare_migrations",
                          "compare_network_paths", "explain_trace_interval", "infer_trace_relations", "inspect_openapi_parser_consistency", "find_cache_key_collision", "find_data_flows", "find_grammar_ambiguity", "generate_configurations", "resolve_dependencies",
                          "synthesize_function", "compare_rational_expressions", "find_behavioral_difference", "compare_sql_queries", "compare_wheels", "compare_workload_cost", "replay_retained_cases",

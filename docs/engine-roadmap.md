@@ -51,7 +51,8 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | Retained approved scenario drivers | `replay_retained_cases` | Old assertions and fixtures against a current captured subject, after a clean retained control, with per-case observations |
 | [Frama-C WP](https://www.frama-c.com/fc-plugins/wp.html) | `prove_c_contract` | Scalar C pre/postconditions and loop invariants beyond unwinding, with precondition feasibility, runtime guards and Qed obligation completion |
 | [Kani](https://github.com/model-checking/kani) 0.68.0 | `check_rust_safety` | Closed primitive Rust safety checks with original-source compilation, owned harnesses, completed unwind assertions and typed witness replay |
-| Pinned uv and Python with hash-locked backend dependencies | `check_release_artifact` | Approved offline paired wheel builds, exact byte comparison, clean install imports and literal entry-point outputs on one host |
+| [Alive2](https://github.com/AliveToolkit/alive2) v20.0 and LLVM 20.1.8 | `check_llvm_refinement` | Directional refinement between captured, verified acyclic scalar integer IR functions; witnesses retain their trusted-engine scope |
+| Pinned uv and Python with hash-locked backend dependencies | `check_release_artifact` | Approved offline paired wheel builds, clean installs and literal outputs; optional captured historical-baseline overlay compared with a clean current wheel |
 | oasdiff 1.33.0 and the local OpenAPI parser | `inspect_openapi_parser_consistency` | Typed flattened-model differences across captured source files and JSON controls, replayed in fresh processes |
 | [Joern](https://github.com/joernio/joern) | `find_data_flows` | Captured C interprocedural parameter-to-argument paths with fixed queries, parse-completion checks and modeled endpoint evidence |
 | [Schemathesis](https://github.com/schemathesis/schemathesis) | `check_api_sequences` | Bounded linked API campaigns against an operator-configured test service, reset isolation and fresh failure replay |
@@ -68,7 +69,6 @@ another transport, plugin loader, or command executor. Native Windows has no isl
 
 | Repository | Next exact question or reason to defer |
 | --- | --- |
-| [Alive2](https://github.com/AliveToolkit/alive2) | Does this supported LLVM transformation refine the original? First establish a reproducible matching LLVM build and exclude unsupported interprocedural transformations. |
 | [Souffle](https://github.com/souffle-lang/souffle) | Which nodes are reachable under a protected dependency relation? First define a useful source extractor and its completeness boundary. |
 | [rr](https://github.com/rr-debugger/rr) | Which write preceded this point in a recorded execution? The actual rr 5.9.0 WSL probe cannot record because hardware performance counters are unavailable. Requires a supported Linux host and captured traces. |
 | [KLEE](https://github.com/klee/klee) | Which inputs reach a selected supported native-code path? Requires a pinned LLVM runtime and explicit environment model. |

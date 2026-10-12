@@ -64,6 +64,10 @@ saturation for invariants, deadlocks and declared crash/restart semantics. Confi
 can have equal modeled keys and different modeled results, with independent witness replay.
 [Trace relations](invariant-model.md) discovers candidates with pinned Daikon and checks supported
 integer comparisons against every supplied sample. This produces sample facts, not universal invariants.
+[LLVM refinement](llvm-refinement-model.md) checks captured acyclic scalar integer IR using Alive2
+v20.0 at commit `c0f5434f402ad91714ee0952f686cd0f524920ad` and LLVM 20.1.8. Its protected LLVM
+validator verifies module validity before admitting the supported instructions. Engine witnesses
+are identified separately from independently replayed counterexamples.
 
 ## Check a replacement
 

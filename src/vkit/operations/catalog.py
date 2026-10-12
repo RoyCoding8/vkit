@@ -22,6 +22,7 @@ from .dependency_resolution import resolve_dependencies
 from .data_flows import find_data_flows
 from .history import check_history
 from .invariants import infer_trace_relations
+from .llvm_refinement import check_llvm_refinement
 from .migrations import compare_migrations
 from .network_paths import compare_network_paths
 from .policies import compare_authorization_policies
@@ -71,6 +72,24 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 OPERATIONS = (
     Operation(
         version=1,
+        name="check_llvm_refinement",
+        description=("Check whether a captured after LLVM function refines the captured before function "
+                     "using pinned Alive2 v20.0 and LLVM 20.1.8. Both modules must define one matching "
+                     "scalar integer function with verified acyclic control flow. Rejects memory, calls, "
+                     "loops and unsupported IR. Completed results require exact transformation counts. "
+                     "Counterexamples are trusted-engine witnesses without independent replay."),
+        properties={
+            "before_path": {"type": "string", "minLength": 1, "description": "repository-relative original .ll file"},
+            "after_path": {"type": "string", "minLength": 1, "description": "repository-relative transformed .ll file"},
+            "function": {"type": "string", "minLength": 1},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 10},
+        },
+        required=("before_path", "after_path", "function"), handler=check_llvm_refinement,
+        outcomes={"REFINES": 0, "COUNTEREXAMPLE": 1, "UNKNOWN": 3,
+                  "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
+    Operation(
+        version=1,
         name="inspect_openapi_parser_consistency",
         description=("Inspect actual captured OpenAPI files for interpretation disagreements. Compares "
                      "pinned oasdiff flattened models from original bytes and same-path JSON controls "
@@ -91,7 +110,9 @@ OPERATIONS = (
         description=("Run an explicitly approved build check through the existing manifest and run store. "
                      "Builds two offline wheels with pinned uv, Python and hashed backend dependencies; "
                      "compares exact wheel bytes, installs each into a fresh environment and checks literal "
-                     "imports and console outputs. PASS covers this host and declared assertions. "
+                     "imports and console outputs. An approved incremental baseline adds a captured Git "
+                     "baseline build and exact current overlay, comparing the warm wheel with a clean one. "
+                     "PASS covers this host and declared assertions. "
                      "Build hooks and installed package code execute; this is not an OS sandbox."),
         properties={"check_id": {"type": "string", "minLength": 1,
                                  "description": "id of an explicitly declared and approved build check"}},

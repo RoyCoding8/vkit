@@ -9,6 +9,41 @@ import pytest
 from helpers import McpClient, vkit
 
 
+def test_llvm_refinement_cli_mcp_and_disabled_discovery(make_project):
+    project = make_project({}, [], accept=False)
+    before = b"define i8 @f(i8 %x) {\n  %y = add i8 %x, 0\n  ret i8 %y\n}\n"
+    after = b"define i8 @f(i8 %x) {\n  ret i8 %x\n}\n"
+    (project / "before.ll").write_bytes(before)
+    (project / "after.ll").write_bytes(after)
+    native = bool(os.environ.get("VKIT_ALIVE2_BIN"))
+    expected = "REFINES" if native else "UNAVAILABLE"
+    code, result = vkit(project, "compute", "check-llvm-refinement", "--before-path", "before.ll",
+                        "--after-path", "after.ll", "--function", "f")
+    assert (code, result["status"]) == (0 if native else 5, expected)
+    assert result["before_sha256"] == hashlib.sha256(before).hexdigest()
+    assert result["after_sha256"] == hashlib.sha256(after).hexdigest()
+    client = McpClient(project)
+    try:
+        result, error = client.call("check_llvm_refinement", before_path="before.ll",
+                                    after_path="after.ll", function="f")
+        assert not error and result["status"] == expected
+        refused, error = client.call("check_llvm_refinement", before_path="before.ll",
+                                    after_path="after.ll", function="f", options=["--disable-undef-input"])
+        assert error and "options" in refused["error"]
+    finally:
+        client.close()
+    assert vkit(project, "tools", "--disable", "check_llvm_refinement")[0] == 0
+    fresh = McpClient(project)
+    try:
+        found, error = fresh.call("help", query="check_llvm_refinement")
+        assert not error and found["tools"] == []
+        refused, error = fresh.call("check_llvm_refinement", before_path="before.ll",
+                                    after_path="after.ll", function="f")
+        assert error and refused["error"] == "unknown or unavailable tool"
+    finally:
+        fresh.close()
+
+
 def test_parser_consistency_cli_mcp_and_disabled_discovery(make_project):
     if not os.environ.get("VKIT_OASDIFF_BIN"):
         pytest.skip("pinned oasdiff is needed for native parser disagreement acceptance")

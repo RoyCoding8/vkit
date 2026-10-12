@@ -21,12 +21,12 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 15 | Bounded SQL bag-query comparison | Broader SQL semantics and unbounded equivalence |
 | 16 | Captured OpenAPI closure comparison between original bytes and local-parser JSON controls, with typed flattened-model differences and fresh replay | Other consumers, formats and interpretation models |
 | 17 | Cedar policy comparison and replay | Additional policy languages |
-| 18 | Open | Observed undeclared inputs and incremental/clean disagreement |
+| 18 | Approved historical-baseline build, exact captured overlay/deletions and warm-versus-clean wheel comparison in the existing build check | Observed undeclared inputs and broader build systems |
 | 19 | Retained approved scenario assertions replayed against current subject after a clean baseline | Additional case formats and assertion extraction |
 | 20 | Batfish differential reachability, real Linux service and CLI/MCP acceptance passed | Additional address families and broader deployment models |
 | 21 | Approved paired workload campaign with baseline capture | Additional measurement protocols |
 | 22 | Kani checks captured standalone primitive Rust functions with owned harnesses, original-source compilation and independent counterexample replay | Heap, unsafe, calls, concurrency and captured Cargo projects |
-| 23 | Open | Pinned LLVM/Alive2 directional refinement |
+| 23 | Alive2 v20.0 directional refinement for two captured scalar integer LLVM functions with verified acyclic IR | Memory, calls, loops and source/compiler correspondence |
 | 24 | Atomic transaction-history linearizability profile | Additional isolation semantics |
 | 25 | Crash/restart transitions over durable/volatile finite state | Instrumented persistent-storage crash testing |
 | 26 | Constrained configuration generation and coverage | Additional constraint domains |

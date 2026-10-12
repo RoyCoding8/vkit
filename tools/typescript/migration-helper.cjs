@@ -376,13 +376,13 @@ function applyToSources(source, edits) {
   return { ...source, files: updated };
 }
 
-function verifyBindings(before, after, rename) {
+function verifyBindings(source, before, after, rename) {
   const options = after.options;
   const programAfter = programFor(after, options);
   const diagnostics = diagnosticEvidence(programAfter.program, after);
   if (diagnostics.length) return { ok: false, diagnostics };
   const checker = programAfter.checker;
-  const targetPath = path.resolve(after.root, ...before.target.split("/"));
+  const targetPath = path.resolve(after.root, ...source.target.split("/"));
   const afterFile = programAfter.program.getSourceFile(targetPath);
   if (!afterFile) return { ok: false, diagnostics: [], reason: "renamed target file disappeared" };
   const editsByFile = new Map();
@@ -393,21 +393,58 @@ function verifyBindings(before, after, rename) {
   }
   const targetDecl = rename.candidates[0].node;
   const targetName = mapOffset(targetDecl.getStart(rename.file), editsByFile.get(targetPath) || []);
-  const targetNode = findIdentifierAt(afterFile, targetName, before.newName);
+  const targetNode = findIdentifierAt(afterFile, targetName, source.newName);
   const targetSymbol = targetNode && checker.getSymbolAtLocation(targetNode);
   if (!targetSymbol) return { ok: false, diagnostics: [], reason: "renamed declaration does not bind" };
+  const beforeIds = identifierNodes(before.program, source);
+  const bindingKey = (symbol, edited) => {
+    if (!symbol) return null;
+    const declarations = symbol.declarations || [];
+    if (!declarations.length) throw new Unsupported("a captured identifier has no stable compiler declaration");
+    const keys = declarations.map((declaration) => {
+      const fileName = path.resolve(declaration.getSourceFile().fileName);
+      const start = declaration.getStart(declaration.getSourceFile());
+      const mapped = edited ? mapOffset(start, editsByFile.get(fileName) || []) : start;
+      return `${fileName}\0${mapped}\0${declaration.kind}`;
+    }).sort();
+    return JSON.stringify(keys);
+  };
+  const sameBinding = (oldSymbol, newSymbol) =>
+    bindingKey(oldSymbol, true) === bindingKey(newSymbol, false);
 
-  for (const reference of rename.related) {
-    const fileName = path.resolve(reference.file.fileName);
-    const afterSource = programAfter.program.getSourceFile(fileName);
-    if (!afterSource) return { ok: false, diagnostics: [], reason: "a captured reference file disappeared" };
-    const mapped = mapOffset(reference.node.getStart(reference.file), editsByFile.get(fileName) || []);
-    const isEdited = rename.edits.some((edit) => edit.fileName === fileName
-      && edit.start === reference.node.getStart(reference.file));
-    const expectedName = isEdited ? before.newName : reference.node.text;
-    const node = findIdentifierAt(afterSource, mapped, expectedName);
-    const resolved = node && followAlias(checker, checker.getSymbolAtLocation(node));
-    if (resolved !== targetSymbol) return { ok: false, diagnostics: [], reason: "a captured reference no longer resolves to the renamed declaration" };
+  for (const { file, node } of beforeIds) {
+    const fileName = path.resolve(file.fileName);
+    const changes = editsByFile.get(fileName) || [];
+    const edit = changes.find((item) => item.start === node.getStart(file));
+    const expandedAlias = edit && edit.newText === `${source.newName} as ${source.oldName}`
+      && (ts.isImportSpecifier(node.parent) || ts.isExportSpecifier(node.parent));
+    const mapped = expandedAlias
+      ? edit.start + source.newName.length + 4
+      : mapOffset(node.getStart(file), changes);
+    const expectedText = expandedAlias ? source.oldName : edit ? source.newName : node.text;
+    const afterFile = programAfter.program.getSourceFile(fileName);
+    const replacement = afterFile && findIdentifierAt(afterFile, mapped, expectedText);
+    if (!replacement) return { ok: false, diagnostics: [], reason: "a captured identifier disappeared after rename" };
+
+    const oldDirect = before.checker.getSymbolAtLocation(node);
+    const newDirect = checker.getSymbolAtLocation(replacement);
+    const oldResolved = followAlias(before.checker, oldDirect);
+    const newResolved = followAlias(checker, newDirect);
+    const oldShorthand = before.checker.getShorthandAssignmentValueSymbol(node);
+    const newShorthand = checker.getShorthandAssignmentValueSymbol(replacement);
+    if (!sameBinding(oldDirect, newDirect) || !sameBinding(oldResolved, newResolved)
+        || !sameBinding(oldShorthand, newShorthand)) {
+      return { ok: false, diagnostics: [], status: "UNSUPPORTED",
+        reason: "rename changes the compiler binding of a captured identifier" };
+    }
+  }
+
+  for (const edit of rename.edits) {
+    const afterSource = programAfter.program.getSourceFile(edit.fileName);
+    const changed = afterSource && findIdentifierAt(afterSource, edit.start, source.newName);
+    const resolved = changed && followAlias(checker, checker.getSymbolAtLocation(changed));
+    if (resolved !== targetSymbol) return { ok: false, diagnostics: [], status: "UNSUPPORTED",
+      reason: "a renamed token does not resolve to the selected declaration" };
   }
   return { ok: true, diagnostics: [], targetSymbol };
 }
@@ -446,9 +483,9 @@ function execute(raw) {
     const rename = renamedSite(capture, source, before.program, before.service, before.checker, [...targetSymbols][0]);
     const afterSource = applyToSources(source, rename.edits);
     afterSource.options = options;
-    const checked = verifyBindings(source, afterSource, rename);
+    const checked = verifyBindings(source, before, afterSource, rename);
     if (!checked.ok) {
-      return fail(checked.diagnostics && checked.diagnostics.length ? "UNSUPPORTED" : "UNKNOWN",
+      return fail(checked.status || (checked.diagnostics && checked.diagnostics.length ? "UNSUPPORTED" : "UNKNOWN"),
         checked.reason || "post-rename compiler diagnostics are present", diagnosticsBefore, checked.diagnostics || []);
     }
     const relatedAliasSites = rename.related.filter((item) => !rename.edits.some((edit) =>

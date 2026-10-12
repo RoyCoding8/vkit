@@ -91,6 +91,31 @@ def test_name_collision_is_refused_after_compiler_recheck(tmp_path, configured_t
     assert "newName" not in result.get("patch", "")
 
 
+def test_rename_does_not_capture_a_preexisting_reference(tmp_path, configured_typescript):
+    _write_project(tmp_path, {
+        "src/api.ts": (
+            "const newName = 1;\n"
+            "export function wrapper(): number {\n"
+            "  const oldName = 2;\n"
+            "  return newName + oldName;\n"
+            "}\n"
+        ),
+    })
+    result = _rename(tmp_path)
+    assert result["status"] == "UNSUPPORTED", result
+    assert "changes the compiler binding" in result["detail"]
+    assert "patch" not in result
+
+
+def test_object_shorthand_dual_binding_is_rejected_without_a_preview(tmp_path, configured_typescript):
+    _write_project(tmp_path, {
+        "src/api.ts": "const oldName = 2;\nexport const record = { oldName };\n",
+    })
+    result = _rename(tmp_path)
+    assert result["status"] == "UNSUPPORTED", result
+    assert "patch" not in result
+
+
 @pytest.mark.parametrize("source, reason", [
     ('import { value } from "external-package";\nexport function oldName(x: number) { return x; }\n', "relative"),
     ('export async function oldName() { return import("./lazy"); }\n', "dynamic import"),

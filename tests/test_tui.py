@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import http.client
 import json
-import queue
-import re
 import shutil
 import socket
 import subprocess
 import sys
-import threading
+import time
 
 import pytest
 
@@ -32,50 +30,46 @@ def test_menu_uses_cli_and_reports_scoped_status(make_project):
     assert json.dumps(str(project)) in done.stdout
 
 
-def test_subprocess_console_answers_while_menu_waits_for_input(make_project):
+def test_subprocess_console_answers_while_menu_waits_for_input(make_project, tmp_path):
     check = scenario_check("sample", "driver.py", scenarios=["ok"], inputs=["driver.py"])
     project = make_project({"driver.py": DRIVER}, [check])
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "vkit.cli", "tui", "--project", str(project)],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **NO_WINDOW,
-    )
-    lines = queue.Queue()
-
-    def read_output():
-        for line in proc.stdout:
-            lines.put(re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line))
-
-    reader = threading.Thread(target=read_output, daemon=True)
-    reader.start()
-    try:
-        proc.stdin.write("2\n")
-        proc.stdin.flush()
-        while True:
-            line = lines.get(timeout=15)
-            if "Web console: http://" in line:
-                port = int(re.search(r"127\.0\.0\.1:(\d+)", line).group(1))
-                break
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    with (tmp_path / "launcher.log").open("w+", encoding="utf-8") as output:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "vkit.cli", "tui", "--project", str(project), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT, text=True, **NO_WINDOW,
+        )
         try:
-            connection.request("GET", "/api/status")
-            response = connection.getresponse()
-            assert response.status == 200
-            body = json.loads(response.read())
+            proc.stdin.write("2\n")
+            proc.stdin.flush()
+            deadline = time.monotonic() + 30
+            while True:
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                try:
+                    connection.request("GET", "/api/status")
+                    response = connection.getresponse()
+                    assert response.status == 200
+                    body = json.loads(response.read())
+                    break
+                except ConnectionRefusedError:
+                    if proc.poll() is not None or time.monotonic() >= deadline:
+                        output.seek(0)
+                        pytest.fail(f"Console did not start. Launcher output:\n{output.read()}")
+                    time.sleep(0.05)
+                finally:
+                    connection.close()
             assert body["project"] == str(project)
             assert [check["id"] for check in body["checks"]] == ["sample"]
+            proc.stdin.write("q\n")
+            proc.stdin.flush()
+            assert proc.wait(timeout=10) == 0
         finally:
-            connection.close()
-        proc.stdin.write("q\n")
-        proc.stdin.flush()
-        assert proc.wait(timeout=10) == 0
-    finally:
-        proc.stdin.close()
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=10)
-        reader.join(timeout=5)
-        proc.stdout.close()
-        proc.stderr.close()
+            proc.stdin.close()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
 
 
 @pytest.mark.parametrize("ending", ["q", EOFError(), KeyboardInterrupt()])

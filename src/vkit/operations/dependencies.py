@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import stat
 import subprocess
 import tempfile
@@ -14,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Mapping
+
+from ._runtime import pinned_node_helper
 
 MAX_FILES = 1_000
 MAX_TREE_ENTRIES = 20_000
@@ -28,14 +29,12 @@ _HELPER_ENV = "VKIT_DEPENDENCY_HELPER"
 _HELPER_SHA_ENV = "VKIT_DEPENDENCY_SHA256"
 _LOCK_ENV = "VKIT_DEPENDENCY_LOCKFILE"
 _LOCK_SHA_ENV = "VKIT_DEPENDENCY_LOCK_SHA256"
-_NODE_ENV = "VKIT_NODE_BIN"
 _PROTOCOL_VERSION = 1
 _SOURCE_EXTENSIONS = {".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"}
 _SKIP_DIRECTORIES = {
     ".git", ".hg", ".next", ".nuxt", ".turbo", ".venv", ".vscode", ".yarn",
     "build", "coverage", "dist", "node_modules", "out", "vendor",
 }
-_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _EXTERNAL_TYPES = {"npm", "npm-dev", "npm-optional", "npm-peer", "npm-no-pkg"}
 _MODEL_SCOPE = (
@@ -183,32 +182,6 @@ def _snapshot(source: Path, destination: Path, deadline: float) -> tuple[str, tu
         digest.update(content)
         relative_paths.append(relative)
     return digest.hexdigest(), tuple(relative_paths)
-
-
-def _runtime() -> tuple[Path, str, Path, str, Path] | None:
-    raw_helper = os.environ.get(_HELPER_ENV)
-    expected_helper = os.environ.get(_HELPER_SHA_ENV, "").lower()
-    raw_lock = os.environ.get(_LOCK_ENV)
-    expected_lock = os.environ.get(_LOCK_SHA_ENV, "").lower()
-    raw_node = os.environ.get(_NODE_ENV)
-    if not raw_helper or not raw_lock or not raw_node \
-            or not _SHA256.fullmatch(expected_helper) or not _SHA256.fullmatch(expected_lock):
-        return None
-    helper = Path(raw_helper).expanduser().resolve()
-    lockfile = Path(raw_lock).expanduser().resolve()
-    node = Path(raw_node).expanduser().resolve()
-    try:
-        if not helper.is_file() or not lockfile.is_file() or not node.is_file():
-            return None
-        with helper.open("rb") as source:
-            helper_digest = hashlib.file_digest(source, "sha256").hexdigest()
-        with lockfile.open("rb") as source:
-            lock_digest = hashlib.file_digest(source, "sha256").hexdigest()
-    except OSError:
-        return None
-    if helper_digest != expected_helper or lock_digest != expected_lock:
-        return None
-    return helper, helper_digest, lockfile, lock_digest, node
 
 
 def _fields(value: Any, expected: set[str], label: str) -> dict[str, Any]:
@@ -426,7 +399,7 @@ def analyze_dependencies(root: Path, path: str, query: str = "graph", sources: l
                     return {**base, "status": "UNSUPPORTED",
                             "detail": f"query path {item!r} is outside the captured JavaScript/TypeScript source subset"}
 
-            runtime = _runtime()
+            runtime = pinned_node_helper(_HELPER_ENV, _HELPER_SHA_ENV, _LOCK_ENV, _LOCK_SHA_ENV)
             if runtime is None:
                 return {**base, "status": "UNAVAILABLE", "backend_identity": None,
                         "detail": "the configured helper or pinned package lock is unavailable or failed its SHA-256 check"}

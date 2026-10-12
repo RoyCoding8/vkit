@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..proc import run
-from ._runtime import pinned_binary
+from ._runtime import pinned_node_helper
 
 TYPESCRIPT_VERSION = "5.9.3"
 NODE_VERSION = "v24.16.0"
@@ -30,8 +30,6 @@ _HELPER_ENV = "VKIT_TYPESCRIPT_RENAME_HELPER"
 _HELPER_SHA_ENV = "VKIT_TYPESCRIPT_RENAME_HELPER_SHA256"
 _LOCK_ENV = "VKIT_TYPESCRIPT_LOCKFILE"
 _LOCK_SHA_ENV = "VKIT_TYPESCRIPT_LOCK_SHA256"
-_NODE_ENV = "VKIT_NODE_BIN"
-_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _NAME = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*\Z")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 _SKIP_DIRECTORIES = frozenset({".git", ".hg", "node_modules", ".venv", "dist", "build", "coverage"})
@@ -197,21 +195,6 @@ def _capture(root: Path, target_value: Any, old_name: Any, new_name: Any,
     return _Snapshot(target.as_posix(), old_name, new_name, tuple(files), digest.hexdigest())
 
 
-def _runtime() -> tuple[Path, str, Path, str, Path] | None:
-    helper = pinned_binary(_HELPER_ENV, _HELPER_SHA_ENV)
-    lockfile = pinned_binary(_LOCK_ENV, _LOCK_SHA_ENV)
-    raw_node = os.environ.get(_NODE_ENV)
-    if helper is None or lockfile is None or not raw_node:
-        return None
-    try:
-        node = Path(raw_node).expanduser().resolve(strict=True)
-        if not node.is_file():
-            return None
-    except (OSError, RuntimeError, ValueError):
-        return None
-    return helper[0], helper[1], lockfile[0], lockfile[1], node
-
-
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -292,7 +275,7 @@ def preview_typescript_symbol_rename(root: Path, path: str, old_name: str, new_n
         return {**result, "status": "UNSUPPORTED", "detail": str(exc)}
     result["source_identity"] = {"sha256": snapshot.digest, "file_count": len(snapshot.files)}
 
-    runtime = _runtime()
+    runtime = pinned_node_helper(_HELPER_ENV, _HELPER_SHA_ENV, _LOCK_ENV, _LOCK_SHA_ENV)
     if runtime is None:
         return {**result, "status": "UNAVAILABLE",
                 "detail": "trusted rename helper, TypeScript lockfile, or configured Node executable is unavailable or failed its SHA-256 check"}

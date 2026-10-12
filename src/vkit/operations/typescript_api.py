@@ -4,13 +4,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import stat
 import subprocess
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from ._runtime import pinned_node_helper
 
 TYPESCRIPT_VERSION = "5.9.3"
 NODE_VERSION = "v24.16.0"
@@ -26,8 +27,6 @@ _HELPER_ENV = "VKIT_TYPESCRIPT_HELPER"
 _HELPER_SHA_ENV = "VKIT_TYPESCRIPT_HELPER_SHA256"
 _LOCK_ENV = "VKIT_TYPESCRIPT_LOCKFILE"
 _LOCK_SHA_ENV = "VKIT_TYPESCRIPT_LOCK_SHA256"
-_NODE_ENV = "VKIT_NODE_BIN"
-_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _SKIP_DIRECTORIES = {".git", ".hg", "node_modules", ".venv", "dist", "build", "coverage"}
 _MODEL_SCOPE = (
@@ -141,32 +140,6 @@ def _capture(root: Path, value: str, deadline: float) -> tuple[dict[str, Any], s
     return {"entry": entry_name, "files": contents}, digest.hexdigest(), len(files)
 
 
-def _runtime() -> tuple[Path, str, Path, str, Path] | None:
-    raw_helper = os.environ.get(_HELPER_ENV)
-    expected_helper = os.environ.get(_HELPER_SHA_ENV, "").lower()
-    raw_lock = os.environ.get(_LOCK_ENV)
-    expected_lock = os.environ.get(_LOCK_SHA_ENV, "").lower()
-    raw_node = os.environ.get(_NODE_ENV)
-    if not raw_helper or not raw_lock or not raw_node \
-            or not _SHA256.fullmatch(expected_helper) or not _SHA256.fullmatch(expected_lock):
-        return None
-    helper = Path(raw_helper).expanduser().resolve()
-    lockfile = Path(raw_lock).expanduser().resolve()
-    node = Path(raw_node).expanduser().resolve()
-    try:
-        if not helper.is_file() or not lockfile.is_file() or not node.is_file():
-            return None
-        with helper.open("rb") as source:
-            helper_digest = hashlib.file_digest(source, "sha256").hexdigest()
-        with lockfile.open("rb") as source:
-            lock_digest = hashlib.file_digest(source, "sha256").hexdigest()
-    except OSError:
-        return None
-    if helper_digest != expected_helper or lock_digest != expected_lock:
-        return None
-    return helper, helper_digest, lockfile, lock_digest, node
-
-
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -236,7 +209,7 @@ def check_typescript_api_compatibility(root: Path, old_path: str, new_path: str,
         return {**base, "status": "UNSUPPORTED", "detail": str(exc)}
     base["source_identity"] = {"old_sha256": old_digest, "new_sha256": new_digest,
                                "old_captured_file_count": old_count, "new_captured_file_count": new_count}
-    runtime = _runtime()
+    runtime = pinned_node_helper(_HELPER_ENV, _HELPER_SHA_ENV, _LOCK_ENV, _LOCK_SHA_ENV)
     if runtime is None:
         return {**base, "status": "UNAVAILABLE", "detail": "trusted TypeScript helper, lockfile, or Node path is unavailable or failed its SHA-256 check"}
     helper, helper_digest, lockfile, lock_digest, node = runtime

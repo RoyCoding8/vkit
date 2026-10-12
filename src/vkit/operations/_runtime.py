@@ -23,3 +23,19 @@ def pinned_binary(path_env: str, sha_env: str) -> tuple[Path, str] | None:
     except (OSError, RuntimeError, ValueError):
         return None
     return (binary, digest) if digest == expected else None
+
+
+def pinned_node_helper(helper_env: str, helper_sha_env: str,
+                       lock_env: str, lock_sha_env: str) -> tuple[Path, str, Path, str, Path] | None:
+    helper = pinned_binary(helper_env, helper_sha_env)
+    lockfile = pinned_binary(lock_env, lock_sha_env)
+    raw_node = os.environ.get("VKIT_NODE_BIN")
+    if helper is None or lockfile is None or not raw_node:
+        return None
+    try:
+        node = Path(raw_node).expanduser().resolve(strict=True)
+        if not node.is_file():
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return *helper, *lockfile, node

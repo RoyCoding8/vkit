@@ -4,12 +4,32 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from vkit.operations import openapi
 from vkit.operations.openapi import OASDIFF_VERSION, check_openapi_compatibility
+
+
+def test_backend_output_limit_combines_stdout_and_stderr(tmp_path, monkeypatch):
+    monkeypatch.setattr(openapi, "MAX_BACKEND_OUTPUT_BYTES", 100_000)
+    script = "import os; os.write(1, b'o' * 60000); os.write(2, b'e' * 60000)"
+    with pytest.raises(openapi._BackendOutputExceeded):
+        openapi._run(Path(sys.executable), ["-c", script], tmp_path,
+                     dict(os.environ), time.monotonic() + 10)
+
+
+def test_backend_preserves_output_within_combined_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(openapi, "MAX_BACKEND_OUTPUT_BYTES", 100_000)
+    script = "import os; os.write(1, b'o' * 20000); os.write(2, b'e' * 30000)"
+    result = openapi._run(Path(sys.executable), ["-c", script], tmp_path,
+                          dict(os.environ), time.monotonic() + 10)
+    assert result.returncode == 0
+    assert result.stdout == b'o' * 20000
+    assert result.stderr == b'e' * 30000
 
 
 @pytest.fixture

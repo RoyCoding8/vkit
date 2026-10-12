@@ -8,12 +8,12 @@ import posixpath
 import re
 import subprocess
 import tempfile
-import threading
 import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from .. import proc
 from ._runtime import pinned_binary
 
 OASDIFF_VERSION = "1.33.0"
@@ -306,41 +306,22 @@ def _run(binary: Path, args: list[str], cwd: Path, env: dict[str, str],
     _check_deadline(deadline)
     remaining = deadline - time.monotonic()
     command = [str(binary), *args]
-    process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE)
-    stdout = bytearray()
-    stderr = bytearray()
-    exceeded = threading.Event()
-
-    def drain(stream, destination: bytearray) -> None:
-        while chunk := stream.read(65_536):
-            if len(destination) + len(chunk) > MAX_BACKEND_OUTPUT_BYTES:
-                exceeded.set()
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                return
-            destination.extend(chunk)
-
-    assert process.stdout is not None and process.stderr is not None
-    readers = (threading.Thread(target=drain, args=(process.stdout, stdout), daemon=True),
-               threading.Thread(target=drain, args=(process.stderr, stderr), daemon=True))
-    for reader in readers:
-        reader.start()
-    try:
-        returncode = process.wait(timeout=remaining)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-        raise subprocess.TimeoutExpired(command, remaining)
-    finally:
-        for reader in readers:
-            reader.join()
+    with tempfile.TemporaryDirectory(prefix="vkit-openapi-output-") as raw_temp:
+        work = Path(raw_temp)
+        stdout_path, stderr_path = work / "stdout", work / "stderr"
+        result = proc.run(
+            command, cwd=cwd, env=env, stdout_path=stdout_path, stderr_path=stderr_path,
+            timeout_seconds=remaining, max_output_bytes=MAX_BACKEND_OUTPUT_BYTES,
+        )
+        if result.launch_error:
+            raise OSError(result.launch_error)
+        if result.timed_out:
+            raise subprocess.TimeoutExpired(command, remaining)
+        if result.output_limited:
+            raise _BackendOutputExceeded
+        stdout, stderr = stdout_path.read_bytes(), stderr_path.read_bytes()
     _check_deadline(deadline)
-    if exceeded.is_set():
-        raise _BackendOutputExceeded
-    return subprocess.CompletedProcess(command, returncode, bytes(stdout), bytes(stderr))
+    return subprocess.CompletedProcess(command, result.code, stdout, stderr)
 
 
 def _severity(level: Any) -> str:

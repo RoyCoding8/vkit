@@ -441,10 +441,12 @@ def check_c_safety(
     preprocessor = None
     if profile == "heap-callgraph":
         cpp_runtime = pinned_binary("VKIT_C_PREPROCESSOR_BIN", "VKIT_C_PREPROCESSOR_SHA256")
-        if cpp_runtime is None or cpp_runtime[0].name.lower() not in {"gcc", "gcc.exe"}:
+        cpp_alias = Path(os.environ.get("VKIT_C_PREPROCESSOR_BIN", "")).expanduser().absolute()
+        if cpp_runtime is None or cpp_alias.name.lower() not in {"gcc", "gcc.exe"}:
             return {**base, "status": "UNAVAILABLE", "backend_sha256": backend_sha256,
                     "detail": "heap library models require an operator-pinned GCC preprocessor runtime"}
-        preprocessor, cpp_sha256 = cpp_runtime
+        _, cpp_sha256 = cpp_runtime
+        preprocessor = cpp_alias
         base["preprocessor_sha256"] = cpp_sha256
     try:
         with tempfile.TemporaryDirectory(prefix="vkit-c-safety-") as temporary:

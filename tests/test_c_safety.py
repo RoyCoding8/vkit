@@ -26,7 +26,7 @@ def configured_cbmc(monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("VKIT_CBMC_SHA256", expected.lower())
     gcc = shutil.which("gcc")
     if gcc is not None:
-        compiler = Path(gcc).resolve()
+        compiler = Path(gcc).absolute()
         monkeypatch.setenv("VKIT_C_PREPROCESSOR_BIN", str(compiler))
         monkeypatch.setenv("VKIT_C_PREPROCESSOR_SHA256", hashlib.sha256(compiler.read_bytes()).hexdigest())
     return path

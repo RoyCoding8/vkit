@@ -4,6 +4,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from vkit import proc
 
 
@@ -75,3 +77,19 @@ def test_capped_capture_preserves_timeout_classification(tmp_path):
     assert result.timed_out is True
     assert result.output_limited is False
     assert (tmp_path / "stdout.log").read_bytes() == b"started"
+
+
+@pytest.mark.parametrize("limit", [None, 4096])
+def test_file_input_preserves_bytes_and_closes_at_eof(tmp_path, limit):
+    request = tmp_path / "request"
+    request.write_bytes(b"request\x00\xff\n")
+    result = proc.run(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+        cwd=tmp_path, stdin_path=request,
+        stdout_path=tmp_path / "stdout.log", stderr_path=tmp_path / "stderr.log",
+        timeout_seconds=5, max_output_bytes=limit,
+    )
+
+    assert result == proc.Exit(0)
+    assert (tmp_path / "stdout.log").read_bytes() == b"request\x00\xff\n"
+    assert (tmp_path / "stderr.log").read_bytes() == b""

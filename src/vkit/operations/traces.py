@@ -6,15 +6,13 @@ import importlib.metadata
 import json
 import os
 import platform
-import signal
-import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from ..nowindow import hidden_window
+from .. import proc
 from ._data import encode_json
 
 PERFETTO_VERSION = "0.58.2"
@@ -300,54 +298,6 @@ def _worker() -> int:
     return 0
 
 
-def _terminate_worker(process: subprocess.Popen[bytes], job: Any) -> None:
-    if os.name == "nt":
-        if job is not None:
-            import win32job
-            win32job.TerminateJobObject(job, 1)
-        else:
-            process.kill()
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-
-def _close_job(job: Any) -> None:
-    if job is not None:
-        import win32api
-        win32api.CloseHandle(job)
-
-
-def _start_worker() -> tuple[subprocess.Popen[bytes], Any]:
-    process = subprocess.Popen(
-        [sys.executable, "-I", "-m", "vkit.operations.traces", "--worker"],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        **({"start_new_session": True} if os.name != "nt" else hidden_window()),
-    )
-    if os.name != "nt":
-        return process, None
-    job = None
-    try:
-        import win32api
-        import win32job
-
-        job = win32job.CreateJobObject(None, "")
-        info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
-        info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
-        win32job.AssignProcessToJobObject(job, int(process._handle))
-    except Exception as exc:
-        process.kill()
-        process.wait(timeout=5)
-        if job is not None:
-            import win32api
-            win32api.CloseHandle(job)
-        raise OSError(f"cannot establish a kill-on-close worker job: {exc}") from exc
-    return process, job
-
-
 def explain_trace_interval(root: Path, path: str, start_ns: int, end_ns: int, tid: int, *,
                            upid: int | None = None, timeout_seconds: int = 30) -> dict[str, Any]:
     """Report bounded scheduling state facts for one thread and trace-clock interval."""
@@ -374,32 +324,34 @@ def explain_trace_interval(root: Path, path: str, start_ns: int, end_ns: int, ti
             request = encode_json({"trace_path": str(trace_path.resolve()), "trace_sha256": trace_sha256,
                                    "start_ns": start_ns, "end_ns": end_ns, "tid": tid, "upid": upid},
                                   max_bytes=MAX_WORKER_INPUT_BYTES)
-            process, job = _start_worker()
-            try:
-                remaining = timeout_seconds - (time.monotonic() - started)
-                if remaining <= 0:
-                    _terminate_worker(process, job)
-                    process.wait(timeout=5)
-                    return _result("UNKNOWN", trace_sha256, reason="trace worker exceeded its wall deadline")
-                try:
-                    stdout, _ = process.communicate(request.encode("ascii"), timeout=remaining)
-                except subprocess.TimeoutExpired:
-                    _terminate_worker(process, job)
-                    process.wait(timeout=5)
-                    return _result("UNKNOWN", trace_sha256, reason="Trace Processor exceeded its wall deadline")
-            finally:
-                _close_job(job)
-            if process.returncode != 0 or len(stdout) > MAX_WORKER_OUTPUT_BYTES:
+            request_path = Path(directory) / "request.json"
+            request_path.write_bytes(request.encode("ascii"))
+            remaining = timeout_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                return _result("UNKNOWN", trace_sha256, reason="trace worker exceeded its wall deadline")
+            stdout_path = Path(directory) / "stdout.json"
+            outcome = proc.run(
+                [sys.executable, "-I", "-m", "vkit.operations.traces", "--worker"],
+                cwd=Path(directory), stdin_path=request_path, stdout_path=stdout_path,
+                stderr_path=Path(directory) / "stderr.log", timeout_seconds=remaining,
+                max_output_bytes=MAX_WORKER_OUTPUT_BYTES,
+            )
+            if outcome.launch_error:
+                return _result("UNAVAILABLE", trace_sha256,
+                               reason=f"cannot start bounded trace worker: {outcome.launch_error}")
+            if outcome.timed_out:
+                return _result("UNKNOWN", trace_sha256, reason="Trace Processor exceeded its wall deadline")
+            if outcome.code != 0 or outcome.output_limited:
                 return _result("UNKNOWN", trace_sha256, reason="isolated trace worker returned no bounded result")
             try:
-                result = json.loads(stdout.decode("ascii"))
+                result = json.loads(stdout_path.read_bytes().decode("ascii"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return _result("UNKNOWN", trace_sha256, reason="isolated trace worker returned invalid JSON")
             if not isinstance(result, dict) or result.get("status") not in _STATUSES:
                 return _result("UNKNOWN", trace_sha256, reason="isolated trace worker returned an invalid result")
             return {"operation": "explain_trace_interval", "path": path, "tid": tid,
                     "upid": upid, **result}
-    except (OSError, subprocess.SubprocessError) as exc:
+    except OSError as exc:
         return _result("UNAVAILABLE", trace_sha256, reason=f"cannot start bounded trace worker: {exc}")
 
 

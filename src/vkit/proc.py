@@ -6,6 +6,7 @@ import signal
 import subprocess
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -64,7 +65,7 @@ class _Tree:
 def run(argv: Sequence[str], *, cwd: Path, stdout_path: Path, stderr_path: Path,
         timeout_seconds: float, env: Mapping[str, str] | None = None,
         should_cancel: Callable[[], bool] = lambda: False,
-        max_output_bytes: int | None = None) -> Exit:
+        max_output_bytes: int | None = None, stdin_path: Path | None = None) -> Exit:
     if max_output_bytes is not None and max_output_bytes < 1:
         raise ValueError("max_output_bytes must be positive")
     options = hidden_window()
@@ -72,12 +73,13 @@ def run(argv: Sequence[str], *, cwd: Path, stdout_path: Path, stderr_path: Path,
         options["creationflags"] = options.get("creationflags", 0) | CREATE_SUSPENDED
     else:
         options["start_new_session"] = True
-    with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
+    with (open(stdout_path, "wb") as out, open(stderr_path, "wb") as err,
+          open(stdin_path, "rb") if stdin_path is not None else nullcontext(subprocess.DEVNULL) as source):
         try:
             proc = subprocess.Popen(
                 list(argv),
                 cwd=cwd,
-                stdin=subprocess.DEVNULL,
+                stdin=source,
                 stdout=subprocess.PIPE if max_output_bytes is not None else out,
                 stderr=subprocess.PIPE if max_output_bytes is not None else err,
                 env=None if env is None else dict(env),

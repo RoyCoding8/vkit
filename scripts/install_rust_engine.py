@@ -106,10 +106,13 @@ def install(root: Path) -> dict[str, str]:
         shutil.copy2(rustup, isolated_rustup)
     env = bootstrap_env.copy()
     env.update({"KANI_HOME": str(kani_home), "RUSTUP_HOME": str(rustup_home)})
-    cargo_exe = str(cargo_root / "bin" / "cargo")
-    if not Path(cargo_exe).is_file():
-        cargo_exe = cargo
-    _run([cargo_exe, "kani", "setup"], env, root)
+    # Invoke the installed cargo subcommand directly. Sending `cargo kani`
+    # through the host rustup shim after switching RUSTUP_HOME would make it
+    # seek a default compiler in the still-empty isolated Rustup home.
+    cargo_kani = cargo_root / "bin" / "cargo-kani"
+    if not cargo_kani.is_file():
+        raise RuntimeError("cargo install did not produce the pinned cargo-kani setup executable")
+    _run([str(cargo_kani), "setup"], env, root)
 
     binary = cargo_root / "bin" / "kani"
     expected_version = f"Kani Rust Verifier {VERSION} (standalone)\nCBMC {CBMC}\n"

@@ -189,6 +189,7 @@ def _build_check(entry: dict, project: Project) -> CheckSpec:
             runtime_requirements=build["runtime_requirements"],
             imports=tuple(build["imports"]),
             entry_points=entries,
+            incremental_baseline_sha=build.get("incremental_baseline_sha"),
         )
     if kind in (CheckKind.PYTEST, CheckKind.PROPERTY, CheckKind.NODE_TEST):
         runner = dict(

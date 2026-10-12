@@ -70,6 +70,49 @@ class BuildReading:
         return [], list(self.counterexamples)
 
 
+def _incremental_problem(check: BuildCheck, document: dict[str, Any], assertions: dict[str, dict]) -> Blocked | None:
+    incremental = document.get("incremental")
+    if check.incremental_baseline_sha is None:
+        if incremental is not None:
+            return Blocked(BlockedReason.ARTIFACT_MALFORMED, "unapproved incremental evidence is present")
+        return None
+    if not isinstance(incremental, dict) or incremental.get("baseline_sha") != check.incremental_baseline_sha:
+        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline does not match the approved SHA")
+    baseline = incremental["baseline_inputs"]
+    overlay = incremental["overlay_inputs"]
+    baseline_paths = [item["path"] for item in baseline]
+    overlay_paths = [item["path"] for item in overlay]
+    if baseline_paths != sorted(set(baseline_paths)) or overlay_paths != sorted(set(overlay_paths)):
+        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental input paths are duplicated or unordered")
+    if incremental["deleted_inputs"] != sorted(set(baseline_paths) - set(overlay_paths)):
+        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental deletion list disagrees with captured input sets")
+    baseline_build = incremental["baseline_build"]
+    overlay_build = incremental["overlay_build"]
+    if (
+        baseline_build["index"] != 0
+        or overlay_build["index"] != 3
+        or baseline_build["exit_code"] != 0
+        or overlay_build["exit_code"] != 0
+        or baseline_build["wheel"] is None
+        or overlay_build["wheel"] is None
+    ):
+        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental report is missing completed baseline and overlay builds")
+    clean_wheel = document["builds"][0]["wheel"]
+    warm_wheel = overlay_build["wheel"]
+    matches_clean = clean_wheel == warm_wheel
+    if incremental["wheel_matches_clean"] is not matches_clean:
+        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental wheel comparison disagrees with recorded wheel identities")
+    assertion = assertions.get("incremental:wheel-matches-clean")
+    if (
+        assertion is None
+        or assertion["expected"] != clean_wheel
+        or assertion["observed"] != warm_wheel
+        or (assertion["result"] == "PASS") != matches_clean
+    ):
+        return Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental wheel assertion is missing or inconsistent")
+    return None
+
+
 def read_build(check: BuildCheck, raw: bytes) -> BuildReading:
     try:
         document = parse_artifact(raw)
@@ -122,6 +165,8 @@ def read_build(check: BuildCheck, raw: bytes) -> BuildReading:
             for entry in check.entry_points
         ),
     }
+    if check.incremental_baseline_sha is not None:
+        expected_names.add("incremental:wheel-matches-clean")
     if set(names) != expected_names:
         return BuildReading(
             (),
@@ -162,6 +207,9 @@ def read_build(check: BuildCheck, raw: bytes) -> BuildReading:
             ),
         )
     by_id = {item["id"]: item for item in assertions}
+    incremental_problem = _incremental_problem(check, document, by_id)
+    if incremental_problem is not None:
+        return BuildReading((), incremental_problem)
     identical = by_id["builds:wheel-bytes-identical"]
     if (
         identical["expected"] is not True
@@ -290,6 +338,7 @@ def _build_profile(check: BuildCheck) -> dict[str, Any]:
             "build_constraints": check.build_constraints,
             "wheelhouse": check.wheelhouse,
             "runtime_requirements": check.runtime_requirements,
+            "incremental_baseline_sha": check.incremental_baseline_sha,
             "imports": list(check.imports),
             "entry_points": [
                 {

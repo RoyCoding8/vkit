@@ -234,6 +234,7 @@ class BuildCheck(NativeCheckSpec):
     runtime_requirements: str
     imports: tuple[str, ...]
     entry_points: tuple[BuildEntryPoint, ...]
+    incremental_baseline_sha: str | None = None
     kind: CheckKind = field(default=CheckKind.BUILD, init=False)
 
 

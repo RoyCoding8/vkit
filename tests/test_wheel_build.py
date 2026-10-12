@@ -126,7 +126,7 @@ def _wheel_bytes(name: str, version: str, files: dict[str, bytes], requires: tup
     return output.getvalue()
 
 
-def _fixture_wheelhouse(*, include_dependency: bool = True, noisy: bool = False) -> tuple[dict[str, bytes], str]:
+def _fixture_wheelhouse(*, include_dependency: bool = True, noisy: bool = False, stale: bool = False) -> tuple[dict[str, bytes], str]:
     dependency = _wheel_bytes("fixture-dep", "1.0", {"fixture_dep.py": b"VALUE = 'ready'\n"})
     backend_source = '''from pathlib import Path
 import zipfile
@@ -153,7 +153,44 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     destination = Path(wheel_directory) / "demo-1.0.0-py3-none-any.whl"
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
         for path, content in files.items():
-            archive.writestr(path, content)
+            info = zipfile.ZipInfo(path, date_time=(2020, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, content)
+    return destination.name
+'''.encode()
+    if stale:
+        backend_source = '''from pathlib import Path
+import base64, csv, hashlib, io, zipfile
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    import fixture_dep
+    assert fixture_dep.VALUE == "ready"
+    marker = Path("build/generated.txt")
+    if not marker.exists():
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_bytes(Path("src/demo/data.txt").read_bytes())
+    files = {
+        "demo/__init__.py": b"def main():\\n    print('hello')\\n",
+        "demo/generated.txt": marker.read_bytes(),
+        "demo-1.0.0.dist-info/METADATA": b"Metadata-Version: 2.1\\nName: demo\\nVersion: 1.0.0\\n\\n",
+        "demo-1.0.0.dist-info/WHEEL": b"Wheel-Version: 1.0\\nGenerator: stale-fixture\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n\\n",
+        "demo-1.0.0.dist-info/entry_points.txt": b"[console_scripts]\\nhello = demo:main\\n",
+    }
+    rows = []
+    for path, content in files.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+        rows.append((path, f"sha256={digest}", str(len(content))))
+    record = "demo-1.0.0.dist-info/RECORD"
+    rows.append((record, "", ""))
+    stream = io.StringIO(newline="")
+    csv.writer(stream, lineterminator="\\n").writerows(rows)
+    files[record] = stream.getvalue().encode()
+    destination = Path(wheel_directory) / "demo-1.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path, content in files.items():
+            info = zipfile.ZipInfo(path, date_time=(2020, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, content)
     return destination.name
 '''.encode()
     if noisy:
@@ -174,8 +211,8 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     return wheels, lock
 
 
-def _fixture_backend_project(make_project, uv: tuple[Path, str, str], *, include_dependency: bool = True, bad_hash: bool = False, noisy: bool = False) -> Path:
-    wheels, lock = _fixture_wheelhouse(include_dependency=include_dependency, noisy=noisy)
+def _fixture_backend_project(make_project, uv: tuple[Path, str, str], *, include_dependency: bool = True, bad_hash: bool = False, noisy: bool = False, stale: bool = False) -> Path:
+    wheels, lock = _fixture_wheelhouse(include_dependency=include_dependency, noisy=noisy, stale=stale)
     if bad_hash:
         lock = lock.replace(hashlib.sha256(wheels["fixture_backend-1.0-py3-none-any.whl"]).hexdigest(), "0" * 64)
     project = _make_project(make_project, uv, backend="fixture", accept=False)
@@ -187,6 +224,9 @@ def _fixture_backend_project(make_project, uv: tuple[Path, str, str], *, include
     wheelhouse = project / "wheelhouse"
     for name, content in wheels.items():
         (wheelhouse / name).write_bytes(content)
+    if stale:
+        (project / "src/demo/data.txt").write_bytes(b"old payload\n")
+        (project / "src/demo/obsolete.txt").write_text("remove this input\n")
     git(project, "add", ".")
     git(project, "commit", "-qm", "add local build backend wheelhouse")
     code, body = vkit(project, "accept", "--yes")
@@ -270,6 +310,8 @@ def test_build_backend_missing_transitive_dependency_is_incomplete_setup(make_pr
 
     assert record["outcome"]["result"] == "BLOCKED"
     assert record["outcome"]["reason"] == "internal_error"
+    assert report["status"] == "BLOCKED"
+    assert "execution observation" in report["problem"]["detail"]
     assert report["builds"][0]["exit_code"] != 0
     assert "fixture-dep" in (run_dir / "build-1.stderr.log").read_text(errors="replace").lower()
 
@@ -286,6 +328,8 @@ def test_build_backend_hash_mismatch_is_incomplete_setup(make_project):
 
     assert record["outcome"]["result"] == "BLOCKED"
     assert record["outcome"]["reason"] == "internal_error"
+    assert report["status"] == "BLOCKED"
+    assert "execution observation" in report["problem"]["detail"]
     assert report["builds"][0]["exit_code"] != 0
     assert "hash mismatch" in (run_dir / "build-1.stderr.log").read_text(errors="replace").lower()
 
@@ -321,6 +365,23 @@ def test_changed_build_definition_requires_new_approval(make_project):
     assert record["argv"] is None
 
 
+def test_incremental_baseline_is_covered_by_the_existing_check_approval(make_project):
+    uv = _uv()
+    if uv is None:
+        pytest.skip("a local uv executable is needed to bind an explicit BuildCheck profile")
+    project = _make_project(make_project, uv)
+    manifest_path = project / "verification" / "manifest.json"
+    document = json.loads(manifest_path.read_text())
+    document["checks"][0]["build"]["incremental_baseline_sha"] = "0" * 40
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+    record = _record(project)
+
+    assert record["outcome"]["result"] == "BLOCKED"
+    assert record["outcome"]["reason"] == "not_approved"
+    assert record["argv"] is None
+
+
 def test_unresolved_backend_build_is_blocked_without_calling_the_package_defective(make_project):
     uv = _uv()
     if uv is None:
@@ -335,3 +396,104 @@ def test_unresolved_backend_build_is_blocked_without_calling_the_package_defecti
     assert report["status"] == "BLOCKED"
     assert "execution observation" in report["problem"]["detail"]
     assert report["builds"][0]["exit_code"] != 0
+
+
+def test_incremental_build_reports_a_stale_generated_file_against_clean_current(make_project):
+    uv = _uv()
+    if uv is None:
+        pytest.skip("a local uv executable is needed to exercise the incremental backend sequence")
+    project = _fixture_backend_project(make_project, uv, stale=True)
+    baseline_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+    manifest_path = project / "verification/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["checks"][0]["build"]["incremental_baseline_sha"] = baseline_sha
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    (project / "src/demo/data.txt").write_bytes(b"new payload\n")
+    (project / "src/demo/obsolete.txt").unlink()
+    git(project, "add", ".")
+    git(project, "commit", "-qm", "approve incremental build profile and candidate")
+    code, body = vkit(project, "accept", "--yes")
+    assert code == 0, body
+
+    record = _record(project)
+    report = _report(project, record)
+    incremental = report["incremental"]
+
+    assert record["outcome"]["result"] == "FAIL"
+    assert report["status"] == "FAIL"
+    assert incremental["baseline_sha"] == baseline_sha
+    baseline_hashes = {item["path"]: item["sha256"] for item in incremental["baseline_inputs"]}
+    overlay_hashes = {item["path"]: item["sha256"] for item in incremental["overlay_inputs"]}
+    assert baseline_hashes["src/demo/data.txt"] != overlay_hashes["src/demo/data.txt"]
+    assert incremental["deleted_inputs"] == ["src/demo/obsolete.txt"]
+    assert incremental["baseline_build"]["exit_code"] == 0
+    assert incremental["overlay_build"]["exit_code"] == 0
+    assert incremental["wheel_matches_clean"] is False
+    assertion = next(item for item in report["assertions"] if item["id"] == "incremental:wheel-matches-clean")
+    assert assertion["result"] == "FAIL"
+    run_dir = Store.of(open_project(project)).run_dir(record["run_id"])
+    with zipfile.ZipFile(run_dir / "artifacts/build-incremental-baseline/demo-1.0.0-py3-none-any.whl") as wheel:
+        assert wheel.read("demo/generated.txt") == b"old payload\n"
+    with zipfile.ZipFile(run_dir / "artifacts/build-3/demo-1.0.0-py3-none-any.whl") as wheel:
+        assert wheel.read("demo/generated.txt") == b"old payload\n"
+
+
+def test_incremental_baseline_rejects_git_symlink_entries(make_project):
+    uv = _uv()
+    if uv is None:
+        pytest.skip("a local uv executable is needed to exercise baseline validation through BuildCheck")
+    project = _fixture_backend_project(make_project, uv)
+    target = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=project, input=b"target",
+        check=True, capture_output=True,
+    ).stdout.decode().strip()
+    git(project, "update-index", "--add", "--cacheinfo", f"120000,{target},src/demo/__init__.py")
+    git(project, "commit", "-qm", "symlink baseline")
+    baseline_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+    manifest_path = project / "verification/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["checks"][0]["build"]["incremental_baseline_sha"] = baseline_sha
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    git(project, "add", "verification/manifest.json")
+    git(project, "commit", "-qm", "approve symlink baseline check")
+    code, body = vkit(project, "accept", "--yes")
+    assert code == 0, body
+
+    record = _record(project)
+    report = _report(project, record)
+
+    assert record["outcome"]["result"] == "BLOCKED"
+    assert record["outcome"]["reason"] == "artifact_malformed"
+    assert report["problem"]["detail"].find("symlink") >= 0
+    assert report["builds"] == []
+
+
+def test_incremental_build_passes_when_warm_output_matches_clean_current(make_project):
+    uv = _uv()
+    if uv is None:
+        pytest.skip("a local uv executable is needed to exercise the incremental backend sequence")
+    project = _fixture_backend_project(make_project, uv, stale=True)
+    baseline_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+    manifest_path = project / "verification/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["checks"][0]["build"]["incremental_baseline_sha"] = baseline_sha
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    git(project, "add", "verification/manifest.json")
+    git(project, "commit", "-qm", "approve unchanged incremental baseline")
+    code, body = vkit(project, "accept", "--yes")
+    assert code == 0, body
+
+    record = _record(project)
+    report = _report(project, record)
+
+    assert record["outcome"]["result"] == "PASS"
+    assert report["status"] == "PASS"
+    incremental = report["incremental"]
+    assert incremental["baseline_sha"] == baseline_sha
+    assert incremental["deleted_inputs"] == []
+    assert incremental["wheel_matches_clean"] is True
+    assert {item["sha256"] for item in incremental["baseline_inputs"]} == {
+        item["sha256"] for item in incremental["overlay_inputs"]
+    }
+    assertion = next(item for item in report["assertions"] if item["id"] == "incremental:wheel-matches-clean")
+    assert assertion["result"] == "PASS"

@@ -8,7 +8,6 @@ import platform
 import random
 import re
 import stat
-import subprocess
 import sys
 import tempfile
 import time
@@ -19,7 +18,6 @@ from typing import Any
 
 from ..inputs import canonical_digest, is_secret, matches, source_files
 from ..manifest import Manifest, parse_manifest
-from ..nowindow import hidden_window
 from ..paths import Project, open_project
 from ..proc import run as run_process
 from ..runner import _child_env, missing_prerequisite
@@ -34,6 +32,9 @@ MAX_INPUT_FILES = 1_000
 MAX_FILE_BYTES = 1_048_576
 MAX_INPUT_BYTES = 16_777_216
 MAX_REPORT_BYTES = 8_388_608
+MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024 + 64 * 1024
+MAX_GIT_METADATA_BYTES = 64 * 1024
+MAX_GIT_ERROR_BYTES = 4 * 1024
 BOOTSTRAP_SAMPLES = 10_000
 _COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _RUN_ID = re.compile(r"[A-Za-z0-9_-]+\Z")
@@ -152,28 +153,39 @@ def _capture_inputs(project: Project, check: NativeCheckSpec, record: dict[str, 
     return tuple(files)
 
 
-def _git(project: Project, *argv: str, timeout: float = 10) -> bytes:
+def _git(project: Project, *argv: str, timeout: float = 10,
+         max_output_bytes: int = MAX_GIT_OUTPUT_BYTES) -> bytes:
     env = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
-    try:
-        result = subprocess.run(["git", "--literal-pathspecs", *argv], cwd=project.root, stdin=subprocess.DEVNULL,
-                                capture_output=True, timeout=timeout, check=False, env=env, **hidden_window())
-    except (OSError, subprocess.TimeoutExpired):
-        raise _Unsupported("the local Git object could not be read within the limit") from None
-    if result.returncode != 0:
-        raise _Unsupported("the requested Git object or subject file is unavailable")
-    return result.stdout
+    with tempfile.TemporaryDirectory(prefix="vkit-git-read-") as temporary:
+        work = Path(temporary)
+        stdout_path = work / "stdout.log"
+        stderr_path = work / "stderr.log"
+        result = run_process(
+            ["git", "--literal-pathspecs", *argv], cwd=project.root,
+            stdout_path=stdout_path, stderr_path=stderr_path,
+            timeout_seconds=timeout, env=env, max_output_bytes=max_output_bytes,
+        )
+        if result.launch_error or result.timed_out or result.cancelled or result.output_limited:
+            raise _Unsupported("the local Git object could not be read within the time and output limits")
+        if result.code != 0:
+            raise _Unsupported("the requested Git object or subject file is unavailable")
+        return stdout_path.read_bytes()
 
 
-def _commit_files(project: Project, before_ref: Any, subjects: tuple[str, ...]) -> tuple[_InputFile, ...]:
+def _commit_files(project: Project, before_ref: Any, subjects: tuple[str, ...], *,
+                  max_file_bytes: int = MAX_FILE_BYTES,
+                  max_total_bytes: int = MAX_INPUT_BYTES) -> tuple[_InputFile, ...]:
     if not isinstance(before_ref, str) or not _COMMIT.fullmatch(before_ref):
         raise _Unsupported("before_ref must be a full immutable Git commit SHA")
-    resolved = _git(project, "rev-parse", "--verify", f"{before_ref}^{{commit}}").decode("ascii", "replace").strip()
+    resolved = _git(project, "rev-parse", "--verify", f"{before_ref}^{{commit}}",
+                    max_output_bytes=MAX_GIT_METADATA_BYTES).decode("ascii", "replace").strip()
     if resolved != before_ref:
         raise _Unsupported("before_ref does not resolve to the supplied full commit SHA")
     files = []
     total = 0
     for relative in subjects:
-        entry = _git(project, "ls-tree", "-z", before_ref, "--", relative)
+        entry = _git(project, "ls-tree", "-z", before_ref, "--", relative,
+                     max_output_bytes=MAX_GIT_METADATA_BYTES)
         rows = [row for row in entry.split(b"\0") if row]
         if len(rows) != 1 or b"\t" not in rows[0]:
             raise _Unsupported(f"subject {relative!r} is missing or ambiguous in before_ref")
@@ -182,18 +194,20 @@ def _commit_files(project: Project, before_ref: Any, subjects: tuple[str, ...]) 
         if path_bytes.decode("utf-8", "surrogateescape") != relative or mode not in {"100644", "100755"} \
                 or kind != "blob":
             raise _Unsupported(f"subject {relative!r} is a symlink, submodule, or unsupported Git entry")
-        size_raw = _git(project, "cat-file", "-s", object_id)
+        size_raw = _git(project, "cat-file", "-s", object_id,
+                        max_output_bytes=MAX_GIT_ERROR_BYTES)
         try:
             size = int(size_raw.strip())
         except ValueError:
             raise _Unsupported(f"Git returned an invalid size for {relative!r}") from None
-        if size < 0 or size > MAX_FILE_BYTES:
+        if size < 0 or size > max_file_bytes:
             raise _Unsupported(f"old subject {relative!r} exceeds the per-file byte limit")
-        content = _git(project, "cat-file", "blob", object_id)
+        content = _git(project, "cat-file", "blob", object_id,
+                       max_output_bytes=size + MAX_GIT_ERROR_BYTES)
         if len(content) != size:
             raise _Unsupported(f"old subject {relative!r} changed while it was captured")
         total += size
-        if total > MAX_INPUT_BYTES:
+        if total > max_total_bytes:
             raise _Unsupported("old subject files exceed the total byte limit")
         files.append(_InputFile(relative, content, hashlib.sha256(content).hexdigest(), int(mode, 8) & 0o777))
     return tuple(files)

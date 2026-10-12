@@ -9,13 +9,14 @@ import json
 import os
 import platform
 import re
+import stat
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from ..inputs import Snapshot
+from ..inputs import Snapshot, is_secret, matches
 from ..manifest import ManifestError, parse_manifest
 from ..nowindow import hidden_window
 from ..outcome import BlockedReason
@@ -26,7 +27,15 @@ from ..store import Store
 from ..verifiers.dispatch import _build_profile
 from ..verifiers.spec import BuildCheck
 from ._data import encode_json
-from .workloads import _capture_inputs, _Unsupported, _write_workspace
+from .workloads import (
+    MAX_INPUT_FILES,
+    MAX_GIT_METADATA_BYTES,
+    _capture_inputs,
+    _commit_files,
+    _git,
+    _Unsupported,
+    _write_workspace,
+)
 
 PROFILE = "offline-wheel-build-install-v1"
 MAX_TOOL_BYTES = 128 * 1024 * 1024
@@ -36,6 +45,8 @@ MAX_INPUT_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_PROCESS_OUTPUT_BYTES = 256 * 1024
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 MAX_LOG_FILES = 64
+MAX_BASELINE_TREE_BYTES = 16 * 1024 * 1024
+MAX_INCREMENTAL_PATH_BYTES = 512 * 1024
 _IMPORT_PROBE = (
     "import importlib,json,sys; "
     "rows=[]; "
@@ -266,6 +277,103 @@ def _capture(project: Project, check: BuildCheck, expected_digest: str):
     return files, snapshot
 
 
+def _baseline_inputs(project: Project, check: BuildCheck, current_files):
+    baseline_sha = check.incremental_baseline_sha
+    if baseline_sha is None:
+        return None
+    try:
+        resolved = _git(project, "rev-parse", "--verify", f"{baseline_sha}^{{commit}}",
+                        max_output_bytes=MAX_GIT_METADATA_BYTES).decode("ascii").strip()
+        if resolved != baseline_sha:
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline is not the supplied full commit SHA")
+        tree = _git(project, "ls-tree", "-r", "-l", "-z", "--full-tree", baseline_sha,
+                    max_output_bytes=MAX_BASELINE_TREE_BYTES)
+    except _Unsupported as exc:
+        raise _Blocked(BlockedReason.INPUT_MISSING, str(exc)) from None
+    if len(tree) > MAX_BASELINE_TREE_BYTES:
+        raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline tree exceeds its byte limit")
+
+    paths: list[str] = []
+    total_bytes = 0
+    for row in tree.split(b"\0"):
+        if not row:
+            continue
+        if b"\t" not in row:
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "Git returned a malformed incremental baseline tree")
+        metadata, raw_path = row.split(b"\t", 1)
+        fields = metadata.split()
+        if len(fields) < 3:
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "Git returned malformed incremental baseline metadata")
+        try:
+            path = raw_path.decode("utf-8", "strict")
+        except UnicodeDecodeError:
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline path is not UTF-8") from None
+        if is_secret(path) or (check.inputs and not any(matches(path, pattern) for pattern in check.inputs)):
+            continue
+        relative = PurePosixPath(path)
+        if (
+            not path
+            or relative.is_absolute()
+            or PureWindowsPath(path).drive
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline path cannot be materialized safely")
+        mode, kind, _object_id = fields[:3]
+        if mode not in {b"100644", b"100755"} or kind != b"blob":
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, f"incremental baseline path {path!r} is a symlink, submodule, or unsupported Git entry")
+        if len(fields) != 4:
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "Git returned malformed incremental baseline size metadata")
+        raw_size = fields[3]
+        try:
+            size = int(raw_size)
+        except ValueError:
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, f"incremental baseline size for {path!r} is invalid") from None
+        if size < 0 or size > MAX_INPUT_FILE_BYTES:
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, f"incremental baseline input {path!r} exceeds the per-file byte limit")
+        total_bytes += size
+        if total_bytes > MAX_INPUT_TOTAL_BYTES:
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline exceeds the captured total byte limit")
+        paths.append(path)
+        if len(paths) > MAX_INPUT_FILES:
+            raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental baseline exceeds the captured file-count limit")
+    if not paths:
+        raise _Blocked(BlockedReason.INPUT_MISSING, "incremental baseline has no files matching the approved input closure")
+    try:
+        baseline = _commit_files(
+            project,
+            baseline_sha,
+            tuple(sorted(paths)),
+            max_file_bytes=MAX_INPUT_FILE_BYTES,
+            max_total_bytes=MAX_INPUT_TOTAL_BYTES,
+        )
+    except _Unsupported as exc:
+        raise _Blocked(BlockedReason.INPUT_MISSING, str(exc)) from None
+
+    old = {item.path: item for item in baseline}
+    current = {item.path: item for item in current_files}
+    path_bytes = sum(len(path.encode("utf-8")) for path in old) + sum(
+        len(path.encode("utf-8")) for path in current
+    )
+    if path_bytes > MAX_INCREMENTAL_PATH_BYTES:
+        raise _Blocked(BlockedReason.ARTIFACT_MALFORMED, "incremental path evidence exceeds its byte limit")
+    support_paths = {check.build_constraints, check.runtime_requirements}
+    old_wheelhouse = {path for path in old if path.startswith(check.wheelhouse.rstrip("/") + "/")}
+    current_wheelhouse = {path for path in current if path.startswith(check.wheelhouse.rstrip("/") + "/")}
+    if (
+        not support_paths <= old.keys()
+        or not support_paths <= current.keys()
+        or not old_wheelhouse
+        or old_wheelhouse != current_wheelhouse
+        or any(old[path].sha256 != current[path].sha256 for path in support_paths | old_wheelhouse)
+    ):
+        raise _Blocked(
+            BlockedReason.INPUT_MISSING,
+            "incremental baseline must retain the approved build locks and exact wheelhouse bytes",
+        )
+    return baseline
+
+
 def _wheel(path: Path, artifact_dir: Path, index: int) -> tuple[dict[str, Any], bytes]:
     if (
         path.is_symlink()
@@ -294,6 +402,77 @@ def _wheel(path: Path, artifact_dir: Path, index: int) -> tuple[dict[str, Any], 
     }, raw
 
 
+def _build_once(
+    project: Project,
+    check: BuildCheck,
+    source: Path,
+    output: Path,
+    cache: Path,
+    run_dir: Path,
+    uv: Path,
+    label: str,
+    index: int,
+    artifact_index: int | str,
+    attempts: list[dict[str, Any]],
+) -> bytes:
+    output.mkdir()
+    cwd = source.joinpath(*check.cwd.relative_to(project.root).parts)
+    cwd.mkdir(parents=True, exist_ok=True)
+    env = _environment(temp=cache.parent, cache=cache)
+    argv = (
+        str(uv),
+        "build",
+        "--wheel",
+        "--out-dir",
+        str(output),
+        "--build-constraints",
+        str(source / check.build_constraints),
+        "--require-hashes",
+        "--no-index",
+        "--offline",
+        "--no-config",
+        "--no-python-downloads",
+        "--find-links",
+        str(source / check.wheelhouse),
+        "--python",
+        sys.executable,
+        str(cwd),
+    )
+    result, stdout, stderr = _record_command(
+        label, argv, cwd, env, run_dir, check.timeout_seconds
+    )
+    row: dict[str, Any] = {
+        "index": index,
+        "exit_code": result.code if result.code is not None else -1,
+        "stdout_bytes": len(stdout),
+        "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+        "stderr_bytes": len(stderr),
+        "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+        "wheel": None,
+    }
+    attempts.append(row)
+    if result.timed_out:
+        raise _Blocked(BlockedReason.TIMEOUT, f"{label} exceeded the check timeout")
+    if result.cancelled:
+        raise _Blocked(BlockedReason.CANCELLED, f"{label} was cancelled")
+    if result.launch_error:
+        raise _Blocked(BlockedReason.LAUNCH_FAILED, f"{label} could not start: {result.launch_error}")
+    if result.code != 0:
+        raise _Blocked(
+            BlockedReason.INTERNAL_ERROR,
+            f"approved build backend exited {result.code} during {label}; this is an execution observation, not a package-defect finding",
+        )
+    output_wheels = tuple(output.glob("*.whl"))
+    if len(output_wheels) != 1:
+        raise _Blocked(
+            BlockedReason.ARTIFACT_MISSING,
+            f"{label} produced {len(output_wheels)} wheels; this profile requires exactly one",
+        )
+    wheel, raw = _wheel(output_wheels[0], run_dir / "artifacts", artifact_index)
+    row["wheel"] = {key: wheel[key] for key in ("filename", "bytes", "sha256")}
+    return raw
+
+
 def _run_builds(
     project: Project,
     check: BuildCheck,
@@ -311,72 +490,129 @@ def _run_builds(
             source = temp / "source"
             source.mkdir()
             _write_workspace(files, source, {})
-            cwd = source.joinpath(*check.cwd.relative_to(project.root).parts)
             output = temp / "dist"
-            output.mkdir()
             cache = temp / "uv-cache"
-            env = _environment(temp=temp, cache=cache)
-            argv = (
-                str(uv),
-                "build",
-                "--wheel",
-                "--out-dir",
-                str(output),
-                "--build-constraints",
-                str(source / check.build_constraints),
-                "--require-hashes",
-                "--no-index",
-                "--offline",
-                "--no-config",
-                "--no-python-downloads",
-                "--find-links",
-                str(source / check.wheelhouse),
-                "--python",
-                sys.executable,
-                str(cwd),
+            wheels.append(
+                _build_once(
+                    project,
+                    check,
+                    source,
+                    output,
+                    cache,
+                    run_dir,
+                    uv,
+                    f"build-{index}",
+                    index,
+                    index,
+                    builds,
+                )
             )
-            result, stdout, stderr = _record_command(
-                f"build-{index}", argv, cwd, env, run_dir, check.timeout_seconds
-            )
-            row: dict[str, Any] = {
-                "index": index,
-                "exit_code": result.code if result.code is not None else -1,
-                "stdout_bytes": len(stdout),
-                "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
-                "stderr_bytes": len(stderr),
-                "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
-                "wheel": None,
-            }
-            builds.append(row)
-            if result.timed_out:
-                raise _Blocked(
-                    BlockedReason.TIMEOUT,
-                    f"uv build {index} exceeded the check timeout",
-                )
-            if result.cancelled:
-                raise _Blocked(
-                    BlockedReason.CANCELLED, f"uv build {index} was cancelled"
-                )
-            if result.launch_error:
-                raise _Blocked(
-                    BlockedReason.LAUNCH_FAILED,
-                    f"uv build {index} could not start: {result.launch_error}",
-                )
-            if result.code != 0:
-                raise _Blocked(
-                    BlockedReason.INTERNAL_ERROR,
-                    f"approved build backend exited {result.code} during build {index}; this is an execution observation, not a package-defect finding",
-                )
-            output_wheels = tuple(output.glob("*.whl"))
-            if len(output_wheels) != 1:
-                raise _Blocked(
-                    BlockedReason.ARTIFACT_MISSING,
-                    f"uv build {index} produced {len(output_wheels)} wheels; this profile requires exactly one",
-                )
-            wheel, raw = _wheel(output_wheels[0], artifact_dir, index)
-            row["wheel"] = {key: wheel[key] for key in ("filename", "bytes", "sha256")}
-            wheels.append(raw)
     return wheels
+
+
+def _apply_overlay(source: Path, baseline_files, current_files) -> list[str]:
+    current_paths = {item.path for item in current_files}
+    deleted = sorted(item.path for item in baseline_files if item.path not in current_paths)
+    for relative in deleted:
+        path = source.joinpath(*PurePosixPath(relative).parts)
+        path.unlink()
+        parent = path.parent
+        while parent != source and parent.is_dir():
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+    _write_workspace(current_files, source, {})
+    return deleted
+
+
+def _verify_workspace_files(source: Path, files) -> None:
+    for item in files:
+        path = source.joinpath(*PurePosixPath(item.path).parts)
+        try:
+            info = path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                or info.st_size > MAX_INPUT_FILE_BYTES
+            ):
+                raise OSError
+            raw = path.read_bytes()
+        except OSError:
+            raise _Blocked(BlockedReason.SOURCE_CHANGED, f"build backend changed captured input {item.path!r}") from None
+        if hashlib.sha256(raw).hexdigest() != item.sha256:
+            raise _Blocked(BlockedReason.SOURCE_CHANGED, f"build backend changed captured input {item.path!r}")
+
+
+def _file_rows(files) -> list[dict[str, Any]]:
+    return [
+        {"path": item.path, "sha256": item.sha256, "mode": 493 if item.mode & 0o111 else 420}
+        for item in sorted(files, key=lambda item: item.path)
+    ]
+
+
+def _run_incremental(
+    project: Project,
+    check: BuildCheck,
+    baseline_files,
+    current_files,
+    clean_wheel: dict[str, Any],
+    run_dir: Path,
+    uv: Path,
+) -> dict[str, Any]:
+    baseline_attempts: list[dict[str, Any]] = []
+    overlay_attempts: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="vkit-build-incremental-") as raw_temp:
+        temp = Path(raw_temp)
+        source = temp / "source"
+        source.mkdir()
+        _write_workspace(baseline_files, source, {})
+        output_baseline = temp / "baseline-dist"
+        cache = temp / "uv-cache"
+        baseline_wheel = _build_once(
+            project,
+            check,
+            source,
+            output_baseline,
+            cache,
+            run_dir,
+            uv,
+            "incremental-baseline",
+            0,
+            "incremental-baseline",
+            baseline_attempts,
+        )
+        _verify_workspace_files(source, baseline_files)
+        deleted = _apply_overlay(source, baseline_files, current_files)
+        output_overlay = temp / "overlay-dist"
+        overlay_wheel = _build_once(
+            project,
+            check,
+            source,
+            output_overlay,
+            cache,
+            run_dir,
+            uv,
+            "incremental-overlay",
+            3,
+            3,
+            overlay_attempts,
+        )
+        _verify_workspace_files(source, current_files)
+    del baseline_wheel
+    observed = overlay_attempts[0]["wheel"]
+    passed = observed == clean_wheel
+    return {
+        "baseline_sha": check.incremental_baseline_sha,
+        "baseline_inputs": _file_rows(baseline_files),
+        "overlay_inputs": _file_rows(current_files),
+        "deleted_inputs": deleted,
+        "baseline_build": baseline_attempts[0],
+        "overlay_build": overlay_attempts[0],
+        "wheel_matches_clean": passed,
+        "assertion": _assertion("incremental:wheel-matches-clean", clean_wheel, observed, passed),
+    }
 
 
 def _python_path(environment: Path) -> Path:
@@ -398,7 +634,11 @@ def _require_command(result: Any, step: str) -> None:
 def _smoke(check: BuildCheck, files, run_dir: Path, uv: Path) -> list[dict[str, Any]]:
     assertions: list[dict[str, Any]] = []
     artifact_dir = run_dir / "artifacts"
-    for index, wheel_path in enumerate(sorted(artifact_dir.glob("build-*/*.whl")), 1):
+    wheel_paths = [artifact_dir / f"build-{index}" / "*.whl" for index in (1, 2)]
+    for index, matches in enumerate((tuple(path.parent.glob(path.name)) for path in wheel_paths), 1):
+        if len(matches) != 1:
+            raise _Blocked(BlockedReason.ARTIFACT_MISSING, f"clean build {index} did not retain exactly one wheel")
+        wheel_path = matches[0]
         with tempfile.TemporaryDirectory(prefix=f"vkit-install-{index}-") as raw_temp:
             temp = Path(raw_temp)
             source = temp / "source"
@@ -641,6 +881,7 @@ def _run(profile_path: Path, report_path: Path) -> int:
                 "build profile is missing its captured input digest",
             )
         files, snapshot = _capture(project, check, input_digest)
+        baseline_files = _baseline_inputs(project, check, files)
         current = Snapshot(project).inputs(check.inputs)
         if current.digest != snapshot.digest:
             raise _Blocked(
@@ -672,6 +913,18 @@ def _run(profile_path: Path, report_path: Path) -> int:
                 filenames_same,
             ),
         ]
+        if baseline_files is not None:
+            incremental = _run_incremental(
+                project,
+                check,
+                baseline_files,
+                files,
+                builds[0]["wheel"],
+                report_path.parent,
+                uv,
+            )
+            assertions.append(incremental.pop("assertion"))
+            report["incremental"] = incremental
         assertions.extend(_smoke(check, files, report_path.parent, uv))
         report["assertions"] = assertions
         try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,45 @@ def test_shorthand_import_becomes_explicit_alias_so_local_binding_stays_stable(t
     assert result["status"] == "PREVIEW", result
     assert "import { newName as oldName }" in result["patch"]
     assert "result = oldName(1)" in result["patch"]
+
+
+def test_longer_rename_maps_shorthand_export_after_earlier_edits(tmp_path, configured_typescript):
+    _write_project(tmp_path, {
+        "src/api.ts": (
+            "function oldName(): number { return 1; }\n"
+            "const first = oldName();\n"
+            "export { oldName };\n"
+        ),
+    })
+    result = preview_typescript_symbol_rename(tmp_path, "src/api.ts", "oldName", "longerName")
+    assert result["status"] == "PREVIEW", result
+    assert "function longerName" in result["patch"]
+    assert "export { longerName as oldName }" in result["patch"]
+    assert "const first = longerName()" in result["patch"]
+
+
+def test_longer_rename_maps_shorthand_import_after_an_earlier_import_edit(tmp_path, configured_typescript):
+    _write_project(tmp_path, {
+        "src/api.ts": "export function oldName(): number { return 1; }\n",
+        "src/barrel.ts": (
+            'export { oldName as primary } from "./api";\n'
+            'export { oldName } from "./api";\n'
+        ),
+        "src/use.ts": (
+            'import { oldName as localName } from "./api";\n'
+            'import { oldName } from "./api";\n'
+            "const result = localName() + oldName();\n"
+            "export { oldName };\n"
+        ),
+    })
+    result = preview_typescript_symbol_rename(tmp_path, "src/api.ts", "oldName", "longerName")
+    assert result["status"] == "PREVIEW", result
+    assert 'import { longerName as localName } from "./api"' in result["patch"]
+    assert 'import { longerName as oldName } from "./api"' in result["patch"]
+    assert 'export { longerName as primary } from "./api"' in result["patch"]
+    assert 'export { longerName as oldName } from "./api"' in result["patch"]
+    assert "const result = localName() + oldName()" in result["patch"]
+    assert 'export { oldName };' in result["patch"]
 
 
 def test_shadowed_same_spelling_is_not_renamed(tmp_path, configured_typescript):
@@ -145,6 +185,29 @@ def test_unicode_before_symbol_keeps_byte_patch_offsets_correct(tmp_path, config
     result = _rename(tmp_path)
     assert result["status"] == "PREVIEW", result
     assert "export function newName" in result["patch"]
+
+
+def test_no_final_newline_preview_applies_as_git_patch_and_preserves_bytes(tmp_path, configured_typescript):
+    original = b"export function oldName(): number { return 1; }"
+    _write_project(tmp_path, {"src/api.ts": original.decode("utf-8")})
+    result = preview_typescript_symbol_rename(tmp_path, "src/api.ts", "oldName", "longerName")
+    assert result["status"] == "PREVIEW", result
+    assert "\\ No newline at end of file" in result["patch"]
+
+    apply_root = tmp_path / "apply-check"
+    apply_root.mkdir()
+    subprocess.run(["git", "init", str(apply_root)], check=True, capture_output=True)
+    target = apply_root / "src" / "api.ts"
+    target.parent.mkdir()
+    target.write_bytes(original)
+    patch = result["patch"].encode("utf-8")
+    checked = subprocess.run(["git", "apply", "--check", "-"], cwd=apply_root,
+                             input=patch, capture_output=True, check=False)
+    assert checked.returncode == 0, checked.stderr.decode("utf-8", "replace")
+    applied = subprocess.run(["git", "apply", "-"], cwd=apply_root,
+                             input=patch, capture_output=True, check=False)
+    assert applied.returncode == 0, applied.stderr.decode("utf-8", "replace")
+    assert target.read_bytes() == b"export function longerName(): number { return 1; }"
 
 
 def test_invalid_target_path_is_rejected_without_starting_node(tmp_path, monkeypatch):

@@ -296,9 +296,15 @@ function renamedSite(capture, source, program, service, checker, targetSymbol) {
     const resolved = followAlias(checker, found);
     if (resolved !== symbol) continue;
     const parent = node.parent;
-    const importOrExportToken = (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent))
+    const importToken = ts.isImportSpecifier(parent)
       && (parent.propertyName === node || parent.propertyName === undefined && parent.name === node);
-    const isDirect = found === symbol || importOrExportToken;
+    const exportToken = ts.isExportSpecifier(parent)
+      && (parent.propertyName === node || parent.propertyName === undefined && parent.name === node);
+    const localExportTarget = ts.isExportSpecifier(parent)
+      ? checker.getExportSpecifierLocalTargetSymbol(parent) : undefined;
+    const isReExport = ts.isExportSpecifier(parent) && ts.isExportDeclaration(parent.parent)
+      && parent.parent.moduleSpecifier !== undefined;
+    const isDirect = found === symbol || importToken || exportToken && (isReExport || localExportTarget === symbol);
     const item = { file: owner, node, direct: isDirect };
     related.push(item);
     if (isDirect) direct.set(siteKey(owner.fileName, node.getStart(owner), node.getWidth(owner)), item);
@@ -418,8 +424,9 @@ function verifyBindings(source, before, after, rename) {
     const edit = changes.find((item) => item.start === node.getStart(file));
     const expandedAlias = edit && edit.newText === `${source.newName} as ${source.oldName}`
       && (ts.isImportSpecifier(node.parent) || ts.isExportSpecifier(node.parent));
+    const mappedEditStart = edit && mapOffset(edit.start, changes);
     const mapped = expandedAlias
-      ? edit.start + source.newName.length + 4
+      ? mappedEditStart + source.newName.length + 4
       : mapOffset(node.getStart(file), changes);
     const expectedText = expandedAlias ? source.oldName : edit ? source.newName : node.text;
     const afterFile = programAfter.program.getSourceFile(fileName);
@@ -441,7 +448,8 @@ function verifyBindings(source, before, after, rename) {
 
   for (const edit of rename.edits) {
     const afterSource = programAfter.program.getSourceFile(edit.fileName);
-    const changed = afterSource && findIdentifierAt(afterSource, edit.start, source.newName);
+    const mappedStart = mapOffset(edit.start, editsByFile.get(edit.fileName) || []);
+    const changed = afterSource && findIdentifierAt(afterSource, mappedStart, source.newName);
     const resolved = changed && followAlias(checker, checker.getSymbolAtLocation(changed));
     if (resolved !== targetSymbol) return { ok: false, diagnostics: [], status: "UNSUPPORTED",
       reason: "a renamed token does not resolve to the selected declaration" };

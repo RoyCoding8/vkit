@@ -266,7 +266,12 @@ def _patch(snapshot: _Snapshot, updated: dict[str, str]) -> str:
     for name in sorted(updated):
         old_lines = before[name].splitlines(keepends=True)
         new_lines = updated[name].splitlines(keepends=True)
-        blocks.extend(difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{name}", tofile=f"b/{name}"))
+        diff = difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{name}", tofile=f"b/{name}")
+        for line in diff:
+            if line.startswith((" ", "-", "+")) and not line.endswith("\n"):
+                blocks.append(f"{line}\n\\ No newline at end of file\n")
+            else:
+                blocks.append(line)
     return "".join(blocks)
 
 

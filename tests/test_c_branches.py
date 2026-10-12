@@ -12,6 +12,8 @@ from vkit.operations.c_branches import inspect_c_branch_reachability
 
 @pytest.fixture
 def configured_backends(monkeypatch: pytest.MonkeyPatch) -> None:
+    if sys.platform != "linux":
+        pytest.skip("native branch replay requires Linux")
     names = (
         "VKIT_CBMC_BIN", "VKIT_CBMC_SHA256",
         "VKIT_C_BRANCH_GCC_BIN", "VKIT_C_BRANCH_GCC_SHA256",
@@ -23,8 +25,6 @@ def configured_backends(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.skip("pinned CBMC and Linux GCC replay runtimes are not configured")
     if not all(configured):
         pytest.fail("both pinned runtimes require paths and SHA-256 values")
-    if sys.platform != "linux":
-        pytest.skip("native branch replay requires Linux")
     for path_name, sha_name in ((names[0], names[1]), (names[2], names[3])):
         path = Path(os.environ[path_name]).resolve()
         digest = hashlib.sha256(path.read_bytes()).hexdigest()

@@ -225,7 +225,7 @@ def _fixture_backend_project(make_project, uv: tuple[Path, str, str], *, include
     for name, content in wheels.items():
         (wheelhouse / name).write_bytes(content)
     if stale:
-        (project / "src/demo/data.txt").write_text("old payload\n")
+        (project / "src/demo/data.txt").write_bytes(b"old payload\n")
         (project / "src/demo/obsolete.txt").write_text("remove this input\n")
     git(project, "add", ".")
     git(project, "commit", "-qm", "add local build backend wheelhouse")
@@ -408,7 +408,7 @@ def test_incremental_build_reports_a_stale_generated_file_against_clean_current(
     manifest = json.loads(manifest_path.read_text())
     manifest["checks"][0]["build"]["incremental_baseline_sha"] = baseline_sha
     manifest_path.write_text(json.dumps(manifest, indent=2))
-    (project / "src/demo/data.txt").write_text("new payload\n")
+    (project / "src/demo/data.txt").write_bytes(b"new payload\n")
     (project / "src/demo/obsolete.txt").unlink()
     git(project, "add", ".")
     git(project, "commit", "-qm", "approve incremental build profile and candidate")
@@ -433,9 +433,9 @@ def test_incremental_build_reports_a_stale_generated_file_against_clean_current(
     assert assertion["result"] == "FAIL"
     run_dir = Store.of(open_project(project)).run_dir(record["run_id"])
     with zipfile.ZipFile(run_dir / "artifacts/build-incremental-baseline/demo-1.0.0-py3-none-any.whl") as wheel:
-        assert wheel.read("demo/generated.txt") == b"old payload\r\n"
+        assert wheel.read("demo/generated.txt") == b"old payload\n"
     with zipfile.ZipFile(run_dir / "artifacts/build-3/demo-1.0.0-py3-none-any.whl") as wheel:
-        assert wheel.read("demo/generated.txt") == b"old payload\r\n"
+        assert wheel.read("demo/generated.txt") == b"old payload\n"
 
 
 def test_incremental_baseline_rejects_git_symlink_entries(make_project):

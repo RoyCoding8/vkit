@@ -80,7 +80,6 @@ __all__ = [
     "argv_for",
     "describe_obligation",
     "evidence_kind",
-    "for_kind",
     "interpret",
     "obligation_from_json",
     "obligation_to_json",

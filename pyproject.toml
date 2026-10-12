@@ -9,6 +9,7 @@ description = "Machine-checked evidence about a repository, for agents and the p
 requires-python = ">=3.11"
 dependencies = [
     "jsonschema>=4.23,<5",
+    "rich>=13,<16",
     "pywin32>=306; sys_platform == 'win32'",
 ]
 

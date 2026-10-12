@@ -233,7 +233,7 @@ def _probe_version(executable: str, args: tuple[str, ...] = ("--version",)) -> s
         return None
     try:
         done = subprocess.run(
-            [found, *args], capture_output=True, encoding="utf-8",
+            [found, *args], stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
             errors="replace", timeout=15, check=False,
             **hidden_window(),
         )

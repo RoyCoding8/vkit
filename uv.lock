@@ -2786,6 +2786,7 @@ source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
@@ -2851,6 +2852,7 @@ requires-dist = [
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
     { name = "pyyaml", marker = "extra == 'engines'", specifier = "==6.0.3" },
     { name = "resolvelib", marker = "extra == 'engines'", specifier = "==1.2.1" },
+    { name = "rich", specifier = ">=13,<16" },
     { name = "schemathesis", marker = "extra == 'engines'", specifier = "==4.30.0" },
     { name = "sqlglot", marker = "extra == 'engines'", specifier = "==30.22.0" },
     { name = "sympy", marker = "extra == 'engines'", specifier = "==1.14.0" },

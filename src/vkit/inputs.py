@@ -36,7 +36,7 @@ def source_files(project: Project) -> tuple[str, ...]:
     try:
         done = subprocess.run(
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-            cwd=project.root, capture_output=True, timeout=30, check=False, **hidden_window(),
+            cwd=project.root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False, **hidden_window(),
         )
     except FileNotFoundError as exc:
         raise ProjectError("git is not installed or not on PATH") from exc

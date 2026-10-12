@@ -300,6 +300,12 @@ def cmd_console(args: argparse.Namespace) -> int:
     return serve(_context(args).project, port=args.port, open_browser=not args.no_browser)
 
 
+def cmd_tui(args: argparse.Namespace) -> int:
+    from .tui import launch
+
+    return launch(_context(args).project, port=args.port)
+
+
 def cmd_compute(args: argparse.Namespace) -> int:
     operation = args._vkit_operation
     project = _context(args).project
@@ -407,6 +413,10 @@ def build_parser() -> argparse.ArgumentParser:
     console = command(sub, "console", "serve the interactive console on 127.0.0.1")
     console.add_argument("--port", type=int, default=8765, help="0 lets the OS pick a free port")
     console.add_argument("--no-browser", action="store_true")
+    tui = sub.add_parser("tui", help="open the terminal launcher")
+    tui.set_defaults(json=False)
+    tui.add_argument("--project", default=".", help="repository root, or a directory inside it")
+    tui.add_argument("--port", type=int, default=0, help="web console port; 0 picks a free port")
     return parser
 
 
@@ -418,6 +428,7 @@ _DISPATCH = {
     ("proposals", None): cmd_proposals, ("reject", None): cmd_reject,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
     ("tools", None): cmd_tools,
+    ("tui", None): cmd_tui,
 }
 
 

@@ -28,6 +28,45 @@ uv sync --extra mcp
 Each check brings its own tool, such as Node, pytest, Lean or ruff. `vkit doctor` reports which ones are
 missing.
 
+## Launch
+
+From this checkout, start the terminal menu for the repository you want to work on:
+
+```powershell
+.\start.bat --project C:\work\my-repo
+```
+
+On Linux or macOS:
+
+```sh
+./start.sh --project /path/to/my-repo
+```
+
+Both wrappers launch `tui.py`. They use this checkout's virtual environment, or `uv` to create it
+if absent. Arguments and paths with spaces are supported. Without `--project`, the launcher uses
+your current directory. The selected project must be a Git repository. The installed command is
+`vkit tui --project <repository>`, also available as `uv run --no-sync vkit tui` from this checkout.
+
+Choose **Open web console / settings** to start the local server and open your browser.
+Choose **Start web server** if you only want its URL. The default port is chosen automatically;
+pass `--port 8765` for a fixed port. Quitting, pressing Ctrl+C at the menu, or changing projects
+stops the server owned by that launcher. Keep the terminal open while using the web console.
+
+In the web console, open **Setup & tools** to enable or disable tools and save settings.
+Open the computations catalog to select a tool, fill in its inputs, and inspect its scoped result.
+Install the Python engines with `uv sync --extra mcp --extra engines`. Native engines have
+additional setup documented in [built-in computations](docs/computations.md).
+
+Choose **Show agent MCP configuration** in the terminal and copy the displayed configuration into
+your agent harness. The harness starts its own stdio MCP server. Ask the agent to call `help`,
+or `help` with a `query` describing the question it needs answered. Reconnect after changing
+enabled tools.
+
+For registered repository checks, first choose **Review and accept check definitions**, then
+**Run stale or missing checks**. **Project status and gate** shows the result. This workflow needs
+a `verification/manifest.json`; the [example below](#try-it) supplies one. Computations and tool
+discovery do not require that manifest.
+
 ## Try it
 
 ```powershell
@@ -129,11 +168,12 @@ Frontend development and asset rebuild instructions are in [tools/console](tools
 | `vkit doctor` | Report missing tools |
 | `vkit project inspect` | Find the test commands a repository already declares |
 | `vkit console` | Browse evidence, run checks and computations, and save console settings |
+| `vkit tui` | Start or stop the web console, run essential commands, and show MCP configuration |
 | `vkit mcp serve` | Serve MCP over stdio |
 | `vkit tools [--query TEXT]` | Discover enabled tools, or change availability with `--enable` / `--disable` |
 | `vkit compute --help` | List installed computations; each command has generated input help |
 
-Every command takes `--project` (default `.`) and `--json`.
+Every command takes `--project` (default `.`). Noninteractive commands also take `--json`.
 
 ## Limits
 

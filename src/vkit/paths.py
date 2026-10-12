@@ -23,7 +23,7 @@ def _git(args: list[str], cwd: Path) -> str:
     """
     try:
         done = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True,
+            ["git", *args], cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
             encoding="utf-8", errors="replace", timeout=30, check=False,
             **hidden_window(),
         )

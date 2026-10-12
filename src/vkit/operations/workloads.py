@@ -164,7 +164,9 @@ def _git(project: Project, *argv: str, timeout: float = 10) -> bytes:
     return result.stdout
 
 
-def _commit_files(project: Project, before_ref: Any, subjects: tuple[str, ...]) -> tuple[_InputFile, ...]:
+def _commit_files(project: Project, before_ref: Any, subjects: tuple[str, ...], *,
+                  max_file_bytes: int = MAX_FILE_BYTES,
+                  max_total_bytes: int = MAX_INPUT_BYTES) -> tuple[_InputFile, ...]:
     if not isinstance(before_ref, str) or not _COMMIT.fullmatch(before_ref):
         raise _Unsupported("before_ref must be a full immutable Git commit SHA")
     resolved = _git(project, "rev-parse", "--verify", f"{before_ref}^{{commit}}").decode("ascii", "replace").strip()
@@ -187,13 +189,13 @@ def _commit_files(project: Project, before_ref: Any, subjects: tuple[str, ...]) 
             size = int(size_raw.strip())
         except ValueError:
             raise _Unsupported(f"Git returned an invalid size for {relative!r}") from None
-        if size < 0 or size > MAX_FILE_BYTES:
+        if size < 0 or size > max_file_bytes:
             raise _Unsupported(f"old subject {relative!r} exceeds the per-file byte limit")
         content = _git(project, "cat-file", "blob", object_id)
         if len(content) != size:
             raise _Unsupported(f"old subject {relative!r} changed while it was captured")
         total += size
-        if total > MAX_INPUT_BYTES:
+        if total > max_total_bytes:
             raise _Unsupported("old subject files exceed the total byte limit")
         files.append(_InputFile(relative, content, hashlib.sha256(content).hexdigest(), int(mode, 8) & 0o777))
     return tuple(files)

@@ -869,6 +869,7 @@
             "build_constraints": {"type": "string", "minLength": 1},
             "wheelhouse": {"type": "string", "minLength": 1},
             "runtime_requirements": {"type": "string", "minLength": 1},
+            "incremental_baseline_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
             "imports": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"}},
             "entry_points": {
               "type": "array", "maxItems": 8,

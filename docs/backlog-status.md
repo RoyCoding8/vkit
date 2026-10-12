@@ -34,7 +34,7 @@ This maps all 43 entries in the [ranked research backlog](tool-backlog.md) to th
 | 28 | Gappa round-off proof for an explicit rational arithmetic DAG | Source extraction and additional operations |
 | 29 | Pinned Recheck backtracking-cost analysis | Additional regex dialects |
 | 30 | Open | Native path search and concrete witness replay |
-| 31 | Open | Deductive C contract proof with checked obligation completion |
+| 31 | Scalar C contracts and loop invariants checked by Frama-C WP/Qed, including completion and precondition feasibility | Heap/function summaries, broader source and additional provers |
 | 32 | Exact affine access relations and replayed overlaps | Alias, bounds and broader loop frontends |
 | 33 | Open | Fixed queries over supported rr recordings |
 | 34 | Perfetto scheduler-state interval facts; real CLI/MCP and three-platform CI passed | Additional trace questions and recording provenance |

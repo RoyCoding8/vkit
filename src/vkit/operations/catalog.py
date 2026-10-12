@@ -10,6 +10,7 @@ from .affine_accesses import analyze_affine_accesses
 from .algebra import compare_rational_expressions
 from .behavior import find_behavioral_difference
 from .c_safety import check_c_safety
+from .c_contracts import prove_c_contract
 from .cache_keys import find_cache_key_collision
 from .contract import FileInput, Operation, operation_by_name
 from .contracts import CONTRACT_PROFILES, compare_contracts
@@ -62,6 +63,22 @@ def _mutation_survivors(root: Path, **arguments: Any) -> dict[str, Any]:
 
 
 OPERATIONS = (
+    Operation(
+        version=1,
+        name="prove_c_contract",
+        description=("Prove a captured scalar C function's declared conditions and loop contracts with "
+                     "Frama-C WP/Qed beyond bounded unwinding. The JSON model supplies typed mathematical "
+                     "requires/ensures/invariants and decreasing variants. Vkit generates the ACSL harness, "
+                     "checks precondition feasibility, runtime guards and proof completion. Unproved goals "
+                     "return UNKNOWN; contradictory preconditions are identified separately. The submitted "
+                     "contract defines the claim, not the application's intended requirements."),
+        properties={
+            "path": {"type": "string", "minLength": 1, "description": "repository-relative C contract JSON"},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60, "default": 20},
+        },
+        required=("path",), handler=prove_c_contract,
+        outcomes={"PROVED": 0, "UNKNOWN": 3, "INFEASIBLE_PRECONDITION": 2, "UNSUPPORTED": 2, "UNAVAILABLE": 5},
+    ),
     Operation(
         version=1,
         name="replay_retained_cases",

@@ -48,6 +48,7 @@ in the existing Git-excluded settings file and filter discovery and dispatch. Fo
 | cvc5 and integer loop extraction | `analyze_loop_termination` | Checked linear rankings over all guarded states; replayed fixed-point nontermination witnesses; bounded synthesis may remain unknown |
 | Approved scenario drivers and paired bootstrap analysis | `compare_workload_cost` | Alternating before/candidate campaigns in fresh workspaces with captured harness bytes, raw measurements and uncertainty intervals |
 | Retained approved scenario drivers | `replay_retained_cases` | Old assertions and fixtures against a current captured subject, after a clean retained control, with per-case observations |
+| [Frama-C WP](https://www.frama-c.com/fc-plugins/wp.html) | `prove_c_contract` | Scalar C pre/postconditions and loop invariants beyond unwinding, with precondition feasibility, runtime guards and Qed obligation completion |
 | ISL named-array access relations | `analyze_affine_accesses` | Exact ordered RAW, WAR, WAW and read/read relations under explicit alias assumptions, with replayed iteration witnesses |
 | TLC 2.19 and exact finite state saturation | `check_protocol_model` | All reachable states of a closed supplied protocol model, checked invariants/deadlocks, explicit crash/restart and replayed counterexamples |
 | cvc5 relational function queries | `find_cache_key_collision` | Equal keys with different results over two independent pure-function input vectors, with replayed witnesses |

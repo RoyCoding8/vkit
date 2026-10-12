@@ -267,6 +267,21 @@ jobs:
           echo "VKIT_GAPPA_SHA256=$(sha256sum "$RUNNER_TEMP/gappa" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
           echo "VKIT_REQUIRE_GAPPA_ENGINE=1" >> "$GITHUB_ENV"
       - run: uv sync --python 3.11 --extra test --extra engines
+      - name: Install and require pinned C contract engine
+        if: runner.os == 'Linux'
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          result = subprocess.run(["uv", "run", "python", "scripts/install_contract_engine.py", "--dest",
+                                   str(pathlib.Path(os.environ["RUNNER_TEMP"]) / "frama-c-33")],
+                                  check=True, capture_output=True, text=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              for key, value in json.loads(result.stdout).items():
+                  output.write(f"{key}={value}\n")
+              output.write("VKIT_REQUIRE_FRAMAC_ENGINE=1\n")
       - name: Prefetch the package-pinned Trace Processor
         shell: python
         run: |

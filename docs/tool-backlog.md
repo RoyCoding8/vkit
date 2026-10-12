@@ -546,6 +546,11 @@ Source: [KLEE documentation and tutorials](https://klee-se.org/docs/).
 
 ### 31. C function contracts beyond bounded unwinding
 
+Implemented: `prove_c_contract(path)` captures a restricted scalar C function and typed contract model,
+generates an owned ACSL harness and requires Frama-C 33.0 WP/Qed obligation completion. It checks
+precondition feasibility separately and reports unproved goals without inventing a counterexample.
+See [C contract model](c-contract-model.md). Heap summaries and broader source remain open.
+
 Proposed call: `prove_c_contract(snapshot, function, contract, profile)`.
 
 Ask whether supported C code satisfies a declared precondition and postcondition under a fixed memory and arithmetic model. Return the obligations, discharged results, and unproved obligations.

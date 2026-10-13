@@ -6,13 +6,15 @@ import subprocess
 import sys
 
 import pytest
-
 from helpers import NO_WINDOW, git
+
 from vkit.cli import main
-from vkit.paths import open_project
-from vkit.settings import (LauncherSettings, launcher_settings_path, load_launcher_settings,
-                           save_launcher_settings)
-from vkit.tui import launch
+from vkit.settings import (
+    LauncherSettings,
+    launcher_settings_path,
+    load_launcher_settings,
+    save_launcher_settings,
+)
 
 
 def test_defaults_do_not_write_a_file():
@@ -41,16 +43,10 @@ def test_json_default_repository_and_explicit_override_from_outside_git(tmp_path
     for extra, expected in (([], first), (["--project", str(second)], second)):
         done = subprocess.run(
             [sys.executable, "-m", "vkit.cli", "status", "--json", *extra],
-            cwd=tmp_path, capture_output=True, text=True, timeout=30, **NO_WINDOW,
+            cwd=tmp_path, check=False, capture_output=True, text=True, timeout=30, **NO_WINDOW,
         )
         assert done.returncode == 0
         assert json.loads(done.stdout)["project"] == str(expected.resolve())
-    done = subprocess.run(
-        [sys.executable, "-m", "vkit.cli", "tui"], input="m\nq\n", cwd=tmp_path,
-        capture_output=True, text=True, timeout=30, **NO_WINDOW,
-    )
-    assert done.returncode == 0, done.stderr
-    assert json.dumps(str(first.resolve())) in done.stdout
     assert path.read_bytes() == original
 
 
@@ -86,17 +82,6 @@ def test_invalid_defaults_report_error_and_preserve_file(document, capsys):
     assert main(["status", "--json"]) == 2
     assert "invalid settings" in json.loads(capsys.readouterr().out)["error"]
     assert path.read_text(encoding="utf-8") == document
-
-
-def test_tui_edits_saved_defaults(make_project, monkeypatch):
-    project = make_project({"README.md": "edit\n"}, [], accept=False)
-    choices = iter(["e", str(project), "n", "q"])
-    monkeypatch.setattr("vkit.tui.Prompt.ask", lambda *a, **kw: next(choices))
-    monkeypatch.setattr("vkit.tui.IntPrompt.ask", lambda *a, **kw: 9001)
-    assert launch(open_project(project)) == 0
-    assert json.loads(launcher_settings_path().read_text(encoding="utf-8")) == {
-        "version": 1, "project": str(project), "port": 9001, "open_browser": False,
-    }
 
 
 def test_out_of_range_cli_port_is_a_request_error(make_project, capsys):

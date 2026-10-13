@@ -30,7 +30,7 @@ missing.
 
 ## Launch
 
-From this checkout, start the terminal menu for the repository you want to work on:
+From this checkout, start the terminal workspace for the repository you want to work on:
 
 ```powershell
 .\start.bat --project C:\work\my-repo
@@ -48,14 +48,21 @@ your saved default repository, then your current directory if none is saved. The
 must be a Git repository. The installed command is
 `vkit tui --project <repository>`, also available as `uv run --no-sync vkit tui` from this checkout.
 
-Choose **Open web console / settings** to start the local server and open your browser.
-Choose **Start web server** if you only want its URL. The saved port is used;
-`0` chooses a free port. Pass `--port 8765` to override it. Quitting, pressing Ctrl+C at the menu, or changing projects
+The boxed workspace has four tabs. Click a tab, or press **F1** for Home, **F2** for Checks,
+**F3** for Settings, and **F4** for Agent. Use **Tab / Shift+Tab** to move between controls,
+**Enter** to activate a button, and **Ctrl+Q** to quit. Smaller terminals stack the cards;
+scroll or move focus to reach controls below the screen.
+
+In **Home**, choose **Open web console** to start the local server and open your browser.
+Choose **Start server** if you only want its URL. The saved port is used;
+`0` chooses a free port. Pass `--port 8765` to override it. Quitting or changing repositories
 stops the server owned by that launcher. Keep the terminal open while using the web console.
+**Checks** runs essential CLI commands and shows their output in a scrollable pane.
+Commands run in the background; quitting cancels the active command and its child processes.
 
 In the web console, open **Setup & tools** to enable or disable tools and save settings.
 Its **Launch defaults** form saves the default repository, web port, and browser preference.
-You can also choose **e** in the terminal menu to edit these defaults.
+The terminal's **Settings** tab edits the same defaults and shows the exact JSON path.
 Changes apply to future launches. Explicit `--project`, `--port`, `--browser`, or `--no-browser`
 options override saved values for that invocation without changing the JSON.
 
@@ -81,13 +88,13 @@ Open the computations catalog to select a tool, fill in its inputs, and inspect 
 Install the Python engines with `uv sync --extra mcp --extra engines`. Native engines have
 additional setup documented in [built-in computations](docs/computations.md).
 
-Choose **Show agent MCP configuration** in the terminal and copy the displayed configuration into
+Open the **Agent** tab in the terminal and copy the displayed MCP configuration into
 your agent harness. The harness starts its own stdio MCP server. Ask the agent to call `help`,
 or `help` with a `query` describing the question it needs answered. Reconnect after changing
 enabled tools.
 
-For registered repository checks, first choose **Review and accept check definitions**, then
-**Run stale or missing checks**. **Project status and gate** shows the result. This workflow needs
+For registered repository checks, use **Checks → Review check definitions**, accept the definitions
+with `vkit accept --yes`, then choose **Run needed checks**. **Project status** shows the result. This workflow needs
 a `verification/manifest.json`; the [example below](#try-it) supplies one. Computations and tool
 discovery do not require that manifest.
 

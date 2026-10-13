@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import http.client
+import io
 import json
-import runpy
+import os
+import re
 import shutil
 import socket
 import subprocess
@@ -12,28 +13,23 @@ import time
 
 import pytest
 from helpers import NO_WINDOW, ROOT, git, scenario_check
-from textual.widgets import (
-    Button,
-    Checkbox,
-    Input,
-    RichLog,
-    Static,
-    TabbedContent,
-    TextArea,
-)
+from rich.console import Console
 
 from vkit.paths import open_project
 from vkit.settings import launcher_settings_path
-from vkit.tui import LauncherApp
+from vkit.tui import Launcher
 
 
 @pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
-
-def log_text(app, selector):
-    return "".join(line.text for line in app.query_one(selector, RichLog).lines)
+def run_ui(monkeypatch):
+    def drive(project, script, *, port=0, width=180, height=40):
+        output = io.StringIO()
+        console = Console(file=output, width=width, height=height, color_system=None)
+        lines = iter(script(output))
+        monkeypatch.setattr(console, "input", lambda *args, **kwargs: next(lines))
+        assert Launcher(open_project(project), port=port, console=console).run() == 0
+        return output.getvalue()
+    return drive
 
 
 def console_status(port):
@@ -47,163 +43,155 @@ def console_status(port):
         connection.close()
 
 
+def last_port(output):
+    return int(re.findall(r"http://127\.0\.0\.1:(\d+)/", output.getvalue())[-1])
+
+
 def is_listening(port):
     with socket.socket() as probe:
         probe.settimeout(0.5)
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
-@pytest.mark.anyio
-async def test_tabs_commands_and_resizing(make_project):
+def refresh_until(output, expected):
+    deadline = time.monotonic() + 20
+    while expected not in output.getvalue():
+        assert time.monotonic() < deadline, f"Did not display {expected!r}"
+        time.sleep(0.05)
+        yield ""
+
+
+def test_tabs_actual_cli_commands_and_agent_config(make_project, monkeypatch, run_ui):
     project = make_project({"README.md": "launcher\n"}, [], accept=False)
-    app = LauncherApp(open_project(project))
-    async with app.run_test(size=(110, 36)) as pilot:
-        await pilot.pause()
-        await pilot.press("f2")
-        await pilot.pause()
-        assert app.query_one(TabbedContent).active == "checks"
-        await pilot.click("#status")
-        await pilot.pause()
-        await app.workers.wait_for_complete()
-        assert "BLOCKED" in log_text(app, "#command-output")
-        assert str(project) in log_text(app, "#command-output")
-        assert not app.query_one("#status", Button).disabled
-        app.query_one("#tool-query", Input).value = "regex alphabet"
-        app.query_one("#find-tools", Button).scroll_visible(animate=False)
-        await pilot.pause()
-        await pilot.click("#find-tools")
-        await pilot.pause()
-        await app.workers.wait_for_complete()
-        assert "compare_matchsets" in log_text(app, "#command-output")
-        await pilot.click("#--content-tab-agent")
-        await pilot.pause()
-        assert app.query_one(TabbedContent).active == "agent"
-        assert json.loads(app.query_one("#agent-config", TextArea).text)["mcpServers"]["vkit"] == {
+    paged = []
+    monkeypatch.setattr("rich.pager.SystemPager.show", lambda self, text: paged.append(text))
+
+    def script(output):
+        yield "2"
+        yield "status"
+        yield from refresh_until(output, "BLOCKED")
+        assert str(project) in output.getvalue()
+        yield "find regex alphabet"
+        yield from refresh_until(output, "compare_matchsets")
+        yield "output"
+        assert "compare_matchsets" in paged[-1]
+        yield "4"
+        assert '"mcpServers"' in output.getvalue()
+        assert '"command":' in output.getvalue()
+        assert "mcp" in output.getvalue() and "serve" in output.getvalue()
+        yield "config"
+        assert json.loads(paged[-1]) == {"mcpServers": {"vkit": {
             "command": sys.executable,
             "args": ["-m", "vkit.cli", "mcp", "serve", "--project", str(project)],
-        }
-        await pilot.click("#copy-agent")
-        await pilot.pause()
-        assert json.loads(app.clipboard)["mcpServers"]["vkit"]["args"][-1] == str(project)
-        await pilot.resize_terminal(60, 24)
-        await pilot.press("f1")
-        await pilot.pause()
-        assert app.query_one("#server-card").region.y > app.query_one("#repository-card").region.y
-        app.query_one("#start-web", Button).focus()
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert console_status(app.server.server_port)["project"] == str(project)
+        }}}
+        yield "unknown"
+        assert "Unknown command for this tab" in output.getvalue()
+        yield "q"
+
+    text = run_ui(project, script)
+    assert "1 Home" in text and "2 Checks" in text and "3 Settings" in text and "4 Agent" in text
+    assert "│" in text and "─" in text
 
 
-@pytest.mark.anyio
-async def test_console_lifecycle_and_browser(make_project, monkeypatch):
+def test_console_lifecycle_and_browser(make_project, monkeypatch, run_ui):
     project = make_project({"README.md": "web\n"}, [], accept=False)
-    opened = []
+    opened, ports = [], []
     monkeypatch.setattr("vkit.tui.webbrowser.open", lambda url: opened.append(url) or True)
-    app = LauncherApp(open_project(project))
-    async with app.run_test(size=(110, 36)) as pilot:
-        await pilot.pause()
-        await pilot.click("#open-web")
-        await pilot.pause()
-        port = app.server.server_port
-        assert console_status(port)["project"] == str(project)
-        assert opened == [f"http://127.0.0.1:{port}/"]
-        await pilot.click("#stop-web")
-        await pilot.pause()
-        assert not is_listening(port)
-        await pilot.click("#start-web")
-        await pilot.pause()
-        port = app.server.server_port
-        assert console_status(port)["project"] == str(project)
-        await pilot.press("ctrl+q")
-    assert not is_listening(port)
+
+    def script(output):
+        yield "open"
+        ports.append(last_port(output))
+        assert console_status(ports[-1])["project"] == str(project)
+        assert opened == [f"http://127.0.0.1:{ports[-1]}/"]
+        yield "start"
+        assert last_port(output) == ports[-1]
+        yield "stop"
+        assert not is_listening(ports[-1])
+        yield "start"
+        ports.append(last_port(output))
+        assert console_status(ports[-1])["project"] == str(project)
+        yield "q"
+
+    run_ui(project, script)
+    assert all(not is_listening(port) for port in ports)
 
 
-@pytest.mark.anyio
-async def test_change_project_validates_before_stopping_server(make_project, tmp_path):
+def test_switch_validates_before_stopping_server(make_project, tmp_path, run_ui):
     first = make_project({"README.md": "first\n"}, [], accept=False)
     second = tmp_path / "another repo"
     second.mkdir()
     git(second, "init", "-q")
-    app = LauncherApp(open_project(first))
-    async with app.run_test(size=(110, 36)) as pilot:
-        await pilot.pause()
-        await pilot.click("#start-web")
-        await pilot.pause()
-        port = app.server.server_port
-        app.query_one("#project-path", Input).value = str(tmp_path / "missing")
-        await pilot.click("#switch-project")
-        await pilot.pause()
-        assert "path does not exist" in str(app.query_one("#home-feedback", Static).content)
+
+    def script(output):
+        yield "start"
+        port = last_port(output)
+        yield f"project {tmp_path / 'missing'}"
+        assert "path does not exist" in output.getvalue()
         assert console_status(port)["project"] == str(first)
-        app.query_one("#project-path", Input).value = str(second)
-        await pilot.pause(0.3)
-        await pilot.click("#switch-project")
-        await pilot.pause()
+        yield "project"
+        yield str(second)
         assert not is_listening(port)
-        await pilot.press("f4")
-        await pilot.pause()
-        assert json.loads(app.query_one("#agent-config", TextArea).text)["mcpServers"]["vkit"]["args"][-1] == str(second)
-        await pilot.press("f1")
-        await pilot.pause()
-        await pilot.click("#start-web")
-        await pilot.pause()
-        assert console_status(app.server.server_port)["project"] == str(second)
+        yield "agent"
+        assert json.dumps(str(second))[1:-1] in output.getvalue()
+        yield "home"
+        yield "start"
+        assert console_status(last_port(output))["project"] == str(second)
+        yield "q"
+
+    run_ui(first, script)
 
 
-@pytest.mark.anyio
-async def test_busy_port_keeps_interface_usable(make_project):
+def test_busy_port_keeps_interface_usable(make_project, run_ui):
     project = make_project({"README.md": "busy\n"}, [], accept=False)
     with socket.socket() as occupied:
         occupied.bind(("127.0.0.1", 0))
         occupied.listen()
-        app = LauncherApp(open_project(project), port=occupied.getsockname()[1])
-        async with app.run_test(size=(110, 36)) as pilot:
-            await pilot.pause()
-            await pilot.click("#start-web")
-            await pilot.pause()
-            message = str(app.query_one("#home-feedback", Static).content)
-            assert any(code in message for code in (("10048", "10013") if sys.platform == "win32"
-                                                    else ("Address already in use",)))
-            assert app.server is None
-            await pilot.press("f3")
-            await pilot.pause()
-            assert app.query_one(TabbedContent).active == "settings"
+
+        def script(output):
+            yield "start"
+            assert any(code in output.getvalue() for code in (("10048", "10013") if sys.platform == "win32"
+                                                             else ("Address already in use",)))
+            yield "3"
+            assert str(launcher_settings_path()) in output.getvalue()
+            yield "q"
+
+        run_ui(project, script, port=occupied.getsockname()[1])
 
 
-@pytest.mark.anyio
-async def test_settings_save_validate_and_reload(make_project):
+def test_settings_save_validate_reload_and_clear_default(make_project, run_ui):
     project = make_project({"README.md": "settings\n"}, [], accept=False)
-    app = LauncherApp(open_project(project))
-    async with app.run_test(size=(100, 36)) as pilot:
-        await pilot.pause()
-        await pilot.press("f3")
-        await pilot.pause()
-        app.query_one("#default-project", Input).value = str(project)
-        app.query_one("#default-port", Input).value = "9001"
-        await pilot.click("#default-browser")
-        await pilot.pause()
-        await pilot.click("#save-defaults")
-        await pilot.pause()
+
+    def script(output):
+        yield "settings"
+        yield f"project {project}"
+        yield "port"
+        yield "9001"
+        yield "browser off"
         expected = {"version": 1, "project": str(project), "port": 9001, "open_browser": False}
         assert json.loads(launcher_settings_path().read_text()) == expected
         original = launcher_settings_path().read_bytes()
-        app.query_one("#default-port", Input).value = "65536"
-        await pilot.pause(0.3)
-        await pilot.click("#save-defaults")
-        await pilot.pause()
-        assert "65535" in str(app.query_one("#settings-feedback", Static).content)
+        yield "port 65536"
+        assert "65535" in output.getvalue()
+        yield "browser invalid"
+        assert "Browser must be on or off" in output.getvalue()
         assert launcher_settings_path().read_bytes() == original
-    async with LauncherApp(open_project(project)).run_test() as pilot:
-        await pilot.pause()
-        assert pilot.app.query_one("#default-project", Input).value == str(project)
-        assert pilot.app.query_one("#default-port", Input).value == "9001"
-        assert pilot.app.query_one("#default-browser", Checkbox).value is False
+        yield "q"
+
+    run_ui(project, script)
+
+    def reload(output):
+        yield "3"
+        assert "9001" in output.getvalue() and str(project) in output.getvalue()
+        yield "project"
+        yield ""
+        assert json.loads(launcher_settings_path().read_text())["project"] is None
+        yield "q"
+
+    run_ui(project, reload)
 
 
-@pytest.mark.anyio
-async def test_quit_cancels_active_check_and_its_process_tree(make_project):
+@pytest.mark.parametrize("end", ["q", "cancel", "eof", "interrupt"])
+def test_cancelling_active_check_reaps_its_process_tree(make_project, run_ui, end):
     source = """
 import socket, time
 from pathlib import Path
@@ -215,28 +203,50 @@ time.sleep(120)
 """
     check = scenario_check("slow", "slow.py", scenarios=["ok"], inputs=["slow.py"], timeout=120)
     project = make_project({"slow.py": source}, [check])
-    app = LauncherApp(open_project(project))
-    async with app.run_test(size=(110, 36)) as pilot:
-        await pilot.pause()
-        await pilot.press("f2")
-        await pilot.pause()
-        await pilot.click("#run-checks")
-        await pilot.pause()
-        deadline = time.monotonic() + 15
+    ports = []
+
+    def script(output):
+        yield "checks"
+        yield "run"
+        deadline = time.monotonic() + 20
         while not (project / "listening.txt").exists():
             assert time.monotonic() < deadline, "The actual check did not start"
-            await asyncio.sleep(0.05)
-        port = int((project / "listening.txt").read_text())
-        assert is_listening(port)
-        assert app.query_one("#switch-project", Button).disabled
-        await pilot.press("f3")
-        await pilot.pause()
-        assert app.query_one(TabbedContent).active == "settings"
-        await pilot.press("ctrl+q")
-    deadline = time.monotonic() + 5
-    while is_listening(port) and time.monotonic() < deadline:
-        await asyncio.sleep(0.05)
-    assert not is_listening(port)
+            time.sleep(0.05)
+        ports.append(int((project / "listening.txt").read_text()))
+        assert is_listening(ports[-1])
+        yield "home"
+        yield f"project {project}"
+        assert "Cancel the active command" in output.getvalue()
+        yield "3"
+        assert str(launcher_settings_path()) in output.getvalue()
+        if end == "eof":
+            raise EOFError
+        if end == "interrupt":
+            raise KeyboardInterrupt
+        yield end
+        if end == "cancel":
+            yield from refresh_until(output, "Cancelled.")
+            assert not is_listening(ports[-1])
+            yield "q"
+
+    run_ui(project, script)
+    assert not is_listening(ports[-1])
+
+
+@pytest.mark.parametrize("width", [60, 110])
+def test_repository_python_entry_point(make_project, width):
+    project = make_project({"README.md": "entry\n"}, [], accept=False)
+    done = subprocess.run(
+        [sys.executable, str(ROOT / "tui.py"), "--project", str(project)],
+        check=False, input="3\n4\nq\n", capture_output=True, text=True, timeout=30,
+        env={**os.environ, "COLUMNS": str(width), "PYTHONIOENCODING": "utf-8"}, encoding="utf-8", **NO_WINDOW,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "1 Home" in done.stdout and "4 Agent" in done.stdout
+    assert '"mcpServers"' in done.stdout
+    assert "│" in done.stdout and "─" in done.stdout
+    without_prompts = re.sub(r"(?:home|checks|settings|agent) > ", "", done.stdout)
+    assert all(len(line) <= width for line in without_prompts.splitlines())
 
 
 def test_tui_invalid_project_is_a_cli_error(tmp_path):
@@ -246,27 +256,6 @@ def test_tui_invalid_project_is_a_cli_error(tmp_path):
     )
     assert done.returncode == 2
     assert "path does not exist" in done.stderr
-
-
-@pytest.mark.parametrize("exit_code", [0, 7])
-def test_repository_python_entry_point(make_project, monkeypatch, exit_code):
-    project = make_project({"README.md": "entry\n"}, [], accept=False)
-
-    async def drive(app):
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            assert str(app.query_one("#current-project", Static).content) == str(project)
-            if exit_code:
-                app.exit(return_code=exit_code)
-            else:
-                await pilot.press("ctrl+q")
-        return app.return_value
-
-    monkeypatch.setattr(LauncherApp, "run", lambda app: asyncio.run(drive(app)))
-    monkeypatch.setattr(sys, "argv", [str(ROOT / "tui.py"), "--project", str(project)])
-    with pytest.raises(SystemExit) as exited:
-        runpy.run_path(str(ROOT / "tui.py"), run_name="__main__")
-    assert exited.value.code == exit_code
 
 
 @pytest.mark.parametrize("wrapper", ["start.bat", "start.sh"])

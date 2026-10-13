@@ -48,21 +48,25 @@ your saved default repository, then your current directory if none is saved. The
 must be a Git repository. The installed command is
 `vkit tui --project <repository>`, also available as `uv run --no-sync vkit tui` from this checkout.
 
-The boxed workspace has four tabs. Click a tab, or press **F1** for Home, **F2** for Checks,
-**F3** for Settings, and **F4** for Agent. Use **Tab / Shift+Tab** to move between controls,
-**Enter** to activate a button, and **Ctrl+Q** to quit. Smaller terminals stack the cards;
-scroll or move focus to reach controls below the screen.
+The Rich workspace has four boxed tabs. Enter **1** for Home, **2** for Checks,
+**3** for Settings, or **4** for Agent, followed by **Enter**. Tab names work too.
+Type a command shown in the current tab and press **Enter**. Enter **q** to quit.
 
-In **Home**, choose **Open web console** to start the local server and open your browser.
-Choose **Start server** if you only want its URL. The saved port is used;
+In **Home**, enter **open** to start the local server and open your browser.
+Enter **start** if you only want its URL, or **stop** to shut it down. Use **project**
+to switch repositories for the current session. The saved port is used;
 `0` chooses a free port. Pass `--port 8765` to override it. Quitting or changing repositories
 stops the server owned by that launcher. Keep the terminal open while using the web console.
-**Checks** runs essential CLI commands and shows their output in a scrollable pane.
-Commands run in the background; quitting cancels the active command and its child processes.
+**Checks** runs essential CLI commands and shows an output preview. Enter **output** to read
+the full result in a pager. Commands run in the background; press **Enter** to refresh the
+display, or enter **cancel** to stop a command. Quitting cancels its child processes too.
 
 In the web console, open **Setup & tools** to enable or disable tools and save settings.
 Its **Launch defaults** form saves the default repository, web port, and browser preference.
 The terminal's **Settings** tab edits the same defaults and shows the exact JSON path.
+Enter **project**, **port**, or **browser** to edit a value, or provide it directly, such as
+`port 8765` or `browser off`. Each valid edit saves immediately. A blank repository value
+uses the current directory.
 Changes apply to future launches. Explicit `--project`, `--port`, `--browser`, or `--no-browser`
 options override saved values for that invocation without changing the JSON.
 
@@ -80,7 +84,7 @@ Launch defaults live outside repositories at `%APPDATA%\vkit\config.json` on Win
 ```
 
 Use an absolute repository path, or `null` to use the current directory. The browser preference
-applies to `vkit console`; choosing **Open web console** in the TUI explicitly opens it.
+applies to `vkit console`; entering **open** in the TUI explicitly opens it.
 Set `VKIT_CONFIG` to select another file, such as this checkout's gitignored `settings/config.json`.
 Repository tool settings remain in the Git common directory. Neither standard settings file is committed.
 
@@ -89,12 +93,13 @@ Install the Python engines with `uv sync --extra mcp --extra engines`. Native en
 additional setup documented in [built-in computations](docs/computations.md).
 
 Open the **Agent** tab in the terminal and copy the displayed MCP configuration into
-your agent harness. The harness starts its own stdio MCP server. Ask the agent to call `help`,
+your agent harness. Enter **config** for unboxed JSON in a pager. The harness starts its
+own stdio MCP server. Ask the agent to call `help`,
 or `help` with a `query` describing the question it needs answered. Reconnect after changing
 enabled tools.
 
-For registered repository checks, use **Checks → Review check definitions**, accept the definitions
-with `vkit accept --yes`, then choose **Run needed checks**. **Project status** shows the result. This workflow needs
+For registered repository checks, enter **review** in Checks, accept the definitions
+with `vkit accept --yes`, then enter **run**. Enter **status** to see the result. This workflow needs
 a `verification/manifest.json`; the [example below](#try-it) supplies one. Computations and tool
 discovery do not require that manifest.
 

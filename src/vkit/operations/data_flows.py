@@ -50,7 +50,6 @@ _MODEL_SCOPE = (
 
 Status = Literal["PATH_FOUND", "NO_PATH_IN_MODEL", "UNSUPPORTED", "UNKNOWN", "UNAVAILABLE"]
 
-# This is deliberately fixed. Request data is passed as JSON parameters and can never become Scala/CPGQL.
 _QUERY = r'''@main def exec(cpgFile: String, sourceMethod: String, sourceParameter: Int,
                sinkMethod: String, sinkArgument: Int, maxPaths: Int, capturedFiles: String) = {
   importCpg(cpgFile)

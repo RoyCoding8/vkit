@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import importlib
 import json
 import subprocess
 import sys
@@ -165,7 +166,7 @@ def _arguments(bundle: dict[str, Any], raw: Any) -> dict[str, Any]:
 
 
 def _search(bundle: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
-    import crosshair.core_and_libs  # Registers the installed symbolic builtin models.
+    importlib.import_module("crosshair.core_and_libs")
     from crosshair.diff_behavior import diff_behavior
     from crosshair.fnutil import FunctionInfo
     from crosshair.options import DEFAULT_OPTIONS

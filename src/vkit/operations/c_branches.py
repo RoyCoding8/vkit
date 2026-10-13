@@ -88,7 +88,7 @@ def _literal_value(value: int | bool, type_name: str) -> str:
         return f"{value}U"
     if not -(1 << 31) <= value < (1 << 31):
         raise ValueError("CBMC returned an out-of-range int")
-    return f"(-2147483647 - 1)" if value == -(1 << 31) else str(value)
+    return "(-2147483647 - 1)" if value == -(1 << 31) else str(value)
 
 
 def _trace_inputs(trace: Any, function: str, parameters: list[tuple[str, str]]) -> dict[str, int | bool] | None:

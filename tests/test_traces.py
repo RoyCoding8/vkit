@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.metadata
 import os
 
@@ -16,7 +17,7 @@ from vkit.operations.traces import (
 
 
 if os.environ.get("VKIT_REQUIRE_TRACE_ENGINE"):
-    import perfetto
+    importlib.import_module("perfetto")
 else:
     pytest.importorskip("perfetto", reason="optional Perfetto engine is not installed")
 

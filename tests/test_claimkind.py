@@ -33,7 +33,7 @@ from helpers import vkit
              "toolchain": {"tool": "tlc"}}, "finite_model_checking",
      "the checked properties hold in every reachable state of one finite model at one recorded configuration",
      "any other number of workers, revisions or resources, and any implementation in any language"),
-])
+], ids=["scenario", "pytest", "node_test", "property", "static", "lean", "tlc"])
 def test_status_carries_the_registered_checks_category_and_limits(
         make_project, kind, fields, category, establishes, limits):
     check = {"id": "example", "kind": kind, "timeout_seconds": 10, "artifact": "result.json",

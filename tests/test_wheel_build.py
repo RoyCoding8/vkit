@@ -40,15 +40,9 @@ def _uv() -> tuple[Path, str, str] | None:
 def _manifest_check(
     uv: tuple[Path, str, str],
     *,
-    backend: str = "uv_build",
     expected_stdout: str | None = None,
 ) -> dict:
     executable, version, digest = uv
-    backend_decl = 'requires = ["uv_build>=0.9,<1"]\nbuild-backend = "uv_build"'
-    if backend == "hatchling":
-        backend_decl = 'requires = ["hatchling"]\nbuild-backend = "hatchling.build"'
-    elif backend == "fixture":
-        backend_decl = 'requires = ["fixture-backend==1.0"]\nbuild-backend = "fixture_backend"'
     return {
         "id": "release-wheel",
         "kind": "build",
@@ -84,7 +78,7 @@ def _make_project(
     accept: bool = True,
     expected_stdout: str | None = None,
 ) -> Path:
-    check = _manifest_check(uv, backend=backend, expected_stdout=expected_stdout)
+    check = _manifest_check(uv, expected_stdout=expected_stdout)
     return make_project({
         "pyproject.toml": (
             "[build-system]\n" + (

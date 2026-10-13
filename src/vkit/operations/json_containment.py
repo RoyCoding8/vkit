@@ -198,7 +198,6 @@ def compare_json_containment(root: Path, old_path: str, new_path: str,
             root, old_path, max_bytes=MAX_SCHEMA_BYTES, reject_symlinks=True)
         new_schema, new_digest = read_json(
             root, new_path, max_bytes=MAX_SCHEMA_BYTES, reject_symlinks=True)
-        # Two independently capped captures cannot exceed the combined limit.
         old_schema = _validate_schema(old_schema)
         new_schema = _validate_schema(new_schema)
     except (ValueError, OSError, RuntimeError) as exc:

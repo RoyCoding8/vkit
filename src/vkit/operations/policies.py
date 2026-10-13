@@ -91,7 +91,6 @@ class _CedarText:
             self._space()
             if self._take("}"):
                 return {}
-            # Cedar uses braces for sets and records. A key followed by ':' is a record.
             start = self.pos
             key_match = re.match(r"[A-Za-z_][A-Za-z0-9_]*\s*:", self.text[self.pos:])
             if key_match:
@@ -238,7 +237,6 @@ def _load_bundle(root: Path, path: str) -> _Bundle:
         raise ValueError("principal_type must be an unnamespaced Cedar entity type identifier")
     if not isinstance(resource_type, str) or not _TYPE.fullmatch(resource_type):
         raise ValueError("resource_type must be an unnamespaced Cedar entity type identifier")
-    # Cedar's CLI accepts action UIDs as one argv item; this fixed profile uses Action::"id".
     if not action.startswith('Action::"') or not action.endswith('"'):
         raise ValueError('action must be a Cedar Action UID such as Action::"view"')
     try:

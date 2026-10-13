@@ -115,7 +115,7 @@ def _configured_kani(monkeypatch) -> None:
     path = Path(binary).resolve()
     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected.lower():
         pytest.fail("the configured Kani executable does not match its SHA-256")
-    bundle = Path(home).parent / "bundle-cache" / f"kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz"
+    bundle = Path(home).parent / "bundle-cache" / "kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz"
     if not bundle.is_file() or hashlib.sha256(bundle.read_bytes()).hexdigest() != KANI_BUNDLE_SHA256:
         pytest.fail("the configured Kani release bundle does not match its official SHA-256")
     monkeypatch.setenv(KANI_BIN_ENV, str(path))

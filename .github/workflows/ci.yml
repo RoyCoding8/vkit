@@ -11,6 +11,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  source-checks:
+    name: Repository lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --python 3.11 --extra test
+      - run: uv run vkit accept --yes --project .
+      - run: uv run vkit check run --check ruff --project .
+
   llvm-refinement:
     name: Alive2 LLVM refinement acceptance
     runs-on: ubuntu-26.04

@@ -17,7 +17,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 VERSION = "4.0.653"
-ARCHIVE_NAME = f"joern-cli-linux-x86_64.zip"
+ARCHIVE_NAME = "joern-cli-linux-x86_64.zip"
 ARCHIVE_URL = f"https://github.com/joernio/joern/releases/download/v{VERSION}/{ARCHIVE_NAME}"
 ARCHIVE_SHA256 = "6cf996f2787381cd789322df52d134dc0b189a2f072f208bb4674a7f09edfb73"
 MAX_ARCHIVE_BYTES = 1_900_000_000

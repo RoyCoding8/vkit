@@ -49,7 +49,6 @@ def _load_cvc5() -> tuple[Any | None, str | None]:
 
 
 def _children(term: Any) -> tuple[Any, ...]:
-    # The pinned Python binding exposes children through Term iteration.
     return tuple(term)
 
 

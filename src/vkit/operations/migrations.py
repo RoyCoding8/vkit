@@ -157,8 +157,6 @@ def _authorizer(readonly: bool, state: dict[str, Any]):
             return sqlite3.SQLITE_DENY
         if action == sqlite3.SQLITE_FUNCTION:
             name = (arg2 or arg1 or "").lower()
-            # SQLite's own ALTER TABLE rename implementation invokes these internal
-            # functions through the authorizer; SQL cannot resolve them as functions.
             if name not in _FUNCTIONS and not name.startswith("sqlite_rename_"):
                 state["refusal"] = f"SQL function {name!r} is outside the deterministic allowlist"
                 return sqlite3.SQLITE_DENY

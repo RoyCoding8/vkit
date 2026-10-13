@@ -131,10 +131,7 @@ def test_timeout_is_validated_before_backend_start(tmp_path):
 def test_failed_independent_witness_replay_never_reports_analyzed(monkeypatch):
     import vkit.operations.affine_accesses as operation
 
-    try:
-        import islpy
-    except ImportError:
-        pytest.skip("ISL backend is not installed")
+    pytest.importorskip("islpy", reason="ISL backend is not installed")
 
     source = "def kernel(n: int):\n    for i in range(n):\n        A[i] = A[i - 1]\n"
     monkeypatch.setattr(operation, "_check_witness", lambda *args: None)

@@ -219,8 +219,6 @@ def check_rust_safety(root: Path, path: str, function: str,
         try:
             os.symlink(kani_home / f"kani-{KANI_VERSION}",
                        private_kani_home / f"kani-{KANI_VERSION}", target_is_directory=True)
-            # Kani removes its setup archive after use. A private symlink keeps
-            # that unlink scoped to this request while preserving the shared cache.
             os.symlink(bundle_cache, private_kani_home / bundle_name)
         except OSError:
             return {**base, "status": "UNAVAILABLE", "detail": "the verified Kani bundle cannot be isolated for this request"}
@@ -488,7 +486,6 @@ def _parse_block(source: bytes, node: Any, incoming: dict[str, tuple[str, bool]]
             output.extend(stmt)
             continue
         if index == len(children) - 1:
-            # Rust's block tail expression is a function return in this closed subset.
             if child.type == "if_expression" and allow_value_tail:
                 parsed, _ = _parse_control(source, child, env, return_type, loop_depth,
                                            statement_count, branch_tail=True)
@@ -697,7 +694,6 @@ def _parse_expr(source: bytes, node: Any, env: dict[str, tuple[str, bool]],
             lhs = _parse_expr(source, left, env, lhs_type, loop_depth)
             rhs_type = right_hint
             if rhs_type is None:
-                # Rust's fallback type for an unconstrained integer shift count is i32.
                 rhs_type = "i32"
             if rhs_type not in _INT_TYPES:
                 raise _Unsupported("shift count must be a primitive integer")
@@ -904,7 +900,7 @@ def _replay_failure(stdout: str, function: _Function, unwind: int,
 
 
 def _playback_inputs(stdout: str, function: _Function) -> list[Any]:
-    marker = f"Concrete playback unit test for `__vkit_harness`:\n"
+    marker = "Concrete playback unit test for `__vkit_harness`:\n"
     if stdout.count(marker) != 1:
         raise ValueError("expected exactly one concrete playback")
     block = stdout.split(marker, 1)[1]

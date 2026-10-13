@@ -16,7 +16,6 @@ MAX_REQUIRED = 2_000
 MAX_CANDIDATES = 4_000
 MAX_COVERAGE_PAIRS = 100_000
 MAX_ID_BYTES = 256
-# Keep every feasible objective exactly representable even through CP-SAT's float accessors.
 MAX_TOTAL_COST = (1 << 53) - 1
 MAX_TIMEOUT_SECONDS = 60
 MODEL_SCOPE = (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 import sys
 import time
 from pathlib import Path
@@ -93,3 +94,30 @@ def test_file_input_preserves_bytes_and_closes_at_eof(tmp_path, limit):
     assert result == proc.Exit(0)
     assert (tmp_path / "stdout.log").read_bytes() == b"request\x00\xff\n"
     assert (tmp_path / "stderr.log").read_bytes() == b""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX cooperative interrupt")
+@pytest.mark.parametrize("ignore_interrupt", [False, True])
+def test_graceful_cancel_also_stops_a_parent_that_ignores_interrupt(tmp_path, ignore_interrupt):
+    ready = tmp_path / "ready"
+    source = (
+        "import signal, socket, time\n"
+        "from pathlib import Path\n"
+        + ("signal.signal(signal.SIGINT, signal.SIG_IGN)\n" if ignore_interrupt else "")
+        + "server = socket.socket()\nserver.bind(('127.0.0.1', 0))\nserver.listen()\n"
+        + "Path('ready').write_text(str(server.getsockname()[1]))\n"
+        + "time.sleep(60)\n"
+    )
+    started = time.monotonic()
+    result = proc.run(
+        [sys.executable, "-c", source], cwd=tmp_path,
+        stdout_path=tmp_path / "stdout", stderr_path=tmp_path / "stderr",
+        timeout_seconds=10, should_cancel=ready.exists, graceful_cancel=True,
+    )
+    assert result == proc.Exit(None, cancelled=True)
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        assert probe.connect_ex(("127.0.0.1", int(ready.read_text()))) != 0
+    assert time.monotonic() - started < 8
+    if not ignore_interrupt:
+        assert "KeyboardInterrupt" in (tmp_path / "stderr").read_text()

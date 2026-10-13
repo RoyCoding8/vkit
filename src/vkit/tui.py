@@ -215,6 +215,7 @@ class LauncherApp(App[None]):
                 [sys.executable, "-m", "vkit.cli", *command, "--project", str(project.root)],
                 cwd=project.root, stdout_path=output, stderr_path=errors,
                 timeout_seconds=float("inf"), should_cancel=lambda: worker.is_cancelled,
+                graceful_cancel=True,
                 max_output_bytes=1_048_576,
             )
             text = output.read_text(encoding="utf-8", errors="replace") + errors.read_text(encoding="utf-8", errors="replace")

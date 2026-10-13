@@ -6,10 +6,10 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
 
 from .nowindow import hidden_window, is_windows
 
@@ -34,6 +34,7 @@ class _Tree:
         self.job = None
         if is_windows:
             import ctypes
+
             import win32job
 
             self.job = win32job.CreateJobObject(None, "")
@@ -61,11 +62,24 @@ class _Tree:
         else:
             self.kill()
 
+    def cancel(self, *, graceful: bool) -> None:
+        if graceful and not is_windows:
+            try:
+                os.killpg(self.proc.pid, signal.SIGINT)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        self.kill()
+
 
 def run(argv: Sequence[str], *, cwd: Path, stdout_path: Path, stderr_path: Path,
         timeout_seconds: float, env: Mapping[str, str] | None = None,
         should_cancel: Callable[[], bool] = lambda: False,
-        max_output_bytes: int | None = None, stdin_path: Path | None = None) -> Exit:
+        max_output_bytes: int | None = None, stdin_path: Path | None = None,
+        graceful_cancel: bool = False) -> Exit:
     if max_output_bytes is not None and max_output_bytes < 1:
         raise ValueError("max_output_bytes must be positive")
     options = hidden_window()
@@ -127,7 +141,7 @@ def run(argv: Sequence[str], *, cwd: Path, stdout_path: Path, stderr_path: Path,
                     code = proc.wait()
                     break
                 if should_cancel():
-                    tree.kill()
+                    tree.cancel(graceful=graceful_cancel)
                     proc.wait()
                     return Exit(None, cancelled=True)
                 if time.monotonic() >= deadline:

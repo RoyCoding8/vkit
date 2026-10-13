@@ -37,6 +37,27 @@ _COMMANDS = {
 }
 
 
+def _pick_directory(initial: Path) -> Path | None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError as exc:
+        raise ValueError("Folder picker unavailable. Use project to type a path instead.") from exc
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        selected = filedialog.askdirectory(
+            parent=root, title="Choose a Git repository", initialdir=str(initial), mustexist=True,
+        )
+    except tk.TclError as exc:
+        raise ValueError("Folder picker unavailable. Use project to type a path instead.") from exc
+    finally:
+        if root is not None:
+            root.destroy()
+    return Path(selected) if selected else None
+
+
 def _run_command(project: Project, command: tuple[str, ...], cancel: threading.Event) -> tuple[str, str]:
     with TemporaryDirectory(prefix="vkit-tui-") as directory:
         output, errors = Path(directory) / "stdout", Path(directory) / "stderr"
@@ -93,7 +114,8 @@ class Launcher:
         if self.tab == "home":
             for command, label in (("open", "Start server and open web console"),
                                    ("start / stop", "Start or stop the local server"),
-                                   ("project", "Switch repository for this session")):
+                                   ("project", "Type a repository path for this session"),
+                                   ("browse", "Select a repository with a folder dialog")):
                 commands.add_row(command, label)
             return Group(Text(str(self.project.root), style="bold"), Text(""),
                          Text(f"Web console: {self.url or 'stopped'}"),
@@ -112,6 +134,7 @@ class Launcher:
         if self.tab == "settings":
             defaults = load_launcher_settings()
             commands.add_row("project", Text(defaults.project or "Current directory"))
+            commands.add_row("browse", "Choose the default repository with a folder dialog")
             commands.add_row("port", str(defaults.port) + (" (automatic)" if defaults.port == 0 else ""))
             commands.add_row("browser", "on" if defaults.open_browser else "off")
             return Group(Text(str(launcher_settings_path())), Text(""), commands, Text(""),
@@ -150,11 +173,18 @@ class Launcher:
             self._cancel.set()
             self.message = "Cancelling…" if self._job else "No command is running."
             return True
-        if self.tab == "home" and name in {"open", "start", "stop", "project"}:
-            if name == "project":
+        if self.tab == "home" and name in {"open", "start", "stop", "project", "browse"}:
+            if name in {"project", "browse"}:
                 if self._job is not None:
                     raise ValueError("Cancel the active command before switching repositories.")
-                selected = open_project(value or self.console.input("Repository path: "))
+                if name == "browse":
+                    path = _pick_directory(self.project.root)
+                    if path is None:
+                        self.message = "Selection cancelled. Repository unchanged."
+                        return True
+                else:
+                    path = value or self.console.input("Repository path: ")
+                selected = open_project(path)
                 self._stop_server()
                 self.project = selected
                 self.output = ""
@@ -189,10 +219,17 @@ class Launcher:
             self.output = ""
             self.message = f"Running {label.lower()}…"
             self._job = self._executor.submit(_run_command, self.project, command, self._cancel)
-        elif self.tab == "settings" and name in {"project", "port", "browser"}:
+        elif self.tab == "settings" and name in {"project", "browse", "port", "browser"}:
             updated = load_launcher_settings().as_json()
-            if name == "project":
-                updated[name] = value or self.console.input("Default repository (blank uses current directory): ").strip() or None
+            if name in {"project", "browse"}:
+                if name == "browse":
+                    path = _pick_directory(Path(updated["project"]) if updated["project"] else self.project.root)
+                    if path is None:
+                        self.message = "Selection cancelled. Defaults unchanged."
+                        return True
+                else:
+                    path = value or self.console.input("Default repository (blank uses current directory): ").strip() or None
+                updated["project"] = str(open_project(path).root) if path else None
             elif name == "port":
                 updated[name] = int(value or self.console.input("Port (0 chooses a free port): "))
             else:

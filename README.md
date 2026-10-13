@@ -54,7 +54,8 @@ Type a command shown in the current tab and press **Enter**. Enter **q** to quit
 
 In **Home**, enter **open** to start the local server and open your browser.
 Enter **start** if you only want its URL, or **stop** to shut it down. Use **project**
-to switch repositories for the current session. The saved port is used;
+to type a repository path, or **browse** to select a folder. Both switch the repository
+for the current session. Cancelling the dialog keeps the current repository. The saved port is used;
 `0` chooses a free port. Pass `--port 8765` to override it. Quitting or changing repositories
 stops the server owned by that launcher. Keep the terminal open while using the web console.
 **Checks** runs essential CLI commands and shows an output preview. Enter **output** to read
@@ -66,7 +67,8 @@ Its **Launch defaults** form saves the default repository, web port, and browser
 The terminal's **Settings** tab edits the same defaults and shows the exact JSON path.
 Enter **project**, **port**, or **browser** to edit a value, or provide it directly, such as
 `port 8765` or `browser off`. Each valid edit saves immediately. A blank repository value
-uses the current directory.
+uses the current directory. Enter **browse** to choose the default repository with a folder dialog.
+The dialog uses Python's Tk support. If Tk or a graphical desktop is unavailable, type the path instead.
 Changes apply to future launches. Explicit `--project`, `--port`, `--browser`, or `--no-browser`
 options override saved values for that invocation without changing the JSON.
 

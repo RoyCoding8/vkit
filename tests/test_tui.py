@@ -141,6 +141,73 @@ def test_switch_validates_before_stopping_server(make_project, tmp_path, run_ui)
     run_ui(first, script)
 
 
+@pytest.mark.parametrize("tab", ["home", "settings"])
+def test_folder_selection_cancel_validation_and_save(make_project, tmp_path, monkeypatch, run_ui, tab):
+    first = make_project({"README.md": "first\n"}, [], accept=False)
+    second = tmp_path / "chosen repo"
+    second.mkdir()
+    git(second, "init", "-q")
+    choices = iter([None, tmp_path, second])
+    starts = []
+
+    def choose(initial):
+        starts.append(initial)
+        return next(choices)
+
+    monkeypatch.setattr("vkit.tui._pick_directory", choose)
+
+    def script(output):
+        yield "settings"
+        yield f"project {first}"
+        saved = launcher_settings_path().read_bytes()
+        yield "home"
+        yield "start"
+        port = last_port(output)
+        yield tab
+        yield "browse"
+        assert "Selection cancelled" in output.getvalue()
+        assert console_status(port)["project"] == str(first)
+        assert launcher_settings_path().read_bytes() == saved
+        yield "browse"
+        assert "not inside a Git repository" in output.getvalue()
+        assert console_status(port)["project"] == str(first)
+        assert launcher_settings_path().read_bytes() == saved
+        yield "browse"
+        if tab == "home":
+            assert not is_listening(port)
+            assert launcher_settings_path().read_bytes() == saved
+            yield "agent"
+            assert json.dumps(str(second))[1:-1] in output.getvalue()
+            yield "home"
+            yield "start"
+            assert console_status(last_port(output))["project"] == str(second)
+        else:
+            assert json.loads(launcher_settings_path().read_text())["project"] == str(second)
+            assert console_status(port)["project"] == str(first)
+        yield "q"
+
+    run_ui(first, script)
+    assert starts == [first, first, first]
+
+
+def test_missing_tk_keeps_typed_selection_available(make_project, tmp_path, monkeypatch, run_ui):
+    first = make_project({"README.md": "first\n"}, [], accept=False)
+    second = tmp_path / "typed repo"
+    second.mkdir()
+    git(second, "init", "-q")
+    monkeypatch.setitem(sys.modules, "tkinter", None)
+
+    def script(output):
+        yield "browse"
+        assert "Folder picker unavailable. Use project to type a path instead." in output.getvalue()
+        yield f"project {second}"
+        yield "start"
+        assert console_status(last_port(output))["project"] == str(second)
+        yield "q"
+
+    run_ui(first, script)
+
+
 def test_busy_port_keeps_interface_usable(make_project, run_ui):
     project = make_project({"README.md": "busy\n"}, [], accept=False)
     with socket.socket() as occupied:
@@ -174,6 +241,8 @@ def test_settings_save_validate_reload_and_clear_default(make_project, run_ui):
         assert "65535" in output.getvalue()
         yield "browser invalid"
         assert "Browser must be on or off" in output.getvalue()
+        yield f"project {project / 'missing'}"
+        assert "path does not exist" in output.getvalue()
         assert launcher_settings_path().read_bytes() == original
         yield "q"
 

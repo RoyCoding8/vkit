@@ -177,7 +177,7 @@ function badge(state) {
   return el("span", label, `status-badge ${tone}`);
 }
 function link(text, action) {
-  const button = el("button", text, "text-link");
+  const button = el("md-text-button", text, "text-link");
   button.type = "button";
   button.onclick = action;
   return button;
@@ -190,9 +190,41 @@ function action(text, page, type = "md-text-button") {
   return button;
 }
 function consoleButton(text, tone = "tonal") {
-  const button = el("button", text, `console-button ${tone}`);
+  const types = {
+      primary: "md-filled-button",
+      tonal: "md-filled-tonal-button",
+      text: "md-text-button",
+      outlined: "md-outlined-button",
+    },
+    button = el(types[tone] || types.tonal, text);
   button.type = "button";
   return button;
+}
+function selectOption(value, headline, selected = false) {
+  const option = el("md-select-option"),
+    text = el("span", headline);
+  option.value = value;
+  if (selected) option.setAttribute("selected", "");
+  text.slot = "headline";
+  option.append(text);
+  return option;
+}
+function selectControl(label, values, selected) {
+  const control = el("md-outlined-select");
+  control.label = label;
+  control.menuPositioning = "fixed";
+  for (const [value, headline] of values)
+    control.append(selectOption(value, headline, value === selected));
+  control.value = selected;
+  return control;
+}
+function textField(label, value, type = "text", supportingText = "") {
+  const control = el("md-outlined-text-field");
+  control.label = label;
+  control.type = type;
+  control.value = value ?? "";
+  control.supportingText = supportingText;
+  return control;
 }
 function panel(title, description, children, button) {
   const box = el("section", null, "panel"),
@@ -255,31 +287,22 @@ function table(headers, name) {
 }
 function toolbar(placeholder, update, withKind = false) {
   const bar = el("div", null, "toolbar"),
-    box = el("label", null, "search-box"),
-    input = el("input");
-  input.type = "search";
+    input = textField(placeholder, search, "search");
+  input.className = "view-search";
   input.id = "view-search";
-  input.placeholder = placeholder;
-  input.value = search;
-  input.setAttribute("aria-label", placeholder);
   input.oninput = () => {
     search = input.value;
     update();
   };
-  box.append(icon("search"), input);
-  bar.append(box);
+  input.append(icon("search", "icon"));
+  input.lastChild.slot = "leading-icon";
+  bar.append(input);
   if (withKind) {
-    const select = el("select");
-    select.setAttribute("aria-label", "Filter by verification method");
-    const all = el("option", "All methods");
-    all.value = "";
-    select.append(all);
-    for (const [key, value] of Object.entries(methods)) {
-      const option = el("option", value[0]);
-      option.value = key;
-      select.append(option);
-    }
-    select.value = kind;
+    const select = selectControl(
+      "Verification method",
+      [["", "All methods"], ...Object.entries(methods).map(([key, value]) => [key, value[0]])],
+      kind,
+    );
     select.onchange = () => {
       kind = select.value;
       update();
@@ -684,55 +707,40 @@ function operationInitialDraft(operation) {
 function operationField(name, property, value, index, required) {
   const field = el("div", null, "form-field"),
     id = `operation-input-${index}`,
-    label = el("label", name.replaceAll("_", " "));
-  label.htmlFor = id;
-  if (required) label.append(el("span", " Required", "required-label"));
-  field.append(label);
+    label = name.replaceAll("_", " ");
   let input;
   if (Array.isArray(property.enum)) {
-    input = el("select");
+    input = el("md-outlined-select");
+    input.label = label;
+    input.menuPositioning = "fixed";
     if (!required || !Object.hasOwn(property, "default")) {
-      const placeholder = el("option", "Choose an option");
-      placeholder.value = "";
-      input.append(placeholder);
+      input.append(selectOption("", "Choose an option"));
     }
-    for (const optionValue of property.enum) {
-      const option = el("option", String(optionValue));
-      option.value = String(optionValue);
-      input.append(option);
-    }
+    for (const optionValue of property.enum)
+      input.append(selectOption(String(optionValue), String(optionValue)));
+    input.value = value;
   } else if (property.type === "string" && name !== "replacement") {
-    input = el("input");
-    input.type = "text";
+    input = textField(label, value);
+    if (property.minLength != null) input.minLength = property.minLength;
+    if (property.maxLength != null) input.maxLength = property.maxLength;
   } else if (property.type === "integer") {
-    input = el("input");
-    input.type = "number";
+    input = textField(label, value, "number");
     input.step = "1";
     if (property.minimum != null) input.min = property.minimum;
     if (property.maximum != null) input.max = property.maximum;
   } else {
-    input = el("textarea");
+    input = textField(label, value, "textarea");
+    input.classList.add("json-field");
     input.rows = name === "replacement" ? 10 : 5;
-    input.spellcheck = false;
     if (property.minLength != null) input.minLength = property.minLength;
-    if (property.type !== "string")
-      input.setAttribute("aria-describedby", `${id}-help`);
+    if (property.type !== "string") input.supportingText = "Enter a JSON value.";
   }
   input.id = id;
   input.dataset.argument = name;
-  input.value = value;
+  input.required = required &&
+    (Array.isArray(property.enum) || property.type !== "string" || property.minLength > 0);
   field.append(input);
-  if (property.description) {
-    const help = el("p", property.description, "field-help");
-    help.id = `${id}-help`;
-    input.setAttribute("aria-describedby", help.id);
-    field.append(help);
-  } else if (property.type !== "string" && property.type !== "integer") {
-    const help = el("p", "Enter a JSON value.", "field-help");
-    help.id = `${id}-help`;
-    input.setAttribute("aria-describedby", help.id);
-    field.append(help);
-  }
+  if (property.description) input.supportingText = property.description;
   return field;
 }
 function parseOperationArguments(operation) {
@@ -917,22 +925,20 @@ function computations() {
     properties = Object.entries(schema.properties || {}),
     required = new Set(schema.required || []),
     form = el("form", null, "computation-form"),
-    pickerField = el("div", null, "form-field"),
-    pickerLabel = el("label", "Operation");
-  pickerLabel.htmlFor = "computation-operation";
-  const picker = el("select");
+    pickerField = el("div", null, "form-field");
+  const picker = el("md-outlined-select");
+  picker.label = "Operation";
+  picker.menuPositioning = "fixed";
   picker.id = "computation-operation";
   for (const item of operations) {
-    const option = el("option", item.name);
-    option.value = item.name;
-    picker.append(option);
+    picker.append(selectOption(item.name, item.name));
   }
   picker.value = operation.name;
   picker.onchange = () => {
     computation.selectedName = picker.value;
     render();
   };
-  pickerField.append(pickerLabel, picker);
+  pickerField.append(picker);
   form.append(pickerField, el("p", operation.description, "operation-description"));
   const draft = (computation.drafts[operation.name] ||=
     operationInitialDraft(operation));
@@ -949,7 +955,7 @@ function computations() {
   );
   error.setAttribute("role", "alert");
   const pending = computation.pendingName === operation.name,
-    submit = el("button", pending ? "Running…" : "Run computation", "console-button primary");
+    submit = el("md-filled-button", pending ? "Running…" : "Run computation");
   submit.type = "submit";
   submit.disabled = Boolean(computation.pendingName);
   const actions = el("div", null, "form-actions");
@@ -1274,61 +1280,54 @@ function settingsForm() {
     fields = el("div", null, "form-grid");
   form.id = "settings-form";
   const themeField = el("div", null, "form-field"),
-    themeLabel = el("label", "Color theme"),
-    theme = el("select");
+    theme = selectControl("Color theme", [
+      ["system", "Use system setting"],
+      ["light", "Light"],
+      ["dark", "Dark"],
+    ], settingsDraft.theme);
   theme.id = "settings-theme";
   theme.dataset.setting = "theme";
-  themeLabel.htmlFor = theme.id;
-  for (const [value, label] of [
-    ["system", "Use system setting"],
-    ["light", "Light"],
-    ["dark", "Dark"],
-  ]) {
-    const option = el("option", label);
-    option.value = value;
-    theme.append(option);
-  }
-  theme.value = settingsDraft.theme;
-  themeField.append(themeLabel, theme, el("p", "Follow the device theme or choose one.", "field-help"));
+  theme.supportingText = "Follow the device theme or choose one.";
+  themeField.append(theme);
   fields.append(themeField);
 
   const refreshField = el("div", null, "form-field"),
-    refreshLabel = el("label", "Refresh interval in seconds"),
-    refresh = el("input");
-  refresh.type = "number";
+    refresh = textField(
+      "Refresh interval in seconds",
+      settingsDraft.refresh_seconds,
+      "number",
+      "Refresh workspace status and runs every 1 to 60 seconds.",
+    );
   refresh.id = "settings-refresh-seconds";
   refresh.dataset.setting = "refresh_seconds";
   refresh.min = "1";
   refresh.max = "60";
   refresh.step = "1";
-  refresh.value = settingsDraft.refresh_seconds;
-  refreshLabel.htmlFor = refresh.id;
-  refreshField.append(refreshLabel, refresh, el("p", "Refresh workspace status and runs every 1 to 60 seconds.", "field-help"));
+  refreshField.append(refresh);
   fields.append(refreshField);
 
   const historyField = el("div", null, "form-field"),
-    historyLabel = el("label", "Recent runs to load"),
-    history = el("input");
-  history.type = "number";
+    history = textField(
+      "Recent runs to load",
+      settingsDraft.history_limit,
+      "number",
+      "Load between 1 and 200 recent runs.",
+    );
   history.id = "settings-history-limit";
   history.dataset.setting = "history_limit";
   history.min = "1";
   history.max = "200";
   history.step = "1";
-  history.value = settingsDraft.history_limit;
-  historyLabel.htmlFor = history.id;
-  historyField.append(historyLabel, history, el("p", "Load between 1 and 200 recent runs.", "field-help"));
+  historyField.append(history);
   fields.append(historyField);
 
-  const sidebar = el("input");
-  sidebar.type = "checkbox";
+  const sidebar = el("md-switch");
   sidebar.id = "settings-sidebar-collapsed";
   sidebar.dataset.setting = "sidebar_collapsed";
-  sidebar.checked = settingsDraft.sidebar_collapsed;
-  const sidebarLabel = el("label", "Keep the sidebar collapsed");
-  sidebarLabel.htmlFor = sidebar.id;
-  const toggle = el("div", null, "form-checkbox");
-  toggle.append(sidebar, sidebarLabel);
+  sidebar.selected = settingsDraft.sidebar_collapsed;
+  sidebar.setAttribute("aria-label", "Keep the sidebar collapsed");
+  const toggle = el("label", null, "form-checkbox");
+  toggle.append(sidebar, el("span", "Keep the sidebar collapsed"));
   fields.append(toggle);
   form.append(fields);
 
@@ -1336,14 +1335,13 @@ function settingsForm() {
   tools.append(el("legend", "Tools available to agents"));
   tools.append(el("p", "Enabled tools appear in MCP and help. Save settings, then reconnect your agent to refresh its tool list. Help always remains available.", "field-help"));
   for (const tool of configuration.managed_tools) {
-    const checkbox = el("input");
-    checkbox.type = "checkbox";
+    const checkbox = el("md-checkbox");
     checkbox.id = `settings-tool-${tool.name}`;
     checkbox.dataset.tool = tool.name;
     checkbox.checked = !settingsDraft.disabled_tools.includes(tool.name);
-    const label = el("label", tool.name);
-    label.htmlFor = checkbox.id;
-    const row = el("div", null, "form-checkbox");
+    checkbox.setAttribute("aria-label", tool.name);
+    const label = el("span", tool.name);
+    const row = el("label", null, "form-checkbox");
     row.append(checkbox, label);
     tools.append(row, el("p", tool.description, "field-help"));
   }
@@ -1354,7 +1352,7 @@ function settingsForm() {
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   const actions = el("div", null, "form-actions");
-  const save = el("button", "Save settings", "console-button primary");
+  const save = el("md-filled-button", "Save settings");
   save.type = "submit";
   save.id = "settings-save";
   const reset = consoleButton("Reset defaults", "text");
@@ -1375,7 +1373,7 @@ function settingsForm() {
     }
     const key = event.target.dataset.setting;
     if (!key) return;
-    if (key === "sidebar_collapsed") settingsDraft[key] = event.target.checked;
+    if (key === "sidebar_collapsed") settingsDraft[key] = event.target.selected;
     else if (key === "refresh_seconds" || key === "history_limit")
       settingsDraft[key] = event.target.value === "" ? "" : Number(event.target.value);
     else settingsDraft[key] = event.target.value;
@@ -1404,32 +1402,37 @@ function launcherSettingsForm() {
     ["port", "Web console port", "number"],
     ["open_browser", "Open browser with vkit console", "checkbox"],
   ]) {
-    const field = el("div", null, type === "checkbox" ? "form-checkbox" : "form-field"),
-      input = el("input"),
-      label = el("label", labelText);
+    const field = el(type === "checkbox" ? "label" : "div", null,
+      type === "checkbox" ? "form-checkbox" : "form-field"),
+      input = type === "checkbox"
+        ? el("md-switch")
+        : textField(labelText, launcherDraft[name], type === "number" ? "number" : "text"),
+      label = el("span", labelText);
     input.id = `launcher-${name}`;
-    input.type = type;
     input.disabled = launcherSaving;
-    label.htmlFor = input.id;
-    if (type === "checkbox") input.checked = launcherDraft[name];
-    else input.value = launcherDraft[name] ?? "";
+    if (type === "checkbox") {
+      input.selected = launcherDraft[name];
+      input.setAttribute("aria-label", labelText);
+    }
     if (name === "port") {
       input.min = "0";
       input.max = "65535";
       input.step = "1";
       input.required = true;
     }
+    if (type !== "checkbox") input.supportingText = name === "project"
+      ? "Use an absolute path. Blank uses the current directory."
+      : "Use 0 to choose a free port. Applies when the server next starts.";
     input.addEventListener("input", () => {
-      launcherDraft[name] = type === "checkbox" ? input.checked
+      launcherDraft[name] = type === "checkbox" ? input.selected
         : type === "number" ? Number(input.value) : input.value.trim() || null;
     });
-    field.append(label, input);
-    if (name === "project") field.append(el("p", "Use an absolute path. Blank uses the current directory.", "field-help"));
-    if (name === "port") field.append(el("p", "Use 0 to choose a free port. Applies when the server next starts.", "field-help"));
+    if (type === "checkbox") field.append(input, label);
+    else field.append(input);
     fields.append(field);
   }
   const status = el("p", launcherMessage, "settings-message"),
-    save = el("button", "Save launch defaults", "console-button primary");
+    save = el("md-filled-button", "Save launch defaults");
   status.setAttribute("role", "status");
   save.type = "submit";
   save.disabled = launcherSaving;
@@ -1597,7 +1600,7 @@ function showCheck(id) {
     );
     body.append(section);
   }
-  if (!$("detail-dialog").open) $("detail-dialog").showModal();
+  if (!$("detail-dialog").open) $("detail-dialog").show();
 }
 async function refreshRun() {
   if (!selectedRun || activePage !== "runs") return;
@@ -1697,15 +1700,8 @@ async function refreshRun() {
   );
   body.append(provenance);
   const logHeader = el("div", null, "log-header"),
-    select = el("select");
+    select = selectControl("Log stream", [["stdout", "stdout"], ["stderr", "stderr"]], stream);
   select.id = "run-log";
-  select.setAttribute("aria-label", "Log stream");
-  for (const name of ["stdout", "stderr"]) {
-    const option = el("option", name);
-    option.value = name;
-    select.append(option);
-  }
-  select.value = stream;
   select.onchange = () => {
     stream = select.value;
     refreshRun().catch(showError);
@@ -1768,12 +1764,17 @@ function render() {
   }
   if (focusId) {
     const next = $(focusId);
-    next?.focus();
-    if (next && start != null && end != null) {
-      try {
-        next.setSelectionRange(start, end);
-      } catch {}
-    }
+    const restore = () => {
+      if (!next?.isConnected || document.activeElement !== document.body) return;
+      next.focus();
+      if (start != null && end != null) {
+        try {
+          next.setSelectionRange(start, end);
+        } catch {}
+      }
+    };
+    if (next?.updateComplete) next.updateComplete.then(restore);
+    else restore();
   }
 }
 function route() {
@@ -1932,18 +1933,6 @@ $("collapse-nav").onclick = () => {
   updatePreference("sidebar_collapsed", collapsed);
 };
 $("close-detail").onclick = () => $("detail-dialog").close();
-$("detail-dialog").addEventListener("click", (event) => {
-  if (event.target === $("detail-dialog")) {
-    const rect = event.target.getBoundingClientRect();
-    if (
-      event.clientX < rect.left ||
-      event.clientX > rect.right ||
-      event.clientY < rect.top ||
-      event.clientY > rect.bottom
-    )
-      event.target.close();
-  }
-});
 $("refresh").onclick = () => refresh();
 for (const [id, [name, symbol]] of Object.entries(pages)) {
   if (id === "capabilities" || id === "setup")

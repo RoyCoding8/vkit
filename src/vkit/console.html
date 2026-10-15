@@ -116,7 +116,10 @@
             <span id="updated" class="updated">Connecting</span>
           </div>
           <div id="view">
-            <div class="loading-state">Loading workspace evidence…</div>
+            <div class="loading-state">
+              <md-circular-progress indeterminate aria-label="Loading workspace evidence"></md-circular-progress>
+              <span>Loading workspace evidence…</span>
+            </div>
           </div>
         </main>
         <footer class="page-footer">
@@ -128,19 +131,18 @@
         </footer>
       </div>
     </div>
-    <dialog id="detail-dialog" aria-labelledby="detail-title">
-      <div class="dialog-header">
+    <md-dialog id="detail-dialog">
+      <div class="dialog-header" slot="headline">
         <div>
           <p class="eyebrow" id="detail-label">CHECK DETAILS</p>
           <h2 id="detail-title"></h2>
         </div>
-        <md-icon-button id="close-detail" aria-label="Close details"
-          ><svg class="icon" aria-hidden="true">
-            <use href="/assets/icons.svg#close"></use></svg
-        ></md-icon-button>
       </div>
-      <div id="detail-body"></div>
-    </dialog>
+      <div id="detail-body" slot="content"></div>
+      <div slot="actions">
+        <md-text-button id="close-detail">Close</md-text-button>
+      </div>
+    </md-dialog>
     <noscript
       ><p class="connection-error">
         Enable JavaScript to browse the console. The CLI is available

@@ -110,7 +110,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .engine-cache/joern/joern-cli-linux-x86_64.zip
-          key: joern-linux-x86_64-4.0.653-6cf996f2787381cd
+          key: joern-linux-x86_64-4.0.653-63430720fc7c01f9
       - run: uv sync --python 3.11 --extra test --extra engines
       - run: uv run python scripts/install_dataflow_engine.py --cache-dir .engine-cache/joern
       - run: uv run pytest -ra tests/test_data_flows.py

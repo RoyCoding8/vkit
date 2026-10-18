@@ -148,7 +148,7 @@ def test_json_containment_through_cli_and_mcp(make_project):
     assert code == 0 and body["status"] == "COMPATIBLE"
     client = McpClient(project)
     try:
-        found, error = client.call("help", query="json containment")
+        found, error = client.call("help", name="compare_contracts")
         assert not error
         schema = next(tool for tool in found["tools"] if tool["name"] == "compare_contracts")
         assert "json-containment" in schema["inputSchema"]["properties"]["profile"]["enum"]

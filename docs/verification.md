@@ -113,7 +113,9 @@ collapsed sidebar, refresh interval, and run-history limit. It cannot change ver
 paths, check definitions, or accepted digests.
 
 **Project settings > Show tools** opens a searchable, scrollable tool list. Saving settings
-persists tool visibility in the same JSON file. Reconnect MCP clients to refresh their tool list.
+persists category and individual visibility, MCP exposure, and agent category scope in the same JSON file.
+Compact MCP advertises help and invoke. Named exposure lists enabled tools individually. Reconnect after
+changing exposure or startup scope. Disabled calls are refused immediately. See [tool discovery](tool-discovery.md).
 The **Launch defaults** form separately saves the default repository, port, and browser preference
 in the user's config directory, or at `VKIT_CONFIG`. These defaults apply to future launches.
 

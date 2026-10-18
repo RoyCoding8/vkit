@@ -41,15 +41,14 @@ One declaration supplies names, scope descriptions, JSON input schemas, defaults
 read-only metadata, and declared outcome statuses. CLI, MCP, and console reuse that declaration.
 An engine remains substantial software internally; the shared plug standardizes its external contract.
 
-Agents discover enabled capabilities by calling MCP `help`, optionally with a text `query`.
-`help` returns descriptions and exact input schemas. Agent onboarding files reference this entry point
-instead of listing every tool. Adding a catalog declaration updates discovery automatically.
+Compact MCP advertises only `help` and `invoke`. Help lists enabled categories and paged tool summaries
+by category or query. `help(name=...)` returns one exact input schema. Agent onboarding files reference
+help instead of listing every tool. Adding a categorized declaration updates discovery automatically.
 
-The operator can enable or disable individual tools through console Setup or `vkit tools`.
-The saved `disabled_tools` field lives in the existing Git-excluded `config.json` beside display settings.
-Disabled tools disappear from MCP `tools/list` and `help`, and the dispatcher refuses direct calls.
-`help` always remains available. A fresh client session sees the filtered catalog; existing clients should
-reconnect to refresh cached definitions. Operator controls are not exposed as MCP tools.
+The operator controls categories, individual tools, and agent connection scope in the existing local
+`config.json`. Disabled or out-of-scope tools disappear from discovery and cannot be invoked by name.
+Named exposure remains available for clients requiring individual tool approval controls. Reconnect
+after changing exposure or scope. Operator controls are not MCP tools. See [tool discovery](tool-discovery.md).
 
 The installed contract, discovery query, persisted switches, and console controls are implemented.
 This shared infrastructure does not itself implement the candidates below or establish their correctness. Engine availability

@@ -10,6 +10,10 @@ content of each check's inputs, so an edit makes the evidence for that check sta
 
 ## Loop
 
+Call `help` to discover enabled categories and tools. Request an exact tool schema with `help(name=...)`.
+In compact exposure, the names below are targets for `invoke(name=..., arguments={...})`.
+Named exposure allows direct calls. An unavailable repository category prevents this loop.
+
 1. Before editing, call `status` with the paths you expect to touch. It lists the checks that read those paths,
    what each kind of evidence establishes and does not, and the features those checks cover. `features` with
    a query finds what a vague report refers to and how a user reaches it.

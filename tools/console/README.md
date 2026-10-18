@@ -13,8 +13,8 @@ Console preferences are saved under the repository's Git common directory in
 `vkit/config.json`, usually `.git/vkit/config.json`.
 Launch defaults use the user config directory's `vkit/config.json`, or the file selected by
 `VKIT_CONFIG`. **Setup & tools** shows both paths and edits each file separately.
-**Project settings > Show tools** opens a searchable list of enable/disable controls.
-The **Computations** operation picker uses the same searchable dialog for selection.
+**Project settings > Show tools** opens category switches, individual controls, and agent category scope.
+MCP exposure can be Compact or Named. The **Computations** picker uses the same searchable, category-filtered dialog.
 
 To rebuild from the pinned dependencies:
 

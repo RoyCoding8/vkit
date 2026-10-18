@@ -259,15 +259,15 @@ def cmd_project_inspect(args: argparse.Namespace) -> int:
 
 
 def cmd_mcp_serve(args: argparse.Namespace) -> int:
-    from .mcp import MCPUnavailable, Server, serve_stdio, tool_definitions
+    from .mcp import MCPUnavailable, Server, serve_stdio
 
     project = _context(args).project
     if args.json:
-        catalogue = tool_definitions(Server(project.root).tools())
+        catalogue = Server.for_mcp(project.root, args.exposure, args.categories).definitions()
         _emit({"project": str(project.root), "tools": catalogue}, True, "")
         return EXIT_OK
     try:
-        return serve_stdio(project.root)
+        return serve_stdio(project.root, exposure=args.exposure, categories=args.categories)
     except MCPUnavailable as exc:
         raise Refused(str(exc), EXIT_UNAVAILABLE) from exc
 
@@ -276,9 +276,11 @@ def cmd_tools(args: argparse.Namespace) -> int:
     from .mcp import BY_NAME, Server
 
     project = _context(args).project
+    from .categories import INFRASTRUCTURE_TOOLS
+
     name = args.enable or args.disable
     if name:
-        if name not in BY_NAME or name == "help":
+        if name not in BY_NAME or name in INFRASTRUCTURE_TOOLS:
             raise Refused("choose an installed tool other than help", EXIT_INVALID)
         settings = load_settings(project)
         disabled = set(settings.disabled_tools)
@@ -287,7 +289,19 @@ def cmd_tools(args: argparse.Namespace) -> int:
         else:
             disabled.discard(name)
         save_settings(project, replace(settings, disabled_tools=tuple(sorted(disabled))))
-    body, is_error = Server(project.root).call("help", {"query": args.query})
+    category = args.enable_category or args.disable_category
+    if category:
+        settings = load_settings(project)
+        disabled = set(settings.disabled_categories)
+        if args.disable_category:
+            disabled.add(category)
+        else:
+            disabled.discard(category)
+        save_settings(project, replace(settings, disabled_categories=tuple(sorted(disabled))))
+    selectors = {"query": args.query, "offset": args.offset, "limit": args.limit}
+    if args.category:
+        selectors["category"] = args.category
+    body, is_error = Server(project.root).call("help", selectors)
     if is_error:
         raise Refused(body["error"], EXIT_INVALID)
     _emit(body, args.json, "\n\n".join(f"{tool['name']}\n{tool['description']}" for tool in body["tools"]))
@@ -309,7 +323,7 @@ def cmd_tui(args: argparse.Namespace) -> int:
 def cmd_compute(args: argparse.Namespace) -> int:
     operation = args._vkit_operation
     project = _context(args).project
-    if operation.name in load_settings(project).disabled_tools:
+    if not load_settings(project).allows(operation.name, operation.category):
         raise Refused("unknown or unavailable tool", EXIT_INVALID)
     try:
         body = invoke(operation, project.root, cli_arguments(operation, vars(args)))
@@ -369,9 +383,16 @@ def build_parser() -> argparse.ArgumentParser:
     command(sub, "features", "show the feature map and which features are verified now")
     tools = command(sub, "tools", "discover enabled tools or change their saved availability")
     tools.add_argument("--query", default="", help="filter enabled tools by words")
+    from .categories import CATEGORIES
+
+    tools.add_argument("--category", choices=list(CATEGORIES), help="filter enabled tools by category")
+    tools.add_argument("--offset", type=int, default=0)
+    tools.add_argument("--limit", type=int, default=10)
     availability = tools.add_mutually_exclusive_group()
     availability.add_argument("--enable", metavar="NAME", help="enable an installed tool by its MCP name")
     availability.add_argument("--disable", metavar="NAME", help="disable an installed tool by its MCP name")
+    availability.add_argument("--enable-category", choices=list(CATEGORIES))
+    availability.add_argument("--disable-category", choices=list(CATEGORIES))
     accept = command(sub, "accept", "review and accept check definitions so they may run")
     accept.add_argument("--check", action="append", help="a check id (repeatable); default every check")
     accept.add_argument("--proposal", help="apply a pending proposal by digest prefix instead")
@@ -403,7 +424,10 @@ def build_parser() -> argparse.ArgumentParser:
     command(project, "inspect", "report what this repository declares about building and testing")
 
     mcp = sub.add_parser("mcp", help="serve an agent over MCP").add_subparsers(dest="mcp_command", required=True)
-    command(mcp, "serve", "serve stdio for one project root; --json prints the tool catalogue")
+    serve = command(mcp, "serve", "serve stdio for one project root; --json prints advertised tools")
+    serve.add_argument("--exposure", choices=["compact", "named"], default=None)
+    serve.add_argument("--categories", nargs="*", choices=["all", *CATEGORIES], default=None,
+                       help="category scope; all overrides a saved subset; empty exposes no domain tools")
 
     compute = sub.add_parser("compute", help="run a built-in source computation").add_subparsers(
         dest="compute_command", required=True)

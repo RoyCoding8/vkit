@@ -43,7 +43,8 @@ Paths below are relative to the repository root.
 | Discovery and proposals | `src/vkit/discover.py`, `src/vkit/features.py`, `src/vkit/proposals.py` | Inspect declared project configuration, map behaviors to checks, and stage changes for operator acceptance. |
 | Computation integration | `src/vkit/operations/catalog.py`, `src/vkit/operations/contract.py` | Declare one versioned schema, defaults, handler, execution metadata, and outcomes for every computation. |
 | Computation semantics | `src/vkit/operations/` | Own each question's model, input limits, execution, and witness checks. `_runtime.py` owns the shared binary path and SHA-256 identity check. |
-| Operator settings | `src/vkit/settings.py` | Persist launch defaults in the user config directory and display preferences and disabled tool names in shared Git state. |
+| Operator settings | `src/vkit/settings.py` | Persist launch defaults in the user config directory and display preferences, tool availability, and MCP defaults in shared Git state. |
+| Tool categories | `src/vkit/categories.py` | Own category labels. Each installed tool declares its category. Settings own category and individual availability. |
 | Terminal launcher | `src/vkit/tui.py`, `tui.py`, `start.bat`, `start.sh` | Select the target repository and own the web console server's lifecycle. |
 | Interfaces | `src/vkit/cli.py`, `src/vkit/mcp/__init__.py`, `src/vkit/console.py` | Translate requests and errors, apply saved visibility, and call the owning implementation. |
 | Console rendering | `src/vkit/console.js`, `src/vkit/console.html`, `src/vkit/console.css` | Render query results, schema-driven computation forms, and operator settings. |
@@ -77,6 +78,9 @@ from those schemas and calls the shared MCP dispatcher.
 An operation owns the meaning of its evidence. The common contract checks transport shape and declared
 statuses. It does not establish solver correctness or validate every operation-specific witness.
 Optional engine imports stay out of tool listing and help.
+Compact MCP advertises only help and invoke. Help returns category summaries and paged tool summaries,
+then one exact schema on request. Named exposure and a fixed startup category scope use the same dispatch
+and visibility rules. See [tool discovery](tool-discovery.md).
 
 The common binary identity check accepts a configured file only when its SHA-256 matches the configured
 pin. Version checks and backend-specific protocols remain in their operations. Java and Node helper

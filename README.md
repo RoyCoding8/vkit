@@ -150,14 +150,19 @@ Copy the MCP JSON from **Setup & tools > Connect an agent**. It uses the console
 interpreter and selected repository, so the harness does not need `vkit` on its PATH.
 Put this short pointer in your repository's `AGENTS.md` or `CLAUDE.md`:
 
-> Call vkit's `help` tool to discover currently enabled tools and their input schemas.
+> Call vkit's `help` for enabled categories. Filter by category or query, then request a tool by name for its exact schema. In compact mode, run it through `invoke` with its name and arguments.
 > Pass `query` to search for a question you need answered. Use each result within its stated scope.
 
-An empty `help` request lists every enabled tool. A request such as `{"query": "regex alphabet"}`
-finds matching tools with their descriptions and complete JSON input schemas. The catalog is generated
-from installed contracts, so onboarding instructions need no manually maintained tool inventory.
+Compact mode advertises only `help` and `invoke`. An empty help request lists enabled categories.
+`help(category="safety")` or `help(query="regex alphabet")` returns paged tool summaries.
+`help(name="compare_matchsets")` returns one exact input schema, then
+`invoke(name="compare_matchsets", arguments={...})` runs the tool. `help(all=true)` lists the enabled
+catalog across pages. The catalog is generated from installed contracts.
 
-Use **Setup & tools > Project settings > Show tools** to search and enable or disable tools, then save settings.
+Use **Setup & tools > Project settings > Show tools** to filter by category and enable or disable
+categories or individual tools, then save settings. The same dialog selects categories for agent connections.
+Choose Compact or Named MCP exposure in Project settings. Named mode advertises enabled tools individually
+for clients that need separate tool approval controls. See [tool discovery](docs/tool-discovery.md).
 The same controls are available from the CLI:
 
 ```powershell
@@ -165,13 +170,15 @@ vkit tools --project . --json
 vkit tools --project . --query "regex alphabet" --json
 vkit tools --project . --disable compare_matchsets
 vkit tools --project . --enable compare_matchsets
+vkit tools --project . --disable-category safety
 ```
 
 Settings live in `<git common directory>/vkit/config.json`, outside tracked source and shared by worktrees.
 Disabled tools disappear from MCP discovery and `help`, and calls to them are refused.
-Reconnect an agent after changing settings because clients may cache tool lists. `help` always remains
-available. Enable/disable controls belong to the operator console and CLI; MCP exposes no such control.
-Enabling an engine does not install its runtime. These switches control MCP exposure, not a shell agent's
+Reconnect after changing exposure or the agent category scope. Disabled calls are refused on the next request,
+even if a client cached their schemas. Help and compact invocation remain available. Enable/disable controls
+belong to the operator console and CLI; MCP exposes no such control.
+Enabling an engine does not install its runtime. These switches control vkit availability, not a shell agent's
 ability to inspect installed software or edit local configuration.
 
 The computation tools use fixed algorithms. Most do not change the gate; `check_release_artifact`

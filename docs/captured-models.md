@@ -1,7 +1,7 @@
 # Captured model tools
 
 These operations answer questions about captured data under an installed, fixed model. Call MCP
-`help` to find the currently enabled tools and their exact argument schemas. Inputs never replace
+`help` to find enabled categories and tools, then `help(name=...)` for an exact argument schema. Inputs never replace
 the installed analysis code. A deployment must separately protect the service installation from
 the coding agent's filesystem permissions.
 

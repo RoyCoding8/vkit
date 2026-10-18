@@ -7,6 +7,9 @@ description: Set up vkit verification for a repository. Use when the user asks t
 
 ## Order
 
+Discover enabled tools with help. Request a tool's schema with `help(name=...)` before use.
+In compact exposure, submit proposals through `invoke(name="propose", arguments={...})`.
+
 1. Run `vkit project inspect --project <root>`. It lists the test commands the repository already declares,
    with the file and line each came from. Report ambiguous ones instead of picking.
 2. Draft checks (manifest schema_version 2 entries) with the user. Prefer a scenario driver

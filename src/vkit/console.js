@@ -1180,8 +1180,12 @@ function setPreferenceFeedback(message) {
 }
 function enabledToolsSummary() {
   const tools = configuration.managed_tools,
-    enabled = tools.filter((tool) => !settingsDraft.disabled_tools.includes(tool.name)).length;
-  return `${enabled} of ${tools.length} tools enabled. Help always remains available.`;
+    enabled = tools.filter(toolAvailable).length;
+  return `${enabled} of ${tools.length} tools enabled. Help and compact invocation remain available.`;
+}
+function toolAvailable(tool) {
+  return !settingsDraft.disabled_tools.includes(tool.name)
+    && !settingsDraft.disabled_categories.includes(tool.category);
 }
 function syncSettingsForm() {
   for (const id of ["settings-message", "tools-message"]) {
@@ -1195,7 +1199,24 @@ function syncSettingsForm() {
     summary.textContent = enabledToolsSummary();
   for (const checkbox of document.querySelectorAll("#tools-body [data-tool]")) {
     checkbox.checked = !settingsDraft.disabled_tools.includes(checkbox.dataset.tool);
+    checkbox.disabled = settingsSaving || settingsDraft.disabled_categories.includes(checkbox.dataset.category);
+  }
+  for (const checkbox of document.querySelectorAll("#tools-body [data-category-toggle]")) {
+    checkbox.checked = !settingsDraft.disabled_categories.includes(checkbox.dataset.categoryToggle);
     checkbox.disabled = settingsSaving;
+  }
+  for (const checkbox of document.querySelectorAll("#tools-body [data-scope]")) {
+    checkbox.checked = settingsDraft.mcp_categories === null || settingsDraft.mcp_categories.includes(checkbox.dataset.scope);
+    checkbox.disabled = settingsSaving || settingsDraft.mcp_categories === null;
+  }
+  for (const count of document.querySelectorAll("#tools-body [data-category-count]")) {
+    const tools = configuration.managed_tools.filter((tool) => tool.category === count.dataset.categoryCount);
+    count.textContent = `${tools.filter(toolAvailable).length} of ${tools.length} tools available`;
+  }
+  const allScope = $("all-agent-categories");
+  if (allScope) {
+    allScope.checked = settingsDraft.mcp_categories === null;
+    allScope.disabled = settingsSaving;
   }
   $("save-tools-settings").disabled = settingsSaving;
   const save = $("settings-save"),
@@ -1294,7 +1315,10 @@ function showTools(onSelect = null) {
     search = textField("Search tools", "", "search"),
     list = el("div", null, "tools-list"),
     count = el("p", null, "small quiet"),
-    status = el("p", settingsMessage, "settings-message");
+    status = el("p", settingsMessage, "settings-message"),
+    category = selectControl("Category", [["", "All categories"],
+      ...configuration.categories.filter((group) => tools.some((tool) => tool.category === group.id))
+        .map((group) => [group.id, group.label])], "");
   search.id = "tools-search";
   search.setAttribute("autofocus", "");
   count.setAttribute("role", "status");
@@ -1303,54 +1327,93 @@ function showTools(onSelect = null) {
   const filter = () => {
     const query = search.value.trim().toLowerCase(),
       matches = tools.filter((tool) =>
-        `${tool.name} ${tool.description}`.toLowerCase().includes(query),
+        (!category.value || tool.category === category.value)
+        && `${tool.name} ${tool.description}`.toLowerCase().includes(query),
       );
     list.replaceChildren();
-    for (const tool of matches) {
-      if (onSelect) {
-        const row = el("div", null, "tool-option"),
-          choose = consoleButton(tool.name, "text");
-        choose.setAttribute("aria-pressed", String(tool.name === computation.selectedName));
-        choose.onclick = async () => {
-          await $("tools-dialog").close();
-          onSelect(tool.name);
-        };
-        row.append(choose, el("p", tool.description, "field-help"));
-        list.append(row);
-        continue;
+    for (const group of configuration.categories) {
+      const members = matches.filter((tool) => tool.category === group.id);
+      if (!members.length) continue;
+      const section = el("section", null, "tool-category"),
+        heading = el("h3", group.label);
+      section.append(heading);
+      if (!onSelect) {
+        const available = el("p", null, "field-help");
+        available.dataset.categoryCount = group.id;
+        for (const [key, text] of [["categoryToggle", "Enable category"], ["scope", "Include in agent scope"]]) {
+          const checkbox = el("md-checkbox"), label = el("label", null, "form-checkbox");
+          checkbox.dataset[key] = group.id;
+          checkbox.setAttribute("aria-label", `${text}: ${group.label}`);
+          label.append(checkbox, el("span", text));
+          section.append(label);
+        }
+        section.append(available);
       }
-      const checkbox = el("md-checkbox"),
-        label = el("span"),
-        row = el("label", null, "form-checkbox tool-option");
-      checkbox.dataset.tool = tool.name;
-      checkbox.checked = !settingsDraft.disabled_tools.includes(tool.name);
-      checkbox.disabled = settingsSaving;
-      checkbox.setAttribute("aria-label", tool.name);
-      label.append(el("span", tool.name), el("span", tool.description, "field-help"));
-      row.append(checkbox, label);
-      list.append(row);
+      for (const tool of members) {
+        if (onSelect) {
+          const row = el("div", null, "tool-option"),
+            choose = consoleButton(tool.name, "text");
+          choose.setAttribute("aria-pressed", String(tool.name === computation.selectedName));
+          choose.onclick = async () => {
+            await $("tools-dialog").close();
+            onSelect(tool.name);
+          };
+          row.append(choose, el("p", tool.description, "field-help"));
+          section.append(row);
+          continue;
+        }
+        const checkbox = el("md-checkbox"),
+          label = el("span"),
+          row = el("label", null, "form-checkbox tool-option");
+        checkbox.dataset.tool = tool.name;
+        checkbox.dataset.category = tool.category;
+        checkbox.setAttribute("aria-label", tool.name);
+        label.append(el("span", tool.name), el("span", tool.description, "field-help"));
+        row.append(checkbox, label);
+        section.append(row);
+      }
+      list.append(section);
     }
     if (!matches.length) list.append(el("p", "No tools match your search.", "field-help"));
     count.textContent = `${matches.length} of ${tools.length} tools shown`;
+    syncSettingsForm();
   };
   search.addEventListener("input", filter);
-  list.addEventListener("input", (event) => {
-    const tool = event.target.dataset.tool;
-    if (!tool || settingsSaving) return;
-    const disabled = new Set(settingsDraft.disabled_tools);
-    if (event.target.checked) disabled.delete(tool);
-    else disabled.add(tool);
-    settingsDraft.disabled_tools = [...disabled].sort();
+  category.addEventListener("input", filter);
+  const change = (event) => {
+    if (settingsSaving) return;
+    const data = event.target.dataset;
+    if (event.target.id === "all-agent-categories") {
+      settingsDraft.mcp_categories = event.target.checked ? null : [];
+    } else {
+      const key = data.tool ? "disabled_tools" : data.categoryToggle ? "disabled_categories" : "mcp_categories",
+        name = data.tool || data.categoryToggle || data.scope;
+      if (!name) return;
+      const values = new Set(settingsDraft[key]),
+        include = key === "mcp_categories" ? event.target.checked : !event.target.checked;
+      if (include) values.add(name);
+      else values.delete(name);
+      settingsDraft[key] = [...values].sort();
+    }
     settingsMessage = "Unsaved settings.";
     syncSettingsForm();
-  });
+  };
+  list.addEventListener("input", change);
+  const scope = el("label", null, "form-checkbox"), allScope = el("md-checkbox");
+  allScope.id = "all-agent-categories";
+  allScope.setAttribute("aria-label", "Include all enabled categories in agent scope");
+  allScope.addEventListener("input", change);
+  scope.append(allScope, el("span", "Include all enabled categories in agent scope"));
+  scope.hidden = Boolean(onSelect);
   $("tools-title").textContent = title;
   $("tools-dialog").setAttribute("aria-label", title);
   $("save-tools-settings").hidden = Boolean(onSelect);
   status.hidden = Boolean(onSelect);
   $("tools-body").replaceChildren(
-    el("p", onSelect ? "Choose a tool. Search by name or description." : "Enabled tools appear in MCP and help. Save settings to apply changes, then reconnect your agent to refresh its tool list.", "field-help"),
-    search, count, list, status,
+    el("p", onSelect
+      ? "Choose a tool. Filter by category or search by name and description."
+      : "Category switches preserve individual tool choices. Agent scope only narrows enabled tools. Save changes; reconnect agents after changing exposure or scope.", "field-help"),
+    search, category, scope, count, list, status,
   );
   filter();
   $("tools-dialog").show();
@@ -1370,6 +1433,12 @@ function settingsForm() {
   theme.supportingText = "Follow the device theme or choose one.";
   themeField.append(theme);
   fields.append(themeField);
+  const exposure = selectControl("MCP exposure", [
+    ["compact", "Compact: help and invoke"], ["named", "Named: individual tools"],
+  ], settingsDraft.mcp_exposure);
+  exposure.dataset.setting = "mcp_exposure";
+  exposure.supportingText = "Compact loads schemas on request. Named preserves individual tool approval controls. Applies on reconnect.";
+  fields.append(exposure);
 
   const refreshField = el("div", null, "form-field"),
     refresh = textField(

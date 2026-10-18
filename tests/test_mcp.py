@@ -11,13 +11,7 @@ def test_an_agent_sees_staleness_runs_what_is_needed_and_reaches_ready(make_proj
     client = McpClient(project)
     try:
         tools = sorted(t["name"] for t in client.request("tools/list", {})["tools"])
-        assert tools == sorted(["analyze_affine_accesses", "analyze_dependencies", "analyze_loop_termination", "analyze_regex_cost", "analyze_roundoff", "check_api_sequences", "check_llvm_refinement", "check_rust_safety", "check_release_artifact", "check_c_safety", "check_history",
-                         "check_protocol_model", "check_rewrite", "check_run", "check_semantic_merge", "compare_authorization_policies", "compare_contracts", "compare_iteration_sets",
-                         "compare_matchsets", "compare_migrations", "compare_network_paths", "compare_rational_expressions", "compare_sql_queries", "compare_wheels", "compare_workload_cost", "features",
-                         "explain_trace_interval", "find_behavioral_difference", "find_cache_key_collision", "find_data_flows", "find_grammar_ambiguity",
-                         "gate", "generate_configurations", "help", "infer_trace_relations", "inspect_c_branch_reachability", "inspect_openapi_parser_consistency", "minimize_cover", "mutation_survivors",
-                         "preview_typescript_symbol_rename", "propose", "prove_c_contract", "reduce_failure", "replay_retained_cases", "resolve_dependencies", "run_cancel", "run_get",
-                         "simplify_function", "status", "synthesize_function"])
+        assert tools == ["help", "invoke"]
 
         body, error = client.call("gate")
         assert (error, body["verdict"], body["checks"][0]["state"]) == (False, "BLOCKED", "missing")

@@ -130,7 +130,7 @@ def test_release_build_cli_mcp_use_existing_approval(make_project):
     assert len(result["artifact"]["assertions"]) == 6
     client = McpClient(project)
     try:
-        tools = client.request("tools/list", {})["tools"]
+        tools = client.call("help", name="check_release_artifact")[0]["tools"]
         definition = next(tool for tool in tools if tool["name"] == "check_release_artifact")
         assert definition["annotations"]["readOnlyHint"] is False
         result, error = client.call("check_release_artifact", check_id="release-wheel")

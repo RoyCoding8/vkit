@@ -59,14 +59,20 @@ DRIVER = textwrap.dedent('''
 class McpClient:
     """Newline-delimited JSON-RPC over the real `vkit mcp serve` subprocess."""
 
-    def __init__(self, project: Path) -> None:
-        self.proc = subprocess.Popen([sys.executable, "-m", "vkit.cli", "mcp", "serve", "--project", str(project)],
+    def __init__(self, project: Path, *, exposure: str | None = None, categories: list[str] | None = None) -> None:
+        argv = [sys.executable, "-m", "vkit.cli", "mcp", "serve", "--project", str(project)]
+        if exposure is not None:
+            argv += ["--exposure", exposure]
+        if categories is not None:
+            argv += ["--categories", *categories]
+        self.proc = subprocess.Popen(argv,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      text=True, encoding="utf-8", **NO_WINDOW)
         self.next_id = 0
         self.initialize = self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                                       "clientInfo": {"name": "vkit-tests", "version": "0"}})
         self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self.compact = any(tool["name"] == "invoke" for tool in self.request("tools/list", {})["tools"])
 
     def send(self, message: dict[str, Any]) -> None:
         self.proc.stdin.write(json.dumps(message) + "\n")
@@ -85,8 +91,10 @@ class McpClient:
                     raise AssertionError(message["error"])
                 return message["result"]
 
-    def call(self, name: str, **arguments: Any) -> tuple[Any, bool]:
-        result = self.request("tools/call", {"name": name, "arguments": arguments})
+    def call(self, tool_name: str, **arguments: Any) -> tuple[Any, bool]:
+        if self.compact and tool_name not in ("help", "invoke"):
+            tool_name, arguments = "invoke", {"name": tool_name, "arguments": arguments}
+        result = self.request("tools/call", {"name": tool_name, "arguments": arguments})
         return json.loads(result["content"][0]["text"]), result.get("isError", False)
 
     def close(self) -> None:

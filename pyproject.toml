@@ -56,3 +56,6 @@ packages = ["src/vkit"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q -p no:cacheprovider"
+
+[tool.ruff]
+target-version = "py311"

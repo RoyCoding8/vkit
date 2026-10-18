@@ -74,7 +74,7 @@ def test_all_new_tools_can_be_hidden_from_a_fresh_session(make_project):
     try:
         listed = client.request("tools/list", {})["tools"]
         found, error = client.call("help")
-        assert not error and found["tools"] == listed
+        assert not error and "tools" not in found
         assert not set(_TOOLS) & {tool["name"] for tool in listed}
         for name in _TOOLS:
             body, error = client.call("help", query=name)

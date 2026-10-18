@@ -436,7 +436,7 @@ def test_api_sequence_cli_mcp_and_mutating_annotation(make_project, api_service)
     assert (code, body["status"]) == (1, "BUG_REPRODUCED"), body
     client = McpClient(project)
     try:
-        tools = client.request("tools/list", {})["tools"]
+        tools = client.call("help", name="check_api_sequences")[0]["tools"]
         operation = next(
             tool for tool in tools if tool["name"] == "check_api_sequences"
         )

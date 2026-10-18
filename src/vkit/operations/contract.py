@@ -10,6 +10,8 @@ from typing import Any, Callable, Mapping
 
 from jsonschema import Draft202012Validator, SchemaError, ValidationError, validate
 
+from ..categories import CATEGORIES, INFRASTRUCTURE_TOOLS
+
 _NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _TYPES = {"string", "integer", "number", "boolean", "array", "object"}
 
@@ -37,10 +39,15 @@ class Operation:
     required: tuple[str, ...]
     handler: Callable[..., dict[str, Any]]
     outcomes: Mapping[str, int]
+    category: str = field(kw_only=True)
     read_only: bool = True
     cli_files: Mapping[str, FileInput] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.category not in CATEGORIES:
+            raise ValueError(f"invalid operation category {self.category!r}")
+        if self.name in INFRASTRUCTURE_TOOLS:
+            raise ValueError(f"reserved operation name {self.name!r}")
         if type(self.version) is not int or self.version != 1:
             raise ValueError(f"unsupported operation contract version {self.version!r}")
         if not _NAME.fullmatch(self.name):

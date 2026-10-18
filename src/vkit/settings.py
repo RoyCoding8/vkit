@@ -11,6 +11,7 @@ from typing import Any, TypeVar
 from jsonschema import ValidationError, validate
 
 from .paths import Project
+from .categories import CATEGORIES, INFRASTRUCTURE_TOOLS
 from .store import Store, read_json, write_json
 
 SETTINGS_SCHEMA = {
@@ -22,7 +23,13 @@ SETTINGS_SCHEMA = {
         "refresh_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
         "history_limit": {"type": "integer", "minimum": 1, "maximum": 200},
         "disabled_tools": {"type": "array", "uniqueItems": True,
-                           "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$", "not": {"const": "help"}}},
+                           "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$",
+                                     "not": {"enum": sorted(INFRASTRUCTURE_TOOLS)}}},
+        "disabled_categories": {"type": "array", "uniqueItems": True,
+                                "items": {"enum": list(CATEGORIES)}},
+        "mcp_exposure": {"enum": ["compact", "named"]},
+        "mcp_categories": {"type": ["array", "null"], "uniqueItems": True,
+                           "items": {"enum": list(CATEGORIES)}},
     },
     "required": ["version", "theme", "sidebar_collapsed", "refresh_seconds", "history_limit"],
     "additionalProperties": False,
@@ -37,6 +44,14 @@ class Settings:
     refresh_seconds: int = 2
     history_limit: int = 50
     disabled_tools: tuple[str, ...] = ()
+    disabled_categories: tuple[str, ...] = ()
+    mcp_exposure: str = "compact"
+    mcp_categories: tuple[str, ...] | None = None
+
+    def allows(self, name: str, category: str | None, scope: tuple[str, ...] | None = None) -> bool:
+        return name in INFRASTRUCTURE_TOOLS or (
+            name not in self.disabled_tools and category not in self.disabled_categories
+            and (scope is None or category in scope))
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -46,6 +61,9 @@ class Settings:
             "refresh_seconds": self.refresh_seconds,
             "history_limit": self.history_limit,
             "disabled_tools": list(self.disabled_tools),
+            "disabled_categories": list(self.disabled_categories),
+            "mcp_exposure": self.mcp_exposure,
+            "mcp_categories": None if self.mcp_categories is None else list(self.mcp_categories),
         }
 
 
@@ -123,7 +141,10 @@ def parse_settings(value: Any) -> Settings:
         raise ValueError(f"invalid settings: {exc.message}") from exc
     disabled = dict.fromkeys("compare_contracts" if name == "check_proto_compatibility" else name
                              for name in value.get("disabled_tools", ()))
-    return Settings(**{**value, "disabled_tools": tuple(disabled)})
+    return Settings(**{**value, "disabled_tools": tuple(disabled),
+                       "disabled_categories": tuple(value.get("disabled_categories", ())),
+                       "mcp_categories": (None if value.get("mcp_categories") is None
+                                          else tuple(value["mcp_categories"]))})
 
 
 def load_settings(project: Project) -> Settings:

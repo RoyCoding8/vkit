@@ -9,9 +9,10 @@ needed. Adding a declaration automatically adds it to discovery and the operator
 
 ## Discover and control operations
 
-Agents call MCP `help` with an optional text `query`. The response contains enabled tools, descriptions,
-and exact JSON input schemas. MCP `tools/list` uses the same enabled view as dispatch. Keep agent
-onboarding files limited to a pointer to `help`, rather than copying tool names and schemas.
+Compact MCP exposes `help` and `invoke`. Help lists enabled categories, returns paged tool summaries by
+category or text query, and returns an exact schema for a name request. Invocation uses the same installed
+contract and current availability. Named exposure advertises enabled tools individually.
+Keep onboarding files limited to a pointer to help. See [tool discovery](tool-discovery.md).
 
 Operators change availability in the console's Setup page or with `vkit tools --disable NAME` and
 `vkit tools --enable NAME`. Names use the MCP underscore spelling. The existing Git-excluded
@@ -21,7 +22,8 @@ disabled if a later installation introduces them. Enabling a tool does not insta
 When Protobuf compatibility was consolidated into `compare_contracts`, saved disabling of
 `check_proto_compatibility` migrated to the consolidated tool. This preserves the operator's restriction.
 
-`help` cannot be disabled. Other MCP tools, including repository check tools, can be disabled.
+Categories can also be disabled without erasing individual choices. New tools inherit their category's
+availability. Help and the compact executor cannot be disabled. Other tools, including repository checks, can.
 Saved settings apply on subsequent discovery and calls; reconnect existing clients to refresh cached
 tool lists. Disabled direct calls are refused. Already running computations and checks are not cancelled.
 The console retains the installed catalog for operator management. The CLI's installed command help
@@ -60,7 +62,7 @@ Preserve an undecided result when the backend cannot establish an answer.
 ## Declare the operation
 
 Add one `Operation` to `OPERATIONS` in `src/vkit/operations/catalog.py`.
-Declare the contract version, unique name, description, input schema, defaults, fixed handler, read-only
+Declare the contract version, unique name, category, description, input schema, defaults, fixed handler, read-only
 behavior, and allowed result statuses with their exit codes.
 Declare any CLI file input and its byte limit in the same entry.
 
@@ -77,6 +79,7 @@ For example, the existing regex comparison declares these inputs and outcomes.
 Operation(
 	version=1,
 	name="compare_matchsets",
+	category="contracts_languages",
 	description="Compare full-match regex languages over the supplied finite alphabet.",
 	properties={
 		"old_pattern": {"type": "string", "maxLength": 2048},

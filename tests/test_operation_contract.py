@@ -51,6 +51,7 @@ def test_catalog_descriptor_drives_cli_and_mcp(monkeypatch, tmp_path, capsys):
         required=("text",),
         handler=handler,
         outcomes={"READY": 0, "FAILED": 1},
+        category="testing",
     )
 
     parser = argparse.ArgumentParser()
@@ -95,7 +96,7 @@ def test_operation_defaults_are_copied_and_shared_by_validation(tmp_path):
 
     operation = Operation(1, "copy_default", "Copy defaults.",
                           {"items": {"type": "array", "items": {"type": "string"},
-                                     "default": ["catalog"]}}, (), handler, {"READY": 0})
+                                     "default": ["catalog"]}}, (), handler, {"READY": 0}, category="testing")
     assert invoke(operation, tmp_path, {}) == {"status": "READY", "items": ["catalog", "handler"]}
     assert validate_arguments(operation, {}) == {"items": ["catalog"]}
 
@@ -104,7 +105,7 @@ def test_operation_defaults_are_copied_and_shared_by_validation(tmp_path):
 def test_nonfinite_inputs_are_refused_before_dispatch(value, tmp_path):
     operation = Operation(1, "finite_input", "Accept a finite number.",
                           {"value": {"type": "number"}}, ("value",),
-                          lambda _root, value: {"status": "OK", "value": value}, {"OK": 0})
+                          lambda _root, value: {"status": "OK", "value": value}, {"OK": 0}, category="testing")
     assert invoke(operation, tmp_path, {"value": 1.5}) == {"status": "OK", "value": 1.5}
     with pytest.raises(OperationInputError, match="finite numbers"):
         invoke(operation, tmp_path, {"value": value})
@@ -112,16 +113,26 @@ def test_nonfinite_inputs_are_refused_before_dispatch(value, tmp_path):
 
 def test_contract_rejects_bad_versions_and_duplicate_names():
     with pytest.raises(ValueError, match="version"):
-        Operation(2, "new_op", "A new operation.", {}, (), lambda _root: {"status": "OK"}, {"OK": 0})
+        Operation(2, "new_op", "A new operation.", {}, (), lambda _root: {"status": "OK"}, {"OK": 0}, category="testing")
     operation = Operation(1, "same_name", "One operation.", {}, (),
-                          lambda _root: {"status": "OK"}, {"OK": 0})
+                          lambda _root: {"status": "OK"}, {"OK": 0}, category="testing")
     with pytest.raises(ValueError, match="duplicate operation name"):
         operation_by_name((operation, operation))
 
     with pytest.raises(ValueError, match="invalid input schema"):
         Operation(1, "bad_schema", "An invalid schema.",
                   {"value": {"type": "string", "minLength": "one"}}, (),
-                  lambda _root, value: {"status": value}, {"OK": 0})
+                  lambda _root, value: {"status": value}, {"OK": 0}, category="testing")
+
+
+@pytest.mark.parametrize("name, category", [("probe", "unknown"), ("help", "testing"), ("invoke", "testing")])
+def test_catalog_rejects_unknown_categories_and_reserved_names(name, category):
+    from vkit.mcp import Tool
+
+    with pytest.raises(ValueError):
+        Operation(1, name, "Probe.", {}, (), lambda _root: {"status": "OK"}, {"OK": 0}, category=category)
+    with pytest.raises(ValueError):
+        Tool(name, "Probe.", {}, lambda _server, _args: {}, category=category)
 
 
 @pytest.mark.parametrize("result", [
@@ -133,7 +144,7 @@ def test_contract_rejects_bad_versions_and_duplicate_names():
 ])
 def test_invoke_fails_closed_on_malformed_results(result, tmp_path):
     operation = Operation(1, "malformed_result", "Return a malformed result.", {}, (),
-                          lambda _root: result, {"READY": 0})
+                          lambda _root: result, {"READY": 0}, category="testing")
     with pytest.raises(OperationContractError):
         invoke(operation, tmp_path, {})
 
@@ -142,7 +153,7 @@ def test_invoke_fails_closed_on_malformed_results(result, tmp_path):
 def test_contract_rejects_transport_owned_inputs(name):
     with pytest.raises(ValueError):
         Operation(1, "collision", "A colliding operation.", {name: {"type": "string"}}, (),
-                  lambda _root, **_args: {"status": "OK"}, {"OK": 0})
+                  lambda _root, **_args: {"status": "OK"}, {"OK": 0}, category="testing")
 
 
 def test_cli_file_mapping_keeps_replacement_flag_bounded_and_utf8(tmp_path):
@@ -163,7 +174,7 @@ def test_cli_file_mapping_keeps_replacement_flag_bounded_and_utf8(tmp_path):
 
     too_small = Operation(1, "file_probe", "Read a small file.", {"source": {"type": "string"}},
                           ("source",), lambda _root, source: {"status": "OK", "source": source},
-                          {"OK": 0}, cli_files={"source": FileInput("source-file", 1)})
+                          {"OK": 0}, cli_files={"source": FileInput("source-file", 1)}, category="testing")
     with pytest.raises(OperationInputError, match="at most 1 bytes"):
         cli_arguments(too_small, {"source_file": replacement})
     replacement.write_bytes(b"\xff")
@@ -177,7 +188,7 @@ def test_undeclared_result_status_fails_closed_in_mcp_and_cli(monkeypatch, tmp_p
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
 
     operation = Operation(1, "bad_result", "Return a bad result.", {}, (),
-                          lambda _root: {"status": "NOT_DECLARED"}, {"READY": 0})
+                          lambda _root: {"status": "NOT_DECLARED"}, {"READY": 0}, category="testing")
     monkeypatch.setattr(mcp, "BY_NAME", {operation.name: operation})
     body, is_error = mcp.Server(tmp_path).call(operation.name, {})
     assert is_error and body["kind"] == "operation_contract_error"

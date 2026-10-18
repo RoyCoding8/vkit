@@ -74,6 +74,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="inspect_c_branch_reachability",
+        category="safety",
         description=("Ask whether a selected if-arm in captured scalar C can execute. Reuses pinned "
                      "CBMC under C11 Linux LP64 and returns selectable branch IDs. REACHABLE requires "
                      "typed solver inputs and native GCC UBSan replay through protected AST instrumentation "
@@ -94,6 +95,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_llvm_refinement",
+        category="equivalence",
         description=("Check whether a captured after LLVM function refines the captured before function "
                      "using pinned Alive2 v20.0 and LLVM 20.1.8. Both modules must define one matching "
                      "scalar integer function with verified acyclic control flow. Rejects memory, calls, "
@@ -112,6 +114,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="inspect_openapi_parser_consistency",
+        category="contracts_languages",
         description=("Inspect actual captured OpenAPI files for interpretation disagreements. Compares "
                      "pinned oasdiff flattened models from original bytes and same-path JSON controls "
                      "created by vkit's local parser, including captured local references. Preserves value "
@@ -128,6 +131,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_release_artifact",
+        category="builds",
         description=("Run an explicitly approved build check through the existing manifest and run store. "
                      "Builds two offline wheels with pinned uv, Python and hashed backend dependencies; "
                      "compares exact wheel bytes, installs each into a fresh environment and checks literal "
@@ -143,6 +147,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_rust_safety",
+        category="safety",
         description=("Check a captured standalone Rust primitive function with pinned Kani and a "
                      "verifier-owned harness. Validates the original captured source with pinned rustc, "
                      "then checks arithmetic, division, shifts and loop unwinding over full primitive "
@@ -160,6 +165,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_api_sequences",
+        category="testing",
         description=("Generate linked OpenAPI request sequences against an operator-configured loopback test "
                      "service with pinned Schemathesis. Resets service state before each sequence and replay. "
                      "Returns a minimized input sequence only after the same engine failure identifiers "
@@ -177,6 +183,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="find_data_flows",
+        category="source",
         description=("Find interprocedural C data-flow paths from one method parameter to one call argument "
                      "using the pinned Joern frontend and a protected query. Captures a bounded source tree; "
                      "preprocessing is unsupported. Negative results require all captured translation units "
@@ -197,6 +204,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="prove_c_contract",
+        category="safety",
         description=("Prove a captured scalar C function's declared conditions and loop contracts with "
                      "Frama-C WP/Qed beyond bounded unwinding. The JSON model supplies typed mathematical "
                      "requires/ensures/invariants and decreasing variants. Vkit generates the ACSL harness, "
@@ -213,6 +221,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="replay_retained_cases",
+        category="testing",
         description=("Replay retained approved scenario assertions against the captured current subject. "
                      "Uses the exact old check inputs from an immutable Git commit and replaces only approved "
                      "subject paths. A clean retained baseline must pass first. Reports literal per-case "
@@ -230,6 +239,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_network_paths",
+        category="systems",
         description=("Compare successful modeled network reachability in two captured configuration snapshots "
                      "with pinned Batfish. Uses fixed differential questions in both directions for concrete "
                      "ingress/egress nodes and an IP/protocol selector. Parsing and conversion diagnostics gate "
@@ -246,6 +256,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="explain_trace_interval",
+        category="runtime",
         description=("Measure fixed scheduler-state facts for a captured Perfetto trace, a half-open normalized "
                      "nanosecond interval and a recorded OS thread ID. Reports clipped running/runnable/blocked "
                      "durations, gaps, overlaps, sampled segments and reported trace loss. Requires a preinstalled "
@@ -265,6 +276,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="analyze_roundoff",
+        category="safety",
         description=("Prove an absolute round-off bound for a closed arithmetic DAG with pinned Gappa, "
                      "or certify a feasible binary32/binary64 uniform format from a supplied finite grid. "
                      "Uses exact rational input intervals and nearest-even operations with gradual subnormals; "
@@ -281,6 +293,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="infer_trace_relations",
+        category="runtime",
         description=("Discover relations in captured typed observations using pinned Daikon, then independently "
                      "check supported integer comparisons against every corresponding supplied sample. Supports "
                      "per-point states and consecutive same-trace pairs. Returns sample counts, checked proposals, "
@@ -296,6 +309,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="find_cache_key_collision",
+        category="systems",
         description=("Search two independent input vectors for equal modeled cache keys and different "
                      "modeled results with pinned cvc5. Captures pure integer/boolean functions from one "
                      "Python source, binds key/value parameters positionally, and independently replays "
@@ -313,6 +327,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_protocol_model",
+        category="systems",
         description=("Check every reachable state of a closed finite protocol model with pinned TLC and "
                      "independent exact saturation. Supports guarded simultaneous updates, invariants, "
                      "deadlock checking and explicit crash/restart of durable/volatile state. Counterexamples "
@@ -328,6 +343,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="analyze_affine_accesses",
+        category="source",
         description=("Build exact ordered memory-access relations for one captured Python affine loop nest "
                      "using pinned ISL. Reports RAW, WAR, WAW and read/read overlaps with independently "
                      "replayed iteration witnesses. Named arrays are distinct abstract allocations by assumption. "
@@ -343,6 +359,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_workload_cost",
+        category="runtime",
         description=("Run a paired workload campaign using a current approved passing scenario check and "
                      "a local committed subject baseline. Captures the approved inputs, overlays only declared "
                      "subject files, alternates run order in fresh workspaces, and reports raw pairs with "
@@ -360,6 +377,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="analyze_loop_termination",
+        category="safety",
         description=("Synthesize and check a linear ranking for one captured Python integer while loop. "
                      "Checks nonnegative strict decrease over all guarded mathematical integer states with "
                      "pinned cvc5; independently replays guarded fixed points before reporting nontermination. "
@@ -376,6 +394,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_semantic_merge",
+        category="equivalence",
         description=("Check a captured base/left/right/merged pure Python function quartet with pinned cvc5. "
                      "For every mathematical integer/boolean input, retain each branch's changed scalar return "
                      "and retain base where neither branch changed. Counterexamples are independently replayed "
@@ -391,6 +410,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_wheels",
+        category="builds",
         description=("Validate captured Python wheel archives and compare their static install scheme/path "
                      "mapping, file content, executable bits and package metadata. Checks RECORD integrity, "
                      "filename/metadata agreement, tags, unsafe paths and collisions before comparison. "
@@ -407,6 +427,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_authorization_policies",
+        category="systems",
         description=("Compare captured Cedar policy sets for every well-formed request in one supplied schema, "
                      "action UID, principal type and resource type. Uses release-pinned Cedar SymCC and cvc5, "
                      "then independently replays concrete authorization differences with Cedar's authorizer. "
@@ -422,6 +443,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_sql_queries",
+        category="data",
         description=("Decide exact SQL SELECT bag equivalence within captured finite database bounds using "
                      "pinned SQLGlot and cvc5. Models nullable integer columns, WHERE and INNER JOIN with "
                      "three-valued NULL logic and duplicate rows. Independently replays every distinguishing "
@@ -437,6 +459,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_rational_expressions",
+        category="equivalence",
         description=("Compare exact rational expressions in Q(x1,...,xn) using pinned SymPy and a separate "
                      "sparse coefficient checker. Returns exact nonidentity evidence and original nonzero "
                      "denominator guards. An identity does not imply equal domains at cancelled poles. "
@@ -451,6 +474,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="preview_typescript_symbol_rename",
+        category="source",
         description=("Preview a symbol rename in a captured closed TypeScript project with pinned TypeScript 5.9.3. "
                      "Checks clean compiler diagnostics, complete rename sites and the declaration bindings of "
                      "every captured identifier before and after the in-memory edit. Preserves import aliases "
@@ -468,6 +492,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="find_behavioral_difference",
+        category="equivalence",
         description=("Find a concrete CPython behavior difference with pinned CrossHair, then replay it twice "
                      "in fresh CPython processes. Observes returns, exceptions and mutated integer-list arguments. "
                      "Accepts only the installed closed language of typed local computation, branches and loops; "
@@ -485,6 +510,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="analyze_regex_cost",
+        category="contracts_languages",
         description=("Classify a bounded regular expression using pinned Recheck's fixed automaton checker. "
                      "Returns completed non-fuzz matching-complexity estimates and theoretical attack pumps "
                      "and hotspots for vulnerable models. SAFE_MODEL concerns this backtracking model only; "
@@ -502,6 +528,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="synthesize_function",
+        category="equivalence",
         description=("Synthesize an equivalent pure integer function within an installed linear expression "
                      "grammar using pinned cvc5 SyGuS. Reuses the source AST model, validates grammar membership, "
                      "then independently proves complete-domain equivalence before SYNTHESIZED. Returns a "
@@ -518,6 +545,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="generate_configurations",
+        category="testing",
         description=("Generate a minimum-cardinality suite covering every feasible strength-t interaction "
                      "in a captured finite factor model. Enumerates legal configurations under forbidden partial "
                      "assignments, derives feasible interactions, and reuses the pinned set-cover solver. "
@@ -534,6 +562,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="find_grammar_ambiguity",
+        category="contracts_languages",
         description=("Find two distinct derivation trees for a supplied string in a captured literal context-free "
                      "grammar using pinned Earley parsing. Independently checks both trees against productions "
                      "and string before AMBIGUOUS. NO_AMBIGUITY_IN_CORPUS concerns only the supplied samples; "
@@ -550,6 +579,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="resolve_dependencies",
+        category="builds",
         description=("Resolve PEP 440/508 Python requirements within a captured finite candidate universe "
                      "and explicit target marker environment. Backtracks with pinned resolvelib, then checks "
                      "every reachable selected requirement independently. RESOLVED returns versions and edges; "
@@ -566,6 +596,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_migrations",
+        category="data",
         description=("Replay captured SQLite upgrade SQL and compare it with fresh-install SQL in bounded "
                      "in-memory databases. Compares exact SQLite-stored catalog SQL and metadata, excluding "
                      "physical rootpages, plus ordered rows from supplied read-only observations. MATCH concerns "
@@ -583,6 +614,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="mutation_survivors",
+        category="testing",
         description=("Generate fixed Stryker mutations of one JavaScript source file from a current, approved "
                      "passing node_test run. Replay the unmodified baseline, test each literal edit in a fresh "
                      "captured workspace, and independently replay survivors. Returns observed test detection "
@@ -606,6 +638,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="analyze_dependencies",
+        category="source",
         description=("Extract a bounded JavaScript/TypeScript repository-local dependency graph from captured "
                      "source with fixed dependency-cruiser configuration. Query the graph, a shortest path, "
                      "strongly connected cycles, reverse impact, or nodes unreachable from supplied entrypoints. "
@@ -627,6 +660,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_c_safety",
+        category="safety",
         description=("Check a supported C source profile for fixed bounds, pointer, division-by-zero, "
                      "signed-overflow, and undefined-shift violations with CBMC under a fixed C11 LP64 model. "
                      "SAFE requires completed checks and sufficient unwinding. COUNTEREXAMPLE returns a model "
@@ -648,6 +682,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_iteration_sets",
+        category="equivalence",
         description=("Compare yielded coordinate sets of supported affine integer generator ASTs for every "
                      "mathematical integer parameter valuation, using fixed built-in range semantics. "
                      "Module globals, yield order, and multiplicity are outside the model. EQUIVALENT means "
@@ -666,6 +701,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="minimize_cover",
+        category="testing",
         description=("Find a minimum-cost candidate selection covering the required IDs in a supplied JSON matrix. "
                      "Uses a fixed integer set-cover model. OPTIMAL includes a checked selection and exact cost; "
                      "FEASIBLE has no optimality proof. INFEASIBLE concerns this matrix only. UNKNOWN preserves "
@@ -681,6 +717,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_contracts",
+        category="contracts_languages",
         description=("Compare captured contracts under a fixed OpenAPI, Protobuf, JSON containment or TypeScript declaration profile. "
                      "OpenAPI validates local document/reference closures and checks protected oasdiff rules. "
                      "Protobuf uses protected Buf FILE, PACKAGE, WIRE_JSON, or WIRE rules. JSON containment "
@@ -702,6 +739,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_history",
+        category="systems",
         description=("Decide whether a completed concurrent history can be ordered under the built-in "
                      "register-zero, initially-empty FIFO queue, or atomic multi-key transaction model. "
                      "Transaction keys start at zero; only completed committed transactions are supported. "
@@ -721,6 +759,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="compare_matchsets",
+        category="contracts_languages",
         description=("Compare full-match acceptance sets in the fixed greenery regex dialect over the supplied "
                      "alphabet. Returns EQUIVALENT or COUNTEREXAMPLE with shortest directional witnesses; "
                      "UNKNOWN on timeout, UNSUPPORTED for unsupported inputs, or UNAVAILABLE without the backend."),
@@ -737,6 +776,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="check_rewrite",
+        category="equivalence",
         description=("Prove equal return values for a supported pure Python int/bool function and a replacement "
                      "function with the same signature. Returns PROVED, COUNTEREXAMPLE, UNKNOWN, UNSUPPORTED "
                      "or UNAVAILABLE, with the modeled domain and source digest. Does not execute or modify the source."),
@@ -752,6 +792,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="simplify_function",
+        category="equivalence",
         description=("Derive a smaller equivalent pure Python int/bool function using fixed egglog rules and "
                      "independently check it with cvc5. Returns a suggested replacement and the proof status; "
                      "does not modify files or establish a global minimum."),
@@ -765,6 +806,7 @@ OPERATIONS = (
     Operation(
         version=1,
         name="reduce_failure",
+        category="testing",
         description=("Reduce one input file of a recorded, still-current failed run using Perses. Reuses the "
                      "approved check and preserves the recorded failure. Returns a validated reproducer without "
                      "modifying the checkout. Requires the configured POSIX Java/Perses runtime."),

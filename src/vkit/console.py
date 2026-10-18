@@ -17,18 +17,18 @@ from . import __version__, query
 from .settings import (DEFAULT_SETTINGS, SETTINGS_SCHEMA, SettingsFileError, load_settings,
                        parse_settings, save_settings, settings_path, launcher_settings_path,
                        load_launcher_settings, parse_launcher_settings, save_launcher_settings)
-from .mcp import BY_NAME, Server, tool_definitions
+from .mcp import BY_NAME, Server
+from .categories import CATEGORIES
 from .operations.catalog import OPERATIONS
 from .paths import Project
 
 _MAX_BODY_BYTES = 1_048_576
 _INVALID_BODY = object()
-_CONSOLE_TOOLS = (*OPERATIONS, BY_NAME["check_run"], BY_NAME["run_cancel"])
-_CALLABLE_TOOLS = frozenset(tool["name"] for tool in tool_definitions(_CONSOLE_TOOLS))
+_CALLABLE_TOOLS = frozenset(tool.name for tool in OPERATIONS) | {"check_run", "run_cancel"}
 _OPERATION_DESCRIPTORS = [
-    {"name": tool["name"], "description": tool["description"], "input_schema": tool["inputSchema"],
-     "read_only": tool["annotations"]["readOnlyHint"]}
-    for tool in tool_definitions(OPERATIONS)
+    {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema,
+     "read_only": tool.read_only, "category": tool.category}
+    for tool in OPERATIONS
 ]
 
 
@@ -138,15 +138,19 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                                 "settings": settings.as_json(), "settings_path": str(settings_path(project)),
                                 "settings_defaults": DEFAULT_SETTINGS.as_json(),
                                 "settings_schema": SETTINGS_SCHEMA, "csrf_token": csrf_token,
+                                "categories": [{"id": key, "label": label} for key, label in CATEGORIES.items()],
                                 "launcher_settings": load_launcher_settings().as_json(),
                                 "launcher_settings_path": str(launcher_settings_path()),
                                 "mcp_config": {"mcpServers": {"vkit": {
                                     "command": sys.executable,
-                                    "args": ["-m", "vkit.cli", "mcp", "serve", "--project", str(project.root)],
+                                    "args": ["-m", "vkit.cli", "mcp", "serve", "--project", str(project.root),
+                                             "--exposure", settings.mcp_exposure, "--categories",
+                                             *(["all"] if settings.mcp_categories is None else settings.mcp_categories)],
                                 }}},
                                 "operations": [tool for tool in _OPERATION_DESCRIPTORS
-                                               if tool["name"] not in settings.disabled_tools],
-                                "managed_tools": [{"name": tool.name, "description": tool.description}
+                                               if settings.allows(tool["name"], tool["category"])],
+                                "managed_tools": [{"name": tool.name, "description": tool.description,
+                                                   "category": tool.category}
                                                   for tool in BY_NAME.values() if tool.name != "help"]})
                 else:
                     self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)

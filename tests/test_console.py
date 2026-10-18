@@ -138,9 +138,10 @@ def test_console_settings_default_save_restart_and_git_status(make_project):
     project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
     settings_path = project / ".git" / "vkit" / "config.json"
     defaults = {"version": 1, "theme": "system", "sidebar_collapsed": False,
-                "refresh_seconds": 2, "history_limit": 50, "disabled_tools": []}
-    saved = {"version": 1, "theme": "dark", "sidebar_collapsed": True,
-             "refresh_seconds": 11, "history_limit": 120, "disabled_tools": []}
+                "refresh_seconds": 2, "history_limit": 50, "disabled_tools": [],
+                "disabled_categories": [], "mcp_exposure": "compact", "mcp_categories": None}
+    saved = {**defaults, "theme": "dark", "sidebar_collapsed": True,
+             "refresh_seconds": 11, "history_limit": 120}
     with _serve(project) as port:
         config = _config(port)
         assert config["settings"] == defaults
@@ -187,6 +188,33 @@ def test_launch_defaults_save_restart_manual_edit_and_csrf(make_project):
                           capture_output=True, text=True, check=True).stdout == ""
 
 
+def test_category_settings_filter_calls_and_persist_mcp_configuration(make_project):
+    project = make_project({"README.md": "category controls\n"}, [], accept=False)
+    with _serve(project) as port:
+        config = _config(port)
+        saved = {**config["settings"], "disabled_categories": ["contracts_languages"],
+                 "disabled_tools": ["compare_matchsets"], "mcp_exposure": "named", "mcp_categories": []}
+        assert _post(port, "/api/settings", saved, config["csrf_token"])[0] == 200
+        updated = _config(port)
+        assert updated["mcp_config"]["mcpServers"]["vkit"]["args"][-3:] == [
+            "--exposure", "named", "--categories"]
+        assert "contracts_languages" in {category["id"] for category in updated["categories"]}
+        assert "analyze_regex_cost" not in {operation["name"] for operation in updated["operations"]}
+        status, raw, _ = _post(port, "/api/call", {"name": "analyze_regex_cost", "arguments": {}},
+                               config["csrf_token"])
+        assert status == 200 and json.loads(raw) == {
+            "is_error": True, "result": {"error": "unknown or unavailable tool"}}
+    with _serve(project) as port:
+        config = _config(port)
+        assert config["settings"] == saved
+        enabled = {**saved, "disabled_categories": [], "mcp_categories": ["repository"]}
+        assert _post(port, "/api/settings", enabled, config["csrf_token"])[0] == 200
+        config = _config(port)
+        names = {operation["name"] for operation in config["operations"]}
+        assert "analyze_regex_cost" in names and "compare_matchsets" not in names
+        assert config["mcp_config"]["mcpServers"]["vkit"]["args"][-2:] == ["--categories", "repository"]
+
+
 def test_agent_configuration_and_settings_preserve_git_metadata(make_project):
     project = make_project({"README.md": "connection\n"}, [], accept=False)
     subprocess.run(["git", "-C", str(project), "remote", "add", "origin", "https://example.com/project.git"],
@@ -196,7 +224,8 @@ def test_agent_configuration_and_settings_preserve_git_metadata(make_project):
         config = _config(port)
         assert config["mcp_config"] == {"mcpServers": {"vkit": {
             "command": sys.executable,
-            "args": ["-m", "vkit.cli", "mcp", "serve", "--project", str(project)],
+            "args": ["-m", "vkit.cli", "mcp", "serve", "--project", str(project),
+                     "--exposure", "compact", "--categories", "all"],
         }}}
         saved = {**config["settings"], "theme": "dark"}
         assert _post(port, "/api/settings", saved, config["csrf_token"])[0] == 200

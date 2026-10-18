@@ -1,0 +1,276 @@
+"""MCP tools for one project root. Agents ask what is known, run registered checks, and read the gate."""
+from __future__ import annotations
+
+import json
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+from jsonschema import ValidationError, validate
+
+from .. import __version__, query
+from ..manifest import ManifestError
+from ..operations.catalog import OPERATIONS
+from ..operations.contract import Operation, OperationContractError, OperationInputError, invoke
+from ..paths import open_project
+from ..settings import load_settings
+from ..store import new_run_id
+
+MAX_WAIT_SECONDS = 60
+INSTRUCTIONS = (
+    "Call help to discover the currently enabled tools and their exact input contracts. "
+    "Verification evidence concerns one Git repository. Registered checks come from the manifest; "
+    "no tool accepts an arbitrary command, and only a human can accept a check definition. "
+    "Each computation describes its exact scope and possible outcomes. Computation results do not "
+    "change registered check evidence. Use a result only within its stated model and assumptions."
+)
+
+
+class MCPUnavailable(Exception):
+    """The `mcp` SDK is not installed."""
+
+
+class Refusal(Exception):
+    """A request this server will not honour; returned to the client as an error result."""
+
+
+@dataclass(frozen=True)
+class _RunThread:
+    check_id: str
+    thread: threading.Thread
+
+
+@dataclass(frozen=True)
+class Tool:
+    name: str
+    description: str
+    properties: dict[str, Any]
+    handler: Callable[["Server", dict[str, Any]], Any]
+    read_only: bool = True
+    required: tuple[str, ...] = ()
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": self.properties, "required": list(self.required),
+                "additionalProperties": False}
+
+
+def _check(arguments: dict[str, Any], schema: dict[str, Any]) -> None:
+    if not isinstance(arguments, dict):
+        raise Refusal("arguments must be an object")
+    unknown = sorted(set(arguments) - set(schema["properties"]))
+    if unknown:
+        raise Refusal(f"unknown argument(s): {', '.join(unknown)}")
+    try:
+        validate(arguments, schema)
+    except ValidationError as exc:
+        raise Refusal(exc.message) from exc
+
+
+@dataclass
+class Server:
+    root: Path
+    threads: dict[str, _RunThread] = field(default_factory=dict)
+    _start_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def context(self) -> query.Context:
+        return query.open_context(self.root)
+
+    def tools(self) -> tuple[Tool | Operation, ...]:
+        disabled = load_settings(open_project(self.root)).disabled_tools
+        return tuple(tool for tool in BY_NAME.values() if tool.name not in disabled)
+
+    def call(self, name: str, arguments: dict[str, Any] | None) -> tuple[Any, bool]:
+        arguments = {} if arguments is None else arguments
+        try:
+            tool = next((tool for tool in self.tools() if tool.name == name), None)
+            if tool is None:
+                return {"error": "unknown or unavailable tool"}, True
+            if isinstance(tool, Operation):
+                return invoke(tool, self.root, arguments), False
+            _check(arguments, tool.input_schema)
+            return tool.handler(self, arguments), False
+        except OperationContractError as exc:
+            return {"error": str(exc), "kind": "operation_contract_error"}, True
+        except (OperationInputError, Refusal, ManifestError, ValueError) as exc:
+            return {"error": str(exc)}, True
+
+    def start(self, ctx: query.Context, check_id: str) -> str:
+        from ..runner import run_check
+
+        with self._start_lock:
+            for run_id, running in self.threads.items():
+                if running.check_id == check_id and running.thread.is_alive():
+                    return run_id
+            run_id = new_run_id()
+            thread = threading.Thread(target=run_check, args=(ctx.project, ctx.require_manifest(), check_id),
+                                      kwargs={"store": ctx.store, "run_id": run_id}, daemon=True)
+            thread.start()
+            self.threads[run_id] = _RunThread(check_id, thread)
+            return run_id
+
+
+def _status(server: Server, args: dict[str, Any]) -> Any:
+    return query.status(server.context(), args.get("paths", ()))
+
+
+def _gate(server: Server, args: dict[str, Any]) -> Any:
+    return query.status(server.context())["gate"]
+
+
+def _features(server: Server, args: dict[str, Any]) -> Any:
+    report = query.status(server.context())
+    if report["feature_error"]:
+        raise Refusal(report["feature_error"])
+    words = str(args.get("query", "")).lower().split()
+    return {"features": [f for f in report["features"]
+                         if all(w in json.dumps(f).lower() for w in words)]}
+
+
+def _help(server: Server, args: dict[str, Any]) -> Any:
+    words = args.get("query", "").lower().split()
+    definitions = tool_definitions(server.tools())
+    return {"contract_version": 1, "tools": [tool for tool in definitions
+            if all(word in json.dumps(tool).lower() for word in words)]}
+
+
+def _summary(ctx: query.Context, run_id: str) -> dict[str, Any]:
+    record = ctx.store.record(run_id)
+    if record is None:
+        return {"run_id": run_id, "state": "starting"}
+    return {"run_id": run_id, "check_id": record["check_id"], "state": record["state"],
+            "outcome": record["outcome"]}
+
+
+def _check_run(server: Server, args: dict[str, Any]) -> Any:
+    ctx = server.context()
+    manifest = ctx.require_manifest()
+    report = query.status(ctx)
+    running = {c["id"]: c["running"][0] for c in report["checks"] if c["running"]}
+    if args.get("needed"):
+        wanted = report["needs_run"]
+    else:
+        wanted = args.get("check_ids") or []
+        if not wanted:
+            raise Refusal("pass check_ids, or needed=true to run every stale or missing check")
+        for check_id in wanted:
+            manifest.require(check_id)
+    run_ids = [running.get(c) or server.start(ctx, c) for c in wanted]
+    deadline = time.monotonic() + min(max(int(args.get("wait_seconds", 20)), 0), MAX_WAIT_SECONDS)
+    while time.monotonic() < deadline and any(
+            server.threads.get(r) is not None and server.threads[r].thread.is_alive() for r in run_ids):
+        time.sleep(0.2)
+    return {"runs": [_summary(ctx, r) for r in run_ids],
+            "note": "poll run_get for runs still running" if any(
+                _summary(ctx, r)["state"] in ("running", "starting") for r in run_ids) else ""}
+
+
+def _run_get(server: Server, args: dict[str, Any]) -> Any:
+    if "run_id" not in args:
+        raise Refusal("run_id is required")
+    view = query.run_view(server.context(), args["run_id"], log=args.get("log", "stdout"),
+                          offset=args.get("log_offset", 0), limit=min(args.get("log_limit", 16_000), 64_000))
+    if view is None:
+        raise Refusal(f"no run {args['run_id']!r}")
+    return view
+
+
+def _propose(server: Server, args: dict[str, Any]) -> Any:
+    from ..proposals import ProposalError, submit
+
+    ctx = server.context()
+    try:
+        proposal = submit(ctx.project, ctx.store, args)
+    except ProposalError as exc:
+        raise Refusal(str(exc)) from exc
+    return {"proposal": proposal.digest, "next": f"a human reviews it with `vkit proposals` and applies it with "
+                                                  f"`vkit accept --proposal {proposal.digest[:12]}`"}
+
+
+def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
+    if "run_id" not in args:
+        raise Refusal("run_id is required")
+    ctx = server.context()
+    record = ctx.store.record(args["run_id"])
+    if record is None:
+        raise Refusal(f"no run {args['run_id']!r}")
+    if record["state"] != "running":
+        return {"run_id": args["run_id"], "cancelled": False, "state": record["state"]}
+    ctx.store.request_cancel(args["run_id"])
+    return {"run_id": args["run_id"], "cancelled": True}
+
+
+_STR = {"type": "string"}
+_PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
+_BASE_TOOLS = (
+    Tool("help", "Discover enabled tools with descriptions and exact input schemas. Filter by words in a name, "
+         "description, or schema. An empty query lists all enabled tools.", {"query": _STR}, _help),
+    Tool("status", "Freshness of every registered check (fresh_pass, fresh_fail, fresh_blocked, stale, missing, "
+         "not_approved), what each kind of evidence establishes and does not, the gate, and the features. Pass "
+         "paths to see only the checks and features that read them, and which paths no check reads.",
+         {"paths": _PATHS}, _status),
+    Tool("features", "The feature map: what users can do, how they reach it, which checks cover it, and known "
+         "gaps. Filter with a free-text query.", {"query": _STR}, _features),
+    Tool("check_run", "Run registered checks by id, or needed=true for every stale or missing one. Waits up to "
+         "wait_seconds (max 60) and returns each run's state and outcome.",
+         {"check_ids": {"type": "array", "items": _STR}, "needed": {"type": "boolean"},
+          "wait_seconds": {"type": "integer"}}, _check_run, read_only=False),
+    Tool("run_get", "One run: state, outcome, obligations, inputs, and a window of its stdout or stderr.",
+         {"run_id": _STR, "log": {"type": "string", "enum": ["stdout", "stderr"]},
+          "log_offset": {"type": "integer", "description": "negative counts from the end"}, "log_limit": {"type": "integer"}}, _run_get),
+    Tool("run_cancel", "Stop a running check and everything it started.", {"run_id": _STR}, _run_cancel,
+         read_only=False),
+    Tool("propose", "Suggest new or changed checks (manifest v2 entries), feature map entries, and new files they "
+         "need, with a rationale. Nothing runs or changes until a human accepts it. Use it to move a lesson up "
+         "the trust ladder: a recurring mistake becomes a static rule or a scenario check.",
+         {"checks": {"type": "array", "items": {"type": "object"}}, "features": {"type": "array",
+          "items": {"type": "object"}}, "files": {"type": "object", "description": "new path -> text"},
+          "rationale": _STR}, _propose, read_only=False),
+    Tool("gate", "READY only when every registered check passed against the current inputs; REJECTED when one "
+         "failed; otherwise BLOCKED with the checks that lack fresh evidence.", {}, _gate),
+)
+TOOLS = (*OPERATIONS, *_BASE_TOOLS)
+if len({tool.name for tool in TOOLS}) != len(TOOLS):
+    raise ValueError("duplicate MCP tool name")
+BY_NAME = {tool.name: tool for tool in TOOLS}
+
+
+def tool_definitions(tools: tuple[Tool | Operation, ...] = TOOLS) -> list[dict[str, Any]]:
+    return [{"name": t.name, "description": t.description, "inputSchema": t.input_schema,
+             "annotations": {"readOnlyHint": t.read_only}} for t in tools]
+
+
+def serve_stdio(root: str | Path) -> int:
+    try:
+        import anyio
+        import mcp.types as types
+        from mcp.server.lowlevel import Server as SdkServer
+        from mcp.server.stdio import stdio_server
+    except ImportError as exc:
+        raise MCPUnavailable(f"the MCP SDK is not installed ({exc}); install vkit[mcp]") from exc
+    server = Server(Path(root))
+
+    async def list_tools(_ctx: Any, _params: Any) -> Any:
+        return types.ListToolsResult(tools=[
+            types.Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"],
+                       annotations=types.ToolAnnotations(readOnlyHint=t["annotations"]["readOnlyHint"]))
+            for t in tool_definitions(server.tools())])
+
+    async def call_tool(_ctx: Any, params: Any) -> Any:
+        body, is_error = await anyio.to_thread.run_sync(server.call, params.name, params.arguments)
+        return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(body, indent=2))],
+                                    isError=is_error)
+
+    sdk = SdkServer(name=Path(root).name, version=__version__, instructions=INSTRUCTIONS,
+                    on_list_tools=list_tools, on_call_tool=call_tool)
+
+    async def main() -> None:
+        print(f"vkit mcp serving {root}", file=sys.stderr, flush=True)
+        async with stdio_server() as (read_stream, write_stream):
+            await sdk.run(read_stream, write_stream, sdk.create_initialization_options())
+
+    anyio.run(main)
+    return 0

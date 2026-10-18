@@ -1,0 +1,13 @@
+{
+  "name": "node-http-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A small HTTP service where creating an item is only observable by reading the list back.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/items-server.js",
+    "test": "node verify-items.js --app src/items-server.js"
+  }
+}

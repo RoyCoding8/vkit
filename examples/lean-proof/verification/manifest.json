@@ -1,0 +1,81 @@
+{
+  "schema_version": 2,
+  "description": "Agent-written Lean proofs checked against statements a human froze.",
+  "checks": [
+    {
+      "id": "cart-theorems",
+      "kind": "lean",
+      "description": "comparator checks Solution.lean proves exactly the statements in the frozen Challenge.lean.",
+      "timeout_seconds": 900,
+      "artifact": "comparator-report.json",
+      "challenge": {
+        "module": "Challenge",
+        "path": "Challenge.lean"
+      },
+      "challenge_sha256": "42c25892517e0f0e5dcf9608ee5cb41b87d35c738136224db171c504a111cd10",
+      "solution": {
+        "module": "Solution",
+        "path": "Solution.lean"
+      },
+      "theorems": [
+        "total_append",
+        "total_swap"
+      ],
+      "profile": "unreviewed_agent",
+      "permitted_axioms": [
+        "propext",
+        "Quot.sound",
+        "Classical.choice"
+      ],
+      "toolchain": {
+        "tool": "lean",
+        "version": "4.35.0-rc4",
+        "comparator": "comparator"
+      },
+      "prerequisites": [
+        {
+          "name": "lake",
+          "executable": "lake",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "comparator",
+          "executable": "comparator",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "lean4export",
+          "executable": "lean4export",
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "landrun",
+          "executable": "landrun",
+          "args": [
+            "--version"
+          ]
+        }
+      ],
+      "inputs": [
+        "Challenge.lean",
+        "Solution.lean",
+        "lakefile.toml",
+        "lean-toolchain"
+      ],
+      "subject": {
+        "paths": [
+          "Challenge.lean",
+          "Solution.lean"
+        ],
+        "digest": null
+      },
+      "claim_id": "cart-theorems"
+    }
+  ]
+}

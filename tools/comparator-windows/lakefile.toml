@@ -1,0 +1,11 @@
+name = "comparator-windows"
+version = "0.1.0"
+defaultTargets = ["landrun", "which"]
+
+[[lean_exe]]
+name = "landrun"
+root = "Landrun"
+
+[[lean_exe]]
+name = "which"
+root = "Which"

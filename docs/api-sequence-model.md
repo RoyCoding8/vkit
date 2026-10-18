@@ -1,0 +1,13 @@
+# Stateful API sequence checks
+
+`check_api_sequences(root, schema_path, *, max_examples=20, max_steps=6, timeout_seconds=60)` checks linked OpenAPI operations against a service that the operator has already started. `NO_VIOLATION` means the configured Schemathesis campaign completed; the result reports actual state-machine setup and step counts. A failure counts as `BUG_REPRODUCED` only when the minimized sequence triggers the same Schemathesis failure after a fresh reset. Timeouts, reset failures, capture changes, body limits, or replay mismatches return `INCONCLUSIVE`.
+
+Set `VKIT_API_SEQUENCE_BASE_URL` to the API's literal loopback HTTP address and `VKIT_API_SEQUENCE_RESET_URL` to a fixed reset route on that same origin. For example, use `http://127.0.0.1:8080/api` and `http://127.0.0.1:8080/__reset`. The reset endpoint must clear the service state and return a 2xx response for each generated sequence and again before replay. Vkit does not start or configure the application.
+
+The operation ignores ambient proxy variables and checks every generated request against the configured loopback origin. It disables redirects for generated calls and reset requests. OpenAPI `servers`, remote references, `operationRef`, callbacks, webhooks, and security schemes or requirements are unsupported. Local `operationId` links drive stateful generation. The engine receives the configured base URL directly, so schema values cannot select the network destination.
+
+The OpenAPI reference closure is limited to 128 JSON or YAML files and 2 MiB total. A campaign accepts at most 100 generated sequences and 12 steps per sequence, with a hard cap of 2,000 total HTTP requests including resets and replay. The worker has a wall deadline of at most 300 seconds. Each generated request and decoded response body is limited to 1 MiB. Worker stdout and stderr together are limited to 256 KiB, and the returned report is limited to 256 KiB.
+
+The counterexample includes the operation, method, path, generated path parameters, query, JSON body when present, response status, exact response body as base64, body SHA-256, and bounded content-type, content-length, and location headers. Its SHA-256 covers the reported step list. The report identifies captured schema paths by byte length and SHA-256. Fresh replay must reproduce the same engine failure identifiers after reset; response equality is not asserted.
+
+`NO_VIOLATION` describes only the sampled sequences that completed against this configured service. It does not prove all requests, states, or environments are correct. The service must provide a trustworthy reset operation for the replay result to be meaningful.

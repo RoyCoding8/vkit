@@ -1,0 +1,407 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-checks:
+    name: Repository lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+      - name: Verify offline console assets
+        run: |
+          npm ci --prefix tools/console
+          npm run build --prefix tools/console
+          node --check src/vkit/console.js
+          git diff --exit-code -- src/vkit/console-assets
+      - run: uv sync --python 3.11 --extra test
+      - run: uv run vkit accept --yes --project .
+      - run: uv run vkit check run --check ruff --project .
+
+  llvm-refinement:
+    name: Alive2 LLVM refinement acceptance
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install the matching LLVM development toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y llvm-20-dev=1:20.1.8-2ubuntu8 cmake ninja-build g++ re2c libz3-dev zlib1g-dev libedit-dev libcurl4-openssl-dev libzstd-dev git
+      - run: uv sync --python 3.11 --extra test --extra engines
+      - name: Build the pinned Alive2 and protected LLVM validator
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          runtime = pathlib.Path(os.environ["RUNNER_TEMP"]) / "llvm-runtime"
+          subprocess.run(["uv", "run", "python", "scripts/install_llvm_engine.py", "--root", str(runtime)], check=True)
+          configuration = json.loads((runtime / "manifest.json").read_text(encoding="utf-8"))
+          values = {
+              "VKIT_ALIVE2_BIN": configuration["alive2_binary"],
+              "VKIT_ALIVE2_SHA256": configuration["alive2_binary_sha256"],
+              "VKIT_LLVM_IR_VALIDATOR_BIN": configuration["validator_binary"],
+              "VKIT_LLVM_IR_VALIDATOR_SHA256": configuration["validator_binary_sha256"],
+              "VKIT_ALIVE2_REQUIRED": "1",
+          }
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              for name, value in values.items():
+                  output.write(f"{name}={value}\n")
+      - run: uv run pytest -ra tests/test_llvm_refinement.py tests/test_verifier_surfaces.py -k llvm
+  rust-safety:
+    name: Kani Rust safety acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --python 3.11 --extra test --extra engines
+      - name: Install the pinned isolated Kani runtime
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          runtime = pathlib.Path(os.environ["RUNNER_TEMP"]) / "kani-runtime"
+          subprocess.run(["uv", "run", "python", "scripts/install_rust_engine.py", "--root", str(runtime)], check=True)
+          configuration = json.loads((runtime / "vkit-kani-runtime.json").read_text(encoding="utf-8"))
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              for name, value in configuration.items():
+                  output.write(f"{name}={value}\n")
+              output.write("VKIT_KANI_REQUIRED=1\n")
+      - run: uv run pytest -ra tests/test_rust_safety.py tests/test_verifier_surfaces.py -k rust
+  dataflow:
+    name: Joern C data-flow acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VKIT_JOERN_HOME: ${{ github.workspace }}/.engine-cache/joern/4.0.653
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21.0.12+8.0.LTS"
+      - name: Configure the trusted system Java used by the fixed Joern environment
+        run: |
+          sudo update-alternatives --install /usr/bin/java java "$JAVA_HOME/bin/java" 100
+          sudo update-alternatives --set java "$JAVA_HOME/bin/java"
+      - uses: actions/cache@v4
+        with:
+          path: .engine-cache/joern/joern-cli-linux-x86_64.zip
+          key: joern-linux-x86_64-4.0.653-6cf996f2787381cd
+      - run: uv sync --python 3.11 --extra test --extra engines
+      - run: uv run python scripts/install_dataflow_engine.py --cache-dir .engine-cache/joern
+      - run: uv run pytest -ra tests/test_data_flows.py
+  network:
+    name: Batfish service acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VKIT_BATFISH_HOST: "127.0.0.1"
+      VKIT_BATFISH_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --python 3.11 --extra test --extra engines
+      - name: Start the digest-pinned Batfish service
+        run: docker run --detach --name vkit-batfish --memory=4g --publish 127.0.0.1:9996:9996 batfish/batfish@sha256:7909378197c5a3974f2e8180af58cef0ca17b74d1cd9ba39f2d1fddb64737e55
+      - name: Wait for the service API
+        shell: python
+        run: |
+          import subprocess
+          import time
+          deadline = time.monotonic() + 180
+          while time.monotonic() < deadline:
+              result = subprocess.run(["uv", "run", "python", "-c", "from pybatfish.client.session import Session; print(Session(host='127.0.0.1', port=9996, timeout=2).get_component_versions())"], capture_output=True, timeout=10)
+              if result.returncode == 0:
+                  print(result.stdout.decode())
+                  break
+              time.sleep(2)
+          else:
+              raise RuntimeError("the pinned Batfish API did not become ready")
+      - run: uv run pytest -ra tests/test_network_paths.py
+      - name: Stop the service
+        if: always()
+        run: docker rm --force vkit-batfish
+  suite:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+      - name: Install pinned dependency engine
+        run: npm ci --prefix tools/dependencies --ignore-scripts
+      - name: Install pinned mutation engine
+        run: npm ci --prefix tools/mutation --ignore-scripts
+      - name: Install pinned TypeScript API engine
+        run: npm ci --prefix tools/typescript --ignore-scripts
+      - name: Install and test pinned regex engine
+        run: |
+          npm ci --prefix tools/regex --ignore-scripts
+          node tools/regex/helper.test.cjs
+      - name: Configure trusted Node helpers
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import shutil
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_NODE_BIN={shutil.which('node')}\n")
+              output.write("VKIT_REQUIRE_TYPESCRIPT_ENGINE=1\n")
+              rename_helper = pathlib.Path("tools/typescript/migration-helper.cjs").resolve()
+              output.write(f"VKIT_TYPESCRIPT_RENAME_HELPER={rename_helper}\n")
+              output.write(f"VKIT_TYPESCRIPT_RENAME_HELPER_SHA256={hashlib.sha256(rename_helper.read_bytes()).hexdigest()}\n")
+              for name, folder, filename in (("DEPENDENCY", "dependencies", "dependency_helper.mjs"),
+                                             ("MUTATION", "mutation", "helper.mjs"),
+                                             ("REGEX", "regex", "helper.cjs"),
+                                             ("TYPESCRIPT", "typescript", "helper.cjs")):
+                  directory = pathlib.Path("tools") / folder
+                  helper = (directory / filename).resolve()
+                  lock = (directory / "package-lock.json").resolve()
+                  output.write(f"VKIT_{name}_HELPER={helper}\n")
+                  digest_key = "HELPER_SHA256" if name == "TYPESCRIPT" else "SHA256"
+                  output.write(f"VKIT_{name}_{digest_key}={hashlib.sha256(helper.read_bytes()).hexdigest()}\n")
+                  output.write(f"VKIT_{name}_LOCKFILE={lock}\n")
+                  output.write(f"VKIT_{name}_LOCK_SHA256={hashlib.sha256(lock.read_bytes()).hexdigest()}\n")
+      - name: Install pinned OpenAPI engine
+        shell: python
+        run: |
+          import hashlib
+          import io
+          import os
+          import pathlib
+          import platform
+          import tarfile
+          import urllib.request
+          assets = {
+              "Linux": ("linux_amd64", "43a4e328e2d13ba1552d760aa68d2485c75c5621f309f6ff64ae895188345247"),
+              "Darwin": ("darwin_all", "2a479337c15afdcbf0b1e89c0b4d0cf0176472dbc11483358fed1f831d1e46c5"),
+              "Windows": ("windows_amd64", "22f98c7247075f8a446e783595802d6d38637de1760df264f3d4b3309f766c5b"),
+          }
+          asset, digest = assets[platform.system()]
+          url = f"https://github.com/oasdiff/oasdiff/releases/download/v1.33.0/oasdiff_1.33.0_{asset}.tar.gz"
+          with urllib.request.urlopen(url, timeout=60) as source:
+              archive = source.read(100_000_001)
+          if len(archive) > 100_000_000 or hashlib.sha256(archive).hexdigest() != digest:
+              raise RuntimeError("oasdiff release digest mismatch")
+          name = "oasdiff.exe" if os.name == "nt" else "oasdiff"
+          with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
+              members = [member for member in bundle.getmembers() if pathlib.PurePosixPath(member.name).name == name and member.isfile()]
+              if len(members) != 1:
+                  raise RuntimeError("oasdiff archive must contain exactly one executable")
+              content = bundle.extractfile(members[0]).read(100_000_001)
+          if len(content) > 100_000_000:
+              raise RuntimeError("oasdiff executable exceeds size limit")
+          binary = pathlib.Path(os.environ["RUNNER_TEMP"]) / name
+          binary.write_bytes(content)
+          binary.chmod(0o755)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_OASDIFF_BIN={binary}\n")
+              output.write(f"VKIT_OASDIFF_SHA256={hashlib.sha256(content).hexdigest()}\n")
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+          cache-dependency-path: tools/history/go.sum
+      - name: Build pinned history helper
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import subprocess
+          directory = pathlib.Path("tools/history")
+          binary = pathlib.Path(os.environ["RUNNER_TEMP"]) / ("vkit-history.exe" if os.name == "nt" else "vkit-history")
+          environment = dict(os.environ, GOTOOLCHAIN="local")
+          subprocess.run(["go", "test", "-mod=readonly", "./..."], cwd=directory, env=environment, check=True)
+          subprocess.run(["go", "build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-o", str(binary), "."],
+                         cwd=directory, env=environment, check=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_HISTORY_BIN={binary}\n")
+              output.write(f"VKIT_HISTORY_SHA256={hashlib.sha256(binary.read_bytes()).hexdigest()}\n")
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install pinned finite protocol engine
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import urllib.request
+          digest = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+          url = "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar"
+          with urllib.request.urlopen(url, timeout=60) as response:
+              content = response.read(10_000_001)
+          if len(content) > 10_000_000 or hashlib.sha256(content).hexdigest() != digest:
+              raise RuntimeError("TLC release digest mismatch")
+          jar = pathlib.Path(os.environ["RUNNER_TEMP"]) / "tla2tools.jar"
+          jar.write_bytes(content)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_TLA2TOOLS_JAR={jar}\nVKIT_REQUIRE_PROTOCOL_ENGINE=1\n")
+      - name: Install pinned trace relation engine
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          jar = pathlib.Path(os.environ["RUNNER_TEMP"]) / "daikon.jar"
+          subprocess.run([sys.executable, "scripts/install_daikon_engine.py", "--output", str(jar)], check=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_DAIKON_JAR={jar}\nVKIT_REQUIRE_DAIKON_ENGINE=1\n")
+      - name: Install pinned Perses
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 https://github.com/uw-pluverse/perses/releases/download/v2.7/perses_deploy.jar -o "$RUNNER_TEMP/perses.jar"
+          echo "1102ec7e3e601792a3c271c41ac7df52b03fca635df552500c241933c2c1e427  $RUNNER_TEMP/perses.jar" | sha256sum --check
+          echo "VKIT_PERSES_JAR=$RUNNER_TEMP/perses.jar" >> "$GITHUB_ENV"
+          echo "VKIT_PERSES_SHA256=1102ec7e3e601792a3c271c41ac7df52b03fca635df552500c241933c2c1e427" >> "$GITHUB_ENV"
+      - name: Install pinned Buf
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import platform
+          import urllib.request
+          assets = {
+              ("Linux", "x86_64"): ("buf-Linux-x86_64", "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1"),
+              ("Darwin", "arm64"): ("buf-Darwin-arm64", "6e6df0fef4522e4e43dfe7c341873c3f2c29ceb45a9dfa5e0bad5580b8b2022f"),
+              ("Darwin", "x86_64"): ("buf-Darwin-x86_64", "ff78d0ebf34180ebfa81d370275851ec630fcb088bf33e213fd723d0fd7444a6"),
+              ("Windows", "AMD64"): ("buf-Windows-x86_64.exe", "13542f2892c4f774150ddb525266d6421d457b3e741297056b64427853526e36"),
+          }
+          asset, digest = assets[(platform.system(), platform.machine())]
+          binary = pathlib.Path(os.environ["RUNNER_TEMP"]) / asset
+          urllib.request.urlretrieve(f"https://github.com/bufbuild/buf/releases/download/v1.73.0/{asset}", binary)
+          if hashlib.sha256(binary.read_bytes()).hexdigest() != digest:
+              raise RuntimeError("Buf release digest mismatch")
+          binary.chmod(0o755)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_BUF_BIN={binary}\nVKIT_BUF_SHA256={digest}\n")
+      - name: Extract pinned CBMC
+        if: runner.os != 'macOS'
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import pathlib
+          import shutil
+          import subprocess
+          import urllib.request
+          runtime = pathlib.Path(os.environ["RUNNER_TEMP"]) / "cbmc-runtime"
+          runtime.mkdir()
+          windows = os.name == "nt"
+          asset, digest = (
+              ("cbmc-6.11.0-win64.msi", "8dcb29c2e91329898ecde5b79198dad2f4b5ebc5cb6b7d15e892c4fe26c6ea53") if windows else
+              ("ubuntu-24.04-cbmc-6.11.0-Linux.deb", "b3721aa541038384d7801ea3aeabbcddc3e8845ac8f1cbff637cf8dec7481ac8")
+          )
+          archive = runtime / asset
+          urllib.request.urlretrieve(f"https://github.com/diffblue/cbmc/releases/download/cbmc-6.11.0/{asset}", archive)
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+              raise RuntimeError("CBMC release digest mismatch")
+          extracted = runtime / "extracted"
+          if windows:
+              subprocess.run(["7z", "x", str(archive), f"-o{extracted}", "-y", "-bso0", "-bsp0"], check=True)
+              binary = extracted / "CM_FP_Unspecified.bin.cbmc.exe"
+          else:
+              subprocess.run(["dpkg-deb", "--extract", str(archive), str(extracted)], check=True)
+              binary = extracted / "usr/bin/cbmc"
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"VKIT_CBMC_BIN={binary}\n")
+              output.write(f"VKIT_CBMC_SHA256={hashlib.sha256(binary.read_bytes()).hexdigest()}\n")
+              gcc = shutil.which("gcc")
+              if gcc is None:
+                  raise RuntimeError("heap-model acceptance requires the trusted runner GCC runtime")
+              preprocessor = pathlib.Path(gcc).absolute()
+              output.write(f"VKIT_C_PREPROCESSOR_BIN={preprocessor}\n")
+              output.write(f"VKIT_C_PREPROCESSOR_SHA256={hashlib.sha256(preprocessor.read_bytes()).hexdigest()}\n")
+              if not windows:
+                  output.write(f"VKIT_C_BRANCH_GCC_BIN={preprocessor}\n")
+                  output.write(f"VKIT_C_BRANCH_GCC_SHA256={hashlib.sha256(preprocessor.read_bytes()).hexdigest()}\n")
+                  output.write("VKIT_C_BRANCH_REQUIRED=1\n")
+      - name: Install and require pinned Cedar policy engines
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          destination = pathlib.Path(os.environ["RUNNER_TEMP"]) / "policy-engine"
+          completed = subprocess.run([sys.executable, "scripts/install_policy_engine.py", "--dest", str(destination)],
+                                     check=True, capture_output=True, text=True)
+          engines = json.loads(completed.stdout)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              for name, value in engines.items():
+                  output.write(f"{name}={value}\n")
+              output.write("VKIT_REQUIRE_POLICY_ENGINE=1\n")
+      - name: Build pinned Gappa engine
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential libgmp-dev libmpfr-dev libboost-dev flex bison
+          python scripts/install_roundoff_engine.py --output "$RUNNER_TEMP/gappa"
+          echo "VKIT_GAPPA_BIN=$RUNNER_TEMP/gappa" >> "$GITHUB_ENV"
+          echo "VKIT_GAPPA_SHA256=$(sha256sum "$RUNNER_TEMP/gappa" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          echo "VKIT_REQUIRE_GAPPA_ENGINE=1" >> "$GITHUB_ENV"
+      - run: uv sync --python 3.11 --extra test --extra engines
+      - name: Check terminal interaction and process cleanup
+        run: uv run pytest -ra tests/test_tui.py tests/test_launcher_settings.py tests/test_proc.py
+      - name: Install and require pinned C contract engine
+        if: runner.os == 'Linux'
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          result = subprocess.run(["uv", "run", "python", "scripts/install_contract_engine.py", "--dest",
+                                   str(pathlib.Path(os.environ["RUNNER_TEMP"]) / "frama-c-33")],
+                                  check=True, capture_output=True, text=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              for key, value in json.loads(result.stdout).items():
+                  output.write(f"{key}={value}\n")
+              output.write("VKIT_REQUIRE_FRAMAC_ENGINE=1\n")
+      - name: Prefetch the package-pinned Trace Processor
+        shell: python
+        run: |
+          import os
+          import subprocess
+          subprocess.run(["uv", "run", "python", "-c", "from perfetto.prebuilts.manifests.trace_processor_shell import TRACE_PROCESSOR_SHELL_MANIFEST; from perfetto.prebuilts.perfetto_prebuilts import get_perfetto_prebuilt; print(get_perfetto_prebuilt(TRACE_PROCESSOR_SHELL_MANIFEST))"], check=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write("VKIT_REQUIRE_TRACE_ENGINE=1\n")
+      - name: Run remaining tests
+        run: uv run pytest -ra --ignore=tests/test_tui.py --ignore=tests/test_launcher_settings.py --ignore=tests/test_proc.py
+      - run: uv run python scripts/e2e.py

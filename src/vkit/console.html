@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>vkit</title>
+    <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+    <link
+      rel="preload"
+      href="/assets/roboto.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="/assets/theme.css" />
+    <link rel="stylesheet" href="/console.css" />
+    <script type="module" src="/console.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar" aria-label="Workspace navigation">
+        <a class="brand" href="#overview" aria-label="vkit overview">
+          <img src="/assets/logo.svg" width="36" height="36" alt="" />
+          <span class="brand-name"
+            >vkit<span class="brand-caption">Verification workspace</span></span
+          >
+        </a>
+        <div class="workspace">
+          <span class="eyebrow">WORKSPACE</span
+          ><strong id="workspace-name">Loading project</strong>
+        </div>
+        <nav id="navigation" aria-label="Main"></nav>
+        <div class="sidebar-bottom">
+          <div class="sidebar-note">
+            <span class="connection-dot"></span
+            ><span>Local console<span id="version">Connecting</span></span>
+          </div>
+          <md-text-button
+            id="collapse-nav"
+            aria-label="Collapse sidebar"
+            aria-expanded="true"
+            aria-controls="sidebar"
+            disabled
+          >
+            <svg slot="icon" class="icon" aria-hidden="true">
+              <use href="/assets/icons.svg#collapse"></use></svg
+            ><span class="collapse-label">Collapse sidebar</span>
+          </md-text-button>
+        </div>
+      </aside>
+      <button
+        class="scrim"
+        id="scrim"
+        aria-label="Close navigation"
+        hidden
+      ></button>
+      <div class="workspace-main">
+        <header class="topbar">
+          <md-icon-button
+            id="mobile-nav"
+            aria-label="Open navigation"
+            aria-expanded="false"
+            aria-controls="sidebar"
+          >
+            <svg class="icon" aria-hidden="true">
+              <use href="/assets/icons.svg#menu"></use>
+            </svg>
+          </md-icon-button>
+          <div class="breadcrumb">
+            <span>Workspace</span><span class="breadcrumb-divider">/</span
+            ><strong id="breadcrumb">Overview</strong>
+          </div>
+          <div class="topbar-actions">
+            <md-icon-button
+              id="refresh"
+              aria-label="Refresh evidence"
+              title="Refresh evidence"
+              ><svg class="icon" aria-hidden="true">
+                <use href="/assets/icons.svg#refresh"></use></svg
+            ></md-icon-button>
+            <md-icon-button
+              id="theme-toggle"
+              aria-label="Switch color theme"
+              title="Switch color theme"
+              disabled
+              ><svg class="icon" aria-hidden="true">
+                <use id="theme-icon" href="/assets/icons.svg#dark"></use></svg
+            ></md-icon-button>
+          </div>
+        </header>
+        <div
+          id="connection-error"
+          class="connection-error"
+          role="status"
+          hidden
+        ></div>
+        <div
+          id="preference-feedback"
+          class="preference-feedback"
+          role="status"
+          aria-live="polite"
+          hidden
+        ></div>
+        <main id="content" tabindex="-1" aria-busy="true">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow" id="page-eyebrow">YOUR WORKSPACE</p>
+              <h1 id="page-title">Verification at a glance</h1>
+              <p class="page-description" id="page-description">
+                What is known about your code, and where evidence is still
+                needed.
+              </p>
+            </div>
+            <span id="updated" class="updated">Connecting</span>
+          </div>
+          <div id="view">
+            <div class="loading-state">
+              <md-circular-progress indeterminate aria-label="Loading workspace evidence"></md-circular-progress>
+              <span>Loading workspace evidence…</span>
+            </div>
+          </div>
+        </main>
+        <footer class="page-footer">
+          <span id="project-path"></span
+          ><span
+            >Evidence applies only to the recorded inputs and checked
+            requirements.</span
+          >
+        </footer>
+      </div>
+    </div>
+    <md-dialog id="detail-dialog">
+      <div class="dialog-header" slot="headline">
+        <div>
+          <p class="eyebrow" id="detail-label">CHECK DETAILS</p>
+          <h2 id="detail-title"></h2>
+        </div>
+      </div>
+      <div id="detail-body" slot="content"></div>
+      <div slot="actions">
+        <md-text-button id="close-detail">Close</md-text-button>
+      </div>
+    </md-dialog>
+    <md-dialog id="tools-dialog" aria-label="Tools available to agents">
+      <span id="tools-title" slot="headline">Tools available to agents</span>
+      <div id="tools-body" slot="content"></div>
+      <div slot="actions">
+        <md-text-button id="close-tools">Close</md-text-button>
+        <md-filled-button id="save-tools-settings">Save settings</md-filled-button>
+      </div>
+    </md-dialog>
+    <noscript
+      ><p class="connection-error">
+        Enable JavaScript to browse the console. The CLI is available
+        independently.
+      </p></noscript
+    >
+  </body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "vkit-regex-engine",
+  "private": true,
+  "type": "module",
+  "dependencies": {"recheck": "4.5.0"}
+}

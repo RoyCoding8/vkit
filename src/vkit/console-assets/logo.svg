@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="t d">
+  <title id="t">vkit</title>
+  <desc id="d">A check mark inside a rounded square, resting on a recorded baseline.</desc>
+  <style>
+    .ring { stroke: #2a78d6; }
+    .mark { stroke: #2a78d6; }
+    .base { stroke: #898781; }
+    @media (prefers-color-scheme: dark) {
+      .ring, .mark { stroke: #3987e5; }
+    }
+  </style>
+  <g transform="translate(4 4) scale(0.875)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect class="ring" x="0" y="0" width="64" height="64" rx="15" stroke-width="2.5" opacity="0.32"/>
+    <path class="mark" d="M16 33.5 L27 44 L48 21" stroke-width="6"/>
+    <path class="base" d="M13 56 H51" stroke-width="3"/>
+  </g>
+</svg>

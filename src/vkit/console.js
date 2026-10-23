@@ -23,13 +23,6 @@ const pages = {
     "Runs",
     "Recorded outcomes, observations, measurements, and logs.",
   ],
-  computations: [
-    "Computations",
-    "science",
-    "BOUNDED OPERATIONS",
-    "Computations",
-    "Run an installed operation with inputs defined by its schema.",
-  ],
   capabilities: [
     "Capabilities",
     "extension",
@@ -142,14 +135,6 @@ let search = "",
   settingsDraft = null,
   settingsMessage = "",
   settingsSaving = false,
-  computation = {
-    selectedName: "",
-    drafts: Object.create(null),
-    touched: Object.create(null),
-    results: Object.create(null),
-    errors: Object.create(null),
-    pendingName: "",
-  },
   execution = {
     pending: new Set(),
     checksMessage: "",
@@ -688,301 +673,6 @@ function runHistory() {
   update();
   return fragment;
 }
-function operationInitialDraft(operation) {
-  const schema = operation.input_schema || {},
-    properties = schema.properties || {};
-  return Object.fromEntries(
-    Object.entries(properties).map(([name, property]) => {
-      let value = "";
-      if (Object.hasOwn(property, "default")) value = property.default;
-      return [
-        name,
-        typeof value === "object" && value !== null
-          ? JSON.stringify(value, null, 2)
-          : String(value),
-      ];
-    }),
-  );
-}
-function operationField(name, property, value, index, required) {
-  const field = el("div", null, "form-field"),
-    id = `operation-input-${index}`,
-    label = name.replaceAll("_", " ");
-  let input;
-  if (Array.isArray(property.enum)) {
-    input = el("md-outlined-select");
-    input.label = label;
-    input.menuPositioning = "fixed";
-    if (!required || !Object.hasOwn(property, "default")) {
-      input.append(selectOption("", "Choose an option"));
-    }
-    for (const optionValue of property.enum)
-      input.append(selectOption(String(optionValue), String(optionValue)));
-    input.value = value;
-  } else if (property.type === "string" && name !== "replacement") {
-    input = textField(label, value);
-    if (property.minLength != null) input.minLength = property.minLength;
-    if (property.maxLength != null) input.maxLength = property.maxLength;
-  } else if (property.type === "integer") {
-    input = textField(label, value, "number");
-    input.step = "1";
-    if (property.minimum != null) input.min = property.minimum;
-    if (property.maximum != null) input.max = property.maximum;
-  } else {
-    input = textField(label, value, "textarea");
-    input.classList.add("json-field");
-    input.rows = name === "replacement" ? 10 : 5;
-    if (property.minLength != null) input.minLength = property.minLength;
-    if (property.type !== "string") input.supportingText = "Enter a JSON value.";
-  }
-  input.id = id;
-  input.dataset.argument = name;
-  input.required = required &&
-    (Array.isArray(property.enum) || property.type !== "string" || property.minLength > 0);
-  field.append(input);
-  if (property.description) input.supportingText = property.description;
-  return field;
-}
-function parseOperationArguments(operation) {
-  const schema = operation.input_schema || {},
-    properties = schema.properties || {},
-    required = new Set(schema.required || []),
-    draft = computation.drafts[operation.name] || {},
-    touched = computation.touched[operation.name] || {},
-    values = {};
-  for (const [name, property] of Object.entries(properties)) {
-    const raw = draft[name] ?? "",
-      isRequired = required.has(name);
-    if (property.type === "string" && !Array.isArray(property.enum)) {
-      if (
-        !isRequired &&
-        raw === "" &&
-        !touched[name] &&
-        !Object.hasOwn(property, "default")
-      )
-        continue;
-      if (property.minLength != null && [...raw].length < property.minLength)
-        return {
-          error: `${name.replaceAll("_", " ")} must contain at least ${property.minLength} characters.`,
-        };
-      values[name] = raw;
-      continue;
-    }
-    if (Array.isArray(property.enum)) {
-      if (
-        !isRequired &&
-        raw === "" &&
-        !touched[name] &&
-        !Object.hasOwn(property, "default")
-      )
-        continue;
-      if (
-        isRequired &&
-        raw === "" &&
-        !touched[name] &&
-        !Object.hasOwn(property, "default")
-      )
-        return { error: `Choose a valid ${name.replaceAll("_", " ")}.` };
-      const value = property.enum.find((item) => String(item) === raw);
-      if (value === undefined) {
-        if (!isRequired && raw === "") continue;
-        return { error: `Choose a valid ${name.replaceAll("_", " ")}.` };
-      }
-      values[name] = value;
-    } else if (property.type === "integer") {
-      if (raw === "") {
-        if (isRequired) return { error: `${name.replaceAll("_", " ")} is required.` };
-        continue;
-      }
-      const number = Number(raw);
-      if (!Number.isSafeInteger(number))
-        return { error: `${name.replaceAll("_", " ")} must be a whole number.` };
-      values[name] = number;
-    } else {
-      if (raw === "") {
-        if (isRequired) return { error: `${name.replaceAll("_", " ")} is required.` };
-        continue;
-      }
-      try {
-        values[name] = JSON.parse(raw);
-      } catch {
-        return { error: `${name.replaceAll("_", " ")} must contain valid JSON.` };
-      }
-    }
-  }
-  return { values };
-}
-function operationResult(operation, entry) {
-  const result = entry.result,
-    box = el("section", null, "panel operation-result"),
-    header = el("div", null, "result-heading"),
-    summary = el("div", null, "result-summary");
-  const status = entry.is_error
-    ? "Request error"
-    : result?.status || result?.state || result?.outcome || "Completed";
-  header.append(el("h2", `${operation.name} result`), badge(status));
-  summary.append(header);
-  if (entry.is_error && result?.error)
-    summary.append(el("p", result.error, "result-error"));
-  const scope =
-    result?.model_scope ??
-    result?.scope ??
-    result?.evidence_scope ??
-    result?.domain;
-  if (scope != null) {
-    const section = el("section", null, "result-detail");
-    section.append(
-      el("h3", result?.model_scope != null ? "Model scope" : "Scope"),
-    );
-    const pre = el(
-      "pre",
-      typeof scope === "string" ? scope : JSON.stringify(scope, null, 2),
-    );
-    section.append(pre);
-    summary.append(section);
-  }
-  for (const [key, label] of [
-    ["old_only", "Accepted only by the old input"],
-    ["new_only", "Accepted only by the new input"],
-  ])
-    if (result?.[key] != null) {
-      const section = el("section", null, "result-detail");
-      section.append(el("h3", label));
-      section.append(
-        el(
-          "pre",
-          typeof result[key] === "string"
-            ? JSON.stringify(result[key])
-            : JSON.stringify(result[key], null, 2),
-        ),
-      );
-      summary.append(section);
-    }
-  const witness =
-    result?.witness ?? result?.counterexample ?? result?.reproducer;
-  if (witness != null) {
-    const section = el("section", null, "result-detail");
-    section.append(el("h3", "Witness"));
-    const pre = el("pre", JSON.stringify(witness, null, 2));
-    section.append(pre);
-    summary.append(section);
-  }
-  const details = el("details", null, "result-json"),
-    source = el("summary", "Full result JSON"),
-    pre = el("pre", JSON.stringify(result, null, 2));
-  details.dataset.resultOperation = operation.name;
-  details.append(source, pre);
-  box.append(summary, details);
-  return box;
-}
-async function runOperation(operation) {
-  if (computation.pendingName) return;
-  const parsed = parseOperationArguments(operation);
-  if (parsed.error) {
-    computation.errors[operation.name] = parsed.error;
-    render();
-    return;
-  }
-  delete computation.errors[operation.name];
-  computation.pendingName = operation.name;
-  render();
-  try {
-    const response = await callTool(operation.name, parsed.values);
-    computation.results[operation.name] = {
-      result: response.result,
-      is_error: response.is_error,
-    };
-  } catch (error) {
-    computation.results[operation.name] = {
-      result: { error: error.message },
-      is_error: true,
-    };
-  } finally {
-    computation.pendingName = "";
-    render();
-    refresh().catch(showError);
-  }
-}
-function computations() {
-  const fragment = document.createDocumentFragment(),
-    operations = configuration.operations || [];
-  if (!operations.some((operation) => operation.name === computation.selectedName))
-    computation.selectedName = operations[0]?.name || "";
-  if (!operations.length) {
-    fragment.append(
-      empty(
-        "No computations are registered",
-        "The server has not exposed any installed operations.",
-        "science",
-      ),
-    );
-    return fragment;
-  }
-  const operation = operations.find(
-      (item) => item.name === computation.selectedName,
-    ),
-    schema = operation.input_schema || {},
-    properties = Object.entries(schema.properties || {}),
-    required = new Set(schema.required || []),
-    form = el("form", null, "computation-form"),
-    pickerField = el("div", null, "form-field");
-  const picker = consoleButton(operation.name, "outlined"),
-    arrow = icon("expand");
-  arrow.setAttribute("slot", "icon");
-  picker.append(arrow);
-  picker.trailingIcon = true;
-  picker.id = "computation-operation";
-  picker.setAttribute("aria-haspopup", "dialog");
-  picker.onclick = () => showTools((name) => {
-    computation.selectedName = name;
-    render();
-  });
-  pickerField.append(el("span", "Operation", "field-help"), picker);
-  form.append(pickerField, el("p", operation.description, "operation-description"));
-  const draft = (computation.drafts[operation.name] ||=
-    operationInitialDraft(operation));
-  const fields = el("div", null, "form-grid");
-  for (const [index, [name, property]] of properties.entries())
-    fields.append(
-      operationField(name, property, draft[name] ?? "", index, required.has(name)),
-    );
-  form.append(fields);
-  const error = el(
-    "p",
-    computation.errors[operation.name] || "",
-    "form-message error-message",
-  );
-  error.setAttribute("role", "alert");
-  const pending = computation.pendingName === operation.name,
-    submit = el("md-filled-button", pending ? "Running…" : "Run computation");
-  submit.type = "submit";
-  submit.disabled = Boolean(computation.pendingName);
-  const actions = el("div", null, "form-actions");
-  actions.append(submit);
-  form.addEventListener("input", (event) => {
-    const name = event.target.dataset.argument;
-    if (!name) return;
-    (computation.touched[operation.name] ||= Object.create(null))[name] = true;
-    draft[name] = event.target.value;
-    delete computation.errors[operation.name];
-    error.textContent = "";
-  });
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    runOperation(operation);
-  });
-  form.append(error, actions);
-  fragment.append(
-    panel(
-      "Run a computation",
-      "Fields come from the installed operation schema. JSON fields accept JSON values.",
-      [form],
-    ),
-  );
-  const result = computation.results[operation.name];
-  if (result) fragment.append(operationResult(operation, result));
-  return fragment;
-}
 function capabilities() {
   const fragment = document.createDocumentFragment(),
     list = el("section", null, "panel");
@@ -1309,9 +999,9 @@ function updatePreference(key, value) {
   applySettings(settingsDraft);
   persistSettings({ ...configuration.settings, [key]: value }, "preference");
 }
-function showTools(onSelect = null) {
-  const tools = onSelect ? configuration.operations : configuration.managed_tools,
-    title = onSelect ? "Choose a computation tool" : "Tools available to agents",
+function showTools() {
+  const tools = configuration.managed_tools,
+    title = "Tools available to agents",
     search = textField("Search tools", "", "search"),
     list = el("div", null, "tools-list"),
     count = el("p", null, "small quiet"),
@@ -1337,31 +1027,17 @@ function showTools(onSelect = null) {
       const section = el("section", null, "tool-category"),
         heading = el("h3", group.label);
       section.append(heading);
-      if (!onSelect) {
-        const available = el("p", null, "field-help");
-        available.dataset.categoryCount = group.id;
-        for (const [key, text] of [["categoryToggle", "Enable category"], ["scope", "Include in agent scope"]]) {
-          const checkbox = el("md-checkbox"), label = el("label", null, "form-checkbox");
-          checkbox.dataset[key] = group.id;
-          checkbox.setAttribute("aria-label", `${text}: ${group.label}`);
-          label.append(checkbox, el("span", text));
-          section.append(label);
-        }
-        section.append(available);
+      const available = el("p", null, "field-help");
+      available.dataset.categoryCount = group.id;
+      for (const [key, text] of [["categoryToggle", "Enable category"], ["scope", "Include in agent scope"]]) {
+        const checkbox = el("md-checkbox"), label = el("label", null, "form-checkbox");
+        checkbox.dataset[key] = group.id;
+        checkbox.setAttribute("aria-label", `${text}: ${group.label}`);
+        label.append(checkbox, el("span", text));
+        section.append(label);
       }
+      section.append(available);
       for (const tool of members) {
-        if (onSelect) {
-          const row = el("div", null, "tool-option"),
-            choose = consoleButton(tool.name, "text");
-          choose.setAttribute("aria-pressed", String(tool.name === computation.selectedName));
-          choose.onclick = async () => {
-            await $("tools-dialog").close();
-            onSelect(tool.name);
-          };
-          row.append(choose, el("p", tool.description, "field-help"));
-          section.append(row);
-          continue;
-        }
         const checkbox = el("md-checkbox"),
           label = el("span"),
           row = el("label", null, "form-checkbox tool-option");
@@ -1404,15 +1080,12 @@ function showTools(onSelect = null) {
   allScope.setAttribute("aria-label", "Include all enabled categories in agent scope");
   allScope.addEventListener("input", change);
   scope.append(allScope, el("span", "Include all enabled categories in agent scope"));
-  scope.hidden = Boolean(onSelect);
   $("tools-title").textContent = title;
   $("tools-dialog").setAttribute("aria-label", title);
-  $("save-tools-settings").hidden = Boolean(onSelect);
-  status.hidden = Boolean(onSelect);
+  $("save-tools-settings").hidden = false;
+  status.hidden = false;
   $("tools-body").replaceChildren(
-    el("p", onSelect
-      ? "Choose a tool. Filter by category or search by name and description."
-      : "Category switches preserve individual tool choices. Agent scope only narrows enabled tools. Save changes; reconnect agents after changing exposure or scope.", "field-help"),
+    el("p", "Category switches preserve individual tool choices. Agent scope only narrows enabled tools. Save changes; reconnect agents after changing exposure or scope.", "field-help"),
     search, category, scope, count, list, status,
   );
   filter();
@@ -1856,9 +1529,6 @@ function render() {
   const openedFeatures = [...$("view").querySelectorAll("details[open]")].map(
     (d) => d.dataset.feature,
   );
-  const openedResults = [
-    ...$("view").querySelectorAll("details[data-result-operation][open]"),
-  ].map((details) => details.dataset.resultOperation);
   const [, , eyebrow, title, description] = pages[activePage];
   $("breadcrumb").textContent = pages[activePage][0];
   $("page-eyebrow").textContent = eyebrow;
@@ -1882,7 +1552,6 @@ function render() {
       overview,
       checks,
       runs: runHistory,
-      computations,
       capabilities,
       features: featureMap,
       proposals,
@@ -1892,8 +1561,6 @@ function render() {
   for (const details of $("view").querySelectorAll("details")) {
     if (details.dataset.feature)
       details.open = openedFeatures.includes(details.dataset.feature);
-    if (details.dataset.resultOperation)
-      details.open = openedResults.includes(details.dataset.resultOperation);
   }
   if (focusId) {
     const next = $(focusId);

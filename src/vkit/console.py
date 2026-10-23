@@ -19,17 +19,10 @@ from .settings import (DEFAULT_SETTINGS, SETTINGS_SCHEMA, SettingsFileError, loa
                        load_launcher_settings, parse_launcher_settings, save_launcher_settings)
 from .mcp import BY_NAME, Server
 from .categories import CATEGORIES
-from .operations.catalog import OPERATIONS
 from .paths import Project
 
 _MAX_BODY_BYTES = 1_048_576
 _INVALID_BODY = object()
-_CALLABLE_TOOLS = frozenset(tool.name for tool in OPERATIONS) | {"check_run", "run_cancel"}
-_OPERATION_DESCRIPTORS = [
-    {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema,
-     "read_only": tool.read_only, "category": tool.category}
-    for tool in OPERATIONS
-]
 
 
 _ASSETS = {
@@ -78,27 +71,58 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
             return (host in allowed_hosts and origin == f"http://{host}" and
                     secrets.compare_digest(token.encode("utf-8"), csrf_token.encode("ascii")))
 
+        def _discard_request_body(self) -> bool:
+            if self.headers.get("Transfer-Encoding"):
+                return False
+            raw_length = self.headers.get("Content-Length")
+            if raw_length is None:
+                return True
+            try:
+                remaining = int(raw_length)
+            except ValueError:
+                return False
+            if remaining < 0 or remaining > _MAX_BODY_BYTES:
+                return False
+            timeout = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(1.0)
+                while remaining:
+                    chunk = self.rfile.read(min(remaining, 64 * 1024))
+                    if not chunk:
+                        return False
+                    remaining -= len(chunk)
+                return True
+            except (TimeoutError, OSError):
+                return False
+            finally:
+                self.connection.settimeout(timeout)
+
+        def _reject_post(self, error: str, status: HTTPStatus) -> None:
+            if not self._discard_request_body():
+                self.close_connection = True
+            self._json({"error": error}, status)
+
         def _post_json(self) -> Any:
             if self.headers.get_content_type() != "application/json":
-                self._json({"error": "Content-Type must be application/json"}, HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                self._reject_post("Content-Type must be application/json", HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
                 return _INVALID_BODY
             content_length = self.headers.get("Content-Length")
             if content_length is None:
-                self._json({"error": "Content-Length is required"}, HTTPStatus.LENGTH_REQUIRED)
+                self._reject_post("Content-Length is required", HTTPStatus.LENGTH_REQUIRED)
                 return _INVALID_BODY
             try:
                 size = int(content_length)
             except ValueError:
-                self._json({"error": "invalid Content-Length"}, HTTPStatus.BAD_REQUEST)
+                self._reject_post("invalid Content-Length", HTTPStatus.BAD_REQUEST)
                 return _INVALID_BODY
             if size < 0:
-                self._json({"error": "invalid Content-Length"}, HTTPStatus.BAD_REQUEST)
+                self._reject_post("invalid Content-Length", HTTPStatus.BAD_REQUEST)
                 return _INVALID_BODY
             if size > _MAX_BODY_BYTES:
-                self._json({"error": "request body is too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                self._reject_post("request body is too large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
                 return _INVALID_BODY
             if size == 0:
-                self._json({"error": "request body is required"}, HTTPStatus.BAD_REQUEST)
+                self._reject_post("request body is required", HTTPStatus.BAD_REQUEST)
                 return _INVALID_BODY
             raw = self.rfile.read(size)
             if len(raw) != size:
@@ -147,8 +171,6 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                                              "--exposure", settings.mcp_exposure, "--categories",
                                              *(["all"] if settings.mcp_categories is None else settings.mcp_categories)],
                                 }}},
-                                "operations": [tool for tool in _OPERATION_DESCRIPTORS
-                                               if settings.allows(tool["name"], tool["category"])],
                                 "managed_tools": [{"name": tool.name, "description": tool.description,
                                                    "category": tool.category}
                                                   for tool in BY_NAME.values() if tool.name != "help"]})
@@ -161,15 +183,15 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
 
         def do_POST(self) -> None:
             if not self._host_allowed():
-                self._json({"error": "unexpected Host header"}, HTTPStatus.FORBIDDEN)
+                self._reject_post("unexpected Host header", HTTPStatus.FORBIDDEN)
                 return
             if not self._post_authorized():
-                self._json({"error": "same-origin request with a valid console token required"},
-                           HTTPStatus.FORBIDDEN)
+                self._reject_post("same-origin request with a valid console token required",
+                                  HTTPStatus.FORBIDDEN)
                 return
             path = urlparse(self.path).path
             if path not in ("/api/settings", "/api/launcher-settings", "/api/call"):
-                self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                self._reject_post("not found", HTTPStatus.NOT_FOUND)
                 return
             payload = self._post_json()
             if payload is _INVALID_BODY:
@@ -198,8 +220,8 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                 self._json({"error": "request must contain exactly name and arguments"}, HTTPStatus.BAD_REQUEST)
                 return
             name, arguments = payload["name"], payload["arguments"]
-            if not isinstance(name, str) or name not in _CALLABLE_TOOLS:
-                self._json({"error": "unknown console operation"}, HTTPStatus.BAD_REQUEST)
+            if not isinstance(name, str) or name not in BY_NAME:
+                self._json({"error": "unknown console tool"}, HTTPStatus.BAD_REQUEST)
                 return
             if not isinstance(arguments, dict):
                 self._json({"error": "arguments must be an object"}, HTTPStatus.BAD_REQUEST)

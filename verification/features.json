@@ -21,13 +21,15 @@
     },
     {
       "id": "check-run",
-      "behavior": "Runs accepted checks in the foreground or from the MCP server, contained in a Job Object or process group, with timeout and cancel.",
+      "behavior": "Submits accepted checks as durable jobs from CLI or MCP, captures inputs, and retains checked evidence with timeout and process-tree cancellation.",
       "how_to_reach": [
         "vkit check run --check <id> | --needed",
         "MCP tool check_run"
       ],
       "entry_points": [
         "src/vkit/runner.py",
+        "src/vkit/jobs.py",
+        "src/vkit/evidence.py",
         "src/vkit/proc.py"
       ],
       "covered_by": [

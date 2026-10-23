@@ -5,7 +5,7 @@ from helpers import DRIVER, McpClient, scenario_check
 PASSES = DRIVER + 'report([("ok", True, "printed ok")])\n'
 
 
-def test_an_agent_sees_staleness_runs_what_is_needed_and_reaches_ready(make_project):
+def test_an_agent_runs_waits_reads_and_exports_durable_check_evidence(make_project, tmp_path):
     project = make_project({"ok.py": PASSES, "README.md": "hi"},
                            [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
     client = McpClient(project)
@@ -19,6 +19,17 @@ def test_an_agent_sees_staleness_runs_what_is_needed_and_reaches_ready(make_proj
         body, error = client.call("check_run", needed=True, wait_seconds=60)
         assert (error, [r["outcome"]["result"] for r in body["runs"]]) == (False, ["PASS"])
         run_id = body["runs"][0]["run_id"]
+
+        body, error = client.call("run_wait", run_id=run_id, wait_seconds=0)
+        assert not error and (body["state"], body["outcome"]["result"]) == ("done", "PASS")
+        assert body["log"]["stream"] == "stdout"
+
+        bundle = tmp_path / "evidence-bundle"
+        body, error = client.call("evidence_export", run_id=run_id, output=str(bundle))
+        assert not error and body["run_id"] == run_id and body["bundle"] == str(bundle)
+        assert (bundle / "receipt.json").is_file()
+        body, error = client.call("evidence_replay", bundle=str(bundle), wait_seconds=0)
+        assert error and "external, Lean, or TLC" in body["error"]
 
         body, _ = client.call("gate")
         assert body["verdict"] == "READY"
@@ -41,5 +52,7 @@ def test_a_request_with_a_command_or_unknown_field_is_refused(make_project):
         assert (error, body["error"]) == (True, "unknown argument(s): command")
         body, error = client.call("check_run", check_ids=["not-registered"])
         assert error and "unknown check 'not-registered'" in body["error"]
+        body, error = client.call("run_wait", run_id="missing", wait_seconds=61)
+        assert error and "61" in body["error"]
     finally:
         client.close()

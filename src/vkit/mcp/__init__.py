@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import sys
-import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -14,13 +13,10 @@ from typing import Any, Callable
 from jsonschema import ValidationError, validate
 
 from ..categories import CATEGORIES, INFRASTRUCTURE_TOOLS
-from .. import __version__, query
+from .. import __version__, evidence, jobs, query
 from ..manifest import ManifestError
-from ..operations.catalog import OPERATIONS
-from ..operations.contract import Operation, OperationContractError, OperationInputError, invoke
 from ..paths import Project, open_project
 from ..settings import load_settings
-from ..store import new_run_id
 
 MAX_WAIT_SECONDS = 60
 INSTRUCTIONS = (
@@ -28,8 +24,8 @@ INSTRUCTIONS = (
     "and help with name for one exact input contract. In compact mode, use invoke with that name and arguments. "
     "Verification evidence concerns one Git repository. Registered checks come from the manifest; "
     "no tool accepts an arbitrary command, and only a human can accept a check definition. "
-    "Each computation describes its exact scope and possible outcomes. Most computations return separate "
-    "results; operations that run accepted checks can publish evidence. Use results within their stated scope."
+    "Each check describes its scope and possible outcomes. Results record which accepted checker ran, its "
+    "inputs, artifacts, and assurance level; use them only for the claim they establish."
 )
 
 
@@ -39,12 +35,6 @@ class MCPUnavailable(Exception):
 
 class Refusal(Exception):
     """A request this server will not honour; returned to the client as an error result."""
-
-
-@dataclass(frozen=True)
-class _RunThread:
-    check_id: str
-    thread: threading.Thread
 
 
 @dataclass(frozen=True)
@@ -87,8 +77,6 @@ class Server:
     root: Path
     exposure: str = "compact"
     categories: tuple[str, ...] | None = None
-    threads: dict[str, _RunThread] = field(default_factory=dict)
-    _start_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @classmethod
     def for_mcp(cls, root: Path, exposure: str | None = None,
@@ -110,7 +98,7 @@ class Server:
     def context(self) -> query.Context:
         return query.open_context(self.root)
 
-    def tools(self) -> tuple[Tool | Operation, ...]:
+    def tools(self) -> tuple[Tool, ...]:
         settings = load_settings(self.project)
         return tuple(tool for tool in BY_NAME.values() if settings.allows(tool.name, tool.category, self.categories))
 
@@ -139,28 +127,10 @@ class Server:
             tool = BY_NAME.get(name)
             if tool is None or not load_settings(self.project).allows(name, tool.category, self.categories):
                 return {"error": "unknown or unavailable tool"}, True
-            if isinstance(tool, Operation):
-                return invoke(tool, self.root, arguments), False
             _check(arguments, tool.input_schema)
             return tool.handler(self, arguments), False
-        except OperationContractError as exc:
-            return {"error": str(exc), "kind": "operation_contract_error"}, True
-        except (OperationInputError, Refusal, ManifestError, ValueError) as exc:
+        except (OSError, Refusal, ManifestError, ValueError) as exc:
             return {"error": str(exc)}, True
-
-    def start(self, ctx: query.Context, check_id: str) -> str:
-        from ..runner import run_check
-
-        with self._start_lock:
-            for run_id, running in self.threads.items():
-                if running.check_id == check_id and running.thread.is_alive():
-                    return run_id
-            run_id = new_run_id()
-            thread = threading.Thread(target=run_check, args=(ctx.project, ctx.require_manifest(), check_id),
-                                      kwargs={"store": ctx.store, "run_id": run_id}, daemon=True)
-            thread.start()
-            self.threads[run_id] = _RunThread(check_id, thread)
-            return run_id
 
 
 def _status(server: Server, args: dict[str, Any]) -> Any:
@@ -189,7 +159,7 @@ def _help(server: Server, args: dict[str, Any]) -> Any:
         if tool is None:
             raise Refusal("unknown or unavailable tool")
         return {"contract_version": 2, "tools": [{**tool_definitions((tool,))[0],
-                "category": tool.category, "contract_version": tool.version if isinstance(tool, Operation) else 1}]}
+                "category": tool.category, "contract_version": 1}]}
     counts = Counter(tool.category for tool in tools)
     if "category" in args and not counts.get(args["category"]):
         raise Refusal("unknown or unavailable category")
@@ -220,19 +190,16 @@ def _help(server: Server, args: dict[str, Any]) -> Any:
         "total": len(matches), "next_offset": offset + limit if offset + limit < len(matches) else None}
 
 
-def _summary(ctx: query.Context, run_id: str) -> dict[str, Any]:
-    record = ctx.store.record(run_id)
-    if record is None:
-        return {"run_id": run_id, "state": "starting"}
-    return {"run_id": run_id, "check_id": record["check_id"], "state": record["state"],
-            "outcome": record["outcome"]}
+def _summary_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: record.get(key) for key in ("job_id", "run_id", "check_id", "state", "outcome",
+                                            "assurance", "claim_outcome", "receipt")}
 
 
 def _check_run(server: Server, args: dict[str, Any]) -> Any:
     ctx = server.context()
     manifest = ctx.require_manifest()
     report = query.status(ctx)
-    running = {c["id"]: c["running"][0] for c in report["checks"] if c["running"]}
+    active = {c["id"]: c["running"][0] for c in report["checks"] if c["running"]}
     if args.get("needed"):
         wanted = report["needs_run"]
     else:
@@ -241,14 +208,20 @@ def _check_run(server: Server, args: dict[str, Any]) -> Any:
             raise Refusal("pass check_ids, or needed=true to run every stale or missing check")
         for check_id in wanted:
             manifest.require(check_id)
-    run_ids = [running.get(c) or server.start(ctx, c) for c in wanted]
+    run_ids = []
+    for check_id in wanted:
+        run_id = active.get(check_id)
+        if run_id is None:
+            run_id = jobs.submit(ctx.project, manifest, check_id, store=ctx.store)["run_id"]
+        run_ids.append(run_id)
     deadline = time.monotonic() + min(max(int(args.get("wait_seconds", 20)), 0), MAX_WAIT_SECONDS)
-    while time.monotonic() < deadline and any(
-            server.threads.get(r) is not None and server.threads[r].thread.is_alive() for r in run_ids):
-        time.sleep(0.2)
-    return {"runs": [_summary(ctx, r) for r in run_ids],
-            "note": "poll run_get for runs still running" if any(
-                _summary(ctx, r)["state"] in ("running", "starting") for r in run_ids) else ""}
+    records = []
+    for run_id in run_ids:
+        records.append(jobs.wait(ctx.store, run_id, max(0, deadline - time.monotonic())))
+    summaries = [_summary_record(record) for record in records]
+    return {"runs": summaries,
+            "note": "poll run_get for runs still queued or running" if any(
+                record["state"] in ("queued", "running") for record in records) else ""}
 
 
 def _run_get(server: Server, args: dict[str, Any]) -> Any:
@@ -259,6 +232,29 @@ def _run_get(server: Server, args: dict[str, Any]) -> Any:
     if view is None:
         raise Refusal(f"no run {args['run_id']!r}")
     return view
+
+
+def _run_wait(server: Server, args: dict[str, Any]) -> Any:
+    ctx = server.context()
+    timeout = min(args.get("wait_seconds", 20), MAX_WAIT_SECONDS)
+    jobs.wait(ctx.store, args["run_id"], timeout)
+    view = query.run_view(ctx, args["run_id"])
+    if view is None:
+        raise Refusal(f"no run {args['run_id']!r}")
+    return view
+
+
+def _evidence_export(server: Server, args: dict[str, Any]) -> Any:
+    ctx = server.context()
+    return evidence.export(ctx.store, args["run_id"], Path(args["output"]))
+
+
+def _evidence_replay(server: Server, args: dict[str, Any]) -> Any:
+    ctx = server.context()
+    record = jobs.replay(ctx.project, ctx.require_manifest(), Path(args["bundle"]), store=ctx.store)
+    if "wait_seconds" in args:
+        record = jobs.wait(ctx.store, record["run_id"], min(args["wait_seconds"], MAX_WAIT_SECONDS))
+    return _summary_record(record)
 
 
 def _propose(server: Server, args: dict[str, Any]) -> Any:
@@ -280,7 +276,7 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
     record = ctx.store.record(args["run_id"])
     if record is None:
         raise Refusal(f"no run {args['run_id']!r}")
-    if record["state"] != "running":
+    if record["state"] not in ("queued", "running"):
         return {"run_id": args["run_id"], "cancelled": False, "state": record["state"]}
     ctx.store.request_cancel(args["run_id"])
     return {"run_id": args["run_id"], "cancelled": True}
@@ -289,26 +285,42 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
 _STR = {"type": "string"}
 _PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
 _BASE_TOOLS = (
-    Tool("help", "Discover enabled categories. Use category or query for tool summaries, all=true for the "
-         "paged catalog, or name for one exact input contract before invocation.",
+    Tool("help", "Discover enabled repository tools. Use query for summaries, all=true for the paged list, "
+         "or name for one exact input contract before invocation.",
          {"query": _STR, "category": _STR, "name": _STR, "all": {"type": "boolean"},
           "offset": {"type": "integer", "minimum": 0},
           "limit": {"type": "integer", "minimum": 1, "maximum": 25, "default": 10}}, _help, category=None),
     Tool("status", "Freshness of every registered check (fresh_pass, fresh_fail, fresh_blocked, stale, missing, "
-         "not_approved), what each kind of evidence establishes and does not, the gate, and the features. Pass "
+         "not_approved), what each evidence category establishes and does not, the gate, and the features. Pass "
          "paths to see only the checks and features that read them, and which paths no check reads.",
          {"paths": _PATHS}, _status, category="repository"),
     Tool("features", "The feature map: what users can do, how they reach it, which checks cover it, and known "
          "gaps. Filter with a free-text query.", {"query": _STR}, _features, category="repository"),
-    Tool("check_run", "Run registered checks by id, or needed=true for every stale or missing one. Waits up to "
-         "wait_seconds (max 60) and returns each run's state and outcome.",
+    Tool("check_run", "Submit durable jobs for registered checks by id, or needed=true for every stale or missing "
+         "one. Waits up to wait_seconds (max 60) and returns each run's state and outcome. A PASS is only the "
+         "accepted checker's claim for its recorded inputs and stated assurance.",
          {"check_ids": {"type": "array", "items": _STR}, "needed": {"type": "boolean"},
-          "wait_seconds": {"type": "integer"}}, _check_run, read_only=False, category="repository"),
+          "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECONDS}},
+         _check_run, read_only=False, category="repository"),
     Tool("run_get", "One run: state, outcome, obligations, inputs, and a window of its stdout or stderr.",
          {"run_id": _STR, "log": {"type": "string", "enum": ["stdout", "stderr"]},
           "log_offset": {"type": "integer", "description": "negative counts from the end"}, "log_limit": {"type": "integer"}}, _run_get, category="repository"),
     Tool("run_cancel", "Stop a running check and everything it started.", {"run_id": _STR}, _run_cancel,
          read_only=False, category="repository"),
+    Tool("run_wait", "Wait up to wait_seconds (max 60) for a durable job to finish, then return its run record "
+         "and stdout window. This reports the checker result and its stated assurance; it does not independently "
+         "upgrade that claim.", {"run_id": _STR, "wait_seconds": {"type": "integer", "minimum": 0,
+          "maximum": MAX_WAIT_SECONDS}}, _run_wait, required=("run_id",), category="repository"),
+    Tool("evidence_export", "Export an intact completed run as an evidence bundle. Replay requires matching current "
+         "inputs and accepted tool identity. The receipt binds the "
+         "recorded inputs, checker identity, outcome, assurance, and artifact digests.",
+         {"run_id": _STR, "output": {"type": "string", "description": "destination bundle directory"}},
+         _evidence_export, read_only=False, required=("run_id", "output"), category="repository"),
+    Tool("evidence_replay", "Submit a durable replay job for a bundle using the currently accepted checker. "
+         "Imported PASS flags are not trusted; the checker runs again. Optionally wait for its result.",
+         {"bundle": {"type": "string", "description": "source bundle directory"},
+          "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECONDS}},
+         _evidence_replay, read_only=False, required=("bundle",), category="repository"),
     Tool("propose", "Suggest new or changed checks (manifest v2 entries), feature map entries, and new files they "
          "need, with a rationale. Nothing runs or changes until a human accepts it. Use it to move a lesson up "
          "the trust ladder: a recurring mistake becomes a static rule or a scenario check.",
@@ -320,18 +332,18 @@ _BASE_TOOLS = (
 )
 _INVOKE = {
     "name": "invoke", "description": "Run one enabled tool using its discovered name and arguments. "
-    "Validates the installed input contract. Some tools run checks, stage proposals, or exercise test services.",
+    "Validates the installed input contract. Some tools submit durable checks, export evidence, or stage proposals.",
     "inputSchema": {"type": "object", "properties": {"name": _STR, "arguments": {"type": "object"}},
                     "required": ["name", "arguments"], "additionalProperties": False},
     "annotations": {"readOnlyHint": False},
 }
-TOOLS = (*OPERATIONS, *_BASE_TOOLS)
+TOOLS = _BASE_TOOLS
 if len({tool.name for tool in TOOLS}) != len(TOOLS):
     raise ValueError("duplicate MCP tool name")
 BY_NAME = {tool.name: tool for tool in TOOLS}
 
 
-def tool_definitions(tools: tuple[Tool | Operation, ...] = TOOLS) -> list[dict[str, Any]]:
+def tool_definitions(tools: tuple[Tool, ...] = TOOLS) -> list[dict[str, Any]]:
     return [{"name": t.name, "description": t.description, "inputSchema": t.input_schema,
              "annotations": {"readOnlyHint": t.read_only}} for t in tools]
 

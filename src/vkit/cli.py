@@ -8,13 +8,11 @@ import argparse
 import json
 import sys
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Sequence
 
 from . import query
 from .manifest import ManifestError
-from .operations.catalog import OPERATIONS
-from .operations.contract import (Operation, OperationContractError, OperationInputError, cli_arguments, cli_value,
-                                  invoke)
 from .paths import ProjectError
 from .settings import load_launcher_settings, load_settings, save_settings
 from .store import now
@@ -89,7 +87,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
 
 def cmd_check_run(args: argparse.Namespace) -> int:
-    from .runner import run_check
+    from . import jobs
 
     ctx = _context(args)
     try:
@@ -104,8 +102,11 @@ def cmd_check_run(args: argparse.Namespace) -> int:
         raise Refused(str(exc), EXIT_INVALID) from exc
     if not check_ids and not args.needed:
         raise Refused("name a check with --check, or pass --needed", EXIT_INVALID)
-    records = [run_check(ctx.project, manifest, check_id, store=ctx.store) for check_id in check_ids]
-    results = {r["outcome"]["result"] for r in records}
+    records = [jobs.submit(ctx.project, manifest, check_id, store=ctx.store) for check_id in check_ids]
+    if not args.detach:
+        records = [jobs.wait(ctx.store, r["run_id"]) for r in records]
+    results = {(r.get("outcome") or {}).get("result", "BLOCKED" if r["state"] == "interrupted" else None)
+               for r in records}
     _emit({"command": "check run", "runs": records}, args.json,
           "\n".join(_outcome_line(r) for r in records) or "every check is fresh; nothing to run")
     for result in ("FAIL", "BLOCKED"):
@@ -129,13 +130,54 @@ def cmd_run_cancel(args: argparse.Namespace) -> int:
     record = ctx.store.record(args.run)
     if record is None:
         raise Refused(f"no run {args.run!r}", EXIT_INVALID)
-    if record["state"] != "running":
+    if record["state"] not in ("queued", "running"):
         _emit({"run_id": args.run, "cancelled": False, "state": record["state"]}, args.json,
               f"run {args.run} is {record['state']}; nothing to cancel")
         return EXIT_OK
     ctx.store.request_cancel(args.run)
     _emit({"run_id": args.run, "cancelled": True}, args.json, f"asked run {args.run} to stop")
     return EXIT_OK
+
+
+def cmd_run_wait(args: argparse.Namespace) -> int:
+    from .jobs import wait
+
+    record = wait(_context(args).store, args.run, args.timeout)
+    _emit(record, args.json, _outcome_line(record))
+    return _RESULT_EXIT.get((record.get("outcome") or {}).get("result"), EXIT_BLOCKED)
+
+
+def cmd_run_retry(args: argparse.Namespace) -> int:
+    from . import jobs
+
+    ctx = _context(args)
+    previous = ctx.store.record(args.run)
+    if previous is None or previous["state"] in ("queued", "running"):
+        raise Refused("retry requires a finished or interrupted attempt", EXIT_INVALID)
+    record = jobs.submit(ctx.project, ctx.require_manifest(), previous["check_id"], store=ctx.store)
+    if not args.detach:
+        record = jobs.wait(ctx.store, record["run_id"])
+    _emit(record, args.json, _outcome_line(record))
+    return _RESULT_EXIT.get((record.get("outcome") or {}).get("result"), EXIT_OK)
+
+
+def cmd_evidence_export(args: argparse.Namespace) -> int:
+    from .evidence import export
+
+    result = export(_context(args).store, args.run, Path(args.output))
+    _emit(result, args.json, f"exported evidence to {result['bundle']}")
+    return EXIT_OK
+
+
+def cmd_evidence_replay(args: argparse.Namespace) -> int:
+    from . import jobs
+
+    ctx = _context(args)
+    record = jobs.replay(ctx.project, ctx.require_manifest(), Path(args.bundle), store=ctx.store)
+    if not args.detach:
+        record = jobs.wait(ctx.store, record["run_id"])
+    _emit(record, args.json, _outcome_line(record))
+    return _RESULT_EXIT.get((record.get("outcome") or {}).get("result"), EXIT_OK)
 
 
 def _confirm(args: argparse.Namespace, description: str, question: str) -> bool:
@@ -197,18 +239,23 @@ def cmd_accept(args: argparse.Namespace) -> int:
     except ManifestError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
     approved = ctx.store.approved()
-    pending = [c for c in wanted if manifest.digest(c) not in approved]
+    from .evidence import backend_identity
+
+    identities = {c: backend_identity(manifest.require(c)) for c in wanted}
+    pending = [c for c in wanted if approved.get(manifest.digest(c), {}).get("backend") != identities[c]]
     lines = []
     for check_id in pending:
         lines.append(f"{check_id} ({manifest.digest(check_id)[:12]})")
         lines.append(json.dumps(manifest.entries[check_id], indent=2))
+        lines.append("checker identity: " + json.dumps(identities[check_id], sort_keys=True))
     if not pending:
         _emit({"accepted": [], "pending": []}, args.json, "every named check is already accepted")
         return EXIT_OK
     if not _confirm(args, "\n".join(lines), f"accept {len(pending)} check definition(s)?"):
         print("nothing accepted")
         return EXIT_BLOCKED
-    ctx.store.approve({manifest.digest(c): {"check_id": c, "accepted_at": now()} for c in pending})
+    ctx.store.approve({manifest.digest(c): {"check_id": c, "accepted_at": now(),
+                                          "backend": identities[c]} for c in pending})
     _emit({"accepted": pending}, args.json, f"accepted: {', '.join(pending)}")
     return EXIT_OK
 
@@ -320,54 +367,11 @@ def cmd_tui(args: argparse.Namespace) -> int:
     return launch(_context(args).project, port=args.port)
 
 
-def cmd_compute(args: argparse.Namespace) -> int:
-    operation = args._vkit_operation
-    project = _context(args).project
-    if not load_settings(project).allows(operation.name, operation.category):
-        raise Refused("unknown or unavailable tool", EXIT_INVALID)
-    try:
-        body = invoke(operation, project.root, cli_arguments(operation, vars(args)))
-    except OperationInputError as exc:
-        raise Refused(str(exc), EXIT_INVALID) from exc
-    except OperationContractError as exc:
-        raise Refused(str(exc), EXIT_INTERNAL) from exc
-    _emit(body, args.json, json.dumps(body, indent=2))
-    return operation.outcomes[body["status"]]
-
-
 def _command_parser(container: Any, name: str, help_text: str) -> argparse.ArgumentParser:
     target = container.add_parser(name, help=help_text)
     target.add_argument("--project", help="repository root; defaults to saved repository, then current directory")
     target.add_argument("--json", action="store_true", help="write one JSON object to stdout")
     return target
-
-
-def _add_operation_parser(compute: Any, operation: Operation) -> argparse.ArgumentParser:
-    parser = _command_parser(compute, operation.cli_name, operation.description)
-    parser.set_defaults(handler=cmd_compute, _vkit_operation=operation)
-    for name, schema in operation.properties.items():
-        file_input = operation.cli_files.get(name)
-        flag = file_input.flag if file_input is not None else name.replace("_", "-")
-        argument_type = str if file_input is not None else (
-            lambda text, schema=schema: _parse_cli_value(text, schema))
-        options: dict[str, Any] = {"dest": name + "_file" if file_input is not None else name,
-                                  "required": name in operation.required}
-        options["default"] = argparse.SUPPRESS
-        if file_input is not None:
-            help_text = f"UTF-8 input file, at most {file_input.max_bytes} bytes"
-        else:
-            help_text = schema.get("description", "")
-            if "enum" in schema:
-                options["choices"] = schema["enum"]
-        parser.add_argument(f"--{flag}", type=argument_type, help=help_text, **options)
-    return parser
-
-
-def _parse_cli_value(text: str, schema: dict[str, Any]) -> Any:
-    try:
-        return cli_value(text, schema)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -406,9 +410,10 @@ def build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--run", help="default: the latest finished run of the check")
 
     check = sub.add_parser("check", help="run registered checks").add_subparsers(dest="check_command", required=True)
-    run_check = command(check, "run", "run checks in the foreground")
+    run_check = command(check, "run", "submit verification jobs and wait for their results")
     run_check.add_argument("--check", action="append", help="a registered check id (repeatable)")
     run_check.add_argument("--needed", action="store_true", help="run every check that is stale or missing")
+    run_check.add_argument("--detach", action="store_true", help="return after durable submission")
 
     run = sub.add_parser("run", help="read or stop a run").add_subparsers(dest="run_command", required=True)
     show = command(run, "show", "show a run, its outcome and a window of its log")
@@ -418,6 +423,21 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--limit", type=int, default=query.DEFAULT_LOG_LIMIT)
     cancel = command(run, "cancel", "stop a running check and everything it started")
     cancel.add_argument("--run", required=True)
+    waiting = command(run, "wait", "wait for a submitted attempt")
+    waiting.add_argument("--run", required=True)
+    waiting.add_argument("--timeout", type=float, help="maximum wait in seconds; leaves the job running")
+    retry = command(run, "retry", "submit a new attempt using the current check and inputs")
+    retry.add_argument("--run", required=True)
+    retry.add_argument("--detach", action="store_true")
+
+    evidence = sub.add_parser("evidence", help="export and independently recheck evidence").add_subparsers(
+        dest="evidence_command", required=True)
+    export = command(evidence, "export", "export a complete evidence bundle")
+    export.add_argument("--run", required=True)
+    export.add_argument("--output", required=True)
+    replay = command(evidence, "replay", "check a bundle with the current accepted verifier")
+    replay.add_argument("--bundle", required=True)
+    replay.add_argument("--detach", action="store_true")
 
     project = sub.add_parser("project", help="onboard a repository").add_subparsers(
         dest="project_command", required=True)
@@ -428,11 +448,6 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--exposure", choices=["compact", "named"], default=None)
     serve.add_argument("--categories", nargs="*", choices=["all", *CATEGORIES], default=None,
                        help="category scope; all overrides a saved subset; empty exposes no domain tools")
-
-    compute = sub.add_parser("compute", help="run a built-in source computation").add_subparsers(
-        dest="compute_command", required=True)
-    for operation in OPERATIONS:
-        _add_operation_parser(compute, operation)
 
     console = command(sub, "console", "serve the interactive console on 127.0.0.1")
     console.add_argument("--port", type=int, help="override saved web port; 0 picks a free port")
@@ -449,6 +464,8 @@ _DISPATCH = {
     ("doctor", None): cmd_doctor, ("status", None): cmd_status, ("gate", None): cmd_gate,
     ("features", None): cmd_features, ("accept", None): cmd_accept, ("baseline", None): cmd_baseline, ("check", "run"): cmd_check_run,
     ("run", "show"): cmd_run_show, ("run", "cancel"): cmd_run_cancel,
+    ("run", "wait"): cmd_run_wait, ("run", "retry"): cmd_run_retry,
+    ("evidence", "export"): cmd_evidence_export, ("evidence", "replay"): cmd_evidence_replay,
     ("project", "inspect"): cmd_project_inspect,
     ("proposals", None): cmd_proposals, ("reject", None): cmd_reject,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,

@@ -126,7 +126,10 @@ def apply(project: Project, store: Store, proposal: Proposal) -> list[str]:
     if body["checks"]:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        from .evidence import backend_identity
+
         store.approve({manifest.digest(e["id"]): {"check_id": e["id"], "accepted_at": now(),
+                                                  "backend": backend_identity(manifest.require(e["id"])),
                                                   "proposal": proposal.digest} for e in body["checks"]})
     if body["features"]:
         path = project.root / FEATURES_RELATIVE

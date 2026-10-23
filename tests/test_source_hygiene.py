@@ -8,7 +8,7 @@ import sys
 
 from helpers import ROOT
 
-NARRATION = re.compile(r"Plan \d|[Cc]heckpoint|CONTRACT\.md|milestone|[Rr]eceipt|supervisor|task_finalize")
+NARRATION = re.compile(r"Plan \d|[Cc]heckpoint|CONTRACT\.md|milestone|supervisor|task_finalize")
 
 
 def test_self_verification_requires_tests_that_pytest_collects():

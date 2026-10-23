@@ -139,16 +139,26 @@ def parse_settings(value: Any) -> Settings:
         validate(value, SETTINGS_SCHEMA)
     except ValidationError as exc:
         raise ValueError(f"invalid settings: {exc.message}") from exc
-    disabled = dict.fromkeys("compare_contracts" if name == "check_proto_compatibility" else name
-                             for name in value.get("disabled_tools", ()))
-    return Settings(**{**value, "disabled_tools": tuple(disabled),
+    return Settings(**{**value, "disabled_tools": tuple(value.get("disabled_tools", ())),
                        "disabled_categories": tuple(value.get("disabled_categories", ())),
                        "mcp_categories": (None if value.get("mcp_categories") is None
                                           else tuple(value["mcp_categories"]))})
 
 
 def load_settings(project: Project) -> Settings:
-    return _load(settings_path(project), parse_settings, DEFAULT_SETTINGS)
+    def current(value: Any) -> Settings:
+        retired = {"contracts_languages", "source", "equivalence", "safety", "testing",
+                   "builds", "data", "runtime", "systems"}
+        if isinstance(value, dict):
+            value = dict(value)
+            for name in ("disabled_categories", "mcp_categories"):
+                if (isinstance(value.get(name), list) and all(isinstance(item, str) for item in value[name])
+                        and len(set(value[name])) == len(value[name])):
+                    value[name] = [category for category in value[name]
+                                   if not isinstance(category, str) or category not in retired]
+        return parse_settings(value)
+
+    return _load(settings_path(project), current, DEFAULT_SETTINGS)
 
 
 _T = TypeVar("_T")

@@ -9,8 +9,6 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-import pytest
-
 from helpers import DRIVER, scenario_check, vkit
 from vkit.console import bind
 from vkit.paths import open_project
@@ -188,31 +186,35 @@ def test_launch_defaults_save_restart_manual_edit_and_csrf(make_project):
                           capture_output=True, text=True, check=True).stdout == ""
 
 
-def test_category_settings_filter_calls_and_persist_mcp_configuration(make_project):
-    project = make_project({"README.md": "category controls\n"}, [], accept=False)
+def test_repository_category_settings_filter_calls_and_persist_mcp_configuration(make_project):
+    project = make_project({"README.md": "category controls\n", "ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])],
+                           accept=False)
     with _serve(project) as port:
         config = _config(port)
-        saved = {**config["settings"], "disabled_categories": ["contracts_languages"],
-                 "disabled_tools": ["compare_matchsets"], "mcp_exposure": "named", "mcp_categories": []}
+        saved = {**config["settings"], "disabled_categories": ["repository"],
+                 "disabled_tools": ["check_run"], "mcp_exposure": "named", "mcp_categories": []}
         assert _post(port, "/api/settings", saved, config["csrf_token"])[0] == 200
         updated = _config(port)
         assert updated["mcp_config"]["mcpServers"]["vkit"]["args"][-3:] == [
             "--exposure", "named", "--categories"]
-        assert "contracts_languages" in {category["id"] for category in updated["categories"]}
-        assert "analyze_regex_cost" not in {operation["name"] for operation in updated["operations"]}
-        status, raw, _ = _post(port, "/api/call", {"name": "analyze_regex_cost", "arguments": {}},
+        assert [category["id"] for category in updated["categories"]] == ["repository"]
+        status, raw, _ = _post(port, "/api/call", {"name": "check_run", "arguments": {"needed": True}},
                                config["csrf_token"])
         assert status == 200 and json.loads(raw) == {
             "is_error": True, "result": {"error": "unknown or unavailable tool"}}
     with _serve(project) as port:
         config = _config(port)
         assert config["settings"] == saved
-        enabled = {**saved, "disabled_categories": [], "mcp_categories": ["repository"]}
+        enabled = {**saved, "disabled_categories": [], "disabled_tools": [], "mcp_categories": ["repository"]}
         assert _post(port, "/api/settings", enabled, config["csrf_token"])[0] == 200
         config = _config(port)
-        names = {operation["name"] for operation in config["operations"]}
-        assert "analyze_regex_cost" in names and "compare_matchsets" not in names
+        names = {tool["name"] for tool in config["managed_tools"]}
+        assert "check_run" in names and "run_wait" in names
         assert config["mcp_config"]["mcpServers"]["vkit"]["args"][-2:] == ["--categories", "repository"]
+        status, raw, _ = _post(port, "/api/call", {"name": "check_run", "arguments": {"needed": True}},
+                               config["csrf_token"])
+        assert status == 200 and not json.loads(raw)["is_error"]
 
 
 def test_agent_configuration_and_settings_preserve_git_metadata(make_project):
@@ -259,17 +261,19 @@ def test_invalid_console_settings_are_reported_without_rewriting(make_project):
         assert settings_path.read_bytes() == malformed
 
 
-def test_console_tool_switches_filter_operations_and_dispatch_after_restart(make_project):
+def test_console_tool_settings_filter_durable_job_dispatch_after_restart(make_project):
     project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
     with _serve(project) as port:
         config = _config(port)
         assert "help" not in {tool["name"] for tool in config["managed_tools"]}
-        assert "compare_matchsets" in {tool["name"] for tool in config["managed_tools"]}
-        saved = {**config["settings"], "theme": "dark", "disabled_tools": ["compare_matchsets", "check_run"]}
+        managed = {tool["name"] for tool in config["managed_tools"]}
+        assert {"check_run", "run_wait", "evidence_export", "evidence_replay"} <= managed
+        saved = {**config["settings"], "theme": "dark", "disabled_tools": ["check_run", "run_cancel"]}
         status, raw, _ = _post(port, "/api/settings", saved, config["csrf_token"])
         assert status == 200 and json.loads(raw)["settings"] == saved
-        for name in saved["disabled_tools"]:
-            status, raw, _ = _post(port, "/api/call", {"name": name, "arguments": {}}, config["csrf_token"])
+        for name, arguments in (("check_run", {"needed": True}), ("run_cancel", {"run_id": "missing"})):
+            status, raw, _ = _post(port, "/api/call", {"name": name, "arguments": arguments},
+                                   config["csrf_token"])
             assert status == 200 and json.loads(raw) == {
                 "is_error": True, "result": {"error": "unknown or unavailable tool"}}
         invalid = {**saved, "disabled_tools": ["help"]}
@@ -278,11 +282,14 @@ def test_console_tool_switches_filter_operations_and_dispatch_after_restart(make
     with _serve(project) as port:
         config = _config(port)
         assert config["settings"] == saved
-        assert "compare_matchsets" not in {tool["name"] for tool in config["operations"]}
-        assert "compare_matchsets" in {tool["name"] for tool in config["managed_tools"]}
+        assert "run_wait" in {tool["name"] for tool in config["managed_tools"]}
         status, raw, _ = _post(port, "/api/settings", {**saved, "disabled_tools": []}, config["csrf_token"])
         assert status == 200
-        assert "compare_matchsets" in {tool["name"] for tool in _config(port)["operations"]}
+        status, raw, _ = _post(port, "/api/call", {
+            "name": "check_run", "arguments": {"needed": True, "wait_seconds": 0},
+        }, config["csrf_token"])
+        response = json.loads(raw)
+        assert status == 200 and not response["is_error"] and len(response["result"]["runs"]) == 1
 
 
 def test_mutating_routes_reject_untrusted_or_incomplete_requests(make_project):
@@ -311,31 +318,26 @@ def test_mutating_routes_reject_untrusted_or_incomplete_requests(make_project):
             assert not settings_path.exists()
 
 
-def test_console_lists_only_catalog_operations_and_uses_the_shared_dispatcher(make_project):
-    pytest.importorskip("greenery")
-    project = make_project({"maths.py": "def f(x):\n    return x\n", "ok.py": PASSES},
-                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["maths.py", "ok.py"])])
+def test_console_lists_only_core_repository_tools(make_project):
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
     with _serve(project) as port:
         config = _config(port)
-        names = {operation["name"] for operation in config["operations"]}
-        assert names == {"analyze_affine_accesses", "analyze_dependencies", "analyze_loop_termination", "analyze_regex_cost", "analyze_roundoff", "check_api_sequences", "check_llvm_refinement", "check_rust_safety", "check_release_artifact", "check_c_safety",
-                         "compare_iteration_sets", "minimize_cover", "compare_migrations",
-                         "compare_network_paths", "explain_trace_interval", "infer_trace_relations", "inspect_c_branch_reachability", "inspect_openapi_parser_consistency", "find_cache_key_collision", "find_data_flows", "find_grammar_ambiguity", "generate_configurations", "resolve_dependencies",
-                         "synthesize_function", "compare_rational_expressions", "find_behavioral_difference", "compare_sql_queries", "compare_wheels", "compare_workload_cost", "replay_retained_cases",
-                         "compare_contracts", "check_history", "compare_matchsets", "compare_authorization_policies",
-                         "check_protocol_model", "check_rewrite", "check_semantic_merge", "preview_typescript_symbol_rename", "prove_c_contract", "simplify_function", "reduce_failure", "mutation_survivors"}
-        assert not names & {"status", "features", "check_run", "run_get", "run_cancel", "gate", "propose"}
-        assert all("input_schema" in operation for operation in config["operations"])
+        names = {tool["name"] for tool in config["managed_tools"]}
+        assert names == {"status", "features", "check_run", "run_get", "run_cancel", "run_wait",
+                         "evidence_export", "evidence_replay", "propose", "gate"}
+        assert "operations" not in config
+        assert all(tool["category"] == "repository" for tool in config["managed_tools"])
         status, raw, _ = _post(port, "/api/call", {
-            "name": "compare_matchsets",
-            "arguments": {"old_pattern": "a|bc", "new_pattern": "a|bd", "alphabet": "abcd"},
+            "name": "check_run",
+            "arguments": {"check_ids": ["ok"], "wait_seconds": 10},
         }, config["csrf_token"])
         response = json.loads(raw)
-        assert (status, response["is_error"], response["result"]["status"],
-                response["result"]["old_only"], response["result"]["new_only"]) == (
-                    200, False, "COUNTEREXAMPLE", "bc", "bd")
-        status, raw, _ = _post(port, "/api/call", {"name": "propose", "arguments": {}}, config["csrf_token"])
-        assert status == 400 and json.loads(raw)["error"] == "unknown console operation"
+        assert (status, response["is_error"], response["result"]["runs"][0]["outcome"]["result"]) == (
+            200, False, "PASS")
+        status, raw, _ = _post(port, "/api/call", {"name": "compare_matchsets", "arguments": {}},
+                               config["csrf_token"])
+        assert status == 400 and json.loads(raw)["error"] == "unknown console tool"
 
 
 def test_console_check_run_does_not_accept_an_unapproved_check(make_project):
@@ -394,35 +396,25 @@ def test_console_run_cancel_stops_a_running_check(make_project):
         assert (view["outcome"]["result"], view["outcome"]["reason"]) == ("BLOCKED", "cancelled")
 
 
-def test_overlapping_console_starts_share_a_run_before_its_record_exists(make_project, monkeypatch):
-    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
-    entered = threading.Event()
-    release = threading.Event()
-    started: list[str] = []
-
-    def hold_runner(project, manifest, check_id, *, store, run_id):
-        started.append(check_id)
-        entered.set()
-        release.wait(timeout=10)
-
-    monkeypatch.setattr("vkit.runner.run_check", hold_runner)
+def test_console_job_outlives_server_restart(make_project):
+    slow = DRIVER + 'import time\ntime.sleep(0.5)\nreport([("ok", True, "finished")])\n'
+    project = make_project({"slow.py": slow},
+                           [scenario_check("slow", "slow.py", scenarios=["ok"], inputs=["slow.py"])])
     with _serve(project) as port:
         token = _config(port)["csrf_token"]
-        request = {"name": "check_run", "arguments": {"check_ids": ["ok"], "wait_seconds": 0}}
-        first: list[tuple[int, bytes, dict[str, str]]] = []
-        first_request = threading.Thread(target=lambda: first.append(
-            _post(port, "/api/call", request, token)))
-        first_request.start()
-        try:
-            assert entered.wait(timeout=5)
-            second_status, second_raw, _ = _post(port, "/api/call", request, token)
-            first_request.join(timeout=5)
-            assert not first_request.is_alive()
-            first_status, first_raw, _ = first[0]
-            first_response = json.loads(first_raw)["result"]["runs"][0]
-            second_response = json.loads(second_raw)["result"]["runs"][0]
-            assert (first_status, second_status, first_response["run_id"] == second_response["run_id"],
-                    started) == (200, 200, True, ["ok"])
-        finally:
-            release.set()
-            first_request.join(timeout=5)
+        status, raw, _ = _post(port, "/api/call", {
+            "name": "check_run", "arguments": {"check_ids": ["slow"], "wait_seconds": 0},
+        }, token)
+        response = json.loads(raw)
+        assert status == 200 and not response["is_error"]
+        run_id = response["result"]["runs"][0]["run_id"]
+    with _serve(project) as port:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            status, raw = _get(port, f"/api/run?id={run_id}")
+            view = json.loads(raw)
+            assert status == 200
+            if view["state"] == "done":
+                break
+            time.sleep(0.05)
+        assert (view["state"], view["outcome"]["result"]) == ("done", "PASS")

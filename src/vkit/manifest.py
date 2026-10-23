@@ -7,13 +7,15 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .budgets import Budget
-from .inputs import canonical_digest, matches
+from .inputs import canonical_digest
 from .paths import Project
 from .schemas import MANIFEST_V2, SchemaValidationError, validate
 from .verifiers.obligation import CaseObligation, PropertyObligation, TheoremObligation
-from .verifiers.spec import (BuildCheck, BuildEntryPoint, CheckKind, CheckSpec, DomainBounds, FingerprintSpec, HypothesisSettings, LeanCheck,
-                             LeanProfile, ModuleRef, NodeTestCheck, PinnedRunner, Prerequisite, PropertyCheck,
-                             PytestCheck, ReplaySettings, ScenarioCheck, StaticCheck, SubjectRef, TlcCheck, ToolchainRef)
+from .verifiers.spec import (Assurance, CheckKind, CheckSpec, DomainBounds, ExternalCheck, FingerprintSpec,
+                             HypothesisSettings, LeanCheck, LeanProfile, ModuleRef, NodeTestCheck,
+                             PinnedCommand, PinnedFile, PinnedRunner, Prerequisite, PropertyCheck,
+                             PytestCheck, ReplaySettings, ScenarioCheck, StaticCheck, SubjectRef, TlcCheck,
+                             ToolchainRef)
 
 MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 
@@ -80,6 +82,10 @@ def _artifact_name(raw: str, check_id: str) -> str:
     parts = PurePosixPath(raw.replace("\\", "/")).parts
     if not parts or Path(raw).is_absolute() or ".." in parts:
         raise ManifestError(f"check {check_id!r}: artifact {raw!r} must be a relative name inside the run directory")
+    reserved = {"record.json", "receipt.json", "job.json", "lock", "cancel", "worker.log", "worker.json",
+                "producer-request.json", "producer-receipt.json", "checker-request.json", "checker-receipt.json"}
+    if parts[0] == "snapshot" or raw in reserved:
+        raise ManifestError(f"check {check_id!r}: artifact {raw!r} is reserved for job infrastructure")
     return raw
 
 
@@ -104,16 +110,20 @@ def _build_check(entry: dict, project: Project) -> CheckSpec:
     timeout = float(entry["timeout_seconds"])
     if not 0 < timeout <= MAX_TIMEOUT_SECONDS:
         raise ManifestError(f"check {check_id!r}: timeout_seconds must be in (0, {MAX_TIMEOUT_SECONDS}]")
+    kind = CheckKind(entry["kind"])
     cwd = _inside(project.root, entry.get("cwd") or ".", "cwd", check_id)
+    if kind is CheckKind.EXTERNAL and Path(entry.get("cwd") or ".").is_absolute():
+        raise ManifestError(f"check {check_id!r}: external cwd must be repository-relative")
     inputs = list(entry.get("inputs", ()))
     for path in inputs:
         _inside(project.root, path, "input", check_id)
-    kind = CheckKind(entry["kind"])
     native = {CheckKind.LEAN: lambda: (entry["challenge"]["path"],
                                        *((entry["solution"]["path"],) if "solution" in entry else ())),
-              CheckKind.TLC: lambda: (entry["model"]["path"], entry["config"])}.get(kind, lambda: ())()
+              CheckKind.TLC: lambda: (entry["model"]["path"], entry["config"]),
+              CheckKind.EXTERNAL: lambda: (entry["specification"],)}.get(kind, lambda: ())()
     for path in native:
-        relative = _inside(project.root, str(cwd / path), "native input", check_id).relative_to(
+        native_path = path if kind is CheckKind.EXTERNAL else str(cwd / path)
+        relative = _inside(project.root, native_path, "native input", check_id).relative_to(
             project.root.resolve()).as_posix()
         if inputs and relative not in inputs:
             inputs.append(relative)
@@ -139,57 +149,31 @@ def _build_check(entry: dict, project: Project) -> CheckSpec:
                              required_scenarios=tuple(CaseObligation(n) for n in names), budgets=budgets)
     if kind is CheckKind.STATIC:
         return StaticCheck(**common, command=_command(check_id, entry["command"]))
-    if kind is CheckKind.BUILD:
-        build = entry["build"]
-        profile_paths = (
-            build["build_constraints"],
-            build["runtime_requirements"],
-            build["wheelhouse"],
+    if kind is CheckKind.EXTERNAL:
+        if "\\" in entry["specification"]:
+            raise ManifestError(f"check {check_id!r}: specification must use a repository-relative POSIX path")
+        specification = _inside(project.root, entry["specification"], "formal specification", check_id)
+        specification_relative = specification.relative_to(project.root.resolve()).as_posix()
+        if specification_relative != entry["specification"]:
+            raise ManifestError(f"check {check_id!r}: specification path must be normalized")
+        obligations = _distinct_nonempty(check_id, "obligation", tuple(entry["obligations"]))
+        evidence = _distinct_nonempty(
+            check_id, "evidence artifact", tuple(_artifact_name(path, check_id) for path in entry["evidence_artifacts"])
         )
-        resolved_paths = [
-            _inside(project.root, path, "build profile input", check_id)
-            for path in profile_paths
-        ]
-        for path, resolved in zip(profile_paths, resolved_paths, strict=True):
-            relative = resolved.relative_to(project.root.resolve()).as_posix()
-            if not any(matches(relative, pattern) for pattern in inputs):
-                raise ManifestError(
-                    f"check {check_id!r}: build profile input {path!r} must also be declared in inputs"
-                )
-        if not resolved_paths[2].is_dir():
-            raise ManifestError(
-                f"check {check_id!r}: wheelhouse must name a repository directory"
-            )
-        uv = Path(build["uv_executable"])
-        if not uv.is_absolute():
-            raise ManifestError(
-                f"check {check_id!r}: uv_executable must be an absolute tool path"
-            )
-        entries = tuple(
-            BuildEntryPoint(
-                item["name"],
-                tuple(item["args"]),
-                item["expected_exit_code"],
-                item["expected_stdout"],
-                item["expected_stderr"],
-            )
-            for item in build["entry_points"]
-        )
-        if len({item.name for item in entries}) != len(entries):
-            raise ManifestError(f"check {check_id!r}: entry-point names must be unique")
-        return BuildCheck(
+        return ExternalCheck(
             **common,
-            uv_executable=str(uv),
-            uv_version=build["uv_version"],
-            uv_sha256=build["uv_sha256"],
-            python_version=build["python_version"],
-            python_sha256=build["python_sha256"],
-            build_constraints=build["build_constraints"],
-            wheelhouse=build["wheelhouse"],
-            runtime_requirements=build["runtime_requirements"],
-            imports=tuple(build["imports"]),
-            entry_points=entries,
-            incremental_baseline_sha=build.get("incremental_baseline_sha"),
+            backend=_pinned_command(check_id, "backend", entry["backend"]),
+            checker=_pinned_command(check_id, "checker", entry["checker"]),
+            specification=specification_relative,
+            obligations=obligations,
+            assumptions=tuple(entry["assumptions"]),
+            model_scope=entry["model_scope"],
+            assurance=Assurance(entry["assurance"]),
+            evidence_artifacts=evidence,
+            trusted_tool_dependencies=tuple(
+                _pinned_file(check_id, "trusted tool dependency", item)
+                for item in entry.get("trusted_tool_dependencies", ())
+            ),
         )
     if kind in (CheckKind.PYTEST, CheckKind.PROPERTY, CheckKind.NODE_TEST):
         runner = dict(
@@ -240,3 +224,22 @@ def _build_check(entry: dict, project: Project) -> CheckSpec:
 
 def _toolchain(raw: dict) -> ToolchainRef:
     return ToolchainRef(raw["tool"], raw.get("version"), raw.get("comparator"), raw.get("jar_sha256"))
+
+
+def _pinned_file(check_id: str, what: str, raw: dict) -> PinnedFile:
+    path = Path(raw["path"])
+    if not path.is_absolute():
+        raise ManifestError(f"check {check_id!r}: {what} path must be absolute")
+    return PinnedFile(str(path.resolve()), raw["sha256"])
+
+
+def _pinned_command(check_id: str, what: str, raw: dict) -> PinnedCommand:
+    argv = tuple(raw.get("argv", ()))
+    if any(not isinstance(part, str) or not part for part in argv):
+        raise ManifestError(f"check {check_id!r}: {what} argv entries must be nonempty strings")
+    return PinnedCommand(
+        executable=_pinned_file(check_id, f"{what} executable", raw["executable"]),
+        argv=argv,
+        dependencies=tuple(_pinned_file(check_id, f"{what} dependency", item)
+                           for item in raw.get("dependencies", ())),
+    )

@@ -152,4 +152,6 @@ def run(argv: Sequence[str], *, cwd: Path, stdout_path: Path, stderr_path: Path,
             tree.close()
             for reader in readers:
                 reader.join()
+        if time.monotonic() >= deadline:
+            return Exit(None, timed_out=True)
         return Exit(code, output_limited=output_limited.is_set())

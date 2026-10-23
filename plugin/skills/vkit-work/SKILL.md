@@ -3,39 +3,58 @@ name: vkit-work
 description: Make a change in a repository vkit verifies and prove it with recorded evidence. Use when implementing, fixing, or reviewing code in a repository that has verification/manifest.json, or when the vkit Stop hook says checks are stale.
 ---
 
-# Work under vkit
+# Work under VKit
 
-vkit records what each registered check established about the code as it is now. Evidence is keyed by the
-content of each check's inputs, so an edit makes the evidence for that check stale and nothing else.
+## Evidence model
 
-## Loop
+| Item | Meaning |
+| --- | --- |
+| Registered check | Records scoped evidence about the current accepted definition and inputs. |
+| Input edit | Makes evidence stale for checks that read those inputs. |
+| Checker or policy change | Can also invalidate evidence and require renewed acceptance. |
+| Passing evidence | Retains the check's category and scope. It does not establish general correctness. |
 
-Call `help` to discover enabled categories and tools. Request an exact tool schema with `help(name=...)`.
-In compact exposure, the names below are targets for `invoke(name=..., arguments={...})`.
-Named exposure allows direct calls. An unavailable repository category prevents this loop.
+## Discover the interface
 
-1. Before editing, call `status` with the paths you expect to touch. It lists the checks that read those paths,
-   what each kind of evidence establishes and does not, and the features those checks cover. `features` with
-   a query finds what a vague report refers to and how a user reaches it.
-2. Make the change.
-3. Call `check_run` with `needed: true`. It runs exactly the checks whose inputs changed. Read each run with
-   `run_get`; a FAIL lists the scenarios or tests that failed and what was observed.
-4. Fix what failed and repeat until `gate` returns READY.
+| Step or mode | Action |
+| --- | --- |
+| Discovery | Call `help` to find enabled categories and tools. |
+| Exact contract | Call `help(name=...)` before using the tool. |
+| Compact exposure | Use the names below as `invoke(name=..., arguments={...})` targets. |
+| Named exposure | Call the tool directly. |
+| Unavailable repository category | The work loop cannot run. |
 
-## Reading results
+## Work loop
 
-- READY: every registered check passed against the current inputs. Report it with the category of each check:
-  a scenario PASS says these cases produced these results, not that the code is correct in general.
-- REJECTED: a check ran and failed. That is an answer; fix the code, not the check.
-- BLOCKED: no answer yet. The reason says why: `stale` or `missing` (run it), `not_approved` (a human must run
-  `vkit accept`), `prerequisite_missing` (a tool is not installed), `timeout`, `source_changed` (files changed
-  during the run; run again).
+1. Before editing, call `status` with the paths you expect to touch. Read the affected checks, evidence limits, and covered features.
+2. If the report is vague, use `features` with a query to find the behavior and how a user reaches it.
+3. Make the change.
+4. Call `check_run` with `needed: true` to run the needed checks.
+5. Read each attempt with `run_get`. A FAIL reports the failed scenarios or tests and their observations.
+6. Fix failures and repeat until `gate` returns READY.
+
+## Read gate results
+
+| Gate | Meaning | Action |
+| --- | --- | --- |
+| READY | Every registered check passed against current inputs. | Report the evidence category and scope of each check. |
+| REJECTED | A check ran and failed. | Fix the code. Do not weaken the check. |
+| BLOCKED | No valid answer yet. | Read the reason and resolve it before claiming a pass. |
+
+| Blocked reason | Response |
+| --- | --- |
+| `stale`, `missing` | Run the check. |
+| `not_approved` | A human must accept the definition through `vkit accept`. |
+| `prerequisite_missing` | Report the missing tool. |
+| `timeout` | Report that the run did not reach a valid decision. |
+| `source_changed` | Files changed during the run. Run again. |
+
+A scenario PASS establishes the observed results for those cases. It does not establish correctness for all inputs.
 
 ## Rules
 
-- A check that has not run has not passed. Never report a run you have not read.
-- You cannot add or change what a check runs. A changed definition is BLOCKED until a human accepts it. If a
-  check is wrong, say so and use `propose`; do not edit the manifest to make it pass.
-- When you fix a mistake that could recur, propose the check that would have caught it: a static rule for a
-  banned pattern, or a scenario for the behavior. A rule the machine enforces outlasts a note in a prompt.
-- Do not commit, push, or merge because the gate is READY. READY is evidence, not permission.
+- A check that has not run has not passed. Never report an attempt you have not read.
+- Do not add or change what a check runs. Changed definitions remain BLOCKED until a human accepts them.
+- If a check is wrong, explain the problem and use `propose`. Do not edit the manifest to force a pass.
+- When a fix prevents a recurring mistake, propose a check that would have caught it. Use a static rule for a banned pattern or a scenario for behavior.
+- READY is evidence, not permission to commit, push, or merge.

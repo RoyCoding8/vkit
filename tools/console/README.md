@@ -1,33 +1,45 @@
 # Console assets
 
-The local console uses official Material Web components, Material 3 color roles
-generated from vkit's blue, and self-hosted Roboto. It can run selected checks,
-cancel active runs, and invoke installed computations. Computation forms use
-each operation's input schema, and results retain their status and scope.
-Running registered checks updates gate evidence. Most computations return a separate result;
-`check_release_artifact` runs an accepted build check and records its evidence.
+## Runtime behavior
 
-Built assets are checked into `src/vkit/console-assets` and ship in the Python
-package. Running the console needs neither Node nor an internet connection.
-Console preferences are saved under the repository's Git common directory in
-`vkit/config.json`, usually `.git/vkit/config.json`.
-Launch defaults use the user config directory's `vkit/config.json`, or the file selected by
-`VKIT_CONFIG`. **Setup & tools** shows both paths and edits each file separately.
-**Project settings > Show tools** opens category switches, individual controls, and agent category scope.
-MCP exposure can be Compact or Named. The **Computations** picker uses the same searchable, category-filtered dialog.
+| Area | Behavior |
+| --- | --- |
+| Interface | Official Material Web components, Material 3 color roles generated from VKit's blue, and self-hosted Roboto. |
+| Jobs | Run registered checks, show durable runs and logs, and cancel active runs. |
+| Gate evidence | Updates only when the accepted checker's recorded inputs and outcome match. |
+| Packaged assets | Checked into `src/vkit/console-assets` and included in the Python package. |
+| Runtime requirements | No Node or internet connection needed to run the console. |
 
-To rebuild from the pinned dependencies:
+## Settings locations
+
+| Settings | Location |
+| --- | --- |
+| Repository preferences | `<git common directory>/vkit/config.json`, usually `.git/vkit/config.json`. |
+| Launch defaults | User config directory's `vkit/config.json`, or the file selected by `VKIT_CONFIG`. |
+| File controls | **Setup & tools** shows and edits the two files separately. |
+| Tool controls | **Project settings > Show tools** provides category switches, individual controls, and agent category scope. |
+| MCP exposure | Compact or Named. |
+
+## Rebuild the assets
+
+Run from the repository root:
 
 ```powershell
 npm ci --prefix tools/console
 npm run build --prefix tools/console
 ```
 
-`icons.svg` contains selected official Google Material Icons, pinned to the
-revision in `icons.mjs`. Regenerate it with `node tools/console/icons.mjs`
-(requires internet), then rebuild. Material Web, its color utilities, and the
-icons use Apache 2.0; Roboto uses the SIL Open Font License. The generated
-assets include their license texts.
+To refresh the pinned icons:
 
-References: https://material-web.dev/ and
-https://github.com/google/material-design-icons.
+1. Run `node tools/console/icons.mjs`. This requires internet access.
+2. Rebuild the console assets.
+
+## Sources and licenses
+
+| Asset | Source or pin | License |
+| --- | --- | --- |
+| Material Web and color utilities | [Material Web](https://material-web.dev/) | Apache 2.0. |
+| `icons.svg` | Selected [Google Material Icons](https://github.com/google/material-design-icons), pinned to the revision in `icons.mjs`. | Apache 2.0. |
+| Roboto | Self-hosted font files. | SIL Open Font License. |
+
+Generated assets include the license texts.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -129,13 +131,31 @@ def test_run_commands_reject_path_fragment_ids_as_invalid_input(make_project):
         }
 
 
-def test_a_run_whose_runner_died_reads_as_interrupted(make_project):
+def test_a_run_survives_its_submitting_client(make_project):
+    project = make_project({"ok.py": DRIVER + 'import time; time.sleep(2)\nreport([("ok", True, "finished")])\n'},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    client = _start_in_background(project, "ok")
+    run_id = _wait_for_running(project)
+    client.kill()
+    client.wait(timeout=30)
+    code, body = vkit(project, "run", "wait", "--run", run_id, "--timeout", "30")
+    assert (code, body["state"], body["outcome"]["result"]) == (0, "done", "PASS")
+
+
+def test_a_run_whose_worker_died_reads_as_interrupted(make_project):
     project = make_project({"slow.py": SLOW_TREE},
                            [scenario_check("slow", "slow.py", scenarios=["never"], inputs=["slow.py"], timeout=120)])
     runner = _start_in_background(project, "slow")
     run_id = _wait_for_running(project)
-    runner.kill()
-    runner.wait(timeout=30)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        _, record = vkit(project, "run", "show", "--run", run_id)
+        if record["state"] == "running":
+            break
+        time.sleep(0.1)
+    assert record["state"] == "running"
+    os.kill(record["worker_pid"], signal.SIGTERM)
+    runner.communicate(timeout=30)
     code, body = vkit(project, "run", "show", "--run", run_id)
     assert (code, body["state"]) == (3, "interrupted")
 

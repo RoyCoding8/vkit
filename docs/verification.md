@@ -1,131 +1,152 @@
-# Verification reference
+# Verification semantics
 
-## Model
+## Core terms
 
-A check is an entry in `verification/manifest.json` (schema version 2, [schema](../schemas/manifest.v2.json)).
-It runs only after a human accepts its exact definition with `vkit accept`. Any change to the entry changes its
-digest, and the changed check is BLOCKED with `not_approved` until it is accepted again.
-
-Each run records evidence under a key made of three digests:
-
-- the check's definition,
-- the content of its inputs (CRLF folded to LF),
-- the pinned baseline, when the check has one.
-
-`inputs` lists files, directories or globs. An empty list includes every tracked and untracked-but-not-ignored file.
-Ignored files and external state are outside that snapshot. A check that depends on them needs separate
-identity checks. Files that look like secrets (`.env*`, private keys, credential files) are never read.
-
-A check's state is computed from the store and the files on disk:
-
-| State | Meaning |
+| Term | Meaning |
 | --- | --- |
-| `fresh_pass`, `fresh_fail`, `fresh_blocked` | The latest run for the current key had this result |
-| `stale` | The check has run, but not against the current inputs |
-| `missing` | The check has never run |
-| `not_approved` | The current definition has not been accepted |
+| Check | Accepted entry in `verification/manifest.json`, schema version 2. Acceptance binds the definition and current checker identity. |
+| Job | Content-derived identity that also binds frozen declared inputs, the baseline, and VKit's validation policy. |
+| Run | Unique execution attempt for a job. |
 
-The gate is READY when every check is `fresh_pass`, REJECTED when any is `fresh_fail`, and BLOCKED otherwise.
+## Read each result dimension separately
 
-## Outcomes
-
-| Outcome | Meaning |
+| Dimension | Values and meaning |
 | --- | --- |
-| PASS | The check's own report satisfied every required obligation |
-| FAIL | The report shows a required obligation failed, or a budget was exceeded |
-| BLOCKED | No decision. The reason is one of `not_approved`, `input_missing`, `prerequisite_missing`, `tool_missing`, `timeout`, `cancelled`, `launch_failed`, `artifact_missing`, `artifact_malformed`, `artifact_empty`, `scenario_unknown`, `source_changed` |
+| Execution | `queued`, `running`, `done`, `interrupted`. |
+| Check outcome | `PASS`: required evidence accepted. `FAIL`: check policy failed. `BLOCKED`: no valid decision. |
+| Claim outcome | `established`, `refuted`, or `unknown`, within the recorded model and assumptions. |
+| Assurance | `empirical`, `finite_model`, `kernel_proof`, or external `trusted_engine`. |
+| Freshness | `fresh_pass`, `fresh_fail`, `fresh_blocked`, `stale`, `missing`, `not_approved`. |
 
-An exit code alone never establishes PASS. Each kind writes a structured report that its adapter reads. A run
-whose inputs change while it executes is BLOCKED with `source_changed`.
-
-## Kinds
-
-| Kind | Report | Obligations |
+| Example | Check outcome | Claim outcome |
 | --- | --- | --- |
-| `scenario` | [check-artifact.v1.json](../schemas/check-artifact.v1.json): each scenario's id, PASS or FAIL, observation, and optional measurements | `required_scenarios`, `budgets` |
-| `pytest`, `property` | JSON from vkit's pytest plugin | `required_tests`; `property` also pins Hypothesis settings |
-| `node_test` | TAP from vkit's Node reporter | `required_tests` |
-| `static` | SARIF 2.1 | no finding outside the pinned baseline |
-| `lean` | the Lean runner or comparator report | `theorems`, `permitted_axioms` |
-| `tlc` | TLC output | `properties` at the declared `bounds` |
-| `build` | `build.json` from vkit's build runner | Paired offline wheel builds and declared clean-install imports and entry-point outputs |
+| Rejected Lean proof | `FAIL` | `unknown`. The theorem has not been refuted. |
+| Real TLC counterexample | `FAIL` | `refuted` in the finite model. |
+| External rejection or uncertainty | `BLOCKED` | `unknown`. |
 
-Commands are argument arrays with two placeholders, `{{run_dir}}` and `{{python}}`, and are never passed to a
-shell. A check runs with vkit's source on `PYTHONPATH`, inside a Windows Job Object or a POSIX process group, so
-timeout and cancel stop everything it started.
+## Gate decisions
 
-### Budgets and baselines
+| Gate | Condition |
+| --- | --- |
+| `READY` | All registered checks have intact, fresh passing evidence. |
+| `REJECTED` | A current check failed its policy. |
+| `BLOCKED` | Any other state. |
 
-A scenario artifact may report `measurements` (`name`, `value`, `unit`, `better`). A `budgets` entry fails the
-run when a measurement passes its `limit` in the worse direction, or regresses more than `max_regression_pct`
-from the pinned baseline. A regression budget with no baseline is reported in `unchecked_budgets`, not failed.
-`vkit baseline --check ID` pins the measurements and static findings of a finished run.
+A READY gate preserves each check's evidence category. It does not promote tests into proofs.
 
-### Lean
+## Supported checks
 
-The `reviewed_proof_sources` profile rechecks human-reviewed sources with the kernel and audits axioms. The
-`unreviewed_agent` profile checks an agent's `solution` module against the `challenge` with
-[comparator](https://github.com/leanprover/comparator). It also requires `challenge_sha256`, so editing the
-statements blocks the check until a human accepts the new digest. See [examples/lean-proof](../examples/lean-proof/README.md).
+| Kind | Evidence and scope |
+| --- | --- |
+| `scenario` | Named observations in a structured artifact, with optional measurement budgets. |
+| `pytest`, `node_test` | Reports for every required test. |
+| `property` | Sampled Hypothesis tests with accepted generator settings. |
+| `static` | SARIF findings compared with an accepted baseline. |
+| `lean` | Kernel-checked theorems and an axiom audit. Supports reviewed-source and unreviewed-comparator profiles. |
+| `tlc` | Exhaustive finite-model checking at recorded bounds and configuration. |
+| `external` | Pinned producer and independently pinned checker with a claim-bound receipt. |
 
-### Builds
+See the [backend protocol](backend-protocol.md) for extension. The installed package excludes the retired utility catalog and build check.
 
-A `build` check pins its interpreter, uv executable, build constraints, wheelhouse, and runtime requirements.
-It compares two offline builds, installs each wheel in a clean environment, and checks the declared imports
-and entry-point outputs. See [approved build checks](wheel-model.md#approved-build-checks) for the supported
-profile and optional historical baseline.
+## Declare the input closure
 
-## Proposals
+| Rule | Behavior |
+| --- | --- |
+| `inputs` selectors | Files, directories, or globs from tracked and untracked nonignored source. |
+| Empty `inputs` | Selects the whole nonignored tree. |
+| Secret-looking paths | Excluded. |
+| Content identity | Normalizes CRLF to LF. |
+| Capture | Copies selected bytes before execution and verifies copied digests. |
+| Missing patterns | Block execution. |
+| External specification | Included automatically. |
 
-Agents call the MCP `propose` tool with manifest entries, feature entries and new files. A proposal may only add
-files. `vkit proposals` lists pending ones. `vkit accept --proposal <digest>` writes them into the working tree
-and accepts their check definitions. `vkit reject` discards one.
+Declare every required source, specification, model, configuration, and dependency.
 
-## Feature map
+| Outside the snapshot by default | How to account for it |
+| --- | --- |
+| Ignored files | Capture or pin separately when required. |
+| Remote services and environment state | Capture or pin separately when possible. |
+| Runtime libraries | Declare trusted dependencies. Native runtime libraries remain environment assumptions. |
+| Arbitrary code dependencies | Declare the closure. VKit does not infer it. |
 
-`verification/features.json`, schema version 2. Each feature has an `id`, a `behavior`, `how_to_reach` steps,
-`entry_points`, the checks that cover it (`covered_by`), and known `gaps`. A feature is verified when it has no
-gaps, its entry points exist, and every covering check is `fresh_pass`. The map holds no expected results;
-those live in the checks.
+## Freshness and acceptance
 
-## Storage
+| Event | Effect |
+| --- | --- |
+| Selected content, accepted policy, checker identity, or baseline changes | Existing evidence no longer satisfies the current gate. |
+| Checker changes | Requires renewed acceptance. |
+| Source changes during execution | Blocks publication as passing evidence. |
+| Native Lean unreviewed profile | Also binds the challenge digest. The comparator checks the solution against accepted statements. |
 
-Everything lives under `<git common dir>/vkit/`, so every worktree of a repository shares it. That covers run
-records and logs, evidence pointers, accepted digests, baselines and proposals. A run holds an OS file lock while
-it lives. A run that reads as `running` but whose lock is free is reported as `interrupted`.
+## Run lifecycle
 
-This is vkit's own subdirectory, not Git's configuration. Writing it does not change remote URLs,
-branches, commits, or the staging index. Git does not include these files in commits or pushes.
-The location keeps local verification state attached to the repository and shared across its worktrees.
-An external application-data directory could serve the same purpose; the Git directory is a storage choice.
+| Command or event | Behavior |
+| --- | --- |
+| `check run` | Submit and wait. |
+| `check run --detach` | Return after capture and worker launch. |
+| `run show`, `run wait`, `run cancel`, `run retry` | Operate independently of the submitting client. |
+| Cancellation or deadline | Stop descendants through a Windows Job Object or POSIX process group. |
+| Worker loss | Report interrupted execution. Never a pass. |
+| Explicit submission | Creates a separate attempt. Identical content retains the job ID. |
 
-## Local console
+## Retained evidence
 
-`vkit console --project <repo>` serves the console on `127.0.0.1`. It can start registered checks,
-request cancellation, and invoke installed computations. Starting a check preserves the CLI/MCP
-acceptance requirement. Most computations do not create gate evidence; `check_release_artifact`
-runs an approved build check and records its evidence. Accepting definitions and applying proposals
-remain CLI actions.
+| Attempt type | Retained files |
+| --- | --- |
+| Finished attempt | `job.json`, `record.json`, `snapshot/`, reports, logs, and `receipt.json`. |
+| External attempt | Also `evidence/`, checker requests, and checker receipts. |
 
-Setup & tools saves display settings in `<git common dir>/vkit/config.json`. The file is local Git
-metadata, shared by the repository's worktrees and excluded from commits. It controls the theme,
-collapsed sidebar, refresh interval, and run-history limit. It cannot change verifier rules, executable
-paths, check definitions, or accepted digests.
+The integrity chain is:
 
-**Project settings > Show tools** opens a searchable, scrollable tool list. Saving settings
-persists category and individual visibility, MCP exposure, and agent category scope in the same JSON file.
-Compact MCP advertises help and invoke. Named exposure lists enabled tools individually. Reconnect after
-changing exposure or startup scope. Disabled calls are refused immediately. See [tool discovery](tool-discovery.md).
-The **Launch defaults** form separately saves the default repository, port, and browser preference
-in the user's config directory, or at `VKIT_CONFIG`. These defaults apply to future launches.
+1. Evidence pointer hashes the final record.
+2. Record hashes the receipt.
+3. Receipt hashes retained artifacts and binds input closure and backend identity.
 
-Write requests require the console's same-origin session token. The server binds only to loopback;
-it is a local operator interface, not a remote multi-user administration service.
+## Export and replay
 
-The Rich TUI only selects a repository and starts, opens, or stops its web console.
-Use the web console for checks, logs, settings, and computations. Setup & tools also supplies
-copyable MCP configuration JSON using the server's Python environment and selected repository.
+| Operation | Requirements and result |
+| --- | --- |
+| `evidence export` | Refuses incomplete or damaged evidence. |
+| `evidence replay` | Requires matching current source, accepted definition, and checker identity. Captures the bundle and launches a fresh checker. |
+| Replay output | New attempt and receipt. |
+| Portability limit | Resolved tool identity and paths must match. Relocating a checker changes its identity. |
 
-## Exit codes
+## Trust and scope
 
-0 PASS or READY, 1 FAIL or REJECTED, 2 invalid request, 3 BLOCKED, 4 internal error, 5 unavailable.
+| Item | Boundary |
+| --- | --- |
+| Assurance labels | Describe the accepted checker contract. They do not establish that arbitrary code is a sound proof kernel. |
+| Acceptance review | Review the checker, specification, and dependencies. |
+| File hashes | Establish integrity relative to trusted local state. They are not signatures. |
+| Installation and store | Protect them from untrusted writers. |
+| Worker containment | Controls the process tree. It is not a filesystem sandbox. |
+| Formal proof | Covers the accepted statement under recorded assumptions. |
+| Model checking | Covers the declared finite configuration. |
+| Unestablished properties | Unmodeled implementation behavior, source-to-binary correspondence, termination, and correctness of undeclared dependencies. |
+
+## CI integration
+
+1. Run `check run` for the required checks.
+2. Export and archive evidence bundles.
+3. Use `gate --json` for the strict decision against current inputs.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | PASS or READY. |
+| `1` | FAIL or REJECTED. |
+| `2` | Invalid request. |
+| `3` | BLOCKED. |
+| `4` | Internal error. |
+| `5` | Unavailable interface. |
+
+A bounded `run wait` timeout returns BLOCKED and leaves the worker running.
+
+| Required formal CI control | Purpose |
+| --- | --- |
+| Real Lean proof | Accept a kernel-checked theorem. |
+| Lean `sorry` and disallowed axiom | Reject unfinished or unapproved proof assumptions. |
+| Exhaustive TLC check | Establish the property within the finite configuration. |
+| TLC counterexample | Refute the property within that configuration. |
+| Missing toolchain | Fail the script rather than skip. |
+
+A local core test pass alone does not establish formal backend execution.

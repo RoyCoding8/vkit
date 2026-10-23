@@ -276,8 +276,7 @@ p {
 .panel-body {
   padding: 0 28px 28px;
 }
-.settings-form,
-.computation-form {
+.settings-form {
   display: grid;
   gap: 20px;
   padding: 0 28px 28px;
@@ -300,10 +299,6 @@ p {
   --md-outlined-text-field-container-shape: 12px;
   --md-outlined-select-text-field-container-shape: 12px;
 }
-.json-field {
-  --md-outlined-text-field-input-text-font: ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-.operation-description,
 .field-help {
   color: var(--md-sys-color-on-surface-variant);
   font-size: 12px;
@@ -333,9 +328,7 @@ p {
 .action-feedback:empty {
   display: none;
 }
-.settings-message[data-state="error"],
-.error-message,
-.result-error {
+.settings-message[data-state="error"] {
   color: var(--md-sys-color-error);
 }
 .preference-feedback {
@@ -343,39 +336,6 @@ p {
   color: var(--md-sys-color-on-secondary-container);
   background: var(--md-sys-color-secondary-container);
   font-size: 12px;
-}
-.operation-description {
-  margin-top: -12px;
-  max-width: 900px;
-}
-.operation-result {
-  margin-top: 20px;
-  padding: 24px 28px;
-}
-.result-summary {
-  display: grid;
-  gap: 18px;
-}
-.result-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.result-detail h3 {
-  margin-bottom: 8px;
-}
-.result-json {
-  margin-top: 20px;
-  color: var(--md-sys-color-primary);
-  font-size: 13px;
-}
-.result-json summary {
-  cursor: pointer;
-  padding: 8px 0;
-}
-.result-json pre {
-  margin-top: 8px;
 }
 .overview-grid {
   display: grid;
@@ -412,25 +372,6 @@ p {
 .tool-option .field-help {
   display: block;
   margin-top: 4px;
-}
-.tool-option md-text-button {
-  max-width: 100%;
-  height: auto;
-  min-height: 40px;
-  text-align: left;
-  text-wrap: wrap;
-  overflow-wrap: anywhere;
-}
-#computation-operation {
-  justify-self: start;
-  max-width: min(100%, 480px);
-  height: auto;
-  min-height: 44px;
-  text-align: left;
-  text-wrap: wrap;
-  overflow-wrap: anywhere;
-  --md-outlined-button-container-shape: 12px;
-  --md-outlined-button-label-text-weight: 400;
 }
 .overview-grid + .panel {
   margin-top: 24px;
@@ -1120,15 +1061,11 @@ md-dialog {
   .panel-body {
     padding: 0 20px 20px;
   }
-  .settings-form,
-  .computation-form {
+  .settings-form {
     padding: 0 20px 20px;
   }
   .form-grid {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .operation-result {
-    padding: 20px;
   }
   .check-row,
   .activity-row {

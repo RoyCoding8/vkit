@@ -1,128 +1,117 @@
-# Repository architecture
+# Architecture
 
-Vkit has two execution paths. Registered checks publish evidence about approved repository inputs.
-Installed computations answer a fixed question and return their own scoped result. Most do not
-publish check evidence. `check_release_artifact` runs an accepted build check and records its evidence.
+## System map
 
-The CLI, MCP server, and console share these paths. Agent discovery comes from MCP `help`, including
-saved tool visibility. [Adding operations](adding-operations.md) describes the common `Operation` contract.
+CLI, MCP, and the console use one verification service. The manifest owns accepted check definitions. Transports submit registered checks rather than arbitrary commands.
 
 ```mermaid
-flowchart TD
-    CLI[CLI] --> Query[Query and derived state]
-    MCP[MCP server] --> Query
-    Console[Console HTTP server] --> Query
-    TUI[Rich launcher] --> Console
-    CLI --> Runner[Registered check runner]
-    MCP --> Runner
+flowchart LR
+    CLI --> Jobs
+    MCP --> Jobs
     Console --> MCP
-    Runner --> Adapters[Check adapters and process control]
-    Runner --> Store[Evidence store]
-    Query --> Store
-    Query --> Inputs[Current input snapshots]
-    CLI --> Contract[Installed operation catalog and contract]
-    MCP --> Contract
-    Contract --> Engines[Operation implementations and pinned engines]
+    Jobs --> Snapshot[Frozen inputs and job definition]
+    Jobs --> Worker[Independent worker process]
+    Worker --> Adapter[Native adapter or external producer and checker]
+    Adapter --> Receipt[Artifacts and checked receipt]
+    Receipt --> Store
+    Store --> Gate[Current identity and integrity gate]
+    Snapshot --> Gate
 ```
 
-## Ownership map
+## Module ownership
 
-Paths below are relative to the repository root.
+| Owner | Responsibility |
+| --- | --- |
+| `manifest.py`, `verifiers/spec.py`, `schemas/manifest.v2.json` | Parse check variants and external backend declarations. |
+| `inputs.py`, `evidence.py` | Capture input closure, hash policy and tool identities, seal and validate bundles. |
+| `jobs.py` | Submit, wait, capture replay evidence, and launch independent workers. |
+| `runner.py` | Claim an attempt, enforce approval, execute on frozen inputs, and publish a receipt. |
+| `verifiers/dispatch.py` | Choose native commands and report adapters. |
+| `verifiers/external.py` | Run the producer, generate the checker request, and validate the receipt. |
+| `proc.py` | Control descendants, deadlines, cancellation, and output capture. |
+| `store.py` | Atomic records, OS liveness locks, cancellation markers, approvals, and evidence pointers. |
+| `state.py`, `query.py` | Derive freshness, gates, and shared read models. |
+| `cli.py`, `mcp/`, `console.py` | Validate transport requests and call the service. |
 
-| Area | Owning files | Responsibility |
+## Job identity
+
+| Identity component | What it binds |
+| --- | --- |
+| Definition | Accepted manifest entry. |
+| Inputs | Normalized content of declared input files. |
+| Backend | Checker identity and declared tools. |
+| Policy | VKit validation code and package version. |
+| Baseline | Accepted baseline for checks that use one. |
+
+- Each submission creates a distinct attempt.
+- The persisted job includes its accepted definition. A later manifest edit cannot rewrite that attempt.
+- The current gate uses the current definition and inputs.
+
+## Execution lifecycle
+
+| Stage | Worker behavior | Invariant |
 | --- | --- | --- |
-| Repository identity | `src/vkit/paths.py` | Resolve the checkout and shared Git directory. |
-| Input identity | `src/vkit/inputs.py` | Select files, exclude secret names, and compute normalized content digests. |
-| Check definitions | `src/vkit/manifest.py`, `schemas/`, `src/vkit/schemas.py` | Parse and validate approved check definitions and scenario artifacts. |
-| Check types | `src/vkit/verifiers/spec.py`, `src/vkit/verifiers/obligation.py` | Represent supported checks and their required obligations. |
-| Check execution | `src/vkit/runner.py`, `src/vkit/proc.py`, `src/vkit/verifiers/dispatch.py` | Enforce approval, launch a registered check, interpret its artifact, and publish its result. |
-| Check-specific semantics | `src/vkit/verifiers/` | Translate a particular report or toolchain in an adapter or runner into observations, counterexamples, or a blocked result. |
-| Evidence storage | `src/vkit/store.py` | Own run paths, atomic JSON writes, liveness locks, cancellation, approvals, and baselines. |
-| Evidence interpretation | `src/vkit/state.py`, `src/vkit/outcome.py`, `src/vkit/claimkind.py`, `src/vkit/budgets.py` | Derive freshness and the gate, represent outcomes, attach claim limits, and evaluate declared budgets. |
-| Read models | `src/vkit/query.py` | Return shared status, run summaries, bounded log windows, and prerequisite findings. |
-| Discovery and proposals | `src/vkit/discover.py`, `src/vkit/features.py`, `src/vkit/proposals.py` | Inspect declared project configuration, map behaviors to checks, and stage changes for operator acceptance. |
-| Computation integration | `src/vkit/operations/catalog.py`, `src/vkit/operations/contract.py` | Declare one versioned schema, defaults, handler, execution metadata, and outcomes for every computation. |
-| Computation semantics | `src/vkit/operations/` | Own each question's model, input limits, execution, and witness checks. `_runtime.py` owns the shared binary path and SHA-256 identity check. |
-| Operator settings | `src/vkit/settings.py` | Persist launch defaults in the user config directory and display preferences, tool availability, and MCP defaults in shared Git state. |
-| Tool categories | `src/vkit/categories.py` | Own category labels. Each installed tool declares its category. Settings own category and individual availability. |
-| Terminal launcher | `src/vkit/tui.py`, `tui.py`, `start.bat`, `start.sh` | Select the target repository and own the web console server's lifecycle. |
-| Interfaces | `src/vkit/cli.py`, `src/vkit/mcp/__init__.py`, `src/vkit/console.py` | Translate requests and errors, apply saved visibility, and call the owning implementation. |
-| Console rendering | `src/vkit/console.js`, `src/vkit/console.html`, `src/vkit/console.css` | Render query results, schema-driven computation forms, and operator settings. |
-| Console assets | `tools/console/`, `src/vkit/console-assets/` | Build and ship the offline Material components, fonts, theme, and icons. |
-| External helpers | `tools/` | Hold pinned helper source, package locks, and fixed backend configuration. |
-| Acceptance and verification | `tests/`, `scripts/e2e.py`, `.github/workflows/ci.yml` | Exercise public interfaces, check adapters and engines, and verify integrated behavior across supported platforms. |
-| Agent guidance | `plugin/` | Provide optional discovery and verification guidance. Guidance is separate from verifier correctness. |
+| Capture | Copy selected files into `snapshot/` and verify hashes. | Execution reads captured inputs. |
+| Queue | Persist the job, record, and worker PID. | Client restart does not erase the submission. |
+| Claim | Take the attempt's OS lock and load its persisted definition. | A second worker cannot execute that attempt. |
+| Execute | Run the native adapter or external producer/checker from the frozen working directory. | External production and acceptance remain separate. |
+| Publish | Recheck input and backend identity, then retain artifacts and the receipt. | Changed identity cannot produce fresh passing evidence. |
+| Recover | Report a dead worker as interrupted. Explicit retry creates another attempt. | Worker loss never becomes a pass. |
 
-## Registered check flow
+There is no scheduler daemon or generic prover checkpoint engine.
 
-`manifest.py` builds a typed check from the installed schema. Operator acceptance records its digest
-in `Store`. `runner.run_check` captures declared inputs and derives an evidence key from the check
-definition, inputs, baseline, and vkit version. It refuses execution without the current approval.
+## Evidence and gate validation
 
-`dispatch.py` chooses the adapter. `proc.py` controls the child process tree, timeout, and cancellation.
-The adapter interprets the report against required obligations. The runner checks input freshness again
-before publishing through `Store`. An exit code alone cannot establish a pass.
+| Link | Binding |
+| --- | --- |
+| Evidence pointer | Hashes the final record. |
+| Record | Hashes `receipt.json`. |
+| Receipt | Hashes retained artifacts and binds the input closure and backend identity. |
+| Gate | Validates the links, files, and current identity before accepting passing evidence. |
 
-`state.py` derives freshness and the gate from current inputs and stored evidence. `query.py` builds
-the response used by the interfaces. Category and scope come from the registered check type, so a
-renderer cannot upgrade a sampled result into a proof. [Verification reference](verification.md)
-defines the result semantics.
+| Change | Consequence |
+| --- | --- |
+| Checker changes | Requires renewed acceptance. |
+| Source or baseline changes | Produces a different job key. |
+| Receipt or artifact tampering | Invalidates retained evidence. |
 
-## Computation flow
+## Export and replay
 
-`catalog.py` contains installed `Operation` declarations. `contract.py` validates arguments, applies
-defaults, calls the handler, and rejects undeclared statuses or non-JSON results. The CLI generates
-flags from the same declaration that MCP publishes as its input schema. The console generates forms
-from those schemas and calls the shared MCP dispatcher.
+1. Export copies a complete, validated attempt.
+2. Replay requires matching current definition, input closure, and checker identity.
+3. Replay captures and validates the source bundle before acknowledging submission.
+4. The new worker performs checking and produces a new receipt.
 
-An operation owns the meaning of its evidence. The common contract checks transport shape and declared
-statuses. It does not establish solver correctness or validate every operation-specific witness.
-Optional engine imports stay out of tool listing and help.
-Compact MCP advertises only help and invoke. Help returns category summaries and paged tool summaries,
-then one exact schema on request. Named exposure and a fixed startup category scope use the same dispatch
-and visibility rules. See [tool discovery](tool-discovery.md).
+| Backend | Replay operation |
+| --- | --- |
+| External | Copy declared proof artifacts into a new attempt and invoke the accepted checker. |
+| Lean | Recompile frozen proof sources. |
+| TLC | Rerun the model checker on the frozen model. |
 
-The common binary identity check accepts a configured file only when its SHA-256 matches the configured
-pin. Version checks and backend-specific protocols remain in their operations. Java and Node helper
-toolchains retain their own multi-file identity rules. Combining them into a generic process framework
-would hide different trust assumptions behind one interface.
+Imported outcome fields never substitute for checking.
 
-## State and installation boundaries
+## Trust boundaries
 
-`<git common directory>/vkit/` holds run records, logs, evidence pointers, approvals, baselines,
-proposals, and `config.json`. Worktrees share this state while retaining separate source files.
-User launch defaults live outside the repository in the platform config directory, unless
-`VKIT_CONFIG` selects another JSON file. The console displays both settings paths.
-Run IDs are identifiers containing letters, digits, underscores, or hyphens. The store rejects path
-fragments before any run access. Log queries seek to the requested byte window instead of loading
-the complete file.
+| Component | Trust requirement or limit |
+| --- | --- |
+| Local store and installed policy | Trusted. Hashes do not authenticate their writers. |
+| Producer and checker | Run with the service user's filesystem permissions. Protect checker code and state from untrusted producers. |
+| External dependencies | Pin code entrypoints and declared transitive trusted dependencies. |
+| Dependency discovery | VKit checks file arguments and explicit pins. It cannot infer arbitrary binary dependencies. |
+| Native identity | Records resolved executables, adapter policy, and relevant environment settings. |
+| Native runtime libraries | Remain trusted environment dependencies. |
+| External closure | Explicit dependency pins support a fully declared tool closure. |
+| OS isolation | Neither native nor external execution provides a hermetic filesystem sandbox. |
 
-The wheel includes schemas and offline console assets. Editable installs read schemas from the
-checkout. Engine executables and helper runtimes require separate operator configuration.
-An agent with permission to overwrite the service installation or its settings can change its behavior.
-[Protect the service](computations.md#protect-the-service) describes the deployment boundary.
+## Storage and packaging
 
-## Maintenance boundaries
+| Location or artifact | Contents or ownership |
+| --- | --- |
+| `<git common directory>/vkit/` | Attempts, snapshots, logs, artifacts, receipts, pointers, approvals, baselines, proposals, and settings. |
+| Git worktrees | Share the store while retaining distinct input content. |
+| JSON writes | Atomic replacement prevents partial records. |
+| Per-attempt OS locks | Control execution ownership. |
+| Python wheel | Includes schemas and offline console assets. |
+| External verifiers | Installation remains under operator control. |
 
-Extend an existing operation when another backend answers the same question under another fixed model.
-Add a new declaration when the question differs. Interface-specific tool lists, default values, or
-dispatch branches duplicate the catalog's ownership.
-
-Share code when callers enforce the same invariant. Keep source-language validation, model semantics,
-snapshot rules, and solver protocols local when their assumptions differ. A short wrapper is justified
-when it adapts a result or preserves optional imports. A forwarding layer with no such role adds another
-place to trace.
-
-`console.js` remains the largest handwritten module. It contains rendering, request handling, and UI
-state in one file. A future interaction change should extract the state it owns with its render and
-event handlers together. Splitting it by arbitrary line counts would leave the same shared mutable
-state spread across files.
-
-`tests/helpers.py` starts actual CLI and MCP processes using the selected interpreter.
-The source-hygiene gate rejects direct `sys.path` redirection in test code, which would bypass an installed
-wheel. Engine tests can skip unavailable runtimes; a skip does not verify that backend. CI configures
-the supported backends and runs the wider suite.
-
-Keep implementation history and session artifacts under ignored `tmp/`. Keep current behavior and
-ownership here. The [ranked backlog](tool-backlog.md) holds research candidates, and the
-[engine roadmap](engine-roadmap.md) records integration status.
+Adding an external verifier changes its manifest and backend implementation. It requires no transport registry changes.

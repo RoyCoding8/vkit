@@ -14,6 +14,7 @@ class ClaimCategory(enum.Enum):
     STATIC = "static_analysis"
     FINITE_MODEL = "finite_model_checking"
     THEOREM = "theorem_checking"
+    EXTERNAL = "external_verification"
 
     @property
     def establishes(self) -> str:
@@ -36,6 +37,7 @@ class ClaimCategory(enum.Enum):
                 "the stated theorem holds for the Lean model, with the axioms "
                 "audited"
             ),
+            ClaimCategory.EXTERNAL: "the accepted checker validated the named obligations in its declared model and assumptions",
         }[self]
 
     @property
@@ -58,4 +60,5 @@ class ClaimCategory(enum.Enum):
             ClaimCategory.THEOREM: (
                 "anything about the Python core"
             ),
+            ClaimCategory.EXTERNAL: "soundness of an arbitrary registered checker or facts outside its declared model and dependency closure",
         }[self]

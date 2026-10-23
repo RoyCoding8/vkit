@@ -18,7 +18,12 @@ class CheckKind(enum.StrEnum):
     LEAN = "lean"
     TLC = "tlc"
     STATIC = "static"
-    BUILD = "build"
+    EXTERNAL = "external"
+
+
+class Assurance(enum.StrEnum):
+    KERNEL_PROOF = "kernel_proof"
+    TRUSTED_ENGINE = "trusted_engine"
 
 
 class LeanProfile(enum.StrEnum):
@@ -31,6 +36,19 @@ class Prerequisite:
     name: str
     executable: str
     args: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PinnedFile:
+    path: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class PinnedCommand:
+    executable: PinnedFile
+    argv: tuple[str, ...]
+    dependencies: tuple[PinnedFile, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -211,40 +229,29 @@ class StaticCheck(NativeCheckSpec):
         return ()
 
 
-@dataclass(frozen=True)
-class BuildEntryPoint:
-    name: str
-    args: tuple[str, ...]
-    expected_exit_code: int
-    expected_stdout: str
-    expected_stderr: str
-
-
 @dataclass(frozen=True, kw_only=True)
-class BuildCheck(NativeCheckSpec):
-    """An explicitly approved, fixed offline wheel build and installation smoke check."""
+class ExternalCheck(NativeCheckSpec):
+    """A pinned producer whose evidence is accepted only after a separately pinned replay checker."""
 
-    uv_executable: str
-    uv_version: str
-    uv_sha256: str
-    python_version: str
-    python_sha256: str
-    build_constraints: str
-    wheelhouse: str
-    runtime_requirements: str
-    imports: tuple[str, ...]
-    entry_points: tuple[BuildEntryPoint, ...]
-    incremental_baseline_sha: str | None = None
-    kind: CheckKind = field(default=CheckKind.BUILD, init=False)
+    backend: PinnedCommand
+    checker: PinnedCommand
+    specification: str
+    obligations: tuple[str, ...]
+    assumptions: tuple[str, ...]
+    model_scope: str
+    assurance: Assurance
+    evidence_artifacts: tuple[str, ...]
+    trusted_tool_dependencies: tuple[PinnedFile, ...] = ()
+    kind: CheckKind = field(default=CheckKind.EXTERNAL, init=False)
 
 
-CheckSpec = StaticCheck | ScenarioCheck | PytestCheck | NodeTestCheck | PropertyCheck | LeanCheck | TlcCheck | BuildCheck
+CheckSpec = StaticCheck | ScenarioCheck | PytestCheck | NodeTestCheck | PropertyCheck | LeanCheck | TlcCheck | ExternalCheck
 
 VARIANTS: dict[CheckKind, type] = {
     CheckKind.SCENARIO: ScenarioCheck, CheckKind.PYTEST: PytestCheck, CheckKind.NODE_TEST: NodeTestCheck,
     CheckKind.PROPERTY: PropertyCheck, CheckKind.LEAN: LeanCheck, CheckKind.TLC: TlcCheck,
     CheckKind.STATIC: StaticCheck,
-    CheckKind.BUILD: BuildCheck,
+    CheckKind.EXTERNAL: ExternalCheck,
 }
 
 
@@ -260,6 +267,6 @@ def evidence_kind(check: NativeCheckSpec) -> ClaimCategory:
         return ClaimCategory.STATIC
     if isinstance(check, (ScenarioCheck, PytestCheck, NodeTestCheck)):
         return ClaimCategory.SCENARIO
-    if isinstance(check, BuildCheck):
-        return ClaimCategory.SCENARIO
+    if isinstance(check, ExternalCheck):
+        return ClaimCategory.EXTERNAL
     raise TypeError(f"{type(check).__name__} is not a check variant")

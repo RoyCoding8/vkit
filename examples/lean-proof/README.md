@@ -1,21 +1,36 @@
 # Lean proofs against frozen statements
 
-`Challenge.lean` holds statements a human wrote and froze. Its digest is pinned in the manifest as
-`challenge_sha256`, so editing it blocks the check until someone accepts the new statements. An agent writes the
-proofs in `Solution.lean`. [comparator](https://github.com/leanprover/comparator) checks that the solution
-states exactly the same theorems, uses only the permitted axioms, and passes the kernel. `sorry` fails because
-it adds the `sorryAx` axiom.
+## Files and verification roles
 
-## Tools
+| Component | Role |
+| --- | --- |
+| `Challenge.lean` | Statements written and frozen by a human. |
+| `challenge_sha256` | Manifest pin for the challenge digest. Editing the challenge blocks checking until new statements are accepted. |
+| `Solution.lean` | Proofs written by the agent. |
+| [comparator](https://github.com/leanprover/comparator) | Checks matching theorem statements, permitted axioms, and kernel acceptance. |
+| `sorry` | Introduces `sorryAx`, so the check fails. |
 
-Build each of these with `lake build` and put its `.lake/build/bin` on PATH:
+## Required tools
 
-- [comparator](https://github.com/leanprover/comparator) and [lean4export](https://github.com/leanprover/lean4export).
-- On Windows, `tools/comparator-windows` in this repository. It provides `landrun` and `which` stand-ins.
-  The `landrun` stand-in gives no sandbox, and the evidence records `build sandbox: none (landrun passthrough)`.
-  On Linux, install the real [landrun](https://github.com/Zouuup/landrun).
+Build each Lean tool with `lake build` and put its `.lake/build/bin` directory on PATH.
 
-## Run
+| Platform | Tools |
+| --- | --- |
+| All | [comparator](https://github.com/leanprover/comparator) and [lean4export](https://github.com/leanprover/lean4export). |
+| Windows | Build [tools/comparator-windows](../../tools/comparator-windows/README.md) for the `landrun` and `which` stand-ins. |
+| Linux | Install real [landrun](https://github.com/Zouuup/landrun). |
+
+## Windows isolation limit
+
+| Item | Behavior |
+| --- | --- |
+| `landrun` stand-in | Runs the command without a sandbox. |
+| Evidence | Records `build sandbox: none (landrun passthrough)`. |
+| Comparator checking | Still checks statements, permitted axioms, and kernel acceptance. |
+
+## Run the check
+
+From this example's repository root:
 
 ```powershell
 vkit accept --project .

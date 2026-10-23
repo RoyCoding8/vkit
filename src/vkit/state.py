@@ -34,9 +34,10 @@ def check_digests(manifest: Manifest) -> dict[str, str]:
     return {check_id: manifest.digest(check_id) for check_id in manifest.checks}
 
 
-def evidence_key(check_digest: str, inputs: InputSet, baseline: dict[str, Any] | None = None) -> str:
+def evidence_key(check_digest: str, inputs: InputSet, baseline: dict[str, Any] | None = None,
+                 backend: dict[str, Any] | None = None) -> str:
     return canonical_digest({"vkit": __version__, "check": check_digest, "inputs": inputs.digest,
-                             "baseline": None if baseline is None else
+                             "backend": backend, "baseline": None if baseline is None else
                              {k: v for k, v in baseline.items() if k in ("measurements", "findings")}})
 
 
@@ -52,12 +53,17 @@ class CheckState:
     running: tuple[str, ...]
 
     def to_json(self) -> dict[str, Any]:
+        from .evidence import assurance
+
         category = self.check.evidence_kind()
         return {
             "id": self.check.id,
             "description": self.check.description,
             "kind": self.check.kind.value,
             "category": category.value,
+            "assurance": assurance(self.check),
+            "model_scope": getattr(self.check, "model_scope", category.establishes),
+            "assumptions": list(getattr(self.check, "assumptions", getattr(self.check, "permitted_axioms", ()))),
             "establishes": category.establishes,
             "does_not_establish": category.does_not_establish,
             "state": self.freshness.value,
@@ -76,16 +82,23 @@ def check_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[C
     baselines = store.baselines()
     running: dict[str, list[str]] = {}
     for record in store.runs(limit=200):
-        if record["state"] == "running":
+        if record["state"] in ("queued", "running"):
             running.setdefault(record["key"], []).append(record["run_id"])
     states = []
     for check_id in sorted(manifest.checks):
         check = manifest.checks[check_id]
         inputs = snapshot.inputs(check.inputs)
-        key = evidence_key(digests[check_id], inputs, baselines.get(check_id))
+        from .evidence import backend_identity
+
+        try:
+            backend = backend_identity(check)
+        except (OSError, ValueError) as exc:
+            backend = {"unavailable": str(exc)}
+        key = evidence_key(digests[check_id], inputs, baselines.get(check_id), backend)
         current = store.evidence(check_id, key)
         last = store.latest(check_id)
-        if digests[check_id] not in approved:
+        if (digests[check_id] not in approved or
+                approved[digests[check_id]].get("backend") != backend):
             freshness = Freshness.NOT_APPROVED
         elif current is not None:
             freshness = _FRESH[current["result"]]

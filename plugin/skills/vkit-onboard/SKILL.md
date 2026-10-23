@@ -5,25 +5,42 @@ description: Set up vkit verification for a repository. Use when the user asks t
 
 # Onboard a repository
 
-## Order
+## Discover the interface
 
-Discover enabled tools with help. Request a tool's schema with `help(name=...)` before use.
-In compact exposure, submit proposals through `invoke(name="propose", arguments={...})`.
+| Action | Call |
+| --- | --- |
+| Find enabled tools | `help`. |
+| Read a tool's contract | `help(name=...)` before use. |
+| Submit in compact mode | `invoke(name="propose", arguments={...})`. |
 
-1. Run `vkit project inspect --project <root>`. It lists the test commands the repository already declares,
-   with the file and line each came from. Report ambiguous ones instead of picking.
-2. Draft checks (manifest schema_version 2 entries) with the user. Prefer a scenario driver
-   that runs the real application and writes each scenario's id, PASS or FAIL, and what it observed. Declare
-   `inputs` as the files the check reads, so unrelated edits do not make it stale.
-3. Draft feature entries: each user-visible behavior, how a user reaches it, its entry points, which checks
-   cover it, and the gaps nobody has checked.
-4. Submit both, with any new driver files, through the `propose` tool. Then stop and ask the user to review
-   it with `vkit proposals` and apply it with `vkit accept --proposal <digest>`. Nothing you proposed exists or
-   runs until they do, and no tool lets you accept it.
+## Onboarding sequence
+
+1. Run `vkit project inspect --project <root>`.
+2. Review the declared test commands and their source file and line. Report ambiguity rather than choosing silently.
+3. Draft schema version 2 checks with the user.
+4. Draft the feature map.
+5. Submit both through `propose`, including any new driver files.
+6. Stop and ask the user to review with `vkit proposals` and apply with `vkit accept --proposal <digest>`.
+
+## Check and feature requirements
+
+| Artifact | Required content |
+| --- | --- |
+| Check | Prefer a scenario driver that runs the real application. |
+| Scenario report | Scenario ID, PASS or FAIL, and the observed result. |
+| `inputs` | Files read by the check. Unrelated edits should not make its evidence stale. |
+| Feature entry | User-visible behavior, how the user reaches it, entry points, covering checks, and unverified gaps. |
+| Proposal | Checks, feature entries, and any new driver files. |
+
+## Acceptance boundary
+
+| State | Meaning |
+| --- | --- |
+| Proposed | The proposed definitions and files do not exist or run until accepted. |
+| Acceptance | Requires the user's CLI action. No MCP tool accepts proposals. |
 
 ## Rules
 
-- The expected results come from the user or the product's specification, not from reading the current code.
-  A driver that asserts whatever the code does today proves nothing.
+- Derive expected results from the user or product specification. A driver that asserts the current implementation's behavior establishes nothing beyond that behavior.
 - Never install dependencies. Report a missing prerequisite and stop.
-- A feature with no check is unverified. Say so; do not describe it as working.
+- A feature without a check is unverified. Do not describe it as working.

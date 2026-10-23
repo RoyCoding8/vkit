@@ -437,14 +437,25 @@ def _config_text(check: Any, variant: TlcCheck) -> str | Blocked:
 
 
 def _checked_properties(config_text: str) -> tuple[str, ...]:
-    """Property names in the config's INVARIANTS and PROPERTIES sections."""
+    """Read singular, plural, inline and multiline TLC property declarations."""
+    text = re.sub(r"\(\*.*?\*\)", "", config_text, flags=re.DOTALL)
+    text = re.sub(r"\\\*[^\n]*", "", text)
     names: list[str] = []
-    for section in ("INVARIANTS", "PROPERTIES"):
-        block = re.search(rf"^{section}\n((?:[ \t]+\S+[ \t]*\n)+)", config_text, re.MULTILINE)
-        if block:
-            names.extend(
-                line.strip() for line in block.group(1).splitlines() if line.strip()
-            )
+    in_properties = False
+    keywords = r"SPECIFICATION|INIT|NEXT|CONSTANTS?|CONSTRAINTS?|ACTION_CONSTRAINTS?|CHECK_DEADLOCK|VIEW|SYMMETRY"
+    for line in text.splitlines():
+        line = line.strip()
+        header = re.match(r"^(INVARIANTS?|PROPERTY|PROPERTIES)\b(.*)$", line)
+        if header:
+            in_properties = True
+            line = header[2].strip()
+        elif re.match(rf"^(?:{keywords})\b", line):
+            in_properties = False
+        if in_properties and line:
+            tokens = line.split()
+            if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_!]*", token) for token in tokens):
+                return ()
+            names.extend(tokens)
     return tuple(names)
 
 

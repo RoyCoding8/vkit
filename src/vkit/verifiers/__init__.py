@@ -1,6 +1,6 @@
 """Check kinds, their obligations, and the adapters that run and read them."""
 
-from .dispatch import ADAPTERS, Adapter, BuildReading, ScenarioReading, argv_for, interpret, outcome_from_reading
+from .dispatch import ADAPTERS, Adapter, ScenarioReading, argv_for, interpret, outcome_from_reading
 from .lean_adapter import AdapterResult as LeanAdapterResult
 from .node_adapter import AdapterResult as NodeAdapterResult
 from .obligation import (
@@ -17,11 +17,11 @@ from .property_adapter import PropertyAdapterResult, TestedScope
 from .pytest_adapter import AdapterResult
 from .spec import (
     VARIANTS,
-    BuildCheck,
-    BuildEntryPoint,
+    Assurance,
     CheckKind,
     CheckSpec,
     DomainBounds,
+    ExternalCheck,
     FingerprintSpec,
     HypothesisSettings,
     LeanCheck,
@@ -30,6 +30,8 @@ from .spec import (
     NativeCheckSpec,
     NodeTestCheck,
     PinnedRunner,
+    PinnedCommand,
+    PinnedFile,
     PropertyCheck,
     PytestCheck,
     ReplaySettings,
@@ -46,13 +48,12 @@ __all__ = [
     "VARIANTS",
     "Adapter",
     "AdapterResult",
-    "BuildCheck",
-    "BuildEntryPoint",
-    "BuildReading",
+    "Assurance",
     "CaseObligation",
     "CheckKind",
     "CheckSpec",
     "DomainBounds",
+    "ExternalCheck",
     "FingerprintSpec",
     "HypothesisSettings",
     "LeanAdapterResult",
@@ -64,6 +65,8 @@ __all__ = [
     "NodeTestCheck",
     "Obligation",
     "PinnedRunner",
+    "PinnedCommand",
+    "PinnedFile",
     "PropertyAdapterResult",
     "PropertyCheck",
     "PropertyObligation",

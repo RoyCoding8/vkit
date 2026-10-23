@@ -36,6 +36,30 @@ def new_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
 
 
+def _process_alive(pid: int) -> bool:
+    if is_windows:
+        import pywintypes
+        import win32api
+        import win32con
+        import win32process
+
+        try:
+            handle = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION, False, pid)
+            try:
+                return win32process.GetExitCodeProcess(handle) == 259
+            finally:
+                handle.Close()
+        except pywintypes.error as error:
+            return error.winerror == 5
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -109,6 +133,10 @@ class Store:
         record = read_json(self.run_dir(run_id) / "record.json")
         if record is not None and record["state"] == "running" and not self.is_alive(run_id):
             record = {**record, "state": "interrupted"}
+        if record is not None and record["state"] == "queued":
+            worker = read_json(self.run_dir(run_id) / "worker.json")
+            if worker is not None and not _process_alive(worker["pid"]):
+                record = {**record, "state": "interrupted"}
         return record
 
     def save(self, record: dict[str, Any]) -> None:
@@ -117,13 +145,31 @@ class Store:
     def publish(self, record: dict[str, Any]) -> None:
         """Save a finished record and point its evidence key and check at it."""
         self.save(record)
+        from .inputs import canonical_digest
+
         pointer = {"run_id": record["run_id"], "result": record["outcome"]["result"],
+                   "record_sha256": canonical_digest(record),
                    "ended_at": record["ended_at"], "key": record["key"]}
         write_json(self.root / "evidence" / record["check_id"] / f"{record['key']}.json", pointer)
         write_json(self.root / "latest" / f"{record['check_id']}.json", pointer)
 
     def evidence(self, check_id: str, key: str) -> dict[str, Any] | None:
-        return read_json(self.root / "evidence" / check_id / f"{key}.json")
+        from .evidence import validate_record
+        from .inputs import canonical_digest
+
+        pointer = read_json(self.root / "evidence" / check_id / f"{key}.json")
+        if pointer is None:
+            return None
+        try:
+            record = self.record(pointer["run_id"])
+            if (record is None or record["state"] != "done" or record["key"] != key
+                    or record["check_id"] != check_id or record["outcome"]["result"] != pointer["result"]
+                    or canonical_digest(record) != pointer["record_sha256"]
+                    or not validate_record(record, self.run_dir(pointer["run_id"]))):
+                return None
+        except (ValueError, KeyError, TypeError, OSError):
+            return None
+        return pointer
 
     def latest(self, check_id: str) -> dict[str, Any] | None:
         return read_json(self.root / "latest" / f"{check_id}.json")

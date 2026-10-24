@@ -30,6 +30,12 @@ jobs:
           extra_nix_config: |
             max-jobs = 1
             cores = 1
+      - name: Restore the pinned build dependencies
+        id: nix-cache
+        uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: rr-${{ runner.os }}-${{ hashFiles('examples/refinedrust-qualification/upstream.json') }}-${{ github.run_id }}
+          restore-prefixes-first-match: rr-${{ runner.os }}-${{ hashFiles('examples/refinedrust-qualification/upstream.json') }}-
       - name: Capture the pinned upstream checkout
         shell: python
         run: |
@@ -59,3 +65,8 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
+      - name: Save the build dependencies after the probe
+        if: always() && steps.nix-cache.outcome == 'success'
+        uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: ${{ steps.nix-cache.outputs.primary-key }}

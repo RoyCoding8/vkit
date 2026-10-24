@@ -17,6 +17,10 @@ endpoint's HTTP 429 failure without changing the accepted library content.
 unsupported features. Those switches do not replace a transitive assumption
 audit or independent proof checking.
 
+The runner invokes Dune explicitly and checks its exit status and the compiled
+body-proof artifact. Upstream's `run_check` callback logs Dune's exit status
+without propagating a failure, so this probe disables that callback.
+
 Run the Linux probe with Nix installed:
 
 ```sh
@@ -27,6 +31,11 @@ The `RefinedRust qualification` GitHub Actions workflow runs the same command
 and retains its report, logs and generated sources as an artifact. The probe
 reports `INCONCLUSIVE` and exits with code 3 until all Q0 gates are implemented
 and checked, even if the scalar body compiles.
+
+The workflow reuses `nix-community/cache-nix-action` to retain build dependencies
+after failed probes. Cache keys include the upstream pin and run ID. The cache
+contains pinned source dependencies and built libraries. The fresh scalar fixture
+copy and its generated per-run proofs are outside it and are checked on every run.
 
 Q0 also requires trusted statement binding, invalid fixtures, implementation
 coverage and a compatible independent checker. Q1 requires the full ledger

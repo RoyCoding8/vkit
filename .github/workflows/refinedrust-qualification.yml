@@ -1,0 +1,61 @@
+name: RefinedRust qualification
+
+on:
+  push:
+    branches: [codex/formal-qualification]
+    paths:
+      - .github/workflows/refinedrust-qualification.yml
+      - examples/refinedrust-qualification/**
+      - scripts/qualify_refinedrust.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refinedrust-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualification:
+    name: Q0 source and body proof probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.34.3/install
+          enable_kvm: false
+          extra_nix_config: |
+            max-jobs = 1
+            cores = 1
+      - name: Capture the pinned upstream checkout
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+
+          pin = json.loads(pathlib.Path("examples/refinedrust-qualification/upstream.json").read_text())
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "refinedrust"
+          subprocess.run(["git", "init", str(root)], check=True)
+          subprocess.run(["git", "-C", str(root), "remote", "add", "origin", pin["repository"]], check=True)
+          subprocess.run(["git", "-C", str(root), "fetch", "--depth", "1", "origin", pin["revision"]], check=True)
+          subprocess.run(["git", "-C", str(root), "checkout", "--detach", "FETCH_HEAD"], check=True)
+      - name: Run the pinned scalar probe
+        shell: bash
+        run: |
+          python3 scripts/qualify_refinedrust.py \
+            --upstream "$RUNNER_TEMP/refinedrust" \
+            --output "$RUNNER_TEMP/refinedrust-qualification"
+      - name: Retain qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: refinedrust-qualification-${{ github.sha }}
+          path: ${{ runner.temp }}/refinedrust-qualification
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

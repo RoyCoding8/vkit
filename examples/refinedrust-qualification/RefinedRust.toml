@@ -1,0 +1,10 @@
+output_dir = "output"
+find_stdlib = false
+no_assumption = true
+admit_proofs = false
+run_check = true
+verify_deps = true
+skip_unsupported_features = false
+no_verify = false
+trust_debug = false
+enable_smtcoq = false

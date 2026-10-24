@@ -1,0 +1,30 @@
+# RefinedRust qualification
+
+This fixture tests the proposed Rust-to-Rocq path before VKit integrates it.
+It is not an accepted VKit formal package or a completed qualification result.
+
+`reserve` checks a scalar capacity update. Its specification requires the exact
+result for zero, insufficient-capacity and successful requests. The input
+precondition is `used ≤ capacity`; the Rust integer types supply their bounds.
+This fixture does not implement the reservation ledger in `PLAN.md`.
+
+`upstream.json` fixes the upstream revision and dependency-lock digest.
+`RefinedRust.toml` rejects assumed functions, proof admission and skipped
+unsupported features. Those switches do not replace a transitive assumption
+audit or independent proof checking.
+
+Run the Linux probe with Nix installed:
+
+```sh
+python3 scripts/qualify_refinedrust.py --upstream /path/to/pinned-checkout --output /path/to/new-run
+```
+
+The `RefinedRust qualification` GitHub Actions workflow runs the same command
+and retains its report, logs and generated sources as an artifact. The probe
+reports `INCONCLUSIVE` and exits with code 3 until all Q0 gates are implemented
+and checked, even if the scalar body compiles.
+
+Q0 also requires trusted statement binding, invalid fixtures, implementation
+coverage and a compatible independent checker. Q1 requires the full ledger
+proofs, including termination. Neither gate is satisfied by this source file
+or a successful translation.

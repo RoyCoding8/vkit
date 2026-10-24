@@ -1,0 +1,8 @@
+{
+  "repository": "https://gitlab.mpi-sws.org/lgaeher/refinedrust-dev.git",
+  "revision": "41c6f542ecc2f4b0be3cfafa726cc79fd7b1824d",
+  "flake_lock_sha256": "eeee3f5cd5f21378c0d146d92b1dd06135b8043f25d323436ef1c26974d6bad1",
+  "rust_channel": "nightly-2026-08-28",
+  "stdpp_revision": "729c671ed573749588f699138e306dbae880f3e1",
+  "iris_revision": "4a6add171278417fec6da7c490fe487e502326f0"
+}

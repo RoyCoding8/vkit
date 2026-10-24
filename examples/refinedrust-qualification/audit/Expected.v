@@ -41,4 +41,5 @@ Theorem reserve_expected (π : thread_id) : expected_body π.
 Proof. exact (reserve_proof π). Qed.
 End contract.
 
+Set Printing Fully Qualified.
 Print Assumptions reserve_expected.

@@ -12,10 +12,10 @@ index e5c5487..c20672f 100644
  pub(crate) mod mir_sets;
 diff --git a/translation/src/environment/source_inventory.rs b/translation/src/environment/source_inventory.rs
 new file mode 100644
-index 0000000..6076597
+index 0000000..c441ee9
 --- /dev/null
 +++ b/translation/src/environment/source_inventory.rs
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,260 @@
 +use std::collections::BTreeMap;
 +use std::fs::File;
 +use std::io::{self, BufWriter, Write};
@@ -166,7 +166,7 @@ index 0000000..6076597
 +            }
 +        }
 +        module_paths.sort_by_cached_key(|entry| {
-+            format!("{}::{}", tcx.def_path_str(entry.module), entry.name)
++            format!("{}::{}", qualified_path(tcx, entry.module), entry.name)
 +        });
 +
 +        Self {
@@ -202,7 +202,7 @@ index 0000000..6076597
 +
 +                ItemReport {
 +                    def_path_hash: def_path_hash(tcx, item.def_id),
-+                    path: tcx.def_path_str(item.def_id),
++                    path: qualified_path(tcx, item.def_id),
 +                    source_file: source_map.span_to_filename(span).prefer_local_unconditionally().to_string(),
 +                    span_lo: span.lo().0,
 +                    span_hi: span.hi().0,
@@ -227,9 +227,9 @@ index 0000000..6076597
 +            .module_paths
 +            .iter()
 +            .map(|entry| ModulePathReport {
-+                path: format!("{}::{}", tcx.def_path_str(entry.module), entry.name),
++                path: format!("{}::{}", qualified_path(tcx, entry.module), entry.name),
 +                target_def_path_hash: def_path_hash(tcx, entry.target),
-+                target_path: tcx.def_path_str(entry.target),
++                target_path: qualified_path(tcx, entry.target),
 +                visibility: entry.visibility.clone(),
 +            })
 +            .collect();
@@ -264,6 +264,17 @@ index 0000000..6076597
 +
 +fn def_path_hash(tcx: ty::TyCtxt<'_>, def_id: DefId) -> String {
 +    format!("{:?}", tcx.def_path_hash(def_id))
++}
++
++fn qualified_path(tcx: ty::TyCtxt<'_>, def_id: DefId) -> String {
++    let path = tcx.def_path_str(def_id);
++    if !def_id.is_local() {
++        path
++    } else if path.is_empty() {
++        tcx.crate_name(LOCAL_CRATE).to_string()
++    } else {
++        format!("{}::{path}", tcx.crate_name(LOCAL_CRATE))
++    }
 +}
 diff --git a/translation/src/lib.rs b/translation/src/lib.rs
 index 9df1ac1..c0d11f8 100644

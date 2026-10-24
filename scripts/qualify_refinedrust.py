@@ -373,7 +373,7 @@ def main() -> int:
                         shadow = ("Definition typed_function := ltac:(\n"
                                   "  let T := type of @refinedrust.primitive.functions.typed_function in\n"
                                   "  refine (_ : T); intros; exact True%I).\n"
-                                  "Arguments typed_function {Σ RRGS lfts rts} π fn fp.\n\n")
+                                  "Arguments typed_function {Σ typeGS0 lfts rts} π fn fp.\n\n")
                         proof.write_text(imports + shadow + definitions + weak_proof, encoding="utf-8")
                         probe["mutated_proof_sha256"] = hashlib.sha256(proof.read_bytes()).hexdigest()
                         vulnerable = (imports

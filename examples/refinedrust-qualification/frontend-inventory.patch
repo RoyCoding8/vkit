@@ -1,0 +1,334 @@
+diff --git a/translation/src/environment/mod.rs b/translation/src/environment/mod.rs
+index e5c5487..c20672f 100644
+--- a/translation/src/environment/mod.rs
++++ b/translation/src/environment/mod.rs
+@@ -10,6 +10,7 @@ mod collect_closure_defs_visitor;
+ mod collect_prusti_spec_visitor;
+ mod dump_borrowck_info;
+ mod loops;
++pub(crate) mod source_inventory;
+ pub(crate) mod mir_analyses;
+ pub(crate) mod mir_mapper;
+ pub(crate) mod mir_sets;
+diff --git a/translation/src/environment/source_inventory.rs b/translation/src/environment/source_inventory.rs
+new file mode 100644
+index 0000000..4af1116
+--- /dev/null
++++ b/translation/src/environment/source_inventory.rs
+@@ -0,0 +1,249 @@
++use std::collections::BTreeMap;
++use std::fs::File;
++use std::io::{self, BufWriter, Write};
++use std::path::Path;
++
++use rr_rustc_interface::hir;
++use rr_rustc_interface::hir::def_id::{CRATE_DEF_INDEX, DefId, LOCAL_CRATE, LocalDefId};
++use rr_rustc_interface::middle::ty;
++use serde::Serialize;
++
++use crate::procedures;
++
++pub(crate) struct SourceInventory {
++    items: Vec<InventoryItem>,
++    module_paths: Vec<ModulePath>,
++}
++
++struct InventoryItem {
++    def_id: DefId,
++    kind: &'static str,
++    has_body: bool,
++}
++
++struct ModulePath {
++    module: DefId,
++    target: DefId,
++    name: String,
++    visibility: String,
++}
++
++#[derive(Serialize)]
++struct InventoryReport {
++    schema_version: u32,
++    crate_name: String,
++    scope: &'static str,
++    complete: bool,
++    items: Vec<ItemReport>,
++    module_paths: Vec<ModulePathReport>,
++}
++
++#[derive(Serialize)]
++struct ItemReport {
++    def_path_hash: String,
++    path: String,
++    source_file: String,
++    span_lo: u32,
++    span_hi: u32,
++    kind: &'static str,
++    has_body: bool,
++    visibility: &'static str,
++    mode: Option<String>,
++    translation: &'static str,
++    code_name: Option<String>,
++    spec_name: Option<String>,
++    rr_export_path: Option<String>,
++    rr_export_as_method: Option<bool>,
++}
++
++#[derive(Serialize)]
++struct ModulePathReport {
++    path: String,
++    target_def_path_hash: String,
++    target_path: String,
++    visibility: String,
++}
++
++impl SourceInventory {
++    pub(crate) fn collect(
++        tcx: ty::TyCtxt<'_>,
++        functions: &[LocalDefId],
++        closures: &[LocalDefId],
++    ) -> Self {
++        let mut items = BTreeMap::new();
++
++        for &def_id in functions {
++            let (kind, has_body) = match tcx.hir_node_by_def_id(def_id) {
++                hir::Node::Item(item) if matches!(item.kind, hir::ItemKind::Fn { .. }) => {
++                    ("function", true)
++                },
++                hir::Node::ImplItem(item) if matches!(item.kind, hir::ImplItemKind::Fn(..)) => {
++                    ("impl_method", true)
++                },
++                hir::Node::TraitItem(item) => match item.kind {
++                    hir::TraitItemKind::Fn(_, hir::TraitFn::Provided(_)) => ("trait_default_method", true),
++                    _ => continue,
++                },
++                _ => continue,
++            };
++            insert_item(tcx, &mut items, def_id.to_def_id(), kind, has_body);
++        }
++
++        for &def_id in closures {
++            insert_item(tcx, &mut items, def_id.to_def_id(), "closure", true);
++        }
++
++        let crate_items = tcx.hir_crate_items(());
++        for id in crate_items.trait_items() {
++            let item = tcx.hir_trait_item(id);
++            if matches!(item.kind, hir::TraitItemKind::Fn(_, hir::TraitFn::Required(_))) {
++                insert_item(
++                    tcx,
++                    &mut items,
++                    item.hir_id().owner.def_id.to_def_id(),
++                    "trait_required_method",
++                    false,
++                );
++            }
++        }
++
++        for id in crate_items.free_items() {
++            let item = tcx.hir_item(id);
++            if let hir::ItemKind::ForeignMod { items: foreign_items, .. } = item.kind {
++                for foreign_item_id in foreign_items {
++                    let foreign_item = tcx.hir_foreign_item(foreign_item_id);
++                    if matches!(foreign_item.kind, hir::ForeignItemKind::Fn(..)) {
++                        insert_item(
++                            tcx,
++                            &mut items,
++                            foreign_item.hir_id().owner.def_id.to_def_id(),
++                            "foreign_function",
++                            false,
++                        );
++                    }
++                }
++            }
++        }
++
++        let mut modules = crate::environment::get_modules(tcx);
++        modules.push(
++            DefId {
++                krate: LOCAL_CRATE,
++                index: CRATE_DEF_INDEX,
++            }
++            .as_local()
++            .unwrap(),
++        );
++        let mut module_paths = Vec::new();
++        for module in modules {
++            let module_def_id = module.to_def_id();
++            for child in tcx.module_children_local(module) {
++                let hir::def::Res::Def(_, target) = child.res else { continue };
++                module_paths.push(ModulePath {
++                    module: module_def_id,
++                    target,
++                    name: child.ident.name.to_string(),
++                    visibility: format!("{:?}", child.vis),
++                });
++            }
++        }
++        module_paths.sort_by_cached_key(|entry| {
++            format!("{}::{}", tcx.def_path_str(entry.module), entry.name)
++        });
++
++        Self {
++            items: items.into_values().collect(),
++            module_paths,
++        }
++    }
++
++    pub(crate) fn write(
++        &self,
++        tcx: ty::TyCtxt<'_>,
++        registry: &procedures::Scope<'_, '_>,
++        path: &Path,
++    ) -> io::Result<()> {
++        let source_map = tcx.sess.source_map();
++        let items = self
++            .items
++            .iter()
++            .map(|item| {
++                let span = tcx.def_span(item.def_id);
++                let meta = registry.lookup_function(item.def_id);
++                let mode = meta.as_ref().map(|meta| meta.get_mode().to_string());
++                let visibility = if tcx.visibility(item.def_id) == ty::Visibility::Public {
++                    "public"
++                } else {
++                    "restricted"
++                };
++                let external_export = if item.has_body && visibility == "public" {
++                    crate::shims::flat::get_external_export_path_for_did(tcx, item.def_id)
++                } else {
++                    None
++                };
++
++                ItemReport {
++                    def_path_hash: def_path_hash(tcx, item.def_id),
++                    path: tcx.def_path_str(item.def_id),
++                    source_file: source_map.span_to_filename(span).to_string(),
++                    span_lo: span.lo().0,
++                    span_hi: span.hi().0,
++                    kind: item.kind,
++                    has_body: item.has_body,
++                    visibility,
++                    mode,
++                    translation: if !item.has_body {
++                        "declaration"
++                    } else {
++                        registry.function_translation_status(item.def_id)
++                    },
++                    code_name: meta.as_ref().map(|meta| meta.get_code_name().to_owned()),
++                    spec_name: meta.as_ref().map(|meta| meta.get_spec_name().to_owned()),
++                    rr_export_path: external_export.as_ref().map(|export| export.path.path.join("::")),
++                    rr_export_as_method: external_export.map(|export| export.as_method),
++                }
++            })
++            .collect();
++
++        let module_paths = self
++            .module_paths
++            .iter()
++            .map(|entry| ModulePathReport {
++                path: format!("{}::{}", tcx.def_path_str(entry.module), entry.name),
++                target_def_path_hash: def_path_hash(tcx, entry.target),
++                target_path: tcx.def_path_str(entry.target),
++                visibility: entry.visibility.clone(),
++            })
++            .collect();
++
++        let report = InventoryReport {
++            schema_version: 1,
++            crate_name: tcx.crate_name(LOCAL_CRATE).to_string(),
++            scope: "active_cfg_local_callable_hir",
++            complete: true,
++            items,
++            module_paths,
++        };
++        let mut writer = BufWriter::new(File::create(path)?);
++        serde_json::to_writer_pretty(&mut writer, &report).map_err(io::Error::other)?;
++        writer.flush()
++    }
++}
++
++fn insert_item(
++    tcx: ty::TyCtxt<'_>,
++    items: &mut BTreeMap<String, InventoryItem>,
++    def_id: DefId,
++    kind: &'static str,
++    has_body: bool,
++) {
++    items.entry(def_path_hash(tcx, def_id)).or_insert(InventoryItem {
++        def_id,
++        kind,
++        has_body,
++    });
++}
++
++fn def_path_hash(tcx: ty::TyCtxt<'_>, def_id: DefId) -> String {
++    format!("{:?}", tcx.def_path_hash(def_id))
++}
+diff --git a/translation/src/lib.rs b/translation/src/lib.rs
+index 9df1ac1..c0d11f8 100644
+--- a/translation/src/lib.rs
++++ b/translation/src/lib.rs
+@@ -74,6 +74,7 @@ pub struct VerificationCtxt<'tcx, 'rcx> {
+     functions: &'rcx [LocalDefId],
+     closures: &'rcx [LocalDefId],
+     adts: &'rcx [LocalDefId],
++    source_inventory: environment::source_inventory::SourceInventory,
+ 
+     fn_arena: &'rcx Arena<specs::functions::Spec<'rcx, specs::functions::InnerSpec<'rcx>>>,
+ 
+@@ -1280,6 +1281,14 @@ impl<'rcx> VerificationCtxt<'_, 'rcx> {
+             self.coq_path_prefix
+         )
+         .unwrap();
++
++        self.source_inventory
++            .write(
++                self.tcx,
++                &self.procedure_registry,
++                generated_dir_path.parent().unwrap().join("source-inventory.json").as_path(),
++            )
++            .unwrap();
+     }
+ }
+ 
+@@ -3391,6 +3400,7 @@ where
+     let functions = environment::get_procedures(tcx);
+     let closures = environment::get_closures(tcx);
+     let adts = environment::get_adts(tcx);
++    let source_inventory = environment::source_inventory::SourceInventory::collect(tcx, &functions, &closures);
+     info!("Found {} function(s), {} closure(s), and {} ADT(s)", functions.len(), closures.len(), adts.len());
+ 
+     let struct_arena = Arena::new();
+@@ -3493,6 +3503,7 @@ where
+         functions: functions.as_slice(),
+         closures: closures.as_slice(),
+         adts: adts.as_slice(),
++        source_inventory,
+         type_translator: &type_translator,
+         trait_registry: &trait_registry,
+         procedure_registry,
+diff --git a/translation/src/procedures.rs b/translation/src/procedures.rs
+index e5f771f..ad4a1de 100644
+--- a/translation/src/procedures.rs
++++ b/translation/src/procedures.rs
+@@ -339,6 +339,19 @@ impl<'tcx, 'def> Scope<'tcx, 'def> {
+         self.lookup_function(did).map(|meta| meta.get_mode())
+     }
+ 
++    pub(crate) fn function_translation_status(&self, did: DefId) -> &'static str {
++        let key = ProcedureKey::Function(self.get_ordered_did(did));
++        if self.translated_procedures.contains_key(&key) {
++            "body_generated"
++        } else if self.specced_procedures.contains_key(&key) {
++            "spec_generated"
++        } else if self.procedure_meta.contains_key(&key) {
++            "registered_without_generated_body"
++        } else {
++            "not_registered"
++        }
++    }
++
+     pub(crate) fn has_raw_mut_self(&self, did: DefId) -> bool {
+         did.is_local() && self.raw_mut_self_functions.contains(&self.get_ordered_did(did))
+     }

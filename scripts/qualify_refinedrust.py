@@ -145,6 +145,28 @@ def main() -> int:
                         raise ValueError(f"expected one {name} proof artifact, found {len(proofs)}")
                     stage["artifact"] = {"path": proofs[0].relative_to(work).as_posix(),
                                          "sha256": hashlib.sha256(proofs[0].read_bytes()).hexdigest()}
+                if name == "body":
+                    inventory = work / "output/vkit_qualification/source-inventory.json"
+                    census = json.loads(inventory.read_text(encoding="utf-8"))
+                    if (census["schema_version"] != 1
+                            or census["scope"] != "active_cfg_local_callable_hir"
+                            or census["complete"] is not True):
+                        raise ValueError("incomplete or incompatible compiler census")
+                    expected = {"reserve", "private_helper", "inner::exposed"}
+                    paths = {item["path"].removeprefix("vkit_qualification::")
+                             for item in census["items"]}
+                    if paths != expected:
+                        raise ValueError(f"unexpected compiler callable census: {sorted(paths)}")
+                    if not any(entry["path"] == "vkit_qualification::exported_alias"
+                               and entry["target_path"] == "vkit_qualification::inner::exposed"
+                               for entry in census["module_paths"]):
+                        raise ValueError("compiler census missed the reexport target")
+                    stage["source_inventory"] = {
+                        "path": inventory.relative_to(work).as_posix(),
+                        "sha256": hashlib.sha256(inventory.read_bytes()).hexdigest(),
+                        "scope": census["scope"],
+                        "items": census["items"],
+                    }
                 stage["state"] = "COMPLETED"
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             if stage["state"] != "COMPLETED":

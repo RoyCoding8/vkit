@@ -28,6 +28,14 @@ module and its dependencies with `rocq check`, without dependency-skip flags.
 `Print Assumptions` and the checker's context summary are retained for review.
 Printing assumptions does not enforce an allowed-assumption policy.
 
+`frontend-inventory.patch` adds one compiler-owned census to the pinned frontend.
+The Nix override applies it to the original source; the report retains the patch
+digest with the other fixture inputs. It records active-configuration callable
+HIR items before verification selection, their translation outcomes and compiler
+module paths. The fixture includes two unannotated functions and a public alias
+to check that the census exposes code omitted from body proofs. This is a
+coverage diagnostic, not acceptance of those unproved functions.
+
 Run the Linux probe with Nix installed:
 
 ```sh

@@ -4,6 +4,18 @@
 #![register_tool(rr)]
 #![rr::package("vkit-qualification")]
 
+fn private_helper(value: u32) -> u32 {
+    value
+}
+
+mod inner {
+    pub fn exposed(value: u32) -> u32 {
+        value
+    }
+}
+
+pub use inner::exposed as exported_alias;
+
 #[rr::params("u" : "Z", "c" : "Z", "a" : "Z")]
 #[rr::args("u", "c", "a")]
 #[rr::requires("0 ≤ u ≤ c")]

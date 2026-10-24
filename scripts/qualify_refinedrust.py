@@ -17,6 +17,10 @@ from urllib.parse import urlsplit
 FIXTURE = Path(__file__).resolve().parents[1] / "examples" / "refinedrust-qualification"
 
 
+def nix_string(value: str | Path) -> str:
+    return json.dumps(str(value), ensure_ascii=False).replace("${", "\\${")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upstream", type=Path, required=True)
@@ -65,10 +69,11 @@ def main() -> int:
             if p.is_file()
         }
         nix = ["nix", "--extra-experimental-features", "nix-command flakes"]
+        arguments = "{ upstreamPath = " + nix_string(upstream) + "; }"
         with (output / "sources.log").open("w", encoding="utf-8") as log:
             sources = json.loads(subprocess.check_output(
-                nix + ["eval", "--impure", "--json", "--file", str(work / "sources.nix"),
-                       "--argstr", "upstreamPath", str(upstream)],
+                nix + ["eval", "--impure", "--json", "--expr",
+                       "import " + nix_string(work / "sources.nix") + " " + arguments],
                 text=True, stderr=log,
             ))
             report["source_inputs"] = sources
@@ -84,7 +89,7 @@ def main() -> int:
                 ).strip()
                 tree = {"type": "git", "url": f"https://{parsed.hostname}{repository}.git",
                         "rev": source["revision"], "narHash": nar_hash}
-                expression = "(builtins.fetchTree (builtins.fromJSON " + json.dumps(json.dumps(tree)) + ")).outPath"
+                expression = "(builtins.fetchTree (builtins.fromJSON " + nix_string(json.dumps(tree)) + ")).outPath"
                 captured = subprocess.check_output(
                     nix + ["eval", "--impure", "--raw", "--expr", expression], text=True, stderr=log,
                 ).strip()
@@ -93,8 +98,8 @@ def main() -> int:
                 print(f"Captured {source['name']} at {source['revision']}", file=log, flush=True)
         command = [
             *nix,
-            "develop", "--impure", "--file", str(work / "environment.nix"),
-            "--argstr", "upstreamPath", str(upstream),
+            "develop", "--impure", "--expr",
+            "import " + nix_string(work / "environment.nix") + " " + arguments,
             "--max-jobs", "1", "--cores", "1",
             "--command", "bash", "-euc",
             "rustc --version\nrocq --version\ncargo refinedrust --show-config\n"

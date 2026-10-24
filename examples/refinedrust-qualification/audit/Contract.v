@@ -11,7 +11,7 @@ Definition foundation_proof_irrelevance :
 Definition foundation_functional_extensionality :
   ∀ (A : Type) (B : A → Type) (f g : ∀ x : A, B x),
     (∀ x : A, f x = g x) → f = g :=
-  Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep.
+  @Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep.
 
 Definition reserve_result (used capacity amount : Z) : Z :=
   if decide (0 < amount ∧ amount ≤ capacity - used) then used + amount else used.

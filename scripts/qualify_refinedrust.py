@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -233,6 +234,7 @@ def main() -> int:
                         raise ValueError(f"unexpected compiler translation outcomes: {outcomes}")
                     if not any(entry["path"] == "vkit_qualification::exported_alias"
                                and entry["target_path"] == "vkit_qualification::inner::exposed"
+                               and entry["visibility"] == "Public"
                                for entry in census["module_paths"]):
                         raise ValueError("compiler census missed the reexport target")
                     stage["source_inventory"] = {
@@ -398,6 +400,66 @@ def main() -> int:
                                           and unsafe in audit["unsafe_fixpoints"] else "UNEXPECTED_FAILURE")
                 if probe["state"] == "INCONCLUSIVE":
                     probe["state"] = "NOT_REJECTED"
+                (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            report["support_probes"] = []
+            for case, lemma in (("census", "reserve"), ("collection", "fill")):
+                case_root = output / "support" / case
+                case_work = case_root / "source"
+                shutil.copytree(FIXTURE, case_work, ignore=shutil.ignore_patterns("output", "target"))
+                source = case_work / "src/lib.rs"
+                candidate = (case_work / "probes" / f"{case}.rs").read_text(encoding="utf-8")
+                if case == "census":
+                    candidate = source.read_text(encoding="utf-8") + "\n" + candidate
+                source.write_text(candidate, encoding="utf-8")
+                probe = {"name": case, "state": "INCONCLUSIVE",
+                         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+                report["support_probes"].append(probe)
+                (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+                script = "cargo refinedrust -- --locked\ndune build --root output\n"
+                command = ["timeout", "--kill-after=10s", "600s", *environment, script]
+                probe.update(run_command(command, case_work, case_root / "body.log"))
+                if probe["returncode"] == 0:
+                    proofs = [p for p in case_work.glob(f"output/**/proof_{lemma}.vo")
+                              if p.is_file() and not p.is_symlink()]
+                    if len(proofs) != 1:
+                        raise ValueError(f"expected one compiled {case} body proof")
+                    probe["body_proof_sha256"] = hashlib.sha256(proofs[0].read_bytes()).hexdigest()
+                    if case == "census":
+                        inventory = case_work / "output/vkit_qualification/source-inventory.json"
+                        census = json.loads(inventory.read_text(encoding="utf-8"))
+                        items = census["items"]
+                        kinds = Counter(item["kind"] for item in items)
+                        expected_kinds = {"function": 4, "closure": 1, "impl_method": 1,
+                                          "trait_default_method": 1, "trait_required_method": 1,
+                                          "foreign_function": 1}
+                        if (census["schema_version"] != 1 or census["complete"] is not True
+                                or census["scope"] != "active_cfg_local_callable_hir"
+                                or kinds != expected_kinds
+                                or len({item["def_path_hash"] for item in items}) != 9
+                                or any(item["has_body"] != (item["kind"] not in {
+                                    "trait_required_method", "foreign_function"}) for item in items)):
+                            raise ValueError("broader compiler callable census did not match the fixture")
+                        if {item["path"] for item in items if item["kind"] == "function"} != {
+                            "vkit_qualification::reserve", "vkit_qualification::private_helper",
+                            "vkit_qualification::inner::exposed", "vkit_qualification::closure_owner",
+                        }:
+                            raise ValueError("compiler census changed the named function identities")
+                        exposed = next(item for item in items
+                                       if item["path"] == "vkit_qualification::inner::exposed")
+                        if not any(entry["path"] == "vkit_qualification::exported_alias"
+                                   and entry["target_def_path_hash"] == exposed["def_path_hash"]
+                                   and entry["visibility"] == "Public"
+                                   for entry in census["module_paths"]):
+                            raise ValueError("census alias no longer binds its compiler identity")
+                        if any((item["mode"], item["translation"]) != (None, "not_registered")
+                               for item in items if item["path"] != "vkit_qualification::reserve"):
+                            raise ValueError("unproved census items were silently registered")
+                        probe["inventory_sha256"] = hashlib.sha256(inventory.read_bytes()).hexdigest()
+                    probe["state"] = "BODY_PROOF_COMPILED"
+                elif probe["returncode"] in {124, 137}:
+                    probe["state"] = "TIMED_OUT"
+                else:
+                    probe["state"] = "UNSUPPORTED_OR_FAILED"
                 (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"qualification": report["qualification"],
                           "stages": [{"name": s["name"], "state": s["state"]} for s in report["stages"]],

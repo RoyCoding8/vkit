@@ -104,6 +104,7 @@ def main() -> int:
             "develop", "--impure", "--expr",
             "import " + nix_string(work / "environment.nix") + " " + arguments,
             "--inputs-from", str(upstream),
+            "--print-build-logs",
             "--max-jobs", "1", "--cores", "2",
             "--command", "bash", "-euc",
         ]

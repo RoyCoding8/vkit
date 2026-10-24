@@ -12,7 +12,7 @@ index e5c5487..c20672f 100644
  pub(crate) mod mir_sets;
 diff --git a/translation/src/environment/source_inventory.rs b/translation/src/environment/source_inventory.rs
 new file mode 100644
-index 0000000..4af1116
+index 0000000..6076597
 --- /dev/null
 +++ b/translation/src/environment/source_inventory.rs
 @@ -0,0 +1,249 @@
@@ -128,7 +128,7 @@ index 0000000..4af1116
 +        for id in crate_items.free_items() {
 +            let item = tcx.hir_item(id);
 +            if let hir::ItemKind::ForeignMod { items: foreign_items, .. } = item.kind {
-+                for foreign_item_id in foreign_items {
++                for &foreign_item_id in foreign_items {
 +                    let foreign_item = tcx.hir_foreign_item(foreign_item_id);
 +                    if matches!(foreign_item.kind, hir::ForeignItemKind::Fn(..)) {
 +                        insert_item(
@@ -203,7 +203,7 @@ index 0000000..4af1116
 +                ItemReport {
 +                    def_path_hash: def_path_hash(tcx, item.def_id),
 +                    path: tcx.def_path_str(item.def_id),
-+                    source_file: source_map.span_to_filename(span).to_string(),
++                    source_file: source_map.span_to_filename(span).prefer_local_unconditionally().to_string(),
 +                    span_lo: span.lo().0,
 +                    span_hi: span.hi().0,
 +                    kind: item.kind,

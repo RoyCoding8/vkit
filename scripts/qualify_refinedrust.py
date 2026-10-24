@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 FIXTURE = Path(__file__).resolve().parents[1] / "examples" / "refinedrust-qualification"
+QUALIFICATION_AXIOMS = {
+    "Stdlib.Logic.ProofIrrelevance.proof_irrelevance",
+    "Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep",
+}
 
 
 def nix_string(value: str | Path) -> str:
@@ -35,6 +40,35 @@ def run_command(command: list[str], cwd: Path, log_path: Path) -> dict:
             process.wait()
     return {"returncode": process.returncode,
             "elapsed_seconds": round(time.monotonic() - started, 3)}
+
+
+def read_axioms(path: Path) -> dict:
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    if lines == ["Closed under the global context"]:
+        return {}
+    if not lines or lines.pop(0) != "Axioms:":
+        raise ValueError("unrecognized theorem-assumption report")
+    axioms = {}
+    current = None
+    for line in lines:
+        if not line.strip():
+            continue
+        if line[0].isspace():
+            if current is None:
+                raise ValueError("assumption type without a qualified name")
+            axioms[current] += "\n" + line
+        else:
+            name, separator, type_display = line.partition(" :")
+            if (not separator or name in axioms
+                    or not re.fullmatch(r"[A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)+", name, flags=re.ASCII)):
+                raise ValueError(f"unrecognized assumption entry: {line}")
+            current = name
+            axioms[name] = type_display.strip()
+    if not axioms or any(not value.strip() for value in axioms.values()):
+        raise ValueError("empty assumption declaration")
+    return {name: {"display_type": value,
+                   "display_type_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest()}
+            for name, value in axioms.items()}
 
 
 def main() -> int:
@@ -182,6 +216,16 @@ def main() -> int:
                         "scope": census["scope"],
                         "items": census["items"],
                     }
+                if name == "contract":
+                    axioms = read_axioms(work / "audit/assumptions.out")
+                    stage["assumption_audit"] = {
+                        "scope": "QUALIFICATION_ONLY",
+                        "observed": axioms,
+                        "unexpected": sorted(axioms.keys() - QUALIFICATION_AXIOMS),
+                        "product_policy_accepted": False,
+                    }
+                    if axioms.keys() != QUALIFICATION_AXIOMS:
+                        raise ValueError("the scalar theorem's foundational assumptions changed")
                 stage["state"] = "COMPLETED"
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             if stage["state"] != "COMPLETED":
@@ -218,6 +262,9 @@ def main() -> int:
                 case_stages = [("generation", "cargo refinedrust -- --locked\n")]
                 if case not in {"trust_me", "only_spec"}:
                     case_stages.append(("body", "dune build --root output\n"))
+                if case == "shadowed_contract":
+                    case_stages.append(("vulnerable_control",
+                                        f"cd output\ndune exec -- rocq compile {loadpath} ../audit/Vulnerable.v\n"))
                 if case in {"weakened_contract", "shadowed_contract", "admitted_body"}:
                     case_stages.append(("contract", contract_script))
                 for name, script in case_stages:
@@ -240,16 +287,24 @@ def main() -> int:
                         diagnostic = f"No assumption is allowed, but this function is annotated with `#[rr::{case}]`"
                         if step["returncode"] == 0:
                             probe["state"] = "NOT_REJECTED"
-                        elif log.count(diagnostic) == 1:
-                            probe["state"] = "DIAGNOSTIC_OBSERVED_REQUIRES_REVIEW"
                         else:
-                            probe["state"] = "UNEXPECTED_FAILURE"
+                            errors = [line for line in log.splitlines() if line.startswith("error:")]
+                            rejected = (step["returncode"] == 101 and len(errors) == 2
+                                        and errors[0] == f"error: [RefinedRust] {diagnostic}"
+                                        and errors[1].startswith("error: could not compile `vkit-qualification`")
+                                        and "due to 1 previous error" in errors[1]
+                                        and "pub fn reserve(" in log)
+                            probe["state"] = "EXPECTED_REJECTION" if rejected else "UNEXPECTED_FAILURE"
                         break
                     if step["returncode"] != 0:
                         if case == "wrong_body" and name == "body":
-                            probe["state"] = "OBSERVED_FAILURE_REQUIRES_REVIEW"
+                            rejected = (step["returncode"] == 1
+                                        and 'File "./vkit_qualification/proofs/proof_reserve.v"' in log
+                                        and "(in proof reserve_proof): Attempt to save an incomplete proof" in log)
+                            probe["state"] = "EXPECTED_REJECTION" if rejected else "UNEXPECTED_FAILURE"
                         elif case in {"weakened_contract", "shadowed_contract"} and name == "contract":
-                            probe["state"] = ("EXPECTED_REJECTION" if "../audit/Expected.v" in log
+                            probe["state"] = ("EXPECTED_REJECTION" if step["returncode"] == 1
+                                              and "../audit/Expected.v" in log
                                               and "while it is expected to have type" in log
                                               and "reserve_proof" in log
                                               else "UNEXPECTED_FAILURE")
@@ -265,17 +320,32 @@ def main() -> int:
                         imports = proof.read_text(encoding="utf-8").split("Section proof.")[0]
                         expected = (case_work / "audit/Contract.v").read_text(encoding="utf-8")
                         definitions = expected[expected.index("Definition reserve_result"):expected.index("End contract.")]
+                        if definitions.count("refinedrust.primitive.functions.typed_function") != 1:
+                            raise ValueError("shadow probe no longer targets one verification judgment")
                         definitions = definitions.replace("refinedrust.primitive.functions.typed_function", "typed_function")
-                        definitions += ('Lemma reserve_proof (π : thread_id) : expected_body π.\n'
-                                        'Proof. intros panic_shim_loc Hlayout. iIntros "_". done. Qed.\n'
-                                        'End contract.\n')
+                        weak_proof = ('Lemma reserve_proof (π : thread_id) : expected_body π.\n'
+                                      'Proof. intros panic_shim_loc Hlayout. iIntros "_". done. Qed.\n'
+                                      'End contract.\n')
                         shadow = ("Definition typed_function := ltac:(\n"
                                   "  let T := type of @refinedrust.primitive.functions.typed_function in\n"
-                                  "  refine (_ : T); intros; exact True%I).\n\n")
-                        proof.write_text(imports + shadow + definitions, encoding="utf-8")
+                                  "  refine (_ : T); intros; exact True%I).\n"
+                                  "Arguments typed_function {Σ RRGS lfts rts} π fn fp.\n\n")
+                        proof.write_text(imports + shadow + definitions + weak_proof, encoding="utf-8")
                         probe["mutated_proof_sha256"] = hashlib.sha256(proof.read_bytes()).hexdigest()
+                        vulnerable = (imports
+                                      + "From refinedrust.examples.vkit_qualification.proofs Require Import proof_reserve.\n"
+                                      + definitions
+                                      + "Theorem reserve_expected (π : thread_id) : expected_body π.\n"
+                                      + "Proof. exact (reserve_proof π). Qed.\nEnd contract.\n")
+                        (case_work / "audit/Vulnerable.v").write_text(vulnerable, encoding="utf-8")
+                    if case == "shadowed_contract" and name == "vulnerable_control":
+                        probe["vulnerable_control_accepted"] = True
                     if case == "admitted_body" and name == "contract":
-                        probe["state"] = "ASSUMPTIONS_REQUIRE_REVIEW"
+                        axioms = read_axioms(case_work / "audit/assumptions.out")
+                        probe["observed_axioms"] = sorted(axioms)
+                        proof_hole = "refinedrust.examples.vkit_qualification.proofs.proof_reserve.reserve_proof"
+                        probe["state"] = ("PROOF_HOLE_DETECTED" if proof_hole in axioms
+                                          and proof_hole not in QUALIFICATION_AXIOMS else "NOT_REJECTED")
                 if probe["state"] == "INCONCLUSIVE":
                     probe["state"] = "NOT_REJECTED"
                 (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

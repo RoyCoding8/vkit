@@ -4,6 +4,15 @@ From refinedrust Require Import typing shims.
 
 Set Default Proof Using "Type".
 
+Definition foundation_proof_irrelevance :
+  ∀ (P : Prop) (p1 p2 : P), p1 = p2 :=
+  Stdlib.Logic.ProofIrrelevance.proof_irrelevance.
+
+Definition foundation_functional_extensionality :
+  ∀ (A : Type) (B : A → Type) (f g : ∀ x : A, B x),
+    (∀ x : A, f x = g x) → f = g :=
+  Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep.
+
 Definition reserve_result (used capacity amount : Z) : Z :=
   if decide (0 < amount ∧ amount ≤ capacity - used) then used + amount else used.
 

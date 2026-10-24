@@ -12,4 +12,6 @@ Proof. exact (refinedrust.examples.vkit_qualification.proofs.proof_reserve.reser
 End binding.
 
 Set Printing Fully Qualified.
-Print Assumptions reserve_expected.
+Unset Printing Notations.
+Set Printing Width 1000000.
+Redirect "../audit/assumptions" Print Assumptions reserve_expected.

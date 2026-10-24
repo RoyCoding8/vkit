@@ -27,8 +27,11 @@ the producer proof. `audit/Expected.v` applies that proof to the compiled
 contract using qualified references. Producer names cannot replace the contract
 during that application. The replay stage independently checks the compiled
 module and its dependencies with `rocq check`, without dependency-skip flags.
-`Print Assumptions` and the checker's context summary are retained for review.
-Printing assumptions does not enforce an allowed-assumption policy.
+`Print Assumptions` writes a dedicated report with qualified names. The runner
+rejects missing, malformed or changed baseline assumptions. The contract also
+typechecks the two identified standard-library constants against explicit type
+witnesses. This qualification boundary does not accept a product assumption
+policy. Displayed type hashes identify report text, not serialized kernel terms.
 
 `frontend-inventory.patch` adds one compiler-owned census to the pinned frontend.
 The Nix override applies it to the original source; the report retains the patch
@@ -42,10 +45,12 @@ After a successful baseline, the same runner executes fixed negative probes in
 fresh source copies. They change the body, weaken the producer contract, shadow
 the verification judgment, admit a proof or request an assumed-function mode.
 Each invocation has a ten-minute limit including Nix setup. Timeouts and
-unexpected failures cannot count as rejection. Initial failure diagnostics and
-admitted-proof assumptions remain marked for review until their actual outputs
-establish the intended failure. These experiments do not accept an assumption
-policy or complete Q0.
+unexpected failures cannot count as rejection. Matchers for the wrong body and
+assumed modes are based on observed CI diagnostics. An admitted proof must expose
+the unapproved `reserve_proof` axiom. The shadowing probe also requires a
+deliberately vulnerable driver to compile the same mutant that the current
+driver must reject. These experiments do not accept a product assumption policy
+or complete Q0.
 
 Run the Linux probe with Nix installed:
 

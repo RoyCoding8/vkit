@@ -9,6 +9,10 @@ precondition is `used ≤ capacity`; the Rust integer types supply their bounds.
 This fixture does not implement the reservation ledger in `PLAN.md`.
 
 `upstream.json` fixes the upstream revision and dependency-lock digest.
+`sources.nix` reads the required GitLab library revisions, hashes and store paths
+from that pinned dependency graph. The runner captures their trees through Git
+and requires the original NAR hashes and store paths. This avoids the archive
+endpoint's HTTP 429 failure without changing the accepted library content.
 `RefinedRust.toml` rejects assumed functions, proof admission and skipped
 unsupported features. Those switches do not replace a transitive assumption
 audit or independent proof checking.

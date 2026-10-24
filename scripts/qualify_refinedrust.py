@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 FIXTURE = Path(__file__).resolve().parents[1] / "examples" / "refinedrust-qualification"
 
@@ -63,8 +64,35 @@ def main() -> int:
             for p in sorted(work.rglob("*"))
             if p.is_file()
         }
+        nix = ["nix", "--extra-experimental-features", "nix-command flakes"]
+        with (output / "sources.log").open("w", encoding="utf-8") as log:
+            sources = json.loads(subprocess.check_output(
+                nix + ["eval", "--impure", "--json", "--file", str(work / "sources.nix"),
+                       "--argstr", "upstreamPath", str(upstream)],
+                text=True, stderr=log,
+            ))
+            report["source_inputs"] = sources
+            (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            for source in sources:
+                parsed = urlsplit(source["url"])
+                repository, separator, _ = parsed.path.partition("/-/archive/")
+                if parsed.hostname != "gitlab.mpi-sws.org" or not separator:
+                    raise ValueError(f"unsupported source archive: {source['url']}")
+                nar_hash = subprocess.check_output(
+                    nix + ["hash", "convert", "--hash-algo", "sha256", "--to", "sri", source["hash"]],
+                    text=True, stderr=log,
+                ).strip()
+                tree = {"type": "git", "url": f"https://{parsed.hostname}{repository}.git",
+                        "rev": source["revision"], "narHash": nar_hash}
+                expression = "(builtins.fetchTree (builtins.fromJSON " + json.dumps(json.dumps(tree)) + ")).outPath"
+                captured = subprocess.check_output(
+                    nix + ["eval", "--impure", "--raw", "--expr", expression], text=True, stderr=log,
+                ).strip()
+                if captured != source["path"]:
+                    raise ValueError(f"source store path mismatch for {source['name']}: {captured}")
+                print(f"Captured {source['name']} at {source['revision']}", file=log, flush=True)
         command = [
-            "nix", "--extra-experimental-features", "nix-command flakes",
+            *nix,
             "develop", "--impure", "--file", str(work / "environment.nix"),
             "--argstr", "upstreamPath", str(upstream),
             "--max-jobs", "1", "--cores", "1",
@@ -83,6 +111,9 @@ def main() -> int:
                           "report": str(output / "report.json")}))
         return 3
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        if "fixture_sha256" in report:
+            report["error"] = str(error)
+            (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Qualification did not run: {error}", file=sys.stderr)
         return 3
 

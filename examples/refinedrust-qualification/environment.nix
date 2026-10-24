@@ -6,12 +6,8 @@ let
     system = "x86_64-linux";
     overlays = [ upstream.overlays.default ];
   };
-  rust = upstream.lib.rust.mkToolchain pkgs pin.rust_channel [
-    "cargo"
-    "llvm-tools-preview"
-    "rustc"
-    "rustc-dev"
-  ];
+  rustConfig = (builtins.fromTOML (builtins.readFile (upstreamPath + "/rr_frontend/rust-toolchain.toml"))).toolchain;
+  rust = upstream.lib.rust.mkToolchain pkgs rustConfig.channel rustConfig.components;
 in
 assert builtins.hashFile "sha256" (upstreamPath + "/flake.lock") == pin.flake_lock_sha256;
 pkgs.mkShellNoCC {

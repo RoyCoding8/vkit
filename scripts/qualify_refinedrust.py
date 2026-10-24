@@ -71,6 +71,31 @@ def read_axioms(path: Path) -> dict:
             for name, value in axioms.items()}
 
 
+def read_checker_safety(path: Path) -> dict:
+    observed = []
+    unsafe_fixpoints = []
+    section = None
+    unexpected_content = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("* "):
+            observed.append(line)
+            section = line
+        elif section is not None and section != "* Axioms:" and line.strip():
+            unexpected_content = True
+            if section == "* Constants/Inductives relying on unsafe (co)fixpoints:":
+                unsafe_fixpoints.append(line.strip())
+    expected = [
+        "* Theory: Set is predicative",
+        "* Theory: Rewrite rules are not allowed",
+        "* Axioms:",
+        "* Constants/Inductives relying on type-in-type: <none>",
+        "* Constants/Inductives relying on unsafe (co)fixpoints: <none>",
+        "* Inductives whose positivity is assumed: <none>",
+    ]
+    return {"headers": observed, "unsafe_fixpoints": unsafe_fixpoints,
+            "safe": observed == expected and not unexpected_content}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upstream", type=Path, required=True)
@@ -226,13 +251,18 @@ def main() -> int:
                     }
                     if axioms.keys() != QUALIFICATION_AXIOMS:
                         raise ValueError("the scalar theorem's foundational assumptions changed")
+                if name == "replay":
+                    stage["safety_audit"] = read_checker_safety(output / "replay.log")
+                    if not stage["safety_audit"]["safe"]:
+                        raise ValueError("recursive checker did not report the required safe typing flags")
                 stage["state"] = "COMPLETED"
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             if stage["state"] != "COMPLETED":
                 break
         if all(stage["state"] == "COMPLETED" for stage in report["stages"]):
             report["negative_probes"] = []
-            for case in ("wrong_body", "weakened_contract", "shadowed_contract", "admitted_body", "trust_me", "only_spec"):
+            for case in ("wrong_body", "weakened_contract", "shadowed_contract", "admitted_body",
+                         "unsafe_body", "trust_me", "only_spec"):
                 case_root = output / "negative" / case
                 case_work = case_root / "source"
                 shutil.copytree(FIXTURE, case_work, ignore=shutil.ignore_patterns("output", "target"))
@@ -265,8 +295,10 @@ def main() -> int:
                 if case == "shadowed_contract":
                     case_stages.append(("vulnerable_control",
                                         f"cd output\ndune exec -- rocq compile {loadpath} ../audit/Vulnerable.v\n"))
-                if case in {"weakened_contract", "shadowed_contract", "admitted_body"}:
+                if case in {"weakened_contract", "shadowed_contract", "admitted_body", "unsafe_body"}:
                     case_stages.append(("contract", contract_script))
+                if case == "unsafe_body":
+                    case_stages.append(("replay", stages[2][1]))
                 for name, script in case_stages:
                     command = ["timeout", "--kill-after=10s", "600s", *environment, script]
                     step = {"name": name, "command": command, "state": "STARTED"}
@@ -315,6 +347,18 @@ def main() -> int:
                         proof = case_work / "output/vkit_qualification/proofs/proof_reserve.v"
                         if "Admitted. (* admitted due to admit_proofs config flag *)" not in proof.read_text(encoding="utf-8"):
                             raise ValueError("admitted-body mutation did not generate the intended proof hole")
+                    if case == "unsafe_body" and name == "generation":
+                        proof = case_work / "output/vkit_qualification/proofs/proof_reserve.v"
+                        statement, separator, _ = proof.read_text(encoding="utf-8").partition("Proof.")
+                        if not separator or statement.count("Lemma reserve_proof") != 1:
+                            raise ValueError("unsafe probe no longer targets one generated proof")
+                        statement = statement.replace("Lemma reserve_proof", (
+                            "Unset Guard Checking.\n"
+                            "Fixpoint false_proof (n : nat) : False := false_proof n.\n"
+                            "Set Guard Checking.\n\nLemma reserve_proof"))
+                        proof.write_text(statement + "Proof. exact (False_rect _ (false_proof 0)). Qed.\n"
+                                         "End proof.\n", encoding="utf-8")
+                        probe["mutated_proof_sha256"] = hashlib.sha256(proof.read_bytes()).hexdigest()
                     if case == "shadowed_contract" and name == "generation":
                         proof = case_work / "output/vkit_qualification/proofs/proof_reserve.v"
                         imports = proof.read_text(encoding="utf-8").split("Section proof.")[0]
@@ -346,6 +390,12 @@ def main() -> int:
                         proof_hole = "refinedrust.examples.vkit_qualification.proofs.proof_reserve.reserve_proof"
                         probe["state"] = ("PROOF_HOLE_DETECTED" if proof_hole in axioms
                                           and proof_hole not in QUALIFICATION_AXIOMS else "NOT_REJECTED")
+                    if case == "unsafe_body" and name == "replay":
+                        audit = read_checker_safety(log_path)
+                        probe["safety_audit"] = audit
+                        unsafe = "refinedrust.examples.vkit_qualification.proofs.proof_reserve.false_proof"
+                        probe["state"] = ("UNSAFE_PROOF_DETECTED" if not audit["safe"]
+                                          and unsafe in audit["unsafe_fixpoints"] else "UNEXPECTED_FAILURE")
                 if probe["state"] == "INCONCLUSIVE":
                     probe["state"] = "NOT_REJECTED"
                 (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

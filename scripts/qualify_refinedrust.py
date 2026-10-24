@@ -269,7 +269,7 @@ def main() -> int:
                 source = case_work / "src/lib.rs"
                 config = case_work / "RefinedRust.toml"
                 replacements = []
-                if case in {"wrong_body", "weakened_contract", "shadowed_contract"}:
+                if case in {"wrong_body", "weakened_contract", "shadowed_contract", "unsafe_body"}:
                     replacements.append((source, "\n    used + amount\n", "\n    used\n"))
                 if case == "weakened_contract":
                     replacements.append((source,

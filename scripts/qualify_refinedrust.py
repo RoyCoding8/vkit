@@ -353,12 +353,13 @@ def main() -> int:
                     if case == "unsafe_body" and name == "generation":
                         proof = case_work / "output/vkit_qualification/proofs/proof_reserve.v"
                         statement, separator, _ = proof.read_text(encoding="utf-8").partition("Proof.")
-                        if not separator or statement.count("Lemma reserve_proof") != 1:
+                        if (not separator or statement.count("Lemma reserve_proof") != 1
+                                or statement.count("Section proof.") != 1):
                             raise ValueError("unsafe probe no longer targets one generated proof")
-                        statement = statement.replace("Lemma reserve_proof", (
+                        statement = statement.replace("Section proof.", (
                             "Unset Guard Checking.\n"
                             "Fixpoint false_proof (n : nat) : False := false_proof n.\n"
-                            "Set Guard Checking.\n\nLemma reserve_proof"))
+                            "Set Guard Checking.\n\nSection proof."))
                         proof.write_text(statement + "Proof. exact (False_rect _ (false_proof 0)). Qed.\n"
                                          "End proof.\n", encoding="utf-8")
                         probe["mutated_proof_sha256"] = hashlib.sha256(proof.read_bytes()).hexdigest()

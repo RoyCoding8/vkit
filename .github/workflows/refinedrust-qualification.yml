@@ -27,9 +27,6 @@ jobs:
         with:
           install_url: https://releases.nixos.org/nix/nix-2.34.3/install
           enable_kvm: false
-          extra_nix_config: |
-            max-jobs = 1
-            cores = 1
       - name: Restore the pinned build dependencies
         id: nix-cache
         uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7

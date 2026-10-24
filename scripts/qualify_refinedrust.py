@@ -104,12 +104,13 @@ def main() -> int:
             *nix,
             "develop", "--impure", "--expr",
             "import " + nix_string(work / "environment.nix") + " " + arguments,
-            "--max-jobs", "1", "--cores", "1",
+            "--max-jobs", "1", "--cores", "2",
             "--command", "bash", "-euc",
             "rustc --version\nrocq --version\ncargo refinedrust --show-config\n"
             "cargo refinedrust -- --locked\ndune build --root output\n",
         ]
         report["command"] = command
+        report["scalar_probe"] = "STARTED"
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print("Build the pinned proof environment and check the scalar body", flush=True)
         started = time.monotonic()
@@ -119,6 +120,7 @@ def main() -> int:
                 assert process.stdout is not None
                 for line in process.stdout:
                     log.write(line)
+                    log.flush()
                     print(line, end="", flush=True)
                 process.wait()
         report["scalar_elapsed_seconds"] = round(time.monotonic() - started, 3)

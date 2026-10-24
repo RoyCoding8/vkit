@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -369,7 +370,8 @@ def main() -> int:
                         if definitions.count("refinedrust.primitive.functions.typed_function") != 1:
                             raise ValueError("shadow probe no longer targets one verification judgment")
                         definitions = definitions.replace("refinedrust.primitive.functions.typed_function", "typed_function")
-                        weak_proof = ('Lemma reserve_proof (π : thread_id) : expected_body π.\n'
+                        body = "refinedrust.examples.vkit_qualification.generated.generated_code_vkit_qualification.reserve_def"
+                        weak_proof = (f'Lemma reserve_proof (π : thread_id) : expected_body {body} π.\n'
                                       'Proof. intros panic_shim_loc Hlayout. iIntros "_". done. Qed.\n'
                                       'End contract.\n')
                         shadow = ("Definition typed_function := ltac:(\n"
@@ -381,7 +383,7 @@ def main() -> int:
                         vulnerable = (imports
                                       + "From refinedrust.examples.vkit_qualification.proofs Require Import proof_reserve.\n"
                                       + definitions
-                                      + "Theorem reserve_expected (π : thread_id) : expected_body π.\n"
+                                      + f"Theorem reserve_expected (π : thread_id) : expected_body {body} π.\n"
                                       + "Proof. exact (reserve_proof π). Qed.\nEnd contract.\n")
                         (case_work / "audit/Vulnerable.v").write_text(vulnerable, encoding="utf-8")
                     if case == "shadowed_contract" and name == "vulnerable_control":
@@ -461,10 +463,64 @@ def main() -> int:
                 else:
                     probe["state"] = "UNSUPPORTED_OR_FAILED"
                 (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            composition = {"state": "INCONCLUSIVE", "versions": []}
+            report["two_version_probe"] = composition
+            version_paths = []
+            for label in ("Old", "New"):
+                case_root = output / "versions" / label
+                case_work = case_root / "source"
+                shutil.copytree(FIXTURE, case_work, ignore=shutil.ignore_patterns("output", "target"))
+                source = case_work / "src/lib.rs"
+                candidate = source.read_text(encoding="utf-8")
+                candidate = f'#![rr::coq_prefix("VKitVersions.{label}")]\n' + candidate
+                if label == "New":
+                    if candidate.count("\n    used + amount\n") != 1:
+                        raise ValueError("two-version probe no longer targets one addition")
+                    candidate = candidate.replace("\n    used + amount\n", "\n    amount + used\n")
+                source.write_text(candidate, encoding="utf-8")
+                version = {"namespace": f"VKitVersions.{label}.vkit_qualification",
+                           "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+                composition["versions"].append(version)
+                (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+                command = ["timeout", "--kill-after=10s", "600s", *environment,
+                           "cargo refinedrust -- --locked\ndune build --root output\n"]
+                version.update(run_command(command, case_work, case_root / "body.log"))
+                if version["returncode"] != 0:
+                    composition["state"] = "UNSUPPORTED_OR_FAILED"
+                    break
+                compiled = case_work / "output/_build/default/vkit_qualification"
+                proof = compiled / "proofs/proof_reserve.vo"
+                if not proof.is_file() or proof.is_symlink():
+                    raise ValueError("two-version body did not produce its compiled proof")
+                version["body_proof_sha256"] = hashlib.sha256(proof.read_bytes()).hexdigest()
+                version_paths.append(f"-Q {shlex.quote(str(compiled))} {version['namespace']}")
+            else:
+                combined_loadpath = loadpath + " " + " ".join(version_paths)
+                script = (f"cd output\ndune exec -- rocq compile {combined_loadpath} ../audit/TwoVersions.v\n"
+                          f"dune exec -- rocq check -silent -o {combined_loadpath} VKitQualification.TwoVersions\n")
+                command = ["timeout", "--kill-after=10s", "600s", *environment, script]
+                log_path = output / "two-version.log"
+                composition.update(run_command(command, work, log_path))
+                if composition["returncode"] == 0:
+                    axioms = read_axioms(work / "audit/two-version-assumptions.out")
+                    safety = read_checker_safety(log_path)
+                    composition["assumptions"] = axioms
+                    composition["safety_audit"] = safety
+                    if axioms.keys() != QUALIFICATION_AXIOMS or not safety["safe"]:
+                        raise ValueError("combined body proof failed its assumption or safety audit")
+                    proof = work / "audit/TwoVersions.vo"
+                    composition["proof_sha256"] = hashlib.sha256(proof.read_bytes()).hexdigest()
+                    composition["state"] = "COMBINED_BODY_PROOF_CHECKED"
+                else:
+                    composition["state"] = "UNSUPPORTED_OR_FAILED"
+            (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"qualification": report["qualification"],
                           "stages": [{"name": s["name"], "state": s["state"]} for s in report["stages"]],
                           "negative_probes": [{"name": p["name"], "state": p["state"]}
                                               for p in report.get("negative_probes", [])],
+                          "support_probes": [{"name": p["name"], "state": p["state"]}
+                                             for p in report.get("support_probes", [])],
+                          "two_version_probe": report.get("two_version_probe", {}).get("state", "NOT_RUN"),
                           "report": str(output / "report.json")}))
         return 3
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

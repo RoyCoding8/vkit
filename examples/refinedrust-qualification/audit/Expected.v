@@ -7,7 +7,8 @@ Set Default Proof Using "Type".
 Section binding.
 Context `{RRGS : !refinedrustGS Σ}.
 Theorem reserve_expected (π : thread_id) :
-  VKitQualification.Contract.expected_body (RRGS:=RRGS) π.
+  VKitQualification.Contract.expected_body (RRGS:=RRGS)
+    refinedrust.examples.vkit_qualification.generated.generated_code_vkit_qualification.reserve_def π.
 Proof. exact (refinedrust.examples.vkit_qualification.proofs.proof_reserve.reserve_proof π). Qed.
 End binding.
 

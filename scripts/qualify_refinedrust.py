@@ -22,6 +22,21 @@ def nix_string(value: str | Path) -> str:
     return json.dumps(str(value), ensure_ascii=False).replace("${", "\\${")
 
 
+def run_command(command: list[str], cwd: Path, log_path: Path) -> dict:
+    started = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        with subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True) as process:
+            assert process.stdout is not None
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+                print(line, end="", flush=True)
+            process.wait()
+    return {"returncode": process.returncode,
+            "elapsed_seconds": round(time.monotonic() - started, 3)}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upstream", type=Path, required=True)
@@ -112,11 +127,13 @@ def main() -> int:
             "-Q _build/default/vkit_qualification refinedrust.examples.vkit_qualification "
             "-Q ../audit VKitQualification"
         )
+        contract_script = (f"cd output\ndune exec -- rocq compile {loadpath} ../audit/Contract.v\n"
+                           f"dune exec -- rocq compile {loadpath} ../audit/Expected.v\n")
         stages = (
             ("body", "rustc --version\nrocq --version\ncargo refinedrust --show-config\n"
              "cargo refinedrust -- --locked\ndune build --root output\n",
              "output/**/proof_reserve.vo"),
-            ("contract", f"cd output\ndune exec -- rocq compile {loadpath} ../audit/Expected.v\n",
+            ("contract", contract_script,
              "audit/Expected.vo"),
             ("replay", f"cd output\ndune exec -- rocq check -silent -o {loadpath} VKitQualification.Expected\n",
              None),
@@ -126,20 +143,9 @@ def main() -> int:
             report["stages"].append(stage)
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             print(f"Run {name} stage", flush=True)
-            started = time.monotonic()
-            with (output / f"{name}.log").open("w", encoding="utf-8") as log:
-                with subprocess.Popen(stage["command"], cwd=work, stdout=subprocess.PIPE,
-                                      stderr=subprocess.STDOUT, text=True) as process:
-                    assert process.stdout is not None
-                    for line in process.stdout:
-                        log.write(line)
-                        log.flush()
-                        print(line, end="", flush=True)
-                    process.wait()
-            stage["elapsed_seconds"] = round(time.monotonic() - started, 3)
-            stage["returncode"] = process.returncode
+            stage.update(run_command(stage["command"], work, output / f"{name}.log"))
             stage["state"] = "FAILED"
-            if process.returncode == 0:
+            if stage["returncode"] == 0:
                 if artifact is not None:
                     proofs = [p for p in work.glob(artifact) if p.is_file() and not p.is_symlink()]
                     if len(proofs) != 1:
@@ -153,11 +159,19 @@ def main() -> int:
                             or census["scope"] != "active_cfg_local_callable_hir"
                             or census["complete"] is not True):
                         raise ValueError("incomplete or incompatible compiler census")
-                    expected = {"reserve", "private_helper", "inner::exposed"}
-                    paths = {item["path"].removeprefix("vkit_qualification::")
-                             for item in census["items"]}
+                    expected = {"vkit_qualification::reserve", "vkit_qualification::private_helper",
+                                "vkit_qualification::inner::exposed"}
+                    paths = {item["path"] for item in census["items"]}
                     if paths != expected:
                         raise ValueError(f"unexpected compiler callable census: {sorted(paths)}")
+                    outcomes = {item["path"]: (item["mode"], item["translation"])
+                                for item in census["items"]}
+                    if outcomes != {
+                        "vkit_qualification::reserve": ("prove", "body_generated"),
+                        "vkit_qualification::private_helper": (None, "not_registered"),
+                        "vkit_qualification::inner::exposed": (None, "not_registered"),
+                    }:
+                        raise ValueError(f"unexpected compiler translation outcomes: {outcomes}")
                     if not any(entry["path"] == "vkit_qualification::exported_alias"
                                and entry["target_path"] == "vkit_qualification::inner::exposed"
                                for entry in census["module_paths"]):
@@ -172,8 +186,103 @@ def main() -> int:
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             if stage["state"] != "COMPLETED":
                 break
+        if all(stage["state"] == "COMPLETED" for stage in report["stages"]):
+            report["negative_probes"] = []
+            for case in ("wrong_body", "weakened_contract", "shadowed_contract", "admitted_body", "trust_me", "only_spec"):
+                case_root = output / "negative" / case
+                case_work = case_root / "source"
+                shutil.copytree(FIXTURE, case_work, ignore=shutil.ignore_patterns("output", "target"))
+                source = case_work / "src/lib.rs"
+                config = case_work / "RefinedRust.toml"
+                replacements = []
+                if case in {"wrong_body", "weakened_contract", "shadowed_contract"}:
+                    replacements.append((source, "\n    used + amount\n", "\n    used\n"))
+                if case == "weakened_contract":
+                    replacements.append((source,
+                                         '#[rr::returns("if decide (0 < a ∧ a ≤ c - u) then u + a else u")]',
+                                         '#[rr::returns("u")]'))
+                if case == "admitted_body":
+                    replacements.append((config, "admit_proofs = false", "admit_proofs = true"))
+                if case in {"trust_me", "only_spec"}:
+                    replacements.append((source, "pub fn reserve(", f"#[rr::{case}]\npub fn reserve("))
+                for path, old, new in replacements:
+                    content = path.read_text(encoding="utf-8")
+                    if content.count(old) != 1:
+                        raise ValueError(f"ambiguous {case} mutation in {path.name}")
+                    path.write_text(content.replace(old, new), encoding="utf-8")
+                probe = {"name": case, "state": "INCONCLUSIVE", "stages": [],
+                         "input_sha256": {p.relative_to(case_work).as_posix():
+                                          hashlib.sha256(p.read_bytes()).hexdigest()
+                                          for p in (source, config)}}
+                report["negative_probes"].append(probe)
+                case_stages = [("generation", "cargo refinedrust -- --locked\n")]
+                if case not in {"trust_me", "only_spec"}:
+                    case_stages.append(("body", "dune build --root output\n"))
+                if case in {"weakened_contract", "shadowed_contract", "admitted_body"}:
+                    case_stages.append(("contract", contract_script))
+                for name, script in case_stages:
+                    command = ["timeout", "--kill-after=10s", "600s", *environment, script]
+                    step = {"name": name, "command": command, "state": "STARTED"}
+                    probe["stages"].append(step)
+                    (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+                    print(f"Run {case}/{name}", flush=True)
+                    log_path = case_root / f"{name}.log"
+                    step.update(run_command(command, case_work, log_path))
+                    step["state"] = "COMPLETED" if step["returncode"] == 0 else "FAILED"
+                    if step["returncode"] in {124, 137}:
+                        probe["state"] = "TIMED_OUT"
+                        break
+                    if step["returncode"] in {125, 126, 127}:
+                        probe["state"] = "UNEXPECTED_FAILURE"
+                        break
+                    log = log_path.read_text(encoding="utf-8")
+                    if name == "generation" and case in {"trust_me", "only_spec"}:
+                        diagnostic = f"No assumption is allowed, but this function is annotated with `#[rr::{case}]`"
+                        if step["returncode"] == 0:
+                            probe["state"] = "NOT_REJECTED"
+                        elif log.count(diagnostic) == 1:
+                            probe["state"] = "DIAGNOSTIC_OBSERVED_REQUIRES_REVIEW"
+                        else:
+                            probe["state"] = "UNEXPECTED_FAILURE"
+                        break
+                    if step["returncode"] != 0:
+                        if case == "wrong_body" and name == "body":
+                            probe["state"] = "OBSERVED_FAILURE_REQUIRES_REVIEW"
+                        elif case in {"weakened_contract", "shadowed_contract"} and name == "contract":
+                            probe["state"] = ("EXPECTED_REJECTION" if "../audit/Expected.v" in log
+                                              and "while it is expected to have type" in log
+                                              and "reserve_proof" in log
+                                              else "UNEXPECTED_FAILURE")
+                        else:
+                            probe["state"] = "UNEXPECTED_FAILURE"
+                        break
+                    if case == "admitted_body" and name == "generation":
+                        proof = case_work / "output/vkit_qualification/proofs/proof_reserve.v"
+                        if "Admitted. (* admitted due to admit_proofs config flag *)" not in proof.read_text(encoding="utf-8"):
+                            raise ValueError("admitted-body mutation did not generate the intended proof hole")
+                    if case == "shadowed_contract" and name == "generation":
+                        proof = case_work / "output/vkit_qualification/proofs/proof_reserve.v"
+                        imports = proof.read_text(encoding="utf-8").split("Section proof.")[0]
+                        expected = (case_work / "audit/Contract.v").read_text(encoding="utf-8")
+                        definitions = expected[expected.index("Definition reserve_result"):expected.index("End contract.")]
+                        definitions = definitions.replace("refinedrust.primitive.functions.typed_function", "typed_function")
+                        definitions += ('Lemma reserve_proof (π : thread_id) : expected_body π.\n'
+                                        'Proof. intros panic_shim_loc Hlayout. iIntros "_". done. Qed.\n'
+                                        'End contract.\n')
+                        shadow = ("Definition typed_function := ltac:(\n"
+                                  "  let T := type of @refinedrust.primitive.functions.typed_function in\n"
+                                  "  refine (_ : T); intros; exact True%I).\n\n")
+                        proof.write_text(imports + shadow + definitions, encoding="utf-8")
+                        probe["mutated_proof_sha256"] = hashlib.sha256(proof.read_bytes()).hexdigest()
+                    if case == "admitted_body" and name == "contract":
+                        probe["state"] = "ASSUMPTIONS_REQUIRE_REVIEW"
+                if probe["state"] == "INCONCLUSIVE":
+                    probe["state"] = "NOT_REJECTED"
+                (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"qualification": report["qualification"],
                           "stages": [{"name": s["name"], "state": s["state"]} for s in report["stages"]],
+                          "negative_probes": [{"name": p["name"], "state": p["state"]}
+                                              for p in report.get("negative_probes", [])],
                           "report": str(output / "report.json")}))
         return 3
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

@@ -21,9 +21,11 @@ The runner records separate body, contract and replay stages. The body stage
 invokes Dune explicitly and requires the compiled body proof. Upstream's
 `run_check` callback only logs Dune failure, so this probe disables it.
 
-`audit/Expected.v` states VKit's required scalar result and the permitted
-panic-shim and layout premises. Applying the generated proof to that explicit
-statement must typecheck. The replay stage independently checks the compiled
+`audit/Contract.v` states VKit's required scalar result and the permitted
+panic-shim and layout premises. It compiles before a fresh Rocq process loads
+the producer proof. `audit/Expected.v` applies that proof to the compiled
+contract using qualified references. Producer names cannot replace the contract
+during that application. The replay stage independently checks the compiled
 module and its dependencies with `rocq check`, without dependency-skip flags.
 `Print Assumptions` and the checker's context summary are retained for review.
 Printing assumptions does not enforce an allowed-assumption policy.
@@ -35,6 +37,15 @@ HIR items before verification selection, their translation outcomes and compiler
 module paths. The fixture includes two unannotated functions and a public alias
 to check that the census exposes code omitted from body proofs. This is a
 coverage diagnostic, not acceptance of those unproved functions.
+
+After a successful baseline, the same runner executes fixed negative probes in
+fresh source copies. They change the body, weaken the producer contract, shadow
+the verification judgment, admit a proof or request an assumed-function mode.
+Each invocation has a ten-minute limit including Nix setup. Timeouts and
+unexpected failures cannot count as rejection. Initial failure diagnostics and
+admitted-proof assumptions remain marked for review until their actual outputs
+establish the intended failure. These experiments do not accept an assumption
+policy or complete Q0.
 
 Run the Linux probe with Nix installed:
 

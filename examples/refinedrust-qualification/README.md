@@ -17,9 +17,16 @@ endpoint's HTTP 429 failure without changing the accepted library content.
 unsupported features. Those switches do not replace a transitive assumption
 audit or independent proof checking.
 
-The runner invokes Dune explicitly and checks its exit status and the compiled
-body-proof artifact. Upstream's `run_check` callback logs Dune's exit status
-without propagating a failure, so this probe disables that callback.
+The runner records separate body, contract and replay stages. The body stage
+invokes Dune explicitly and requires the compiled body proof. Upstream's
+`run_check` callback only logs Dune failure, so this probe disables it.
+
+`audit/Expected.v` states VKit's required scalar result and the permitted
+panic-shim and layout premises. Applying the generated proof to that explicit
+statement must typecheck. The replay stage independently checks the compiled
+module and its dependencies with `rocq check`, without dependency-skip flags.
+`Print Assumptions` and the checker's context summary are retained for review.
+Printing assumptions does not enforce an allowed-assumption policy.
 
 Run the Linux probe with Nix installed:
 
@@ -30,7 +37,8 @@ python3 scripts/qualify_refinedrust.py --upstream /path/to/pinned-checkout --out
 The `RefinedRust qualification` GitHub Actions workflow runs the same command
 and retains its report, logs and generated sources as an artifact. The probe
 reports `INCONCLUSIVE` and exits with code 3 until all Q0 gates are implemented
-and checked, even if the scalar body compiles.
+and checked, even if all three stages complete. Per-stage elapsed time includes
+the entire recorded command, including any environment setup.
 
 The workflow reuses `nix-community/cache-nix-action` to retain build dependencies
 after failed probes. Cache keys include the upstream pin and run ID. The cache

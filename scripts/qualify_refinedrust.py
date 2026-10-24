@@ -33,10 +33,9 @@ def main() -> int:
     report = {
         "qualification": "INCONCLUSIVE",
         "upstream": pin,
-        "scalar_probe": "NOT_RUN",
+        "stages": [],
         "remaining_gates": [
-            "independent full proof checking and transitive assumption audit",
-            "trusted expected statement and source-body binding",
+            "transitive theorem assumption audit and trusted source-body binding",
             "rejection of wrong bodies, proof holes and verification bypasses",
             "collection support and complete compiler-backed source inventory",
             "two-version namespace and proof composition",
@@ -100,41 +99,58 @@ def main() -> int:
                     raise ValueError(f"source store path mismatch for {source['name']}: {captured}")
                 print(f"Captured {source['name']} at {source['revision']}", file=log, flush=True)
                 print(f"Verified source identity for {source['name']}", flush=True)
-        command = [
+        environment = [
             *nix,
             "develop", "--impure", "--expr",
             "import " + nix_string(work / "environment.nix") + " " + arguments,
+            "--inputs-from", str(upstream),
             "--max-jobs", "1", "--cores", "2",
             "--command", "bash", "-euc",
-            "rustc --version\nrocq --version\ncargo refinedrust --show-config\n"
-            "cargo refinedrust -- --locked\ndune build --root output\n",
         ]
-        report["command"] = command
-        report["scalar_probe"] = "STARTED"
-        (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-        print("Build the pinned proof environment and check the scalar body", flush=True)
-        started = time.monotonic()
-        with (output / "scalar.log").open("w", encoding="utf-8") as log:
-            with subprocess.Popen(command, cwd=work, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True) as process:
-                assert process.stdout is not None
-                for line in process.stdout:
-                    log.write(line)
-                    log.flush()
-                    print(line, end="", flush=True)
-                process.wait()
-        report["command_elapsed_seconds"] = round(time.monotonic() - started, 3)
-        report["returncode"] = process.returncode
-        report["scalar_probe"] = "BLOCKED"
-        if process.returncode == 0:
-            proofs = [p for p in (work / "output").rglob("proof_reserve.vo") if not p.is_symlink()]
-            if len(proofs) != 1:
-                raise ValueError(f"expected one compiled reserve body proof, found {len(proofs)}")
-            report["body_proof"] = {"path": proofs[0].relative_to(work).as_posix(),
-                                    "sha256": hashlib.sha256(proofs[0].read_bytes()).hexdigest()}
-            report["scalar_probe"] = "COMPILED"
-        (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-        print(json.dumps({"qualification": report["qualification"], "scalar_probe": report["scalar_probe"],
+        loadpath = (
+            "-Q _build/default/vkit_qualification refinedrust.examples.vkit_qualification "
+            "-Q ../audit VKitQualification"
+        )
+        stages = (
+            ("body", "rustc --version\nrocq --version\ncargo refinedrust --show-config\n"
+             "cargo refinedrust -- --locked\ndune build --root output\n",
+             "output/**/proof_reserve.vo"),
+            ("contract", f"cd output\ndune exec -- rocq compile {loadpath} ../audit/Expected.v\n",
+             "audit/Expected.vo"),
+            ("replay", f"cd output\ndune exec -- rocq check -silent -o {loadpath} VKitQualification.Expected\n",
+             None),
+        )
+        for name, script, artifact in stages:
+            stage = {"name": name, "command": [*environment, script], "state": "STARTED"}
+            report["stages"].append(stage)
+            (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            print(f"Run {name} stage", flush=True)
+            started = time.monotonic()
+            with (output / f"{name}.log").open("w", encoding="utf-8") as log:
+                with subprocess.Popen(stage["command"], cwd=work, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True) as process:
+                    assert process.stdout is not None
+                    for line in process.stdout:
+                        log.write(line)
+                        log.flush()
+                        print(line, end="", flush=True)
+                    process.wait()
+            stage["elapsed_seconds"] = round(time.monotonic() - started, 3)
+            stage["returncode"] = process.returncode
+            stage["state"] = "FAILED"
+            if process.returncode == 0:
+                if artifact is not None:
+                    proofs = [p for p in work.glob(artifact) if p.is_file() and not p.is_symlink()]
+                    if len(proofs) != 1:
+                        raise ValueError(f"expected one {name} proof artifact, found {len(proofs)}")
+                    stage["artifact"] = {"path": proofs[0].relative_to(work).as_posix(),
+                                         "sha256": hashlib.sha256(proofs[0].read_bytes()).hexdigest()}
+                stage["state"] = "COMPLETED"
+            (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            if stage["state"] != "COMPLETED":
+                break
+        print(json.dumps({"qualification": report["qualification"],
+                          "stages": [{"name": s["name"], "state": s["state"]} for s in report["stages"]],
                           "report": str(output / "report.json")}))
         return 3
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

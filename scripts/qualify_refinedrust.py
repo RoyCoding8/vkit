@@ -123,7 +123,7 @@ def main() -> int:
                     log.flush()
                     print(line, end="", flush=True)
                 process.wait()
-        report["scalar_elapsed_seconds"] = round(time.monotonic() - started, 3)
+        report["command_elapsed_seconds"] = round(time.monotonic() - started, 3)
         report["returncode"] = process.returncode
         report["scalar_probe"] = "BLOCKED"
         if process.returncode == 0:

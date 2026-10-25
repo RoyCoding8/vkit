@@ -1,13 +1,11 @@
 name: Ledger model iteration session
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       minutes:
-        description: Duration for checking observed branch tips
-        type: choice
-        options: ["10", "20", "30"]
-        default: "20"
+        type: string
+        required: true
 
 permissions:
   contents: read

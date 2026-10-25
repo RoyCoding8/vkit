@@ -14,16 +14,22 @@ on:
         description: Check the provisional ledger model without Rust capability probes
         type: boolean
         default: false
+      session_minutes:
+        description: Keep one model environment alive; 0 runs the one-shot probe
+        type: choice
+        options: ["0", "10", "20", "30"]
+        default: "0"
 
 permissions:
   contents: read
 
 concurrency:
-  group: refinedrust-qualification-${{ github.ref }}
-  cancel-in-progress: true
+  group: refinedrust-qualification-${{ github.ref }}-${{ inputs.session_minutes && inputs.session_minutes != '0' && 'session' || 'single' }}
+  cancel-in-progress: ${{ !inputs.session_minutes || inputs.session_minutes == '0' }}
 
 jobs:
   qualification:
+    if: github.event_name != 'workflow_dispatch' || inputs.session_minutes == '0'
     name: Q0 source and body proof probe
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -79,3 +85,11 @@ jobs:
         uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           primary-key: ${{ steps.nix-cache.outputs.primary-key }}
+  model-session:
+    if: github.event_name == 'workflow_dispatch' && inputs.session_minutes != '0'
+    permissions:
+      contents: read
+      checks: write
+    uses: ./.github/workflows/ledger-model-session.yml
+    with:
+      minutes: ${{ inputs.session_minutes }}

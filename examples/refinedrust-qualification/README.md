@@ -76,8 +76,9 @@ requires a fresh output directory. The report remains `INCONCLUSIVE` for product
 qualification even when its model stage completes. CI offers the same mode
 through the workflow's `model_only` input.
 
-For several proof edits, dispatch `Ledger model iteration session` on the working
-branch. It checks observed branch tips for a bounded duration in one environment.
+For several proof edits, dispatch `RefinedRust qualification` on the working
+branch with `session_minutes` set to 10, 20 or 30. It checks observed branch tips
+for that bounded duration in one environment.
 The `Provisional ledger model` commit check includes the compiler result; every
 checked revision gets its own retained evidence bundle. Rapid intermediate tips
 may be skipped. Driver/environment changes require a new session. These checks

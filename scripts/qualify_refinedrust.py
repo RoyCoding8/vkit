@@ -460,6 +460,25 @@ def main() -> int:
                             raise ValueError("census body/declaration translation states changed")
                         probe["inventory_sha256"] = hashlib.sha256(inventory.read_bytes()).hexdigest()
                     probe["state"] = "BODY_PROOF_COMPILED"
+                    if case == "collection":
+                        script = (
+                            f"cd output\ndune exec -- rocq compile {loadpath} ../audit/CollectionAudit.v\n"
+                            f"dune exec -- rocq check -silent -o {loadpath} VKitQualification.CollectionAudit\n"
+                        )
+                        command = ["timeout", "--kill-after=10s", "600s", *environment, script]
+                        log_path = case_root / "replay.log"
+                        audit = {"command": command, **run_command(command, case_work, log_path)}
+                        probe["replay"] = audit
+                        probe["state"] = "REPLAY_FAILED"
+                        if audit["returncode"] == 0:
+                            audit["assumptions"] = read_axioms(case_work / "audit/collection-assumptions.out")
+                            audit["safety_audit"] = read_checker_safety(log_path)
+                            audit["scope"] = "QUALIFICATION_ONLY"
+                            audit["product_policy_accepted"] = False
+                            if (audit["assumptions"].keys() != QUALIFICATION_AXIOMS
+                                    or not audit["safety_audit"]["safe"]):
+                                raise ValueError("collection proof failed its assumption or safety audit")
+                            probe["state"] = "BODY_PROOF_CHECKED"
                 elif probe["returncode"] in {124, 137}:
                     probe["state"] = "TIMED_OUT"
                 else:

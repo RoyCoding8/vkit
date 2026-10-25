@@ -454,9 +454,10 @@ def main() -> int:
                                    and entry["visibility"] == "Public"
                                    for entry in census["module_paths"]):
                             raise ValueError("census alias no longer binds its compiler identity")
-                        if any((item["mode"], item["translation"]) != (None, "not_registered")
+                        if any((item["mode"], item["translation"]) != (
+                            None, "not_registered" if item["has_body"] else "declaration")
                                for item in items if item["path"] != "vkit_qualification::reserve"):
-                            raise ValueError("unproved census items were silently registered")
+                            raise ValueError("census body/declaration translation states changed")
                         probe["inventory_sha256"] = hashlib.sha256(inventory.read_bytes()).hexdigest()
                     probe["state"] = "BODY_PROOF_COMPILED"
                 elif probe["returncode"] in {124, 137}:

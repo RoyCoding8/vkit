@@ -18,8 +18,8 @@ Definition checked_model_lemmas :=
    @VKitLedger.Model.reserve_sequence_accounting,
    @VKitLedger.Model.reserve_batch_success_accounting,
    @VKitLedger.Model.reserve_batch_too_large,
-   @VKitLedger.Model.ledger_step_valid,
-   @VKitLedger.Model.ledger_steps_valid).
+   @VKitLedger.Model.perform_valid,
+   @VKitLedger.Model.run_commands_correct).
 
 Set Printing Fully Qualified.
 Unset Printing Notations.

@@ -1,4 +1,4 @@
-From stdpp Require Import gmap relations.
+From stdpp Require Import gmap.
 From Stdlib Require Import Lia.
 
 Local Open Scope nat_scope.
@@ -104,13 +104,43 @@ Definition reserve_batch (s : ledger) (requests : list request) :
     end
   else (s, inl BatchTooLarge).
 
-Inductive ledger_step : ledger -> ledger -> Prop :=
-  | ledger_step_reserve s r next (outcome : reserve_error + unit) :
-      reserve s r = (next, outcome) -> ledger_step s next
-  | ledger_step_release s owner id next (outcome : release_error + nat) :
-      release s owner id = (next, outcome) -> ledger_step s next
-  | ledger_step_batch s requests next (outcome : batch_error + unit) :
-      reserve_batch s requests = (next, outcome) -> ledger_step s next.
+Inductive command :=
+  | CmdReserve (r : request)
+  | CmdRelease (owner : Owner) (id : Id)
+  | CmdBatch (requests : list request).
+
+Definition response (c : command) : Type :=
+  match c with
+  | CmdReserve _ => reserve_error + unit
+  | CmdRelease _ _ => release_error + nat
+  | CmdBatch _ => batch_error + unit
+  end.
+
+Inductive outputs : list command -> Type :=
+  | outputs_nil : outputs []
+  | outputs_cons {c cs} : response c -> outputs cs -> outputs (c :: cs).
+
+Definition perform (s : ledger) (c : command) : ledger * response c :=
+  match c as c0 return ledger * response c0 with
+  | CmdReserve r => reserve s r
+  | CmdRelease owner id => release s owner id
+  | CmdBatch requests => reserve_batch s requests
+  end.
+
+Fixpoint run_commands (s : ledger) (cs : list command) : ledger * outputs cs :=
+  match cs as cs0 return ledger * outputs cs0 with
+  | [] => (s, outputs_nil)
+  | c :: rest =>
+      let '(next, out) := perform s c in
+      let '(final, outs) := run_commands next rest in
+      (final, outputs_cons out outs)
+  end.
+
+Inductive faithful : ledger -> forall cs, outputs cs -> ledger -> Prop :=
+  | faithful_nil s : faithful s [] outputs_nil s
+  | faithful_cons s c cs next out final outs :
+      perform s c = (next, out) -> faithful next cs outs final ->
+      faithful s (c :: cs) (outputs_cons out outs) final.
 
 Lemma used_empty : used (∅ : gmap Id reservation) = 0.
 Proof. apply map_fold_empty. Qed.
@@ -446,26 +476,28 @@ Proof.
   - destruct (reserve_sequence s requests) as [[index error]|final]; naive_solver lia.
   - naive_solver lia.
 Qed.
-Lemma ledger_step_valid s next :
-  valid s -> ledger_step s next -> valid next.
+Lemma perform_valid s c : valid s -> valid (fst (perform s c)).
 Proof.
-  intros Hvalid Hstep. destruct Hstep as
-    [before r after outcome Hrun | before owner id after outcome Hrun |
-     before requests after outcome Hrun].
-  - pose proof (reserve_valid before r Hvalid) as Hnext.
-    rewrite Hrun in Hnext. exact Hnext.
-  - pose proof (release_valid before owner id Hvalid) as Hnext.
-    rewrite Hrun in Hnext. exact Hnext.
-  - pose proof (reserve_batch_valid before requests Hvalid) as Hnext.
-    rewrite Hrun in Hnext. exact Hnext.
+  destruct c; cbn [perform].
+  - apply reserve_valid.
+  - apply release_valid.
+  - apply reserve_batch_valid.
 Qed.
 
-Lemma ledger_steps_valid s final :
-  valid s -> rtc ledger_step s final -> valid final.
+Lemma run_commands_correct s cs final outs :
+  valid s -> run_commands s cs = (final, outs) ->
+  valid final /\ faithful s cs outs final.
 Proof.
-  intros Hvalid Htrace. revert Hvalid.
-  induction Htrace as [initial|before mid after Hstep Htail IH]; intros Hvalid.
-  - exact Hvalid.
-  - apply IH. eapply ledger_step_valid; eauto.
+  revert s final outs. induction cs as [|c rest IH]; intros s final outs Hvalid Hrun.
+  - cbn [run_commands] in Hrun. inversion Hrun. subst.
+    split; [exact Hvalid|constructor].
+  - cbn [run_commands] in Hrun.
+    destruct (perform s c) as [next out] eqn:Hstep.
+    destruct (run_commands next rest) as [last tail] eqn:Htail.
+    inversion Hrun. subst final outs.
+    pose proof (perform_valid s c Hvalid) as Hnext.
+    rewrite Hstep in Hnext. cbn [fst] in Hnext.
+    destruct (IH next last tail Hnext Htail) as [Hfinal Hfaithful].
+    split; [exact Hfinal|]. econstructor; eassumption.
 Qed.
 End resource_ledger.

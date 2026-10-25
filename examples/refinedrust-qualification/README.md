@@ -76,6 +76,13 @@ requires a fresh output directory. The report remains `INCONCLUSIVE` for product
 qualification even when its model stage completes. CI offers the same mode
 through the workflow's `model_only` input.
 
+For several proof edits, dispatch `Ledger model iteration session` on the working
+branch. It checks observed branch tips for a bounded duration in one environment.
+The `Provisional ledger model` commit check includes the compiler result; every
+checked revision gets its own retained evidence bundle. Rapid intermediate tips
+may be skipped. Driver/environment changes require a new session. These checks
+do not establish product qualification and are not product acceptance gates.
+
 The `RefinedRust qualification` GitHub Actions workflow runs the same command
 and retains its report, logs and generated sources as an artifact. The probe
 reports `INCONCLUSIVE` and exits with code 3 until all Q0 gates are implemented

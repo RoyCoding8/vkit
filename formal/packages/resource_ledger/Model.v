@@ -235,6 +235,15 @@ Proof.
   rewrite used_slot_records by exact Hnd. exact Hcache.
 Qed.
 
+Lemma slot_view_init cap record_bound :
+  slot_view (init cap record_bound) (replicate (Pos.to_nat record_bound) None).
+Proof.
+  unfold slot_view, slot_records. cbn [init]. rewrite length_replicate.
+  assert (Hempty : forall n, active_pairs (replicate n None) = []).
+  { induction n; cbn; [reflexivity|exact IHn]. }
+  rewrite Hempty, list_to_map_nil. repeat split; constructor.
+Qed.
+
 Lemma init_valid cap record_bound : valid (init cap record_bound).
 Proof.
   unfold valid. split.

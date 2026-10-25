@@ -6,6 +6,7 @@ Definition checked_model_lemmas :=
    @VKitLedger.Model.active_pairs_length, @VKitLedger.Model.slot_records_size,
    @VKitLedger.Model.used_list_to_map, @VKitLedger.Model.used_slot_records,
    @VKitLedger.Model.slot_view_size_bound, @VKitLedger.Model.slot_cache_matches_map,
+   @VKitLedger.Model.slot_view_init,
    @VKitLedger.Model.reserve_valid, @VKitLedger.Model.release_valid,
    @VKitLedger.Model.reserve_rejected_unchanged,
    @VKitLedger.Model.release_rejected_unchanged,

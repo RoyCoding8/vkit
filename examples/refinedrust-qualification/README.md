@@ -105,6 +105,9 @@ or a successful translation.
 The runner captures `formal/packages/resource_ledger/Model.v` with its inputs,
 compiles the provisional model and independently checks the lemmas listed in
 `audit/ModelAudit.v`: initialization, invariant preservation, exact error and
-accounting laws, atomic batch/index behavior and finite mixed-operation traces.
-Its audit remains `PROVISIONAL_MODEL_ONLY`. Concrete representation, body
-refinement and resource-aware bounded execution remain separate obligations.
+accounting laws, atomic batch/index behavior, typed command/result traces and
+pure slot/map correspondence. The slot relation requires fixed length, unique
+active IDs and exact map equality. It derives the record bound and usage/cache
+equality without adding a second semantic total. Its audit remains
+`PROVISIONAL_MODEL_ONLY`. Rust layout correspondence, body refinement and
+resource-aware bounded execution remain separate obligations.

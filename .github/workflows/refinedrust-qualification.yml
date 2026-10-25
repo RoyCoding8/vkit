@@ -1,20 +1,20 @@
-name: RefinedRust qualification
+name: Ledger qualification
 
 on:
   push:
     branches: [codex/formal-qualification]
     paths:
       - .github/workflows/refinedrust-qualification.yml
-      - examples/refinedrust-qualification/**
-      - formal/packages/resource_ledger/**
-      - scripts/qualify_refinedrust.py
+      - examples/verus-qualification/**
+      - formal/packages/resource_ledger/ledger.rs
+      - scripts/check_verus_ledger.py
   workflow_dispatch:
     inputs:
       probe:
         description: Run the full regression or one existing probe
         type: choice
-        options: [full, model, collection, unsafe_body, verus]
-        default: full
+        options: [verus, full, model, collection, unsafe_body]
+        default: verus
       session_minutes:
         description: Keep one model environment alive; 0 runs the one-shot probe
         type: choice
@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   qualification:
-    if: github.event_name != 'workflow_dispatch' || (inputs.session_minutes == '0' && inputs.probe != 'verus')
+    if: github.event_name == 'workflow_dispatch' && inputs.session_minutes == '0' && inputs.probe != 'verus'
     name: Q0 source and body proof probe
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -95,7 +95,7 @@ jobs:
     with:
       minutes: ${{ inputs.session_minutes }}
   verus-comparison:
-    if: github.event_name == 'workflow_dispatch' && inputs.probe == 'verus'
+    if: github.event_name == 'push' || inputs.probe == 'verus'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

@@ -88,7 +88,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     out = args.output.resolve()
-    out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=False)
     pin = json.loads(PIN_PATH.read_text())
     identity = tool_identity(args.archive.resolve(), args.verus_root.resolve(), pin)
     source = SOURCE.read_text(encoding="utf-8")

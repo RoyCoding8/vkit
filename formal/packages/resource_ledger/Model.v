@@ -276,6 +276,7 @@ Proof.
   intros Hresult. inversion Hresult. subst next.
   set (new_entry := {| reservation_owner := request_owner r;
                        reservation_amount := request_amount r |}).
+  Show.
   change
     (0 < request_amount r /\ reservations s !! request_id r = None /\
      size (reservations s) < Pos.to_nat (max_records s) /\

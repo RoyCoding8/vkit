@@ -66,6 +66,21 @@ def test_recursive_checker_safe_summary(tmp_path: Path) -> None:
     assert read_checker_safety(report)["safe"] is True
 
 
+def test_recursive_checker_closed_summary(tmp_path: Path) -> None:
+    report = tmp_path / "replay.log"
+    report.write_text(SAFE_CHECKER_REPORT.replace(
+        "* Axioms:\n    Stdlib.Logic.ProofIrrelevance.proof_irrelevance",
+        "* Axioms: <none>"), encoding="utf-8")
+    assert read_checker_safety(report)["safe"] is True
+
+
+def test_recursive_checker_rejects_content_under_closed_axioms(tmp_path: Path) -> None:
+    report = tmp_path / "replay.log"
+    report.write_text(SAFE_CHECKER_REPORT.replace(
+        "* Axioms:", "* Axioms: <none>"), encoding="utf-8")
+    assert read_checker_safety(report)["safe"] is False
+
+
 @pytest.mark.parametrize("content", [
     "",
     SAFE_CHECKER_REPORT.replace("* Theory: Set is predicative\n", ""),

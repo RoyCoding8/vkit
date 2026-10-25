@@ -96,8 +96,10 @@ def read_checker_safety(path: Path) -> dict:
         "* Constants/Inductives relying on unsafe (co)fixpoints: <none>",
         "* Inductives whose positivity is assumed: <none>",
     ]
+    normalized = ["* Axioms:" if header == "* Axioms: <none>" else header
+                  for header in observed]
     return {"headers": observed, "unsafe_fixpoints": unsafe_fixpoints,
-            "safe": observed == expected and not unexpected_content}
+            "safe": normalized == expected and not unexpected_content}
 
 
 def main() -> int:

@@ -315,4 +315,45 @@ Proof.
   - apply used_delete. exact Hlookup.
   - rewrite map_size_delete_Some by (exists entry; exact Hlookup). reflexivity.
 Qed.
+Lemma reserve_sequence_first_failure s requests index error :
+  reserve_sequence s requests = inl (index, error) ->
+  exists prefix r suffix mid,
+    requests = prefix ++ r :: suffix /\ length prefix = index /\
+    reserve_sequence s prefix = inr mid /\ reserve mid r = (mid, inl error).
+Proof.
+  revert s index error.
+  induction requests as [|r rest IH]; intros s index error Hrun; [discriminate|].
+  cbn [reserve_sequence] in Hrun.
+  destruct (reserve s r) as [next outcome] eqn:Hstep.
+  destruct outcome as [cause|u].
+  - inversion Hrun. subst index error. exists [], r, rest, s.
+    repeat split; try reflexivity.
+    assert (next = s) by (eapply reserve_rejected_unchanged; exact Hstep).
+    subst next. exact Hstep.
+  - destruct (reserve_sequence next rest) as [[i cause]|last] eqn:Htail;
+      [|discriminate].
+    inversion Hrun. subst index error.
+    destruct (IH next i cause Htail) as (prefix & bad & suffix & mid & Hlist & Hlen & Hprefix & Hbad).
+    exists (r :: prefix), bad, suffix, mid. repeat split.
+    + cbn. rewrite Hlist. reflexivity.
+    + cbn. rewrite Hlen. reflexivity.
+    + cbn [reserve_sequence]. rewrite Hstep, Hprefix. reflexivity.
+    + exact Hbad.
+Qed.
+
+Lemma reserve_batch_first_failure s requests next index error :
+  reserve_batch s requests = (next, inl (BatchFailure index error)) ->
+  next = s /\ length requests <= Pos.to_nat batch_bound /\
+  exists prefix r suffix mid,
+    requests = prefix ++ r :: suffix /\ length prefix = index /\
+    reserve_sequence s prefix = inr mid /\ reserve mid r = (mid, inl error).
+Proof.
+  unfold reserve_batch. case_decide.
+  - destruct (reserve_sequence s requests) as [[i cause]|last] eqn:Hsequence;
+      [|discriminate].
+    intros Hrun. inversion Hrun. subst next index error.
+    split; [reflexivity|]. split; [assumption|].
+    eapply reserve_sequence_first_failure. exact Hsequence.
+  - discriminate.
+Qed.
 End resource_ledger.

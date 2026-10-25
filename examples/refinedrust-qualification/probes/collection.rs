@@ -7,7 +7,7 @@
 
 #[rr::refined_by("slots" : "list Z")]
 pub struct FixedPool {
-    #[rr::field("slots")]
+    #[rr::field("#(<#> slots)")]
     slots: [i32; 3],
 }
 

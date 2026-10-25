@@ -1,0 +1,140 @@
+From stdpp Require Import gmap.
+From Stdlib Require Import Lia.
+
+Local Open Scope nat_scope.
+
+Inductive reserve_error :=
+  | ZeroAmount
+  | DuplicateId
+  | NoRecordSpace
+  | InsufficientCapacity.
+
+Inductive release_error :=
+  | MissingId
+  | WrongOwner.
+
+Inductive batch_error :=
+  | BatchTooLarge
+  | BatchFailure (index : nat) (error : reserve_error).
+
+Section resource_ledger.
+Context {Id Owner : Type} `{Countable Id} `{EqDecision Owner}.
+
+Record reservation := {
+  reservation_owner : Owner;
+  reservation_amount : nat;
+}.
+
+Record request := {
+  request_owner : Owner;
+  request_id : Id;
+  request_amount : nat;
+}.
+
+Record ledger := {
+  capacity : nat;
+  max_records : nat;
+  reservations : gmap Id reservation;
+}.
+
+Definition used (records : gmap Id reservation) : nat :=
+  map_fold (fun _ entry total => reservation_amount entry + total) 0 records.
+
+Definition valid (s : ledger) : Prop :=
+  (forall id entry, reservations s !! id = Some entry ->
+     0 < reservation_amount entry) /\
+  used (reservations s) <= capacity s /\
+  size (reservations s) <= max_records s.
+
+Definition init (cap record_bound : nat) : ledger :=
+  {| capacity := cap; max_records := record_bound; reservations := ∅ |}.
+
+Definition with_records (s : ledger) (records : gmap Id reservation) : ledger :=
+  {| capacity := capacity s; max_records := max_records s;
+     reservations := records |}.
+
+Definition reserve (s : ledger) (r : request) : ledger * (reserve_error + unit) :=
+  if decide (request_amount r = 0) then (s, inl ZeroAmount) else
+  match reservations s !! request_id r with
+  | Some _ => (s, inl DuplicateId)
+  | None =>
+      if decide (size (reservations s) < max_records s) then
+        if decide (request_amount r <= capacity s - used (reservations s)) then
+          (with_records s
+             (<[request_id r := {| reservation_owner := request_owner r;
+                                  reservation_amount := request_amount r |}]>
+                reservations s), inr tt)
+        else (s, inl InsufficientCapacity)
+      else (s, inl NoRecordSpace)
+  end.
+
+Definition release (s : ledger) (owner : Owner) (id : Id) :
+    ledger * (release_error + nat) :=
+  match reservations s !! id with
+  | None => (s, inl MissingId)
+  | Some entry =>
+      if decide (reservation_owner entry = owner) then
+        (with_records s (delete id (reservations s)), inr (reservation_amount entry))
+      else (s, inl WrongOwner)
+  end.
+
+Fixpoint reserve_sequence (s : ledger) (requests : list request) :
+    (nat * reserve_error) + ledger :=
+  match requests with
+  | [] => inr s
+  | r :: rest =>
+      match reserve s r with
+      | (_, inl error) => inl (0, error)
+      | (next, inr _) =>
+          match reserve_sequence next rest with
+          | inl (index, error) => inl (S index, error)
+          | inr final => inr final
+          end
+      end
+  end.
+
+Definition reserve_batch (batch_bound : nat) (s : ledger) (requests : list request) :
+    ledger * (batch_error + unit) :=
+  if decide (length requests <= batch_bound) then
+    match reserve_sequence s requests with
+    | inl (index, error) => (s, inl (BatchFailure index error))
+    | inr final => (final, inr tt)
+    end
+  else (s, inl BatchTooLarge).
+
+Lemma used_empty : used (∅ : gmap Id reservation) = 0.
+Proof. apply map_fold_empty. Qed.
+
+Lemma used_insert (records : gmap Id reservation) id entry :
+  records !! id = None ->
+  used (<[id := entry]> records) = reservation_amount entry + used records.
+Proof.
+  intros Hfresh. unfold used.
+  apply map_fold_insert_L.
+  - intros. simpl. lia.
+  - exact Hfresh.
+Qed.
+
+Lemma used_delete (records : gmap Id reservation) id entry :
+  records !! id = Some entry ->
+  used records = reservation_amount entry + used (delete id records).
+Proof.
+  intros Hlookup. unfold used.
+  apply map_fold_delete_L.
+  - intros. simpl. lia.
+  - exact Hlookup.
+Qed.
+
+Lemma init_valid cap record_bound : valid (init cap record_bound).
+Proof.
+  unfold valid. split.
+  - intros id entry Hlookup.
+    change ((∅ : gmap Id reservation) !! id = Some entry) in Hlookup.
+    rewrite lookup_empty in Hlookup. discriminate.
+  - split.
+    + change (used (∅ : gmap Id reservation) <= cap).
+      rewrite used_empty. lia.
+    + change (size (∅ : gmap Id reservation) <= record_bound).
+      rewrite size_empty. lia.
+Qed.
+End resource_ledger.

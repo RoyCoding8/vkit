@@ -1,4 +1,4 @@
-"""Run the scalar RefinedRust probe in the pinned Linux environment.
+"""Run RefinedRust capability and provisional ledger probes in the pinned environment.
 
 A successful probe is not full Q0 qualification. The report keeps the remaining
 proof, statement-binding, coverage and negative-fixture gates explicit.
@@ -18,7 +18,9 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import urlsplit
 
-FIXTURE = Path(__file__).resolve().parents[1] / "examples" / "refinedrust-qualification"
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURE = ROOT / "examples" / "refinedrust-qualification"
+MODEL = ROOT / "formal" / "packages" / "resource_ledger" / "Model.v"
 QUALIFICATION_AXIOMS = {
     "Stdlib.Logic.ProofIrrelevance.proof_irrelevance",
     "Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep",
@@ -111,10 +113,10 @@ def main() -> int:
         "upstream": pin,
         "stages": [],
         "remaining_gates": [
-            "transitive theorem assumption audit and trusted source-body binding",
-            "rejection of wrong bodies, proof holes and verification bypasses",
-            "collection support and complete compiler-backed source inventory",
-            "two-version namespace and proof composition",
+            "checker-version and trusted toolchain profile qualification",
+            "reviewed foundational assumption policy for product acceptance",
+            "ledger body refinement, representation and closed soundness",
+            "resource-aware bounded execution and normal-execution witness",
         ],
     }
     try:
@@ -139,6 +141,8 @@ def main() -> int:
         output.mkdir(parents=True, exist_ok=False)
         work = output / "source"
         shutil.copytree(FIXTURE, work, ignore=shutil.ignore_patterns("output", "target"))
+        (work / "ledger").mkdir()
+        shutil.copyfile(MODEL, work / "ledger/Model.v")
         report["fixture_sha256"] = {
             p.relative_to(work).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(work.rglob("*"))
@@ -194,6 +198,10 @@ def main() -> int:
             ("body", "rustc --version\nrocq --version\ncargo refinedrust --show-config\n"
              "cargo refinedrust -- --locked\ndune build --root output\n",
              "output/**/proof_reserve.vo"),
+            ("model", f"cd output\ndune exec -- rocq compile -Q ../ledger VKitLedger ../ledger/Model.v\n"
+             f"dune exec -- rocq compile {loadpath} -Q ../ledger VKitLedger ../audit/ModelAudit.v\n"
+             f"dune exec -- rocq check -silent -o {loadpath} -Q ../ledger VKitLedger VKitQualification.ModelAudit\n",
+             "ledger/Model.vo"),
             ("contract", contract_script,
              "audit/Expected.vo"),
             ("replay", f"cd output\ndune exec -- rocq check -silent -o {loadpath} VKitQualification.Expected\n",
@@ -254,6 +262,16 @@ def main() -> int:
                     }
                     if axioms.keys() != QUALIFICATION_AXIOMS:
                         raise ValueError("the scalar theorem's foundational assumptions changed")
+                if name == "model":
+                    axioms = read_axioms(work / "ledger/model-assumptions.out")
+                    stage["assumption_audit"] = {
+                        "scope": "PROVISIONAL_MODEL_ONLY", "observed": axioms,
+                        "unexpected": sorted(axioms.keys() - QUALIFICATION_AXIOMS),
+                        "product_policy_accepted": False,
+                    }
+                    stage["safety_audit"] = read_checker_safety(output / "model.log")
+                    if axioms.keys() - QUALIFICATION_AXIOMS or not stage["safety_audit"]["safe"]:
+                        raise ValueError("provisional ledger model failed its assumption or safety audit")
                 if name == "replay":
                     stage["safety_audit"] = read_checker_safety(output / "replay.log")
                     if not stage["safety_audit"]["safe"]:

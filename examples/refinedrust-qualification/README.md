@@ -71,7 +71,7 @@ python3 scripts/qualify_refinedrust.py --upstream /path/to/pinned-checkout --out
 The `RefinedRust qualification` GitHub Actions workflow runs the same command
 and retains its report, logs and generated sources as an artifact. The probe
 reports `INCONCLUSIVE` and exits with code 3 until all Q0 gates are implemented
-and checked, even if all three stages complete. Per-stage elapsed time includes
+and checked, even if every recorded stage completes. Per-stage elapsed time includes
 the entire recorded command, including any environment setup.
 
 The workflow reuses `nix-community/cache-nix-action` to retain build dependencies
@@ -83,3 +83,9 @@ Q0 also requires trusted statement binding, invalid fixtures, implementation
 coverage and a compatible independent checker. Q1 requires the full ledger
 proofs, including termination. Neither gate is satisfied by this source file
 or a successful translation.
+
+The runner captures `formal/packages/resource_ledger/Model.v` with its inputs,
+compiles the provisional model and independently checks its initialization and
+fold-accounting lemmas. Its audit remains `PROVISIONAL_MODEL_ONLY`. Operation
+preservation, concrete body refinement and resource-aware bounded execution are
+separate obligations.

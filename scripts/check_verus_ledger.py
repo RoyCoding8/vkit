@@ -135,7 +135,7 @@ def main() -> int:
             raise RuntimeError(f"could not capture {name}")
     binary = out / ("ledger.exe" if exe.suffix else "ledger")
     check = run([str(exe), str(captured), "--no-cheating", "--no-external-by-default", "--num-threads", "2",
-                 "-V", "axiom-usage-info"],
+                 "-V", "axiom-usage-info", "--log", "call-graph", "--log-dir", str(out / "call-graph")],
                 out / "verify.log", out)
     report["checks"].append({"name": "verified_body", **check})
     log = (out / "verify.log").read_text(encoding="utf-8", errors="replace")

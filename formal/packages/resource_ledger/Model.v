@@ -356,4 +356,36 @@ Proof.
     eapply reserve_sequence_first_failure. exact Hsequence.
   - discriminate.
 Qed.
+Lemma reserve_rejection_spec s r error :
+  reserve s r = (s, inl error) <->
+  match error with
+  | ZeroAmount => request_amount r = 0
+  | DuplicateId => request_amount r <> 0 /\ is_Some (reservations s !! request_id r)
+  | NoRecordSpace =>
+      request_amount r <> 0 /\ reservations s !! request_id r = None /\
+      Pos.to_nat (max_records s) <= size (reservations s)
+  | InsufficientCapacity =>
+      request_amount r <> 0 /\ reservations s !! request_id r = None /\
+      size (reservations s) < Pos.to_nat (max_records s) /\
+      capacity s - used (reservations s) < request_amount r
+  end.
+Proof.
+  destruct error; unfold reserve;
+    destruct (decide (request_amount r = 0));
+    destruct (reservations s !! request_id r) as [entry|] eqn:Hlookup;
+    repeat case_decide; cbn; try unfold is_Some; naive_solver lia.
+Qed.
+
+Lemma release_rejection_spec s owner id error :
+  release s owner id = (s, inl error) <->
+  match error with
+  | MissingId => reservations s !! id = None
+  | WrongOwner => exists entry,
+      reservations s !! id = Some entry /\ reservation_owner entry <> owner
+  end.
+Proof.
+  destruct error; unfold release;
+    destruct (reservations s !! id) as [entry|] eqn:Hlookup;
+    repeat case_decide; cbn; naive_solver.
+Qed.
 End resource_ledger.

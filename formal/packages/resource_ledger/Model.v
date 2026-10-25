@@ -51,7 +51,7 @@ Fixpoint active_pairs (slots : list (option (Id * reservation))) :
   match slots with
   | [] => []
   | None :: rest => active_pairs rest
-  | Some pair :: rest => pair :: active_pairs rest
+  | Some item :: rest => item :: active_pairs rest
   end.
 
 Definition slot_records (slots : list (option (Id * reservation))) :

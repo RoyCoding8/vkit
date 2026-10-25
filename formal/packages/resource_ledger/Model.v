@@ -1,4 +1,4 @@
-From stdpp Require Import gmap.
+From stdpp Require Import gmap relations.
 From Stdlib Require Import Lia.
 
 Local Open Scope nat_scope.
@@ -103,6 +103,14 @@ Definition reserve_batch (s : ledger) (requests : list request) :
     | inr final => (final, inr tt)
     end
   else (s, inl BatchTooLarge).
+
+Inductive ledger_step : ledger -> ledger -> Prop :=
+  | ledger_step_reserve s r next (outcome : reserve_error + unit) :
+      reserve s r = (next, outcome) -> ledger_step s next
+  | ledger_step_release s owner id next (outcome : release_error + nat) :
+      release s owner id = (next, outcome) -> ledger_step s next
+  | ledger_step_batch s requests next (outcome : batch_error + unit) :
+      reserve_batch s requests = (next, outcome) -> ledger_step s next.
 
 Lemma used_empty : used (∅ : gmap Id reservation) = 0.
 Proof. apply map_fold_empty. Qed.
@@ -437,5 +445,27 @@ Proof.
   unfold reserve_batch. case_decide.
   - destruct (reserve_sequence s requests) as [[index error]|final]; naive_solver lia.
   - naive_solver lia.
+Qed.
+Lemma ledger_step_valid s next :
+  valid s -> ledger_step s next -> valid next.
+Proof.
+  intros Hvalid Hstep. destruct Hstep as
+    [before r after outcome Hrun | before owner id after outcome Hrun |
+     before requests after outcome Hrun].
+  - pose proof (reserve_valid before r Hvalid) as Hnext.
+    rewrite Hrun in Hnext. exact Hnext.
+  - pose proof (release_valid before owner id Hvalid) as Hnext.
+    rewrite Hrun in Hnext. exact Hnext.
+  - pose proof (reserve_batch_valid before requests Hvalid) as Hnext.
+    rewrite Hrun in Hnext. exact Hnext.
+Qed.
+
+Lemma ledger_steps_valid s final :
+  valid s -> rtc ledger_step s final -> valid final.
+Proof.
+  intros Hvalid Htrace. revert Hvalid.
+  induction Htrace as [initial|before mid after Hstep Htail IH]; intros Hvalid.
+  - exact Hvalid.
+  - apply IH. eapply ledger_step_valid; eauto.
 Qed.
 End resource_ledger.

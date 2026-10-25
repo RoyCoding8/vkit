@@ -17,7 +17,9 @@ Definition checked_model_lemmas :=
    @VKitLedger.Model.release_rejection_spec,
    @VKitLedger.Model.reserve_sequence_accounting,
    @VKitLedger.Model.reserve_batch_success_accounting,
-   @VKitLedger.Model.reserve_batch_too_large).
+   @VKitLedger.Model.reserve_batch_too_large,
+   @VKitLedger.Model.ledger_step_valid,
+   @VKitLedger.Model.ledger_steps_valid).
 
 Set Printing Fully Qualified.
 Unset Printing Notations.

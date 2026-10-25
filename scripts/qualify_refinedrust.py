@@ -115,6 +115,7 @@ def main() -> int:
         "remaining_gates": [
             "checker-version and trusted toolchain profile qualification",
             "reviewed foundational assumption policy for product acceptance",
+            "pure-model preservation, rejection/accounting, batch and composition laws",
             "ledger body refinement, representation and closed soundness",
             "resource-aware bounded execution and normal-execution witness",
         ],

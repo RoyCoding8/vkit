@@ -33,7 +33,7 @@ Record request := {
 
 Record ledger := {
   capacity : nat;
-  max_records : nat;
+  max_records : positive;
   reservations : gmap Id reservation;
 }.
 
@@ -44,9 +44,9 @@ Definition valid (s : ledger) : Prop :=
   (forall id entry, reservations s !! id = Some entry ->
      0 < reservation_amount entry) /\
   used (reservations s) <= capacity s /\
-  size (reservations s) <= max_records s.
+  size (reservations s) <= Pos.to_nat (max_records s).
 
-Definition init (cap record_bound : nat) : ledger :=
+Definition init (cap : nat) (record_bound : positive) : ledger :=
   {| capacity := cap; max_records := record_bound; reservations := ∅ |}.
 
 Definition with_records (s : ledger) (records : gmap Id reservation) : ledger :=
@@ -58,12 +58,12 @@ Definition reserve (s : ledger) (r : request) : ledger * (reserve_error + unit) 
   match reservations s !! request_id r with
   | Some _ => (s, inl DuplicateId)
   | None =>
-      if decide (size (reservations s) < max_records s) then
+      if decide (size (reservations s) < Pos.to_nat (max_records s)) then
         if decide (request_amount r <= capacity s - used (reservations s)) then
           (with_records s
              (<[request_id r := {| reservation_owner := request_owner r;
                                   reservation_amount := request_amount r |}]>
-                reservations s), inr tt)
+                (reservations s)), inr tt)
         else (s, inl InsufficientCapacity)
       else (s, inl NoRecordSpace)
   end.
@@ -93,9 +93,11 @@ Fixpoint reserve_sequence (s : ledger) (requests : list request) :
       end
   end.
 
-Definition reserve_batch (batch_bound : nat) (s : ledger) (requests : list request) :
+Context (batch_bound : positive).
+
+Definition reserve_batch (s : ledger) (requests : list request) :
     ledger * (batch_error + unit) :=
-  if decide (length requests <= batch_bound) then
+  if decide (length requests <= Pos.to_nat batch_bound) then
     match reserve_sequence s requests with
     | inl (index, error) => (s, inl (BatchFailure index error))
     | inr final => (final, inr tt)
@@ -134,7 +136,7 @@ Proof.
   - split.
     + change (used (∅ : gmap Id reservation) <= cap).
       rewrite used_empty. lia.
-    + change (size (∅ : gmap Id reservation) <= record_bound).
+    + change (size (∅ : gmap Id reservation) <= Pos.to_nat record_bound).
       rewrite size_empty. lia.
 Qed.
 End resource_ledger.

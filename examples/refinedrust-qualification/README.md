@@ -33,13 +33,19 @@ typechecks the two identified standard-library constants against explicit type
 witnesses. This qualification boundary does not accept a product assumption
 policy. Displayed type hashes identify report text, not serialized kernel terms.
 
-`frontend-inventory.patch` adds one compiler-owned census to the pinned frontend.
+`frontend.patch` adds one compiler-owned census to the pinned frontend.
 The Nix override applies it to the original source; the report retains the patch
 digest with the other fixture inputs. It records active-configuration callable
 HIR items before verification selection, their translation outcomes and compiler
 module paths. The fixture includes two unannotated functions and a public alias
 to check that the census exposes code omitted from body proofs. This is a
 coverage diagnostic, not acceptance of those unproved functions.
+
+The same patch corrects fixed-array refinement types to match `array_t`'s stored
+`list (place_rfn rt)` representation. The collection probe keeps an abstract
+`list Z` model and maps it explicitly into that representation. Without the
+frontend correction, generated struct pretypes fail before field invariants
+can be checked. This correction still requires the actual collection proof.
 
 After a successful baseline, the same runner executes fixed negative probes in
 fresh source copies. They change the body, weaken the producer contract, shadow

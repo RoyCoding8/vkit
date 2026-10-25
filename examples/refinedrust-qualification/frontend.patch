@@ -1,3 +1,18 @@
+diff --git a/radium/src/specs/mod.rs b/radium/src/specs/mod.rs
+index a3ea22c..a51def2 100644
+--- a/radium/src/specs/mod.rs
++++ b/radium/src/specs/mod.rs
+@@ -157,7 +157,9 @@ impl Type<'_> {
+                 coq::term::Type::Literal(su.get_rfn_type())
+             },
+
+-            Self::Array(ty, _) => coq::term::Type::List(Box::new(ty.get_rfn_type())),
++            Self::Array(ty, _) => coq::term::Type::List(Box::new(
++                model::Type::PlaceRfn(Box::new(ty.get_rfn_type())).into(),
++            )),
+
+             Self::Unit | Self::Never | Self::Uninit(_) => {
+                 // NOTE: could also choose to use an uninhabited type for Never
 diff --git a/translation/src/environment/mod.rs b/translation/src/environment/mod.rs
 index e5c5487..c20672f 100644
 --- a/translation/src/environment/mod.rs

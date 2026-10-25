@@ -276,9 +276,8 @@ Proof.
   intros Hresult. inversion Hresult. subst next.
   set (new_entry := {| reservation_owner := request_owner r;
                        reservation_amount := request_amount r |}).
-  Show.
   change
-    (0 < request_amount r /\ reservations s !! request_id r = None /\
+    (0 < request_amount r /\ None = (None : option reservation) /\
      size (reservations s) < Pos.to_nat (max_records s) /\
      request_amount r <= capacity s - used (reservations s) /\
      <[request_id r := new_entry]> (reservations s) =
@@ -306,7 +305,7 @@ Proof.
   destruct (decide (reservation_owner entry = owner)); [|discriminate].
   intros Hresult. inversion Hresult. subst next amount. exists entry.
   change
-    (reservations s !! id = Some entry /\ reservation_owner entry = owner /\
+    (Some entry = Some entry /\ reservation_owner entry = owner /\
      reservation_amount entry = reservation_amount entry /\
      delete id (reservations s) = delete id (reservations s) /\
      used (reservations s) = reservation_amount entry + used (delete id (reservations s)) /\

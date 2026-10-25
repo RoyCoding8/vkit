@@ -42,14 +42,18 @@ to check that the census exposes code omitted from body proofs. This is a
 coverage diagnostic, not acceptance of those unproved functions.
 
 The same patch corrects fixed-array refinement types to match `array_t`'s stored
-`list (place_rfn rt)` representation. The collection probe keeps an abstract
-`list Z` model and maps it explicitly into that representation. Without the
+`list (place_rfn rt)` representation. The original collection probe used an
+abstract `list Z` model with an explicit field map. Without the
 frontend correction, generated struct pretypes fail before field invariants
 can be checked. The corrected collection proof compiled in CI `40151475498`.
 The runner also audits that theorem's assumptions and recursively checks its
 dependency closure. This support probe audits the fixed qualification fixture;
 it does not bind the collection to a separately owned expected contract or prove
-a bound on execution.
+a bound on execution. The current collection experiment replaces the primitive
+cells with `Option<Entry>`, initializes three empty cells and inserts one record.
+Its field map lifts both the optional payload and each array cell. This layout
+and its tuple refinement remain unqualified until that experiment passes; the
+tuple also needs an explicit connection to the ledger model's reservation type.
 
 After a successful baseline, the same runner executes fixed negative probes in
 fresh source copies. They change the body, weaken the producer contract, shadow

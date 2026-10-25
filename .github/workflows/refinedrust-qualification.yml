@@ -25,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: refinedrust-qualification-${{ github.ref }}-${{ inputs.session_minutes && inputs.session_minutes != '0' && 'session' || 'single' }}
+  group: refinedrust-qualification-${{ github.ref }}-${{ inputs.session_minutes && inputs.session_minutes != '0' && 'session' || inputs.probe || 'full' }}
   cancel-in-progress: ${{ !inputs.session_minutes || inputs.session_minutes == '0' }}
 
 jobs:

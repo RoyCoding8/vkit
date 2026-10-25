@@ -5,26 +5,26 @@
 #![register_tool(rr)]
 #![rr::package("vkit-qualification")]
 
-#[rr::refined_by("slots" : "list Z")]
+#[rr::refined_by("(entry_id, (owner, amount))" : "Z * (Z * Z)")]
+pub struct Entry {
+    #[rr::field("#(entry_id)")]
+    entry_id: i32,
+    #[rr::field("#(owner)")]
+    owner: i32,
+    #[rr::field("#(amount)")]
+    amount: i32,
+}
+
+#[rr::refined_by("slots" : "list (option (Z * (Z * Z)))")]
 pub struct FixedPool {
-    #[rr::field("#(<#> slots)")]
-    slots: [i32; 3],
+    #[rr::field("#(<#> (fmap (M:=list) (fmap (M:=option) PlaceIn) slots))")]
+    slots: [Option<Entry>; 3],
 }
 
 #[rr::verify]
-#[rr::returns("replicate 3 ((1))")]
+#[rr::returns("[Some (1, (2, 3)); None; None]")]
 pub fn fill() -> FixedPool {
-    let mut state = FixedPool { slots: [0; 3] };
-    let mut i = 0usize;
-    while i < 3 {
-        let _ =
-            #[rr::exists("i_z")]
-            #[rr::inv_var("i" : "#i_z")]
-            #[rr::inv_var("state" : "#(replicate (Z.to_nat i_z) ((1)) ++ replicate (3 - Z.to_nat i_z) ((0)))")]
-            #[rr::inv("(0 ≤ i_z ≤ 3)%Z")]
-            #[rr::ignore] || {};
-        state.slots[i] = 1;
-        i += 1;
-    }
+    let mut state = FixedPool { slots: [None, None, None] };
+    state.slots[0] = Some(Entry { entry_id: 1, owner: 2, amount: 3 });
     state
 }

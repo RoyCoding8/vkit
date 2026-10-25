@@ -112,7 +112,8 @@ Lemma used_insert (records : gmap Id reservation) id entry :
   used (<[id := entry]> records) = reservation_amount entry + used records.
 Proof.
   intros Hfresh. unfold used.
-  apply map_fold_insert_L.
+  apply (map_fold_insert_L
+    (fun _ entry total => reservation_amount entry + total) 0 id entry records).
   - intros. simpl. lia.
   - exact Hfresh.
 Qed.
@@ -122,7 +123,8 @@ Lemma used_delete (records : gmap Id reservation) id entry :
   used records = reservation_amount entry + used (delete id records).
 Proof.
   intros Hlookup. unfold used.
-  apply map_fold_delete_L.
+  apply (map_fold_delete_L
+    (fun _ entry total => reservation_amount entry + total) 0 id entry records).
   - intros. simpl. lia.
   - exact Hlookup.
 Qed.
@@ -137,6 +139,6 @@ Proof.
     + change (used (∅ : gmap Id reservation) <= cap).
       rewrite used_empty. lia.
     + change (size (∅ : gmap Id reservation) <= Pos.to_nat record_bound).
-      rewrite size_empty. lia.
+      rewrite map_size_empty. lia.
 Qed.
 End resource_ledger.

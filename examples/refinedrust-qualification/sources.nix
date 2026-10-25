@@ -1,4 +1,4 @@
-{ upstreamPath }:
+{ upstreamPath, modelOnly ? false }:
 let
   upstream = builtins.getFlake upstreamPath;
   pkgs = import upstream.inputs.nixpkgs {
@@ -14,7 +14,7 @@ map
     path = package.src.outPath;
     url = package.src.url or (builtins.head package.src.urls);
   })
-  (with pkgs.rocqPackages; [
+  (with pkgs.rocqPackages; if modelOnly then [ stdpp ] else [
     stdpp
     iris
     iris-contrib

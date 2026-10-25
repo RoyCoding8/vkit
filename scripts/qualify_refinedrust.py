@@ -104,12 +104,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upstream", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="New directory for sources and logs.")
+    parser.add_argument("--model-only", action="store_true",
+                        help="Check only the provisional pure model, without Rust or RefinedRust.")
     args = parser.parse_args()
     upstream = args.upstream.resolve()
     output = args.output.resolve()
     pin = json.loads((FIXTURE / "upstream.json").read_text(encoding="utf-8"))
     report = {
         "qualification": "INCONCLUSIVE",
+        "execution_mode": "model_only" if args.model_only else "full",
         "upstream": pin,
         "stages": [],
         "remaining_gates": [
@@ -150,7 +153,8 @@ def main() -> int:
             if p.is_file()
         }
         nix = ["nix", "--extra-experimental-features", "nix-command flakes"]
-        arguments = "{ upstreamPath = " + nix_string(upstream) + "; }"
+        arguments = ("{ upstreamPath = " + nix_string(upstream)
+                     + "; modelOnly = " + ("true" if args.model_only else "false") + "; }")
         print("Resolve pinned library source identities", flush=True)
         with (output / "sources.log").open("w", encoding="utf-8") as log:
             sources = json.loads(subprocess.check_output(
@@ -208,6 +212,15 @@ def main() -> int:
             ("replay", f"cd output\ndune exec -- rocq check -silent -o {loadpath} VKitQualification.Expected\n",
              None),
         )
+        if args.model_only:
+            model_script = (
+                "mkdir -p output\ncd output\n"
+                "rocq --version\n"
+                "rocq compile -Q ../ledger VKitLedger ../ledger/Model.v\n"
+                "rocq compile -Q ../ledger VKitLedger -Q ../audit VKitQualification ../audit/ModelAudit.v\n"
+                "rocq check -silent -o -Q ../ledger VKitLedger -Q ../audit VKitQualification VKitQualification.ModelAudit\n"
+            )
+            stages = (("model", model_script, "ledger/Model.vo"),)
         for name, script, artifact in stages:
             stage = {"name": name, "command": [*environment, script], "state": "STARTED"}
             report["stages"].append(stage)
@@ -281,7 +294,7 @@ def main() -> int:
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             if stage["state"] != "COMPLETED":
                 break
-        if all(stage["state"] == "COMPLETED" for stage in report["stages"]):
+        if not args.model_only and all(stage["state"] == "COMPLETED" for stage in report["stages"]):
             report["negative_probes"] = []
             for case in ("wrong_body", "weakened_contract", "shadowed_contract", "admitted_body",
                          "unsafe_body", "trust_me", "only_spec"):

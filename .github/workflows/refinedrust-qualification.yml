@@ -6,8 +6,14 @@ on:
     paths:
       - .github/workflows/refinedrust-qualification.yml
       - examples/refinedrust-qualification/**
+      - formal/packages/resource_ledger/**
       - scripts/qualify_refinedrust.py
   workflow_dispatch:
+    inputs:
+      model_only:
+        description: Check the provisional ledger model without Rust capability probes
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -49,10 +55,13 @@ jobs:
           subprocess.run(["git", "-C", str(root), "checkout", "--detach", "FETCH_HEAD"], check=True)
       - name: Run the pinned scalar probe
         shell: bash
+        env:
+          MODEL_ONLY: ${{ inputs.model_only || false }}
         run: |
+          if [ "$MODEL_ONLY" = true ]; then set -- --model-only; else set --; fi
           python3 scripts/qualify_refinedrust.py \
             --upstream "$RUNNER_TEMP/refinedrust" \
-            --output "$RUNNER_TEMP/refinedrust-qualification"
+            --output "$RUNNER_TEMP/refinedrust-qualification" "$@"
       - name: Retain qualification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

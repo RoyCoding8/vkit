@@ -68,6 +68,14 @@ Run the Linux probe with Nix installed:
 python3 scripts/qualify_refinedrust.py --upstream /path/to/pinned-checkout --output /path/to/new-run
 ```
 
+For pure ledger proof iteration, add `--model-only`. This reuses the pinned
+Rocq/stdpp environment, source hashes, assumption audit and independent checker,
+while skipping Rust translation and capability probes. The first invocation
+builds dependencies; subsequent invocations reuse the local Nix store. Each run
+requires a fresh output directory. The report remains `INCONCLUSIVE` for product
+qualification even when its model stage completes. CI offers the same mode
+through the workflow's `model_only` input.
+
 The `RefinedRust qualification` GitHub Actions workflow runs the same command
 and retains its report, logs and generated sources as an artifact. The probe
 reports `INCONCLUSIVE` and exits with code 3 until all Q0 gates are implemented

@@ -62,6 +62,9 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
+      - name: Make Nix build locks readable for cache archiving
+        if: always() && steps.nix-cache.outcome == 'success'
+        run: sudo find /nix/store -maxdepth 1 -type f -name '*.lock' -exec chmod a+r {} +
       - name: Save the build dependencies after the probe
         if: always() && steps.nix-cache.outcome == 'success'
         uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569 # v7

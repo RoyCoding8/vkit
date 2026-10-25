@@ -8,7 +8,9 @@ Definition checked_model_lemmas :=
    @VKitLedger.Model.release_rejected_unchanged,
    @VKitLedger.Model.reserve_sequence_valid,
    @VKitLedger.Model.reserve_batch_valid,
-   @VKitLedger.Model.reserve_batch_rejected_unchanged).
+   @VKitLedger.Model.reserve_batch_rejected_unchanged,
+   @VKitLedger.Model.reserve_success_accounting,
+   @VKitLedger.Model.release_success_accounting).
 
 Set Printing Fully Qualified.
 Unset Printing Notations.

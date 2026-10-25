@@ -254,4 +254,65 @@ Proof.
       intros Hresult; inversion Hresult; reflexivity.
   - intros Hresult. inversion Hresult. reflexivity.
 Qed.
+Lemma reserve_success_accounting s r next :
+  reserve s r = (next, inr tt) ->
+  0 < request_amount r /\
+  reservations s !! request_id r = None /\
+  size (reservations s) < Pos.to_nat (max_records s) /\
+  request_amount r <= capacity s - used (reservations s) /\
+  reservations next =
+    <[request_id r := {| reservation_owner := request_owner r;
+                        reservation_amount := request_amount r |}]> (reservations s) /\
+  used (reservations next) = request_amount r + used (reservations s) /\
+  size (reservations next) = S (size (reservations s)) /\
+  capacity next = capacity s /\ max_records next = max_records s.
+Proof.
+  unfold reserve. destruct (decide (request_amount r = 0)); [discriminate|].
+  destruct (reservations s !! request_id r) as [entry|] eqn:Hlookup; [discriminate|].
+  destruct (decide (size (reservations s) < Pos.to_nat (max_records s)));
+    [|discriminate].
+  destruct (decide (request_amount r <= capacity s - used (reservations s)));
+    [|discriminate].
+  intros Hresult. inversion Hresult. subst next.
+  set (new_entry := {| reservation_owner := request_owner r;
+                       reservation_amount := request_amount r |}).
+  change
+    (0 < request_amount r /\ reservations s !! request_id r = None /\
+     size (reservations s) < Pos.to_nat (max_records s) /\
+     request_amount r <= capacity s - used (reservations s) /\
+     <[request_id r := new_entry]> (reservations s) =
+       <[request_id r := new_entry]> (reservations s) /\
+     used (<[request_id r := new_entry]> (reservations s)) =
+       request_amount r + used (reservations s) /\
+     size (<[request_id r := new_entry]> (reservations s)) = S (size (reservations s)) /\
+     capacity s = capacity s /\ max_records s = max_records s).
+  repeat split; try assumption; try reflexivity; try lia.
+  - rewrite used_insert by exact Hlookup. reflexivity.
+  - rewrite map_size_insert_None by exact Hlookup. reflexivity.
+Qed.
+
+Lemma release_success_accounting s owner id next amount :
+  release s owner id = (next, inr amount) ->
+  exists entry,
+    reservations s !! id = Some entry /\ reservation_owner entry = owner /\
+    amount = reservation_amount entry /\ reservations next = delete id (reservations s) /\
+    used (reservations s) = amount + used (reservations next) /\
+    size (reservations next) = pred (size (reservations s)) /\
+    capacity next = capacity s /\ max_records next = max_records s.
+Proof.
+  unfold release. destruct (reservations s !! id) as [entry|] eqn:Hlookup;
+    [|discriminate].
+  destruct (decide (reservation_owner entry = owner)); [|discriminate].
+  intros Hresult. inversion Hresult. subst next amount. exists entry.
+  change
+    (reservations s !! id = Some entry /\ reservation_owner entry = owner /\
+     reservation_amount entry = reservation_amount entry /\
+     delete id (reservations s) = delete id (reservations s) /\
+     used (reservations s) = reservation_amount entry + used (delete id (reservations s)) /\
+     size (delete id (reservations s)) = pred (size (reservations s)) /\
+     capacity s = capacity s /\ max_records s = max_records s).
+  repeat split; try assumption; try reflexivity.
+  - apply used_delete. exact Hlookup.
+  - rewrite map_size_delete_Some by (exists entry; exact Hlookup). reflexivity.
+Qed.
 End resource_ledger.

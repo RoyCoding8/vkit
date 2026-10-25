@@ -154,7 +154,7 @@ Proof.
       * destruct (decide (request_amount r <= capacity s - used (reservations s)))
           as [Hfits|Hinsufficient]; cbn [fst].
         -- destruct Hvalid as [Hpositive [Hused Hsize]].
-           cbn [valid with_records]. split.
+           cbn [valid with_records reservations capacity max_records]. split.
            ++ intros id entry Hnew. apply lookup_insert_Some in Hnew.
               destruct Hnew as [[-> <-]|[_ Hold]].
               ** cbn. lia.
@@ -173,7 +173,7 @@ Proof.
   destruct (reservations s !! id) as [entry|] eqn:Hlookup; cbn [fst].
   - destruct (decide (reservation_owner entry = owner)) as [Howner|Hwrong]; cbn [fst].
     + destruct Hvalid as [Hpositive [Hused Hsize]].
-      cbn [valid with_records]. split.
+      cbn [valid with_records reservations capacity max_records]. split.
       * intros id' entry' Hafter. apply lookup_delete_Some in Hafter.
         destruct Hafter as [_ Hbefore]. eapply Hpositive. exact Hbefore.
       * split.

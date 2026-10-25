@@ -29,6 +29,18 @@ MUTATIONS = {
         "return (new(ledger.capacity), Err(LedgerError::ZeroAmount));",
     ),
     "wrong_release_amount": ("return (next, Ok(entry.amount));", "return (next, Ok(0));"),
+    "partial_batch_commit": (
+        "return (\n                    ledger,\n                    BatchResponse::RequestFailed { index: 1, error },",
+        "return (\n                    current,\n                    BatchResponse::RequestFailed { index: 1, error },",
+    ),
+    "wrong_batch_index": (
+        "BatchResponse::RequestFailed { index: 1, error },",
+        "BatchResponse::RequestFailed { index: 0, error },",
+    ),
+    "batch_bound_bypass": (
+        "if count > 3 {\n        return (ledger, BatchResponse::TooManyRequests);",
+        "if false {\n        return (ledger, BatchResponse::TooManyRequests);",
+    ),
     "assumed_proof": ("    Ledger {\n        slots:", "    assume(false);\n    Ledger {\n        slots:"),
 }
 

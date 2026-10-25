@@ -2,6 +2,10 @@ use vstd::prelude::*;
 
 verus! {
 
+pub mod ledger_api {
+
+use super::*;
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub id: u32,
@@ -21,9 +25,42 @@ pub enum LedgerError {
 
 #[derive(Copy, Clone)]
 pub struct Ledger {
+    slots: [Option<Entry>; 3],
+    used: u32,
+    capacity: u32,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct LedgerView {
     pub slots: [Option<Entry>; 3],
     pub used: u32,
     pub capacity: u32,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub id: u32,
+    pub owner: u32,
+    pub amount: u32,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum Command {
+    Reserve { id: u32, owner: u32, amount: u32 },
+    Release { id: u32, owner: u32 },
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum Response {
+    Reserved(Result<(), LedgerError>),
+    Released(Result<u32, LedgerError>),
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum BatchResponse {
+    Applied { count: u32 },
+    TooManyRequests,
+    RequestFailed { index: u32, error: LedgerError },
 }
 
 pub open spec fn amount_of(slot: Option<Entry>) -> nat {
@@ -121,6 +158,111 @@ pub open spec fn slots_after_reserve(
     }
 }
 
+pub open spec fn reserve_state(state: LedgerView, request: Request) -> LedgerView {
+    let entry = Entry {
+        id: request.id,
+        owner: request.owner,
+        amount: request.amount,
+    };
+    let slots = if slot_is_empty(state.slots[0]) {
+        [Some(entry), state.slots[1], state.slots[2]]
+    } else if slot_is_empty(state.slots[1]) {
+        [state.slots[0], Some(entry), state.slots[2]]
+    } else {
+        [state.slots[0], state.slots[1], Some(entry)]
+    };
+    LedgerView {
+        slots,
+        used: (state.used + request.amount) as u32,
+        capacity: state.capacity,
+    }
+}
+
+pub open spec fn batch_model_from(
+    original: LedgerView,
+    current: LedgerView,
+    requests: Seq<Request>,
+    index: nat,
+    remaining: nat,
+) -> (LedgerView, BatchResponse)
+    recommends requests.len() == 3, index + remaining <= 3,
+    decreases remaining,
+{
+    if remaining == 0 {
+        (current, BatchResponse::Applied { count: index as u32 })
+    } else {
+        let request = requests[index as int];
+        match reserve_result(current, request.id, request.amount) {
+            Err(error) => (
+                original,
+                BatchResponse::RequestFailed {
+                    index: index as u32,
+                    error,
+                },
+            ),
+            Ok(()) => batch_model_from(
+                original,
+                reserve_state(current, request),
+                requests,
+                index + 1,
+                (remaining - 1) as nat,
+            ),
+        }
+    }
+}
+
+pub open spec fn batch_model(
+    ledger: LedgerView,
+    requests: Seq<Request>,
+    count: u32,
+) -> (LedgerView, BatchResponse)
+    recommends requests.len() == 3,
+{
+    if count > 3 {
+        (ledger, BatchResponse::TooManyRequests)
+    } else {
+        batch_model_from(ledger, ledger, requests, 0, count as nat)
+    }
+}
+
+pub open spec fn release_state(state: LedgerView, id: u32) -> LedgerView {
+    let slots = [
+        if slot_has_id(state.slots[0], id) { None } else { state.slots[0] },
+        if slot_has_id(state.slots[1], id) { None } else { state.slots[1] },
+        if slot_has_id(state.slots[2], id) { None } else { state.slots[2] },
+    ];
+    let used = match first_entry(state.slots@, id) {
+        Some(entry) => (state.used - entry.amount) as u32,
+        None => state.used,
+    };
+    LedgerView {
+        slots,
+        used,
+        capacity: state.capacity,
+    }
+}
+
+pub open spec fn apply_model(ledger: LedgerView, command: Command) -> (LedgerView, Response) {
+    match command {
+        Command::Reserve { id, owner, amount } => {
+            let result = reserve_result(ledger, id, amount);
+            let next = match result {
+                Ok(()) => reserve_state(ledger, Request { id, owner, amount }),
+                Err(_) => ledger,
+            };
+            (next, Response::Reserved(result))
+        }
+        Command::Release { id, owner } => {
+            let result = release_result_for(ledger, id, owner);
+            let next = match result {
+                Ok(_) => release_state(ledger, id),
+                Err(_) => ledger,
+            };
+            (next, Response::Released(result))
+        }
+    }
+}
+
 pub open spec fn slots_map(slots: Seq<Option<Entry>>) -> Map<u32, (u32, u32)>
     recommends slots.len() == 3,
 {
@@ -139,30 +281,49 @@ pub open spec fn slots_map(slots: Seq<Option<Entry>>) -> Map<u32, (u32, u32)>
     }
 }
 
-pub open spec fn same_state(a: Ledger, b: Ledger) -> bool {
+pub open spec fn same_view(a: LedgerView, b: LedgerView) -> bool {
     a.slots@ == b.slots@ && a.used == b.used && a.capacity == b.capacity
 }
 
+pub open spec fn same_state(a: Ledger, b: Ledger) -> bool {
+    same_view(a.view(), b.view())
+}
+
 impl Ledger {
+    pub closed spec fn view(&self) -> LedgerView {
+        LedgerView {
+            slots: self.slots,
+            used: self.used,
+            capacity: self.capacity,
+        }
+    }
+
     pub open spec fn reservations(&self) -> Map<u32, (u32, u32)> {
-        slots_map(self.slots@)
+        slots_map(self.view().slots@)
     }
 
     pub open spec fn valid(&self) -> bool {
-        self.used as nat == slots_used(self.slots@)
-            && self.used <= self.capacity
-            && slots_have_distinct_ids(self.slots@)
-            && slots_have_positive_amounts(self.slots@)
+        let state = self.view();
+        state.used as nat == slots_used(state.slots@)
+            && state.used <= state.capacity
+            && slots_have_distinct_ids(state.slots@)
+            && slots_have_positive_amounts(state.slots@)
+    }
+
+    pub open spec fn is_empty_with_capacity(&self, capacity: u32) -> bool {
+        let state = self.view();
+        state.used == 0
+            && state.capacity == capacity
+            && state.slots@ == seq![None, None, None]
     }
 }
 
 pub fn new(capacity: u32) -> (ledger: Ledger)
     ensures
         ledger.valid(),
-        ledger.used == 0,
-        ledger.capacity == capacity,
-        ledger.slots@ == seq![None, None, None],
+        ledger.is_empty_with_capacity(capacity),
 {
+    proof { reveal(Ledger::view); }
     Ledger {
         slots: [None, None, None],
         used: 0,
@@ -179,19 +340,20 @@ pub fn reserve(
     requires ledger.valid(),
     ensures
         out.0.valid(),
-        out.1 == reserve_result(ledger, id, amount),
+        out.1 == reserve_result(ledger.view(), id, amount),
         match out.1 {
-            Ok(()) => out.0.slots@ == slots_after_reserve(
-                ledger.slots@,
-                Entry { id, owner, amount },
-            )
-                && out.0.reservations()
-                == ledger.reservations().insert(id, (owner, amount))
-                && out.0.used == ledger.used + amount
-                && out.0.capacity == ledger.capacity,
+            Ok(()) => same_view(
+                out.0.view(),
+                reserve_state(ledger.view(), Request { id, owner, amount }),
+            ),
             Err(_) => same_state(out.0, ledger),
         },
     {
+    proof {
+        reveal(reserve_result);
+        reveal(reserve_state);
+        reveal(Ledger::view);
+    }
     if amount == 0 {
         return (ledger, Err(LedgerError::ZeroAmount));
     }
@@ -233,6 +395,25 @@ pub fn reserve(
         next.slots[2] = Some(entry);
     }
     next.used = next.used + amount;
+    assert(
+        reserve_state(ledger.view(), Request { id, owner, amount }).slots@
+            == slots_after_reserve(
+                ledger.view().slots@,
+                Entry { id, owner, amount },
+            )
+    );
+    assert(next.used == reserve_state(
+        ledger.view(),
+        Request { id, owner, amount },
+    ).used);
+    assert(next.capacity == reserve_state(
+        ledger.view(),
+        Request { id, owner, amount },
+    ).capacity);
+    assert(same_view(next.view(), reserve_state(
+        ledger.view(),
+        Request { id, owner, amount },
+    )));
     (next, Ok(()))
 }
 
@@ -251,7 +432,7 @@ pub open spec fn first_entry(slots: Seq<Option<Entry>>, id: u32) -> Option<Entry
 }
 
 pub open spec fn reserve_result(
-    ledger: Ledger,
+    ledger: LedgerView,
     id: u32,
     amount: u32,
 ) -> Result<(), LedgerError> {
@@ -287,6 +468,14 @@ pub open spec fn release_result(
     }
 }
 
+pub open spec fn release_result_for(
+    ledger: LedgerView,
+    id: u32,
+    owner: u32,
+) -> Result<u32, LedgerError> {
+    release_result(ledger.slots@, id, owner)
+}
+
 pub fn release(
     ledger: Ledger,
     id: u32,
@@ -295,14 +484,18 @@ pub fn release(
     requires ledger.valid(),
     ensures
         out.0.valid(),
-        out.1 == release_result(ledger.slots@, id, owner),
+        out.1 == release_result_for(ledger.view(), id, owner),
         match out.1 {
-            Ok(amount) => out.0.reservations() == ledger.reservations().remove(id)
-                && out.0.used == ledger.used - amount
-                && out.0.capacity == ledger.capacity,
+            Ok(_) => same_view(out.0.view(), release_state(ledger.view(), id)),
             Err(_) => same_state(out.0, ledger),
         },
 {
+    proof {
+        reveal(release_result_for);
+        reveal(release_state);
+        reveal(same_state);
+        reveal(Ledger::view);
+    }
     if let Some(entry) = ledger.slots[0] {
         if entry.id == id {
             if entry.owner != owner {
@@ -311,6 +504,10 @@ pub fn release(
             let mut next = ledger;
             next.slots[0] = None;
             next.used = next.used - entry.amount;
+            assert(next.slots@ == release_state(ledger.view(), id).slots@);
+            assert(next.used == release_state(ledger.view(), id).used);
+            assert(next.capacity == release_state(ledger.view(), id).capacity);
+            assert(same_view(next.view(), release_state(ledger.view(), id)));
             return (next, Ok(entry.amount));
         }
     }
@@ -323,6 +520,10 @@ pub fn release(
             let mut next = ledger;
             next.slots[1] = None;
             next.used = next.used - entry.amount;
+            assert(next.slots@ == release_state(ledger.view(), id).slots@);
+            assert(next.used == release_state(ledger.view(), id).used);
+            assert(next.capacity == release_state(ledger.view(), id).capacity);
+            assert(same_view(next.view(), release_state(ledger.view(), id)));
             return (next, Ok(entry.amount));
         }
     }
@@ -335,6 +536,10 @@ pub fn release(
             let mut next = ledger;
             next.slots[2] = None;
             next.used = next.used - entry.amount;
+            assert(next.slots@ == release_state(ledger.view(), id).slots@);
+            assert(next.used == release_state(ledger.view(), id).used);
+            assert(next.capacity == release_state(ledger.view(), id).capacity);
+            assert(same_view(next.view(), release_state(ledger.view(), id)));
             return (next, Ok(entry.amount));
         }
     }
@@ -342,7 +547,119 @@ pub fn release(
     (ledger, Err(LedgerError::Missing))
 }
 
-pub fn main() {
+pub fn apply_command(
+    ledger: Ledger,
+    command: Command,
+) -> (out: (Ledger, Response))
+    requires ledger.valid(),
+    ensures
+        out.0.valid(),
+        out.1 == apply_model(ledger.view(), command).1,
+        same_view(out.0.view(), apply_model(ledger.view(), command).0),
+{
+    proof {
+        reveal(apply_model);
+        reveal(reserve_result);
+        reveal(reserve_state);
+        reveal(release_result_for);
+        reveal(release_state);
+        reveal(same_state);
+        reveal(Ledger::view);
+    }
+    match command {
+        Command::Reserve { id, owner, amount } => {
+            let (next, result) = reserve(ledger, id, owner, amount);
+            (next, Response::Reserved(result))
+        }
+        Command::Release { id, owner } => {
+            let (next, result) = release(ledger, id, owner);
+            (next, Response::Released(result))
+        }
+    }
+}
+
+pub fn reserve_batch(
+    ledger: Ledger,
+    requests: [Request; 3],
+    count: u32,
+) -> (out: (Ledger, BatchResponse))
+    requires ledger.valid(),
+    ensures
+        out.0.valid(),
+        out.1 == batch_model(ledger.view(), requests@, count).1,
+        same_view(out.0.view(), batch_model(ledger.view(), requests@, count).0),
+{
+    proof {
+        reveal(batch_model);
+        reveal_with_fuel(batch_model_from, 4);
+        reveal(reserve_result);
+        reveal(reserve_state);
+        reveal(Ledger::view);
+    }
+    if count > 3 {
+        return (ledger, BatchResponse::TooManyRequests);
+    }
+
+    let mut current = ledger;
+
+    if count >= 1 {
+        let (next, result) = reserve(
+            current,
+            requests[0].id,
+            requests[0].owner,
+            requests[0].amount,
+        );
+        match result {
+            Err(error) => {
+                return (
+                    ledger,
+                    BatchResponse::RequestFailed { index: 0, error },
+                );
+            }
+            Ok(()) => current = next,
+        }
+    }
+
+    if count >= 2 {
+        let (next, result) = reserve(
+            current,
+            requests[1].id,
+            requests[1].owner,
+            requests[1].amount,
+        );
+        match result {
+            Err(error) => {
+                return (
+                    ledger,
+                    BatchResponse::RequestFailed { index: 1, error },
+                );
+            }
+            Ok(()) => current = next,
+        }
+    }
+
+    if count >= 3 {
+        let (next, result) = reserve(
+            current,
+            requests[2].id,
+            requests[2].owner,
+            requests[2].amount,
+        );
+        match result {
+            Err(error) => {
+                return (
+                    ledger,
+                    BatchResponse::RequestFailed { index: 2, error },
+                );
+            }
+            Ok(()) => current = next,
+        }
+    }
+
+    (current, BatchResponse::Applied { count })
+}
+
+pub fn internal_proof_client() {
     let initial = new(7);
 
     assert(initial.valid());
@@ -352,6 +669,24 @@ pub fn main() {
     assert(one.valid());
     assert(one.used == 3);
     assert(one.reservations().dom().contains(11));
+
+    let (tagged, response) = apply_command(
+        initial,
+        Command::Reserve {
+            id: 20,
+            owner: 2,
+            amount: 2,
+        },
+    );
+    assert(response == Response::Reserved(Ok(())));
+    assert(tagged.used == 2);
+    let (tagged_released, response) = apply_command(
+        tagged,
+        Command::Release { id: 20, owner: 2 },
+    );
+    assert(response == Response::Released(Ok(2)));
+    proof { reveal(Ledger::view); }
+    assert(same_state(tagged_released, initial));
 
     let (duplicate, result) = reserve(one, 11, 9, 1);
     assert(result == Err(LedgerError::DuplicateId));
@@ -369,6 +704,42 @@ pub fn main() {
     assert(result == Ok(()));
     let (three, result) = reserve(two, 13, 6, 1);
     assert(result == Ok(()));
+
+    let batch_requests = [
+        Request { id: 14, owner: 8, amount: 1 },
+        Request { id: 15, owner: 9, amount: 1 },
+        Request { id: 16, owner: 10, amount: 1 },
+    ];
+    let (batched, batch_response) = reserve_batch(one, batch_requests, 2);
+    proof {
+        reveal(batch_model);
+        reveal_with_fuel(batch_model_from, 4);
+        reveal(reserve_result);
+        reveal(reserve_state);
+    }
+    assert(batch_response == BatchResponse::Applied { count: 2 });
+    assert(batched.valid());
+    assert(batched.used == 5);
+    assert(batched.reservations().dom().contains(14));
+    assert(batched.reservations().dom().contains(15));
+    assert(!batched.reservations().dom().contains(16));
+
+    let failing_requests = [
+        Request { id: 14, owner: 8, amount: 1 },
+        Request { id: 11, owner: 9, amount: 1 },
+        Request { id: 15, owner: 10, amount: 1 },
+    ];
+    let (rolled_back, batch_response) = reserve_batch(one, failing_requests, 3);
+    assert(batch_response == BatchResponse::RequestFailed {
+        index: 1,
+        error: LedgerError::DuplicateId,
+    });
+    assert(same_state(rolled_back, one));
+
+    let (too_many, batch_response) = reserve_batch(one, batch_requests, 4);
+    assert(batch_response == BatchResponse::TooManyRequests);
+    assert(same_state(too_many, one));
+
     let (full_duplicate, result) = reserve(three, 11, 8, 8);
     assert(result == Err(LedgerError::DuplicateId));
     assert(same_state(full_duplicate, three));
@@ -396,6 +767,34 @@ pub fn main() {
     let (released_last, result) = release(three, 13, 6);
     assert(result == Ok(1));
     assert(released_last.valid());
+}
+
+}
+
+mod downstream {
+    use super::ledger_api::*;
+
+    pub fn external_caller() {
+        let empty = new(6);
+        assert(empty.valid());
+        assert(empty.view().used == 0);
+        assert(empty.view().capacity == 6);
+
+        let (held, response) = reserve(empty, 37, 9, 2);
+        assert(response == Ok(()));
+        assert(held.view().used == 2);
+        assert(held.reservations().dom().contains(37));
+        assert(held.reservations()[37] == (9, 2));
+
+        let (empty_again, response) = release(held, 37, 9);
+        assert(response == Ok(2));
+        assert(empty_again.view().used == 0);
+        assert(!empty_again.reservations().dom().contains(37));
+    }
+}
+
+pub fn main() {
+    downstream::external_caller()
 }
 
 }

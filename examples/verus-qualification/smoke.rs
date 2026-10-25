@@ -1,12 +1,12 @@
 mod ledger;
 
 use ledger::ledger_api::{
-    apply_command, new, release, reserve, reserve_batch, BatchResponse, Command,
-    LedgerError, Request, Response,
+    apply_command, new, release, reserve, reserve_batch, run_commands, BatchResponse,
+    Command, Entry, LedgerError, Request, Response,
 };
 
 fn main() {
-    let initial = new(7);
+    let initial = new([None; 3], 7);
     let (one, result) = reserve(initial, 11, 4, 3);
     assert!(matches!(result, Ok(())));
     let (_, result) = reserve(one, 11, 9, 0);
@@ -54,9 +54,38 @@ fn main() {
     assert!(matches!(result, Ok(3)));
     let (_, result) = reserve_batch(one, failing, 4);
     assert!(matches!(result, BatchResponse::TooManyRequests));
-    let (tagged, result) = apply_command(new(5), Command::Reserve { id: 51, owner: 9, amount: 2 });
+    let (tagged, result) = apply_command(new([None; 2], 5), Command::Reserve { id: 51, owner: 9, amount: 2 });
     assert!(matches!(result, Response::Reserved(Ok(()))));
     let (_, result) = apply_command(tagged, Command::Release { id: 51, owner: 9 });
     assert!(matches!(result, Response::Released(Ok(2))));
+
+    let supplied = [Some(Entry { id: 99, owner: 99, amount: 99 }); 4];
+    let cleared = new(supplied, 10);
+    let (_, result) = release(cleared, 99, 99);
+    assert!(matches!(result, Err(LedgerError::Missing)));
+    let commands = [
+        Command::Reserve { id: 11, owner: 4, amount: 3 },
+        Command::Batch { requests, count: 2 },
+        Command::Release { id: 21, owner: 8 },
+        Command::Batch { requests: failing, count: 3 },
+        Command::Release { id: 11, owner: 4 },
+    ];
+    let mut responses = [Response::Reserved(Ok(())); 5];
+    let final_state = run_commands(cleared, commands, &mut responses);
+    assert!(matches!(responses[0], Response::Reserved(Ok(()))));
+    assert!(matches!(responses[1], Response::Batched(BatchResponse::Applied { count: 2 })));
+    assert!(matches!(responses[2], Response::Released(Ok(1))));
+    assert!(matches!(responses[3], Response::Batched(BatchResponse::RequestFailed {
+        index: 1, error: LedgerError::DuplicateId,
+    })));
+    assert!(matches!(responses[4], Response::Released(Ok(3))));
+    let (_, result) = release(final_state, 21, 8);
+    assert!(matches!(result, Err(LedgerError::Missing)));
+    let (_, result) = release(final_state, 22, 9);
+    assert!(matches!(result, Ok(2)));
+    let mut empty_responses: [Response; 0] = [];
+    let unchanged = run_commands(final_state, [], &mut empty_responses);
+    let (_, result) = release(unchanged, 22, 9);
+    assert!(matches!(result, Ok(2)));
     println!("VKIT_LEDGER_SMOKE_OK");
 }

@@ -26,12 +26,12 @@ MUTATIONS = {
     ),
     "rejection_changes_state": (
         "return (ledger, Err(LedgerError::ZeroAmount));",
-        "return (new(ledger.capacity), Err(LedgerError::ZeroAmount));",
+        "return (new(ledger.slots, ledger.capacity), Err(LedgerError::ZeroAmount));",
     ),
     "wrong_release_amount": ("return (next, Ok(entry.amount));", "return (next, Ok(0));"),
     "partial_batch_commit": (
-        "return (\n                    ledger,\n                    BatchResponse::RequestFailed { index: 1, error },",
-        "return (\n                    current,\n                    BatchResponse::RequestFailed { index: 1, error },",
+        "ledger, BatchResponse::RequestFailed { index: 1, error },",
+        "current, BatchResponse::RequestFailed { index: 1, error },",
     ),
     "wrong_batch_index": (
         "BatchResponse::RequestFailed { index: 1, error },",
@@ -41,7 +41,14 @@ MUTATIONS = {
         "if count > 3 {\n        return (ledger, BatchResponse::TooManyRequests);",
         "if false {\n        return (ledger, BatchResponse::TooManyRequests);",
     ),
-    "assumed_proof": ("    Ledger {\n        slots:", "    assume(false);\n    Ledger {\n        slots:"),
+    "wrong_trace_response": (
+        "responses[i] = response;",
+        "responses[i] = Response::Reserved(Ok(()));",
+    ),
+    "assumed_proof": (
+        "    Ledger { slots, used: 0, capacity }",
+        "    assume(false);\n    Ledger { slots, used: 0, capacity }",
+    ),
 }
 
 

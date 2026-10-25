@@ -3,6 +3,9 @@ From VKitLedger Require Model.
 Definition checked_model_lemmas :=
   (@VKitLedger.Model.used_empty, @VKitLedger.Model.used_insert,
    @VKitLedger.Model.used_delete, @VKitLedger.Model.init_valid,
+   @VKitLedger.Model.active_pairs_length, @VKitLedger.Model.slot_records_size,
+   @VKitLedger.Model.used_list_to_map, @VKitLedger.Model.used_slot_records,
+   @VKitLedger.Model.slot_view_size_bound, @VKitLedger.Model.slot_cache_matches_map,
    @VKitLedger.Model.reserve_valid, @VKitLedger.Model.release_valid,
    @VKitLedger.Model.reserve_rejected_unchanged,
    @VKitLedger.Model.release_rejected_unchanged,

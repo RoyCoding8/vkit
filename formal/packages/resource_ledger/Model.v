@@ -46,6 +46,24 @@ Definition valid (s : ledger) : Prop :=
   used (reservations s) <= capacity s /\
   size (reservations s) <= Pos.to_nat (max_records s).
 
+Fixpoint active_pairs (slots : list (option (Id * reservation))) :
+    list (Id * reservation) :=
+  match slots with
+  | [] => []
+  | None :: rest => active_pairs rest
+  | Some pair :: rest => pair :: active_pairs rest
+  end.
+
+Definition slot_records (slots : list (option (Id * reservation))) :
+    gmap Id reservation := list_to_map (active_pairs slots).
+
+Definition slot_total (slots : list (option (Id * reservation))) : nat :=
+  foldr (fun pair total => reservation_amount (snd pair) + total) 0 (active_pairs slots).
+
+Definition slot_view (s : ledger) (slots : list (option (Id * reservation))) : Prop :=
+  length slots = Pos.to_nat (max_records s) /\
+  NoDup ((active_pairs slots).*1) /\ slot_records slots = reservations s.
+
 Definition init (cap : nat) (record_bound : positive) : ledger :=
   {| capacity := cap; max_records := record_bound; reservations := ∅ |}.
 
@@ -165,6 +183,56 @@ Proof.
     (fun _ entry total => reservation_amount entry + total) 0 id entry records).
   - intros. simpl. lia.
   - exact Hlookup.
+Qed.
+
+Lemma active_pairs_length slots : length (active_pairs slots) <= length slots.
+Proof.
+  induction slots as [|slot slots IH]; [simpl; lia|].
+  destruct slot; simpl; lia.
+Qed.
+
+Lemma slot_records_size slots :
+  NoDup ((active_pairs slots).*1) ->
+  size (slot_records slots) = length (active_pairs slots).
+Proof. intros Hnd. unfold slot_records. apply map_size_list_to_map. exact Hnd. Qed.
+
+Lemma used_list_to_map (pairs : list (Id * reservation)) :
+  NoDup (pairs.*1) ->
+  used (list_to_map pairs) =
+    foldr (fun pair total => reservation_amount (snd pair) + total) 0 pairs.
+Proof.
+  induction pairs as [|[id entry] rest IH]; intros Hnd.
+  - rewrite list_to_map_nil, used_empty. reflexivity.
+  - inversion Hnd as [|? ? Hfresh Htail].
+    rewrite list_to_map_cons.
+    assert (Hnone : (list_to_map rest : gmap Id reservation) !! id = None).
+    { apply not_elem_of_list_to_map_1. exact Hfresh. }
+    rewrite used_insert by exact Hnone.
+    change (reservation_amount entry + used (list_to_map rest) =
+      reservation_amount entry +
+        foldr (fun pair total => reservation_amount (snd pair) + total) 0 rest).
+    f_equal. apply IH. exact Htail.
+Qed.
+
+Lemma used_slot_records slots :
+  NoDup ((active_pairs slots).*1) -> used (slot_records slots) = slot_total slots.
+Proof.
+  intros Hnd. unfold slot_records, slot_total. apply used_list_to_map. exact Hnd.
+Qed.
+
+Lemma slot_view_size_bound s slots :
+  slot_view s slots -> size (reservations s) <= Pos.to_nat (max_records s).
+Proof.
+  intros [Hlen [Hnd Hmap]]. rewrite <- Hmap, slot_records_size by exact Hnd.
+  eapply Nat.le_trans; [apply active_pairs_length|]. rewrite Hlen. lia.
+Qed.
+
+Lemma slot_cache_matches_map s slots cached_used :
+  slot_view s slots -> cached_used = slot_total slots ->
+  cached_used = used (reservations s).
+Proof.
+  intros [_ [Hnd Hmap]] Hcache. rewrite <- Hmap.
+  rewrite used_slot_records by exact Hnd. exact Hcache.
 Qed.
 
 Lemma init_valid cap record_bound : valid (init cap record_bound).

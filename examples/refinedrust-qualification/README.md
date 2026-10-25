@@ -93,7 +93,8 @@ proofs, including termination. Neither gate is satisfied by this source file
 or a successful translation.
 
 The runner captures `formal/packages/resource_ledger/Model.v` with its inputs,
-compiles the provisional model and independently checks its initialization and
-fold-accounting lemmas. Its audit remains `PROVISIONAL_MODEL_ONLY`. Operation
-preservation, concrete body refinement and resource-aware bounded execution are
-separate obligations.
+compiles the provisional model and independently checks the lemmas listed in
+`audit/ModelAudit.v`: initialization, fold accounting, operation preservation,
+state preservation on rejection and successful reservation-sequence validity.
+Its audit remains `PROVISIONAL_MODEL_ONLY`. Exact error/index laws, concrete body
+refinement and resource-aware bounded execution remain separate obligations.

@@ -141,4 +141,101 @@ Proof.
     + change (size (∅ : gmap Id reservation) <= Pos.to_nat record_bound).
       rewrite map_size_empty. lia.
 Qed.
+Lemma reserve_valid (s : ledger) (r : request) :
+  valid s -> valid (fst (reserve s r)).
+Proof.
+  intros Hvalid. unfold reserve.
+  destruct (decide (request_amount r = 0)) as [Hzero|Hnonzero]; cbn [fst].
+  - exact Hvalid.
+  - destruct (reservations s !! request_id r) as [entry|] eqn:Hlookup; cbn [fst].
+    + exact Hvalid.
+    + destruct (decide (size (reservations s) < Pos.to_nat (max_records s)))
+        as [Hroom|Hfull]; cbn [fst].
+      * destruct (decide (request_amount r <= capacity s - used (reservations s)))
+          as [Hfits|Hinsufficient]; cbn [fst].
+        -- destruct Hvalid as [Hpositive [Hused Hsize]].
+           cbn [valid with_records]. split.
+           ++ intros id entry Hnew. apply lookup_insert_Some in Hnew.
+              destruct Hnew as [[-> <-]|[_ Hold]].
+              ** cbn. lia.
+              ** eapply Hpositive. exact Hold.
+           ++ split.
+              ** rewrite used_insert by exact Hlookup. lia.
+              ** rewrite map_size_insert_None by exact Hlookup. lia.
+        -- exact Hvalid.
+      * exact Hvalid.
+Qed.
+
+Lemma release_valid (s : ledger) owner id :
+  valid s -> valid (fst (release s owner id)).
+Proof.
+  intros Hvalid. unfold release.
+  destruct (reservations s !! id) as [entry|] eqn:Hlookup; cbn [fst].
+  - destruct (decide (reservation_owner entry = owner)) as [Howner|Hwrong]; cbn [fst].
+    + destruct Hvalid as [Hpositive [Hused Hsize]].
+      cbn [valid with_records]. split.
+      * intros id' entry' Hafter. apply lookup_delete_Some in Hafter.
+        destruct Hafter as [_ Hbefore]. eapply Hpositive. exact Hbefore.
+      * split.
+        -- pose proof (used_delete (reservations s) id entry Hlookup) as Haccounting.
+           lia.
+        -- rewrite map_size_delete_Some by (exists entry; exact Hlookup). lia.
+    + exact Hvalid.
+  - exact Hvalid.
+Qed.
+
+Lemma reserve_rejected_unchanged s r next error :
+  reserve s r = (next, inl error) -> next = s.
+Proof.
+  unfold reserve. destruct (decide (request_amount r = 0)).
+  - intros Hresult. inversion Hresult. reflexivity.
+  - destruct (reservations s !! request_id r).
+    + intros Hresult. inversion Hresult. reflexivity.
+    + repeat case_decide; intros Hresult; inversion Hresult; reflexivity.
+Qed.
+
+Lemma release_rejected_unchanged s owner id next error :
+  release s owner id = (next, inl error) -> next = s.
+Proof.
+  unfold release. destruct (reservations s !! id).
+  - case_decide; intros Hresult; inversion Hresult; reflexivity.
+  - intros Hresult. inversion Hresult. reflexivity.
+Qed.
+
+Lemma reserve_sequence_valid s requests final :
+  valid s -> reserve_sequence s requests = inr final -> valid final.
+Proof.
+  revert s final. induction requests as [|r rest IH]; intros s final Hvalid Hrun.
+  - cbn [reserve_sequence] in Hrun. inversion Hrun. subst. exact Hvalid.
+  - cbn [reserve_sequence] in Hrun.
+    destruct (reserve s r) as [next outcome] eqn:Hstep.
+    destruct outcome as [error|u]; [discriminate|].
+    destruct (reserve_sequence next rest) as [[index error]|last] eqn:Hrest;
+      [discriminate|].
+    inversion Hrun. subst last.
+    apply (IH next final).
+    + pose proof (reserve_valid s r Hvalid) as Hnext.
+      rewrite Hstep in Hnext. exact Hnext.
+    + exact Hrest.
+Qed.
+
+Lemma reserve_batch_valid s requests :
+  valid s -> valid (fst (reserve_batch s requests)).
+Proof.
+  intros Hvalid. unfold reserve_batch. case_decide; cbn [fst].
+  - destruct (reserve_sequence s requests) as [[index error]|final] eqn:Hrun;
+      cbn [fst].
+    + exact Hvalid.
+    + eapply reserve_sequence_valid; eassumption.
+  - exact Hvalid.
+Qed.
+
+Lemma reserve_batch_rejected_unchanged s requests next error :
+  reserve_batch s requests = (next, inl error) -> next = s.
+Proof.
+  unfold reserve_batch. case_decide.
+  - destruct (reserve_sequence s requests) as [[index cause]|final];
+      intros Hresult; inversion Hresult; reflexivity.
+  - intros Hresult. inversion Hresult. reflexivity.
+Qed.
 End resource_ledger.

@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/verus-lang/verus",
+  "release": "release/0.2026.10.18.7d82994",
+  "revision": "7d829946231d6413a398f6e4160cdfe951261dad",
+  "version": "0.2026.10.18.7d82994",
+  "rust": "1.99.1",
+  "archives": {
+    "verus-0.2026.10.18.7d82994-x86-win.zip": "82b9558a3c4fa77673700507c066c711535d130c2789dcfcec30878168db20ec",
+    "verus-0.2026.10.18.7d82994-x86-linux.zip": "e9af03732d4bdd32b93a8fcf471706739c24c1473fa5086618d96c47237845dd"
+  }
+}

@@ -13,7 +13,7 @@ on:
       probe:
         description: Run the full regression or one existing probe
         type: choice
-        options: [full, model, collection, unsafe_body]
+        options: [full, model, collection, unsafe_body, verus]
         default: full
       session_minutes:
         description: Keep one model environment alive; 0 runs the one-shot probe
@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   qualification:
-    if: github.event_name != 'workflow_dispatch' || inputs.session_minutes == '0'
+    if: github.event_name != 'workflow_dispatch' || (inputs.session_minutes == '0' && inputs.probe != 'verus')
     name: Q0 source and body proof probe
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -87,10 +87,54 @@ jobs:
         with:
           primary-key: ${{ steps.nix-cache.outputs.primary-key }}
   model-session:
-    if: github.event_name == 'workflow_dispatch' && inputs.session_minutes != '0'
+    if: github.event_name == 'workflow_dispatch' && inputs.session_minutes != '0' && inputs.probe != 'verus'
     permissions:
       contents: read
       checks: write
     uses: ./.github/workflows/ledger-model-session.yml
     with:
       minutes: ${{ inputs.session_minutes }}
+  verus-comparison:
+    if: github.event_name == 'workflow_dispatch' && inputs.probe == 'verus'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install the official pinned Verus release
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import urllib.request
+          import zipfile
+
+          pin = json.loads(pathlib.Path("examples/verus-qualification/upstream.json").read_text())
+          name = f"verus-{pin['version']}-x86-linux.zip"
+          archive = pathlib.Path(os.environ["RUNNER_TEMP"]) / name
+          urllib.request.urlretrieve(f"{pin['repository']}/releases/download/{pin['release']}/{name}", archive)
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != pin["archives"][name]:
+              raise SystemExit("official archive hash mismatch")
+          with zipfile.ZipFile(archive) as bundle:
+              bundle.extractall(pathlib.Path(os.environ["RUNNER_TEMP"]) / "verus")
+          tool = pathlib.Path(os.environ["RUNNER_TEMP"]) / "verus/verus-x86-linux"
+          for entry in tool.iterdir():
+              if entry.is_file() and entry.suffix == "":
+                  entry.chmod(entry.stat().st_mode | 0o111)
+          subprocess.run(["rustup", "toolchain", "install", pin["rust"], "--profile", "minimal"], check=True)
+      - name: Verify and challenge the ledger
+        run: |
+          python3 scripts/check_verus_ledger.py \
+            --verus-root "$RUNNER_TEMP/verus/verus-x86-linux" \
+            --archive "$RUNNER_TEMP/verus-0.2026.10.18.7d82994-x86-linux.zip" \
+            --output "$RUNNER_TEMP/verus-ledger-evidence"
+      - name: Retain the comparison evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verus-ledger-${{ github.sha }}
+          path: ${{ runner.temp }}/verus-ledger-evidence
+          if-no-files-found: error
+          retention-days: 14

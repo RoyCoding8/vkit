@@ -106,21 +106,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upstream", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="New directory for sources and logs.")
-    parser.add_argument("--model-only", action="store_true",
-                        help="Check only the provisional pure model, without Rust or RefinedRust.")
+    parser.add_argument("--only", choices=("model", "collection", "unsafe_body"),
+                        help="Run one existing probe instead of the full capability regression.")
     args = parser.parse_args()
     upstream = args.upstream.resolve()
     output = args.output.resolve()
     pin = json.loads((FIXTURE / "upstream.json").read_text(encoding="utf-8"))
     report = {
         "qualification": "INCONCLUSIVE",
-        "execution_mode": "model_only" if args.model_only else "full",
+        "execution_mode": f"{args.only}_only" if args.only else "full",
         "upstream": pin,
         "stages": [],
         "remaining_gates": [
             "checker-version and trusted toolchain profile qualification",
             "reviewed foundational assumption policy for product acceptance",
-            "pure-model preservation, rejection/accounting, batch and composition laws",
+            "accepted contract and package-parameter binding for the provisional model",
             "ledger body refinement, representation and closed soundness",
             "resource-aware bounded execution and normal-execution witness",
         ],
@@ -156,7 +156,7 @@ def main() -> int:
         }
         nix = ["nix", "--extra-experimental-features", "nix-command flakes"]
         arguments = ("{ upstreamPath = " + nix_string(upstream)
-                     + "; modelOnly = " + ("true" if args.model_only else "false") + "; }")
+                     + "; modelOnly = " + ("true" if args.only == "model" else "false") + "; }")
         print("Resolve pinned library source identities", flush=True)
         with (output / "sources.log").open("w", encoding="utf-8") as log:
             sources = json.loads(subprocess.check_output(
@@ -201,6 +201,7 @@ def main() -> int:
         )
         contract_script = (f"cd output\ndune exec -- rocq compile {loadpath} ../audit/Contract.v\n"
                            f"dune exec -- rocq compile {loadpath} ../audit/Expected.v\n")
+        replay_script = f"cd output\ndune exec -- rocq check -silent -o {loadpath} VKitQualification.Expected\n"
         stages = (
             ("body", "rustc --version\nrocq --version\ncargo refinedrust --show-config\n"
              "cargo refinedrust -- --locked\ndune build --root output\n",
@@ -211,10 +212,9 @@ def main() -> int:
              "ledger/Model.vo"),
             ("contract", contract_script,
              "audit/Expected.vo"),
-            ("replay", f"cd output\ndune exec -- rocq check -silent -o {loadpath} VKitQualification.Expected\n",
-             None),
+            ("replay", replay_script, None),
         )
-        if args.model_only:
+        if args.only == "model":
             model_script = (
                 "mkdir -p output\ncd output\n"
                 "rocq --version\n"
@@ -223,6 +223,8 @@ def main() -> int:
                 "rocq check -silent -o -Q ../ledger VKitLedger -Q ../audit VKitQualification VKitQualification.ModelAudit\n"
             )
             stages = (("model", model_script, "ledger/Model.vo"),)
+        elif args.only:
+            stages = ()
         for name, script, artifact in stages:
             stage = {"name": name, "command": [*environment, script], "state": "STARTED"}
             report["stages"].append(stage)
@@ -296,10 +298,12 @@ def main() -> int:
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             if stage["state"] != "COMPLETED":
                 break
-        if not args.model_only and all(stage["state"] == "COMPLETED" for stage in report["stages"]):
+        if args.only in {None, "unsafe_body"} and all(
+                stage["state"] == "COMPLETED" for stage in report["stages"]):
             report["negative_probes"] = []
-            for case in ("wrong_body", "weakened_contract", "shadowed_contract", "admitted_body",
-                         "unsafe_body", "trust_me", "only_spec"):
+            cases = ("wrong_body", "weakened_contract", "shadowed_contract", "admitted_body",
+                     "unsafe_body", "trust_me", "only_spec") if args.only is None else (args.only,)
+            for case in cases:
                 case_root = output / "negative" / case
                 case_work = case_root / "source"
                 shutil.copytree(FIXTURE, case_work, ignore=shutil.ignore_patterns("output", "target"))
@@ -335,7 +339,7 @@ def main() -> int:
                 if case in {"weakened_contract", "shadowed_contract", "admitted_body", "unsafe_body"}:
                     case_stages.append(("contract", contract_script))
                 if case == "unsafe_body":
-                    case_stages.append(("replay", stages[2][1]))
+                    case_stages.append(("replay", replay_script))
                 for name, script in case_stages:
                     command = ["timeout", "--kill-after=10s", "600s", *environment, script]
                     step = {"name": name, "command": command, "state": "STARTED"}
@@ -438,8 +442,11 @@ def main() -> int:
                 if probe["state"] == "INCONCLUSIVE":
                     probe["state"] = "NOT_REJECTED"
                 (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        if args.only in {None, "collection"} and all(
+                stage["state"] == "COMPLETED" for stage in report["stages"]):
             report["support_probes"] = []
-            for case, lemma in (("census", "reserve"), ("collection", "fill")):
+            cases = (("census", "reserve"), ("collection", "fill")) if args.only is None else (("collection", "fill"),)
+            for case, lemma in cases:
                 case_root = output / "support" / case
                 case_work = case_root / "source"
                 shutil.copytree(FIXTURE, case_work, ignore=shutil.ignore_patterns("output", "target"))
@@ -518,6 +525,7 @@ def main() -> int:
                 else:
                     probe["state"] = "UNSUPPORTED_OR_FAILED"
                 (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        if args.only is None and all(stage["state"] == "COMPLETED" for stage in report["stages"]):
             composition = {"state": "INCONCLUSIVE", "versions": []}
             report["two_version_probe"] = composition
             version_paths = []

@@ -89,7 +89,7 @@ def main() -> int:
                 for name, digest in driver_hashes.items():
                     if hashlib.sha256((root / name).read_bytes()).hexdigest() != digest:
                         raise ValueError(f"restart the session to review changed driver input: {name}")
-                command = ["python3", str(root / "scripts/qualify_refinedrust.py"), "--model-only",
+                command = ["python3", str(root / "scripts/qualify_refinedrust.py"), "--only", "model",
                            "--upstream", str(args.upstream), "--output", str(run)]
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:

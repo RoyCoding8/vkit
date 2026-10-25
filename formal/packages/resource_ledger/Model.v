@@ -388,4 +388,54 @@ Proof.
     destruct (reservations s !! id) as [entry|] eqn:Hlookup;
     repeat case_decide; cbn; naive_solver.
 Qed.
+Lemma reserve_sequence_accounting s requests final :
+  reserve_sequence s requests = inr final ->
+  used (reservations final) =
+    foldr (fun r total => request_amount r + total) 0 requests + used (reservations s) /\
+  size (reservations final) = length requests + size (reservations s) /\
+  capacity final = capacity s /\ max_records final = max_records s.
+Proof.
+  revert s final. induction requests as [|r rest IH]; intros s final Hrun.
+  - cbn [reserve_sequence] in Hrun. inversion Hrun. subst final.
+    repeat split; reflexivity.
+  - cbn [reserve_sequence] in Hrun.
+    destruct (reserve s r) as [next outcome] eqn:Hstep.
+    destruct outcome as [error|[]]; [discriminate|].
+    destruct (reserve_sequence next rest) as [[index error]|last] eqn:Htail;
+      [discriminate|].
+    inversion Hrun. subst last.
+    destruct (reserve_success_accounting s r next Hstep)
+      as (_ & _ & _ & _ & _ & Hused & Hsize & Hcap & Hmax).
+    destruct (IH next final Htail) as (Htailused & Htailsize & Htailcap & Htailmax).
+    cbn [foldr length]. repeat split.
+    + rewrite Htailused, Hused. lia.
+    + rewrite Htailsize, Hsize. lia.
+    + rewrite Htailcap, Hcap. reflexivity.
+    + rewrite Htailmax, Hmax. reflexivity.
+Qed.
+
+Lemma reserve_batch_success_accounting s requests final :
+  reserve_batch s requests = (final, inr tt) ->
+  length requests <= Pos.to_nat batch_bound /\
+  used (reservations final) =
+    foldr (fun r total => request_amount r + total) 0 requests + used (reservations s) /\
+  size (reservations final) = length requests + size (reservations s) /\
+  capacity final = capacity s /\ max_records final = max_records s.
+Proof.
+  unfold reserve_batch. case_decide.
+  - destruct (reserve_sequence s requests) as [[index error]|last] eqn:Hsequence;
+      [discriminate|].
+    intros Hrun. inversion Hrun. subst last.
+    split; [assumption|]. apply reserve_sequence_accounting. exact Hsequence.
+  - discriminate.
+Qed.
+
+Lemma reserve_batch_too_large s requests :
+  reserve_batch s requests = (s, inl BatchTooLarge) <->
+  Pos.to_nat batch_bound < length requests.
+Proof.
+  unfold reserve_batch. case_decide.
+  - destruct (reserve_sequence s requests) as [[index error]|final]; naive_solver lia.
+  - naive_solver lia.
+Qed.
 End resource_ledger.

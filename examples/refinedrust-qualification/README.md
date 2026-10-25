@@ -104,7 +104,7 @@ or a successful translation.
 
 The runner captures `formal/packages/resource_ledger/Model.v` with its inputs,
 compiles the provisional model and independently checks the lemmas listed in
-`audit/ModelAudit.v`: initialization, fold accounting, operation preservation,
-state preservation on rejection and successful reservation-sequence validity.
-Its audit remains `PROVISIONAL_MODEL_ONLY`. Exact error/index laws, concrete body
+`audit/ModelAudit.v`: initialization, invariant preservation, exact error and
+accounting laws, atomic batch/index behavior and finite mixed-operation traces.
+Its audit remains `PROVISIONAL_MODEL_ONLY`. Concrete representation, body
 refinement and resource-aware bounded execution remain separate obligations.

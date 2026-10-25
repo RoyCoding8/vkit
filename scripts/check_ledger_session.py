@@ -44,13 +44,16 @@ def main() -> int:
                      GIT_CONFIG_VALUE_0=f"AUTHORIZATION: basic {credential}")
 
     def api(method: str, suffix: str, data: dict) -> dict:
+        budget = deadline + (60 if method == "PATCH" else 0) - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError("session deadline reached")
         request = Request(
             f"https://api.github.com/repos/{repository}/check-runs{suffix}",
             data=json.dumps(data).encode(), method=method,
             headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
                      "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28"},
         )
-        with urlopen(request, timeout=30) as response:
+        with urlopen(request, timeout=min(30, budget)) as response:
             return json.load(response)
 
     def stop(signum: int, frame: object) -> None:
@@ -60,7 +63,10 @@ def main() -> int:
     try:
         while time.monotonic() < deadline:
             subprocess.run(["git", "fetch", "--quiet", "--no-tags", "origin", f"refs/heads/{branch}"],
-                           cwd=root, env=fetch_env, check=True, timeout=30)
+                           cwd=root, env=fetch_env, check=True,
+                           timeout=min(30, max(0.001, deadline - time.monotonic())))
+            if time.monotonic() >= deadline:
+                break
             revision = subprocess.check_output(
                 ["git", "rev-parse", "FETCH_HEAD"], cwd=root, text=True).strip()
             if revision in seen:
@@ -68,24 +74,31 @@ def main() -> int:
                 continue
             seen.add(revision)
             subprocess.run(["git", "checkout", "--quiet", "--detach", revision],
-                           cwd=root, env=child_env, check=True, timeout=30)
+                           cwd=root, env=child_env, check=True,
+                           timeout=min(30, max(0.001, deadline - time.monotonic())))
+            if time.monotonic() >= deadline:
+                break
             run = args.output / revision
             log_path = args.output / f"{revision}.log"
-            check = api("POST", "", {"name": "Provisional ledger model", "head_sha": revision,
-                                     "status": "in_progress"})
+            check = None
             completed = False
             detail = "The session stopped before a model result was recorded."
             try:
+                check = api("POST", "", {"name": "Provisional ledger model", "head_sha": revision,
+                                         "status": "in_progress"})
                 for name, digest in driver_hashes.items():
                     if hashlib.sha256((root / name).read_bytes()).hexdigest() != digest:
                         raise ValueError(f"restart the session to review changed driver input: {name}")
                 command = ["python3", str(root / "scripts/qualify_refinedrust.py"), "--model-only",
                            "--upstream", str(args.upstream), "--output", str(run)]
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("session deadline reached before model launch")
                 with log_path.open("w", encoding="utf-8") as log:
                     with subprocess.Popen(command, cwd=root, env=child_env, stdout=log,
                                           stderr=subprocess.STDOUT, start_new_session=True) as process:
                         try:
-                            process.wait(timeout=max(1, deadline - time.monotonic()))
+                            process.wait(timeout=remaining)
                         finally:
                             if process.poll() is None:
                                 os.killpg(process.pid, signal.SIGTERM)
@@ -93,6 +106,7 @@ def main() -> int:
                                     process.wait(timeout=10)
                                 except subprocess.TimeoutExpired:
                                     os.killpg(process.pid, signal.SIGKILL)
+                                    process.wait()
                 report = json.loads((run / "report.json").read_text(encoding="utf-8"))
                 stages = report.get("stages", [])
                 completed = (report.get("execution_mode") == "model_only"
@@ -109,15 +123,19 @@ def main() -> int:
                           "qualification": "INCONCLUSIVE", "product_policy_accepted": False}
                 (args.output / f"{revision}.json").write_text(
                     json.dumps(result, indent=2) + "\n", encoding="utf-8")
-                api("PATCH", f"/{check['id']}", {
-                    "status": "completed", "conclusion": "success" if completed else "failure",
-                    "output": {"title": "Provisional model checked" if completed else "Model check failed",
-                               "summary": "Product qualification remains INCONCLUSIVE. Evidence is retained per revision.",
-                               "text": detail},
-                })
+                if check is not None:
+                    api("PATCH", f"/{check['id']}", {
+                        "status": "completed", "conclusion": "success" if completed else "failure",
+                        "output": {"title": "Provisional model checked" if completed else "Model check failed",
+                                   "summary": "Product qualification remains INCONCLUSIVE. Evidence is retained per revision.",
+                                   "text": detail},
+                    })
                 print(json.dumps(result), flush=True)
     except KeyboardInterrupt:
         return 130
+    except subprocess.TimeoutExpired:
+        if time.monotonic() < deadline:
+            raise
     return 0
 
 

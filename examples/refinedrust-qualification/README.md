@@ -83,6 +83,8 @@ The `Provisional ledger model` commit check includes the compiler result; every
 checked revision gets its own retained evidence bundle. Rapid intermediate tips
 may be skipped. Driver/environment changes require a new session. These checks
 do not establish product qualification and are not product acceptance gates.
+After the checking budget ends, shutdown and final status publication have up
+to one minute to finish.
 
 The `RefinedRust qualification` GitHub Actions workflow runs the same command
 and retains its report, logs and generated sources as an artifact. The probe

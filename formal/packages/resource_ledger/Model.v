@@ -165,11 +165,12 @@ Proof.
                 Pos.to_nat (max_records s)).
            split.
            ++ intros id entry Hnew. apply lookup_insert_Some in Hnew.
-              destruct Hnew as [[-> <-]|[_ Hold]].
-              ** change (0 < request_amount r). lia.
+              destruct Hnew as [[_ Hentry]|[_ Hold]].
+              ** subst entry. change (0 < request_amount r). lia.
               ** eapply Hpositive. exact Hold.
            ++ split.
-              ** rewrite used_insert by exact Hlookup. lia.
+              ** rewrite used_insert by exact Hlookup.
+                 change (request_amount r + used (reservations s) <= capacity s). lia.
               ** rewrite map_size_insert_None by exact Hlookup. lia.
         -- exact Hvalid.
       * exact Hvalid.

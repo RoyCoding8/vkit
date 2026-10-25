@@ -154,10 +154,19 @@ Proof.
       * destruct (decide (request_amount r <= capacity s - used (reservations s)))
           as [Hfits|Hinsufficient]; cbn [fst].
         -- destruct Hvalid as [Hpositive [Hused Hsize]].
-           cbn [valid with_records reservations capacity max_records]. split.
+           set (new_entry := {| reservation_owner := request_owner r;
+                                reservation_amount := request_amount r |}).
+           change
+             ((forall id entry,
+                (<[request_id r := new_entry]> (reservations s)) !! id = Some entry ->
+                0 < reservation_amount entry) /\
+              used (<[request_id r := new_entry]> (reservations s)) <= capacity s /\
+              size (<[request_id r := new_entry]> (reservations s)) <=
+                Pos.to_nat (max_records s)).
+           split.
            ++ intros id entry Hnew. apply lookup_insert_Some in Hnew.
               destruct Hnew as [[-> <-]|[_ Hold]].
-              ** cbn. lia.
+              ** change (0 < request_amount r). lia.
               ** eapply Hpositive. exact Hold.
            ++ split.
               ** rewrite used_insert by exact Hlookup. lia.
@@ -173,7 +182,13 @@ Proof.
   destruct (reservations s !! id) as [entry|] eqn:Hlookup; cbn [fst].
   - destruct (decide (reservation_owner entry = owner)) as [Howner|Hwrong]; cbn [fst].
     + destruct Hvalid as [Hpositive [Hused Hsize]].
-      cbn [valid with_records reservations capacity max_records]. split.
+      change
+        ((forall id' entry',
+            delete id (reservations s) !! id' = Some entry' ->
+            0 < reservation_amount entry') /\
+         used (delete id (reservations s)) <= capacity s /\
+         size (delete id (reservations s)) <= Pos.to_nat (max_records s)).
+      split.
       * intros id' entry' Hafter. apply lookup_delete_Some in Hafter.
         destruct Hafter as [_ Hbefore]. eapply Hpositive. exact Hbefore.
       * split.

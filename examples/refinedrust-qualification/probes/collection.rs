@@ -4,6 +4,7 @@
 #![feature(stmt_expr_attributes)]
 #![register_tool(rr)]
 #![rr::package("vkit-qualification")]
+#![rr::include("option")]
 
 #[rr::refined_by("(entry_id, (owner, amount))" : "Z * (Z * Z)")]
 pub struct Entry {

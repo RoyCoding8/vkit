@@ -55,6 +55,14 @@ Its field map lifts both the optional payload and each array cell. This layout
 and its tuple refinement remain unqualified until that experiment passes; the
 tuple also needs an explicit connection to the ledger model's reservation type.
 
+The collection fixture explicitly includes the pinned upstream `option` model.
+The environment exposes its library search path. A task-local Nix override keeps
+Option's declared closure, clone, result and sized dependencies and RefinedRust
+core. It removes the upstream packaging dependency on SMTCoq, which none of those
+theories imports. Their original proof sources remain unchanged and must compile
+before the collection experiment can run. This override is recorded with the
+fixture; it is not an upstream configuration switch.
+
 After a successful baseline, the same runner executes fixed negative probes in
 fresh source copies. They change the body, weaken the producer contract, shadow
 the verification judgment, admit a proof or request an assumed-function mode.

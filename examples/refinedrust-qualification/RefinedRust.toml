@@ -1,5 +1,4 @@
 output_dir = "output"
-find_stdlib = false
 no_assumption = true
 admit_proofs = false
 run_check = false

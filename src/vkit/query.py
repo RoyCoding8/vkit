@@ -12,7 +12,7 @@ from .inputs import Snapshot, matches
 from .manifest import Manifest, ManifestError, parse_manifest
 from .paths import Project, open_project
 from .proposals import pending
-from .state import CheckState, Freshness, check_states, gate, needs_run
+from .state import CheckState, FormalState, Freshness, _resolve_execution, check_states, formal_states as _formal_states, gate, needs_run
 from .store import Store
 
 DEFAULT_LOG_LIMIT = 16_000
@@ -46,6 +46,11 @@ def states(ctx: Context) -> list[CheckState]:
     return check_states(ctx.manifest, ctx.store, Snapshot(ctx.project))
 
 
+def formal_states(ctx: Context) -> list[FormalState]:
+    if ctx.manifest is None:
+        return []
+    return _formal_states(ctx.manifest, ctx.store, Snapshot(ctx.project))
+
 def _features(ctx: Context, by_id: dict[str, CheckState]) -> tuple[list[dict[str, Any]], str | None]:
     try:
         features = load_features(ctx.project.root)
@@ -65,6 +70,7 @@ def _features(ctx: Context, by_id: dict[str, CheckState]) -> tuple[list[dict[str
 def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
     """Every check's freshness and the gate; narrowed to checks reading `paths` when given."""
     all_states = states(ctx)
+    all_formal = formal_states(ctx)
     by_id = {s.check.id: s for s in all_states}
     wanted = [p.replace("\\", "/") for p in paths]
     shown = [s for s in all_states if not wanted or any(s.inputs.covers(p) for p in wanted)]
@@ -76,16 +82,18 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
     return {
         "project": str(ctx.project.root),
         "manifest_error": ctx.manifest_error,
-        "gate": gate(all_states) if ctx.manifest is not None else
+        "gate": gate(all_states, all_formal) if ctx.manifest is not None else
         {"verdict": "BLOCKED", "reason": ctx.manifest_error, "checks": []},
         "paths": wanted,
         "checks": [s.to_json() for s in shown],
+        "formal": [s.to_json() for s in all_formal],
         "unmapped_paths": [p for p in wanted if not any(s.inputs.covers(p) for s in all_states)],
         "feature_paths_unmapped": [p for p in wanted if not any(matches(p, e) for f in features
                                                                 for e in f["entry_points"])],
         "features": features,
         "feature_error": feature_error,
         "needs_run": [s.check.id for s in all_states if needs_run(s)],
+        "formal_needs_run": [s.component.id for s in all_formal if needs_run(s)],
         "proposals": [{"digest": p.digest, "rationale": p.body["rationale"],
                        "checks": [c["id"] for c in p.body["checks"]],
                        "features": [f["id"] for f in p.body["features"]], "files": sorted(p.body["files"]),
@@ -132,5 +140,16 @@ def doctor(ctx: Context) -> dict[str, Any]:
                 found = shutil.which(need.executable)
                 findings.append({"check": check.id, "prerequisite": need.name, "ok": found is not None,
                                  "detail": found or f"{need.executable!r} is not on PATH"})
+        for component in ctx.manifest.components.values():
+            try:
+                _resolve_execution(component)
+            except Exception as exc:
+                findings.append({"check": component.id, "kind": "formal_goal",
+                                 "prerequisite": "Verus setup", "ok": False,
+                                 "detail": f"{type(exc).__name__}: {exc}"})
+            else:
+                findings.append({"check": component.id, "kind": "formal_goal",
+                                 "prerequisite": "Verus setup", "ok": True,
+                                 "detail": "pinned Verus assets and container image are available"})
     return {"project": str(ctx.project.root), "state_root": str(ctx.store.root),
             "ok": all(f["ok"] for f in findings), "findings": findings}

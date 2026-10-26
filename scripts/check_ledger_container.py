@@ -53,6 +53,7 @@ def docker_base(run_id: str, cidfile: Path) -> list[str]:
         "--label", f"vkit.ledger.profile={PROFILE}", "--network=none", "--read-only",
         "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=256",
         "--memory=4g", "--cpus=2", "--ulimit", "nofile=1024:1024",
+        "--ulimit", "fsize=2147483648:2147483648",
         "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=128m", "--user", "65532:65532",
         "--workdir", "/work", "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp",
     ]
@@ -108,7 +109,7 @@ def stage_trusted(directory: Path, source: Path) -> tuple[Path, Path, dict[str, 
 
 def container_command(image_id: str, base: list[str], trusted: Path, source: Path, archive: Path,
                       verus_root: Path, rustup_home: Path, cargo_home: Path,
-                      command: list[str]) -> list[str]:
+                      output: Path | None, command: list[str]) -> list[str]:
     return [
         *base,
         *mount(trusted, "/trusted"),
@@ -117,7 +118,7 @@ def container_command(image_id: str, base: list[str], trusted: Path, source: Pat
         *mount(verus_root, "/assets/verus"),
         *mount(rustup_home, "/assets/rustup"),
         *mount(cargo_home, "/assets/cargo"),
-        "--tmpfs", "/output:rw,exec,nosuid,nodev,size=2048m",
+        *([] if output is None else mount(output, "/output", readonly=False)),
         "--env", "RUSTUP_HOME=/assets/rustup", "--env", "CARGO_HOME=/assets/cargo",
         "--env", "PATH=/assets/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         image_id, *command,
@@ -132,7 +133,7 @@ def execute(image_id: str, run_id: str, cidfile: Path, command: list[str],
     timeout_started = None
     owned_label = False
     removed = False
-    output_copied = None
+    output_retained = None
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
 
     def terminate(signum, frame):
@@ -173,15 +174,13 @@ def execute(image_id: str, run_id: str, cidfile: Path, command: list[str],
             if container_id and inspect_label(container_id) == run_id:
                 owned_label = True
                 if output is not None:
-                    output.mkdir(parents=True, exist_ok=True)
-                    copied = run(["docker", "cp", f"{container_id}:/output/.", str(output)], check=False)
-                    output_copied = copied.returncode == 0
+                    output_retained = output.is_dir() and any(output.iterdir())
                 run(["docker", "rm", "-f", container_id], check=False)
                 removed = run(["docker", "inspect", container_id], check=False).returncode != 0
     return {"returncode": code, "container_id": container_id, "label_owned": owned_label,
             "seconds": round(time.monotonic() - start, 3), "log": log_path.name,
             "timed_out": code is None, "container_removed": removed,
-            "output_copied": output_copied,
+            "output_retained": output_retained,
             "cancel_seconds": round(time.monotonic() - timeout_started, 3) if timeout_started else None}
 
 
@@ -191,13 +190,13 @@ def run_controls(image_id: str, run_id: str, cid_dir: Path, trusted: Path, sourc
     controls = {}
     probe_base = docker_base(f"{run_id}-probe", cid_dir / "probe.cid")
     ro_cmd = container_command(image_id, probe_base, trusted, source, archive, verus_root,
-                               rustup_home, cargo_home,
+                               rustup_home, cargo_home, None,
                                ["python3", "-c", f"from pathlib import Path; Path('/trusted/{SOURCE_REL.as_posix()}').write_text('changed')"])
     ro_result = run(ro_cmd, check=False)
     controls["source_read_only"] = ro_result.returncode != 0 and "Read-only file system" in ro_result.stderr + ro_result.stdout
 
     net_cmd = container_command(image_id, docker_base(f"{run_id}-network", cid_dir / "network.cid"),
-                                trusted, source, archive, verus_root, rustup_home, cargo_home,
+                                trusted, source, archive, verus_root, rustup_home, cargo_home, None,
                                 ["python3", "-c", "import errno,socket,sys\ntry:\n    socket.create_connection(('1.1.1.1', 53), timeout=2)\nexcept OSError as error:\n    if error.errno != errno.ENETUNREACH:\n        raise\n    print('network_denied:ENETUNREACH')\n    sys.exit(0)\nsys.exit(2)"])
     net_result = run(net_cmd, timeout=10, check=False)
     network_cidfile = cid_dir / "network.cid"
@@ -270,6 +269,9 @@ def main() -> int:
         raise RuntimeError("container tool assets must be staged under RUNNER_TEMP, outside the host home")
     args.output.mkdir(parents=True, exist_ok=False)
     os.chmod(args.output, 0o700)
+    candidate_output = args.output / "candidate-output"
+    candidate_output.mkdir()
+    os.chmod(candidate_output, 0o777)
     image_id = docker_image_id(args.image)
     run_id = args.run_id
     cid_dir = args.output.parent / f"{args.output.name}-control"
@@ -291,12 +293,13 @@ def main() -> int:
             {"target": "/assets/rustup", "read_only": True},
             {"target": "/assets/cargo", "read_only": True},
             {"target": "/tmp", "kind": "tmpfs", "size": "128 MiB", "exec": False},
-            {"target": "/output", "kind": "tmpfs", "size": "2 GiB", "exec": True},
+            {"target": "/output", "host_source": str(candidate_output),
+             "kind": "private runner-temp bind", "read_only": False, "exec": True},
         ],
         "container_policy": {"network": "none", "user": "65532:65532", "cap_drop": "ALL",
                              "no_new_privileges": True, "rootfs_read_only": True,
-                             "tmpfs": {"/tmp": {"size": "128 MiB", "exec": False},
-                                       "/output": {"size": "2 GiB", "exec": True}},
+                             "tmpfs": {"/tmp": {"size": "128 MiB", "exec": False}},
+                             "output_file_size_limit_bytes": 2147483648,
                              "memory": "4 GiB", "cpus": 2, "pids": 256,
                              "home_token_socket_mounts": []},
         "checks": {},
@@ -310,27 +313,27 @@ def main() -> int:
         cidfile = cid_dir / "qualification.cid"
         command = container_command(image_id, docker_base(run_id, cidfile), trusted, source,
                                     args.archive, args.verus_root, args.rustup_home,
-                                    args.cargo_home,
+                                    args.cargo_home, candidate_output,
                                     ["python3", "/trusted/scripts/check_verus_ledger.py",
                                      "--verus-root", "/assets/verus",
                                      "--archive", f"/assets/{args.archive.name}",
                                      "--output", "/output/evidence"])
         execution = execute(image_id, run_id, cidfile, command,
-                            args.output / "container.log", args.timeout, args.output)
+                            args.output / "container.log", args.timeout, candidate_output)
         report["execution"] = execution
-        evidence = args.output / "evidence/report.json"
+        evidence = candidate_output / "evidence/report.json"
         report["checks"]["comparison_passed"] = False
         evidence_report = json.loads(evidence.read_text(encoding="utf-8")) if evidence.is_file() else {}
         report["checks"]["comparison_passed"] = evidence_report.get("comparison_passed") is True
         report["driver_scope"] = evidence_report.get("scope")
         if (execution["returncode"] != 0 or execution["timed_out"]
-                or not execution["output_copied"] or not evidence.is_file()):
+                or not execution["output_retained"] or not evidence.is_file()):
             raise RuntimeError("sealed Verus qualification failed")
         checks = evidence_report["checks"]
         rust_log = next(item["log"] for item in checks if item["name"] == "rust_version")
         z3_log = next(item["log"] for item in checks if item["name"] == "solver_version")
-        rust_text = (args.output / "evidence" / rust_log).read_text(encoding="utf-8", errors="replace")
-        z3_text = (args.output / "evidence" / z3_log).read_text(encoding="utf-8", errors="replace")
+        rust_text = (candidate_output / "evidence" / rust_log).read_text(encoding="utf-8", errors="replace")
+        z3_text = (candidate_output / "evidence" / z3_log).read_text(encoding="utf-8", errors="replace")
         report["checks"]["rust_1_99_1"] = "rustc 1.99.1" in rust_text
         report["checks"]["z3_4_16_0"] = "Z3 version 4.16.0" in z3_text
         report["qualification_passed"] = all(report["checks"][name] for name in

@@ -9,12 +9,15 @@ Verification infrastructure for coding agents, through CLI and MCP.
 | Capability | Behavior |
 | --- | --- |
 | Verification jobs | Run accepted definitions against frozen input files. |
+| Owned mathematical package | Check six declared resource-ledger operations against fixed accounting, ownership and atomic-batch contracts. |
 | External verifiers | Connect a producer and a separately pinned checker through one protocol. |
 | Evidence | Retain inputs, artifacts, checker identity, and receipts. |
 | Freshness gates | Check whether intact passing evidence still applies to the current software. |
 | Agent access | Use the same job service through CLI and MCP. |
 
-The design follows the separation of proof production and trusted checking in [Anthropic's formal verification research](https://www.anthropic.com/research/formal-verification). Each verifier supplies its formal semantics and checking implementation. A producer's success message cannot establish the claim.
+VKit owns the resource-ledger model and expected contracts. An agent submits a component and candidate revision; VKit captures source, checks the accepted verifier, proves the model and candidate, and checks a separate unchanged client against all six bound operations. The first package uses Verus. Its result has `trusted_engine` assurance, not an independently checked kernel certificate.
+
+The separate external-verifier protocol retains the producer/checker distinction illustrated in [Anthropic's formal verification research](https://www.anthropic.com/research/formal-verification). A producer's success message cannot establish the claim. Each method records its own scope and trust boundary.
 
 The computation catalog is retired and retained in Git history. The core consists of jobs, verifier adapters, receipts, and gates.
 
@@ -28,6 +31,8 @@ The computation catalog is retired and retained in Git history. The core consist
 | Connect and configure an agent | [Tool discovery](docs/tool-discovery.md) |
 | Try an existing project | [Python CLI](examples/python-cli/README.md), [Node CLI](examples/node-cli/README.md), [HTTP service](examples/node-http/README.md), or [Lean proofs](examples/lean-proof/README.md) |
 | Inspect the refactor and its evidence | [Session report](TASKS.md) |
+| Understand the owned model and exact implementation scope | [Formal core plan](PLAN.md), [two API interpretations](examples/ledger-reuse/README.md) |
+| Gate a combined merge candidate | [Protected CI example](examples/protected-ci/README.md) |
 
 ## Install
 
@@ -47,7 +52,7 @@ uv run vkit doctor --project /path/to/repository
 
 ## Run a verification job
 
-1. Define checks in `verification/manifest.json`, schema version 2. Use an [example](examples/) or the [external protocol](docs/backend-protocol.md).
+1. Define checks or formal components in `verification/manifest.json`, schema version 3. Use an [example](examples/), the [formal component shape](schemas/manifest.v3.json), or the [external protocol](docs/backend-protocol.md).
 2. Review and accept the definition and checker identity.
 3. Submit the job, wait for its result, and inspect the gate.
 
@@ -64,7 +69,7 @@ uv run vkit gate --project /path/to/repository --json
 | `check run --detach` | Capture inputs, launch a worker, and return. The worker survives client exit. |
 | `run show` | Read the attempt and bounded logs. |
 | `run cancel` | Stop the process tree. |
-| `run retry` | Create a new attempt using the current definition and inputs. |
+| `run retry` | Create a new attempt for the same frozen job. |
 
 | Identity | Meaning |
 | --- | --- |
@@ -73,6 +78,16 @@ uv run vkit gate --project /path/to/repository --json
 | Receipt | Binds the outcome, obligations, input digests, checker identity, and retained artifacts. |
 
 Changed inputs, checkers, policies, artifacts, or receipts invalidate passing gate evidence. Checker changes also require acceptance again.
+
+For a configured formal component, use the same lifecycle:
+
+```sh
+uv run vkit accept --project /path/to/repository --component allocation
+uv run vkit verify allocation --project /path/to/repository --candidate HEAD --wait 0 --json
+uv run vkit run wait --project /path/to/repository --run RUN_ID --json
+```
+
+The initial `verus-linux-x86_64-v1` profile requires Linux x86_64, Docker, the pinned official Verus archive and expanded tools, and matching Rust/Cargo homes. Host configuration supplies `VKIT_VERUS_IMAGE`, `VKIT_VERUS_ARCHIVE`, `VKIT_VERUS_ROOT`, `VKIT_RUSTUP_HOME` and `VKIT_CARGO_HOME`. Missing or changed assets block verification. `--working-tree` captures provisional source; committed CI uses exact Git objects.
 
 ## Export and recheck evidence
 
@@ -87,9 +102,10 @@ uv run vkit evidence replay --project /path/to/repository --bundle /path/to/bund
 | Capture | Copy the bundle before launching a worker. |
 | External check | Run only the checker on retained proof artifacts. |
 | Lean or TLC check | Rerun the native checker on frozen proof sources or the model. |
+| Formal component | Independently recapture the candidate and rerun model, candidate and fixed expected-client verification. |
 | Publish | Create a new attempt and receipt. Stored success flags never satisfy replay. |
 
-Replay requires the same accepted definition and tool identity, including resolved paths. Bundles support inspection and rechecking in that environment. They are not signed portable attestations.
+Replay requires matching accepted policy and tool identity. Formal jobs bind tool bytes rather than host paths. Registered-check path requirements depend on their adapter. Bundles are not signed attestations.
 
 ## Add a verifier
 
@@ -106,7 +122,7 @@ The checker receives a VKit-generated request and returns a versioned receipt bo
 
 - Adding a backend requires no CLI, MCP, or console registry changes.
 - The [backend protocol](docs/backend-protocol.md) defines the commands and receipt format.
-- Python fixtures test orchestration. Real formal-checker coverage comes from Lean and TLC.
+- Python fixtures test orchestration. Real CI separately exercises Lean, TLC and the installed Verus component procedure.
 
 ## Connect an agent
 
@@ -118,6 +134,7 @@ uv run vkit mcp serve --project /path/to/repository
 | --- | --- |
 | Compact MCP | Exposes `help` and `invoke`. Use `help(all=true)` to discover tools. |
 | Exact schema | Use `help(name="check_run")`. |
+| Formal request | Use `help(name="verify")` for component, goal and candidate fields. |
 | Named MCP | Add `--exposure named` to advertise enabled tools individually. |
 | Acceptance | Remains a CLI action. Agents can submit registered checks and propose definitions. |
 | Claude Code | The optional [plugin](plugin/) supplies guidance and hooks. |
@@ -151,6 +168,7 @@ uv run vkit tui --project /path/to/repository
 | File digests | Provide integrity, not authenticity or OS isolation. |
 | Trusted components | Service installation, accepted checker, and declared trusted dependencies. |
 | Process permissions | Producer and checker run as the service user. Protect checker code and local state from untrusted writers. |
+| Formal execution | Runs in a restricted container with read-only source/tools, no network, and private output. Host installation and container runtime remain trusted. |
 | Dependency closure | Must be declared. VKit cannot infer every dependency of arbitrary code. |
 
 These results alone do not establish source-to-binary correspondence, termination, or correctness of an undeclared environment. See [verification semantics](docs/verification.md) and [architecture](docs/architecture.md).

@@ -1,6 +1,6 @@
 # VKit formal core implementation plan
 
-The design decisions are settled. Product implementation is unfinished.
+P1 through P6 are implemented and verified for the source contract. Current results and exact artifacts are recorded in [TASKS.md](TASKS.md).
 Ship one reusable mathematical package through the existing CLI, MCP, workers and evidence store.
 The first contract is `ledger.source.v1`, checked with Verus. It does not satisfy `ledger.total.v1`.
 Execute P1 through P6 in order. This document supersedes earlier backend and integration plans.
@@ -105,7 +105,7 @@ Use `--no-cheating` and the pinned release's `--no-external-by-default`. Own the
 
 ## Define requests and accepted policy once
 
-CLI and MCP map to the same closed request. This is the proposed API, not an installed command yet:
+CLI and MCP map to the same installed closed request:
 
 ```json
 {
@@ -242,13 +242,13 @@ Use the existing report timings. For a fixture of at most 100 captured files, co
 
 ## Finish when the evidence exists
 
-- [ ] P1 through P6 each have their exact head, commands, positive/negative outcomes and artifact hashes recorded.
-- [ ] The same installed package works through CLI and MCP, survives detach/retry/replay, and gates the exact committed combined candidate under protected policy.
-- [ ] All six required contracts, map accounting and scope boundaries are checked. Full application, kernel and operational-totality claims remain explicitly absent.
-- [ ] Retired backends and duplicated models/templates/execution code have no active callers or packaged remnants.
-- [ ] The retained tests, isolated wheel and real Linux CI pass. Report local and remote results separately.
+- [x] P1 through P6 have their verified head, reproduction commands, positive/negative outcomes and artifact hashes recorded in TASKS.md.
+- [x] The same installed package works through CLI and MCP, survives detach/retry/replay, and gates the exact committed combined candidate under protected policy.
+- [x] All six required contracts, map accounting and scope boundaries are checked. Full application, kernel and operational-totality claims remain explicitly absent.
+- [x] Retired backends and duplicated models/templates/execution code have no active callers or packaged remnants.
+- [x] The retained tests, isolated wheel and real Linux CI pass. Local and remote results are recorded separately.
 
-Planning completion means these mechanisms, scope decisions, tests and unit boundaries are specified. It does not mean those implementation boxes are complete. Keep current evidence and execution checkboxes in [TASKS.md](TASKS.md).
+These boxes describe the delivered source profile. Host merge enforcement remains a deployment requirement; the stronger totality profile remains deferred. Keep the current evidence in [TASKS.md](TASKS.md).
 
 ## Evidence and harvested mechanisms
 
@@ -256,9 +256,9 @@ Planning completion means these mechanisms, scope decisions, tests and unit boun
 | --- | --- |
 | [CI 40237404026](https://github.com/RoyCoding8/vkit/actions/runs/40237404026), `aba3eb9` | Generic ledger: 50 verified functions, eleven rejected controls, compiled execution; 57 seconds. |
 | [CI 40258535126](https://github.com/RoyCoding8/vkit/actions/runs/40258535126), `0cb26cf` | Full reserve import contract: 22 checks matched, twelve rejected controls, unchanged expected client and compiled execution; 49 seconds. Source and fixture bytes matched Git and report hashes. |
-| Retained Python suite after backend cleanup | 168 passed, four skipped on Windows. Product integration has not been implemented. |
+| Planning baseline, retained Python suite after backend cleanup | 168 passed, four skipped on Windows before product integration. Superseded by the final three-OS suite in TASKS.md. |
 
-The existing proof counts do not establish map-fold equivalence, all-six external binding, sealed Docker execution or protected product gates. Those are P1 onward, not reasons to relabel past results.
+Those early proof counts did not establish the later map-fold equivalence, all-six binding, container execution or protected product gate. Final qualification records those separately; earlier evidence is not relabeled.
 
 | Source | Harvest or boundary |
 | --- | --- |

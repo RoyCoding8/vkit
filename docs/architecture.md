@@ -2,7 +2,16 @@
 
 ## System map
 
-CLI, MCP, and the console use one verification service. The manifest owns accepted check definitions. Transports submit registered checks rather than arbitrary commands.
+CLI, MCP, and the console use one job service. A version-3 manifest declares registered checks and formal components. A formal component binds candidate API names to VKit's owned mathematical package. An agent selects the component and source; it cannot supply replacement contracts or checker commands in a verification request.
+
+| Component | Role |
+| --- | --- |
+| Owned package | Resource-ledger mathematics, six expected operation contracts and pinned verifier release. |
+| Component policy | Reviewed package identity, source entrypoint, capacity and API-name bindings. |
+| Job | Frozen source and accepted policy/checker identities. |
+| Worker | Checks actual tools, executes verification and publishes evidence. |
+| Receipt | Records scope, obligations, actual tool inventory and artifact hashes. |
+| Gate | Requires intact passing evidence for the intended source and authority. |
 
 ```mermaid
 flowchart LR
@@ -11,7 +20,7 @@ flowchart LR
     Console --> MCP
     Jobs --> Snapshot[Frozen inputs and job definition]
     Jobs --> Worker[Independent worker process]
-    Worker --> Adapter[Native adapter or external producer and checker]
+    Worker --> Adapter[Formal procedure or registered adapter]
     Adapter --> Receipt[Artifacts and checked receipt]
     Receipt --> Store
     Store --> Gate[Current identity and integrity gate]
@@ -22,7 +31,10 @@ flowchart LR
 
 | Owner | Responsibility |
 | --- | --- |
-| `manifest.py`, `verifiers/spec.py`, `schemas/manifest.v2.json` | Parse check variants and external backend declarations. |
+| `manifest.py`, `formal/policy.py`, `verifiers/spec.py`, `schemas/manifest.v3.json` | Parse tagged component policies, check variants and backend declarations. |
+| `formal/ledger.py`, `formal/packages/resource_ledger/` | Resolve the owned model, fixed expected contracts and obligations. |
+| `formal/verus.py`, `container.py` | Inventory actual verifier assets and run model/candidate/expected verification in one restricted container. |
+| `job.py`, `ci.py` | Define immutable job subjects and enforce protected target policy for exact Git candidates. |
 | `inputs.py`, `evidence.py` | Capture input closure, hash policy and tool identities, seal and validate bundles. |
 | `jobs.py` | Submit, wait, capture replay evidence, and launch independent workers. |
 | `runner.py` | Claim an attempt, enforce approval, execute on frozen inputs, and publish a receipt. |
@@ -38,8 +50,8 @@ flowchart LR
 | Identity component | What it binds |
 | --- | --- |
 | Definition | Accepted manifest entry. |
-| Inputs | Normalized content of declared input files. |
-| Backend | Checker identity and declared tools. |
+| Inputs | Registered checks bind normalized declared inputs. Formal components bind raw captured bytes and source mode, including Git commit/tree/blob identities. |
+| Backend | Accepted checker digest. Formal execution hashes actual tools and retains the matching inventory in the receipt. |
 | Policy | VKit validation code and package version. |
 | Baseline | Accepted baseline for checks that use one. |
 
@@ -87,6 +99,7 @@ There is no scheduler daemon or generic prover checkpoint engine.
 | External | Copy declared proof artifacts into a new attempt and invoke the accepted checker. |
 | Lean | Recompile frozen proof sources. |
 | TLC | Rerun the model checker on the frozen model. |
+| Verus component | Recapture the candidate and rerun the model, candidate and unchanged expected client. |
 
 Imported outcome fields never substitute for checking.
 
@@ -101,7 +114,8 @@ Imported outcome fields never substitute for checking.
 | Native identity | Records resolved executables, adapter policy, and relevant environment settings. |
 | Native runtime libraries | Remain trusted environment dependencies. |
 | External closure | Explicit dependency pins support a fully declared tool closure. |
-| OS isolation | Neither native nor external execution provides a hermetic filesystem sandbox. |
+| Registered local execution | Native and external commands retain service-user permissions. |
+| Formal and protected-CI execution | Restricted Docker container, read-only source/tools, no network and private output. Host policy, installation and Docker remain trusted. |
 
 ## Storage and packaging
 
@@ -111,7 +125,9 @@ Imported outcome fields never substitute for checking.
 | Git worktrees | Share the store while retaining distinct input content. |
 | JSON writes | Atomic replacement prevents partial records. |
 | Per-attempt OS locks | Control execution ownership. |
-| Python wheel | Includes schemas and offline console assets. |
+| Python wheel | Includes schemas, one owned mathematical package/templates/pins and offline console assets. |
 | External verifiers | Installation remains under operator control. |
 
 Adding an external verifier changes its manifest and backend implementation. It requires no transport registry changes.
+
+The first owned package covers ledger accounting and six declared APIs. It does not infer how real workers, quotas or caller identities correspond to the model. See the [reuse examples](../examples/ledger-reuse/README.md) and [protected gate](../examples/protected-ci/README.md) for those boundaries.

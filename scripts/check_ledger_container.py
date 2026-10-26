@@ -232,7 +232,6 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
 
 
 def run_gate_probe(directory: Path, source: str, image_id: str) -> dict:
-    from vkit.ci import run_gate
     from vkit.formal.service import resolve_commit
     from vkit.paths import open_project
 
@@ -297,9 +296,12 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps({"schema_version":1,"scenarios":
     reports = {}
     try:
         for name, oid in (("branch_a", branch_a), ("branch_b", branch_b), ("combined", combined)):
-            report = run_gate(project, oid, target, directory / name)
+            invocation = run([sys.executable, "-m", "vkit.cli", "gate", "--project", str(project.root),
+                              "--candidate", oid, "--target", target, "--output", str(directory / name), "--json"],
+                             timeout=900, check=False)
+            report = json.loads(invocation.stdout)
             expected = "BLOCKED" if name == "combined" else "READY"
-            if report["verdict"] != expected or len(report["checks"]) != 2:
+            if invocation.returncode != (3 if name == "combined" else 0) or report["verdict"] != expected or len(report["checks"]) != 2:
                 raise RuntimeError(f"gate control {name} failed: {report['checks']}")
             if any(not c["receipt_valid"] for c in report["checks"]):
                 raise RuntimeError(f"gate control {name} has invalid receipts")

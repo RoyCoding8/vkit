@@ -52,6 +52,8 @@ def validate_authority(job: dict[str, Any], project: Project) -> Manifest:
     source = capture_git_commit(project, job["source"]["commit"])
     if {**source.to_json(), "digest": source.digest} != job["source"]:
         raise ValueError("authority candidate differs from its raw Git source")
+    if not git_ancestor(project, authority["target_commit"], source):
+        raise ValueError("authority target is not an ancestor of its candidate")
     manifest = parse_manifest_data(authority["manifest"], project=project, origin="target policy")
     subject = job["subject"]
     if subject["kind"] == "formal_goal":

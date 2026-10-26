@@ -122,6 +122,14 @@ def qualify(directory, source, identity):
     if Path(verus.__file__).resolve().is_relative_to(ROOT / "src"):
         raise RuntimeError("reuse qualification requires the installed wheel, not an editable checkout")
     fixtures = json.loads((ROOT / "examples/ledger-reuse/fixtures.json").read_text())
+    if len(fixtures) != 2 or {f["id"] for f in fixtures} != {"quota-admission", "worker-slot-reservations"}:
+        raise RuntimeError("reuse qualification requires both named application fixtures")
+    for fixture in fixtures:
+        commands = fixture["commands"]
+        if (len(commands) < 5 or not any("reserve" in c for c in commands) or not any("release" in c for c in commands)
+                or not any("CapacityExceeded" in c["expected"] for c in commands)
+                or not any("OwnerMismatch" in c["expected"] for c in commands)):
+            raise RuntimeError("reuse fixture must exercise admission, capacity rejection, release and ownership rejection")
     reuse = []
     for fixture in fixtures:
         namespace = fixture["namespace"]

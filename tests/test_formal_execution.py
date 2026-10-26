@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from vkit.formal import ledger, verus
 from vkit.formal.policy import FormalComponent, LedgerBindings, PackageIdentity
 from vkit.proc import Exit
+from vkit.inputs import canonical_digest
 
 
 def _fixture(tmp_path: Path, monkeypatch):
@@ -56,6 +57,7 @@ def _fixture(tmp_path: Path, monkeypatch):
         "version": version["verus"]["version"],
         "revision": version["verus"]["commit"],
         "archives": {archive.name: hashlib.sha256(archive.read_bytes()).hexdigest()},
+        "expanded_files": {archive.name: canonical_digest({name: hashlib.sha256(contents).hexdigest() for name, contents in files.items()})},
     }
     package = SimpleNamespace(
         root=package_root,

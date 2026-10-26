@@ -14,6 +14,8 @@ from .paths import ProjectError
 from .schemas import SchemaValidationError
 from .store import read_json, write_json
 
+_UNSEALED = frozenset({"record.json", "receipt.json", "lock", "cancel", "worker.log", "worker.json"})
+
 
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
@@ -61,6 +63,11 @@ def retained_files(root: Path):
             yield path
 
 
+def _artifact_names(directory: Path) -> set[str]:
+    names = (p.relative_to(directory).as_posix() for p in retained_files(directory))
+    return {name for name in names if name not in _UNSEALED and not name.startswith(("snapshot/", "replay/"))}
+
+
 def policy_identity() -> dict[str, str]:
     package = Path(__file__).parent
     files = [
@@ -82,6 +89,7 @@ def policy_identity() -> dict[str, str]:
             "container.py",
             "ci.py",
             "cli.py",
+            "paths.py",
         )
     ]
     files += [
@@ -151,24 +159,7 @@ def assurance(check) -> str:
 
 
 def seal(record: dict[str, Any], directory: Path, check=None) -> None:
-    artifacts = {}
-    for path in retained_files(directory):
-        relative = path.relative_to(directory).as_posix()
-        if (
-            path.is_file()
-            and not is_link(path)
-            and not relative.startswith(("snapshot/", "replay/"))
-            and relative
-            not in {
-                "record.json",
-                "receipt.json",
-                "lock",
-                "cancel",
-                "worker.log",
-                "worker.json",
-            }
-        ):
-            artifacts[relative] = sha256(path)
+    artifacts = {name: sha256(directory / name) for name in sorted(_artifact_names(directory))}
     result = record["outcome"]["result"]
     claim_outcome = {"PASS": "established", "FAIL": "refuted", "BLOCKED": "unknown"}[
         result
@@ -219,7 +210,7 @@ def seal(record: dict[str, Any], directory: Path, check=None) -> None:
 def validate_record(record: dict[str, Any], directory: Path) -> bool:
     """Local state is trusted; imported success flags are never sufficient for replay."""
     try:
-        list(retained_files(directory))
+        artifact_names = _artifact_names(directory)
         link = record["receipt"]
         if (
             link["path"] != "receipt.json"
@@ -227,6 +218,8 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
         ):
             return False
         receipt = read_json(directory / "receipt.json")
+        if artifact_names != set(receipt["artifacts"]):
+            return False
         if receipt["schema_version"] == 1:
             if any(
                 receipt[name] != record[name]

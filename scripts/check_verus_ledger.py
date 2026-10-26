@@ -7,10 +7,11 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import time
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src/vkit/formal/packages/resource_ledger"
@@ -57,6 +58,35 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def archive_files(archive: Path, pin: dict) -> dict[str, str]:
+    with archive.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != pin["archives"].get(archive.name):
+            raise ValueError("archive does not match its official pin")
+    files, roots = {}, set()
+    with zipfile.ZipFile(archive) as bundle:
+        for item in bundle.infolist():
+            if item.is_dir():
+                continue
+            path = PurePosixPath(item.filename)
+            if path.is_absolute() or ".." in path.parts or len(path.parts) < 2:
+                raise ValueError("archive contains an unsafe path")
+            if item.external_attr >> 16 & 0o170000 not in {0, stat.S_IFREG}:
+                raise ValueError("archive contains a non-regular tool")
+            roots.add(path.parts[0])
+            relative = PurePosixPath(*path.parts[1:]).as_posix()
+            if relative in files:
+                raise ValueError("archive contains duplicate paths")
+            with bundle.open(item) as stream:
+                files[relative] = hashlib.file_digest(stream, "sha256").hexdigest()
+    if len(roots) != 1:
+        raise ValueError("archive has an unexpected root layout")
+    return files
+
+
+def inventory_digest(files: dict[str, str]) -> str:
+    return digest(json.dumps(files, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
+
+
 def run(command: list[str], output: Path, cwd: Path) -> dict:
     start = time.monotonic()
     env = os.environ.copy()
@@ -85,19 +115,13 @@ def tool_identity(archive: Path, tool_root: Path, pin: dict) -> dict:
     version = json.loads((tool_root / "version.json").read_text())["verus"]
     if version["commit"] != pin["revision"] or version["version"] != pin["version"]:
         raise ValueError("tool version does not match the pinned release")
-    hashes = {}
-    with zipfile.ZipFile(archive) as bundle:
-        for item in bundle.infolist():
-            parts = Path(item.filename).parts
-            if len(parts) != 2 or item.is_dir():
-                continue
-            path = tool_root / parts[1]
-            if path.suffix not in {".exe", ".dll", ".so", ".rlib", ".vir", ".json", ""}:
-                continue
-            expected_hash = digest(bundle.read(item))
-            if not path.is_file() or digest(path.read_bytes()) != expected_hash:
-                raise ValueError(f"tool file differs from the pinned archive: {path.name}")
-            hashes[path.name] = expected_hash
+    hashes = archive_files(archive, pin)
+    if pin.get("expanded_files", {}).get(archive.name) != inventory_digest(hashes):
+        raise ValueError("expanded-file pin differs from the official archive")
+    for relative, expected_hash in hashes.items():
+        path = tool_root / relative
+        if not path.is_file() or path.is_symlink() or digest(path.read_bytes()) != expected_hash:
+            raise ValueError(f"tool file differs from the pinned archive: {relative}")
     return {"archive_sha256": expected, "version": version, "files": hashes}
 
 
@@ -214,13 +238,20 @@ def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--verus-root", type=Path, required=True)
+    parser.add_argument("--verus-root", type=Path)
     parser.add_argument("--archive", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--pin-extracted", action="store_true", help="derive the compact expanded-file pin from the verified official archive")
     args = parser.parse_args()
+    pin = json.loads(PIN_PATH.read_text())
+    if args.pin_extracted:
+        pin.setdefault("expanded_files", {})[args.archive.name] = inventory_digest(archive_files(args.archive, pin))
+        PIN_PATH.write_text(json.dumps(pin, indent=2) + "\n", encoding="utf-8")
+        return 0
+    if args.verus_root is None or args.output is None:
+        parser.error("--verus-root and --output are required for qualification")
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    pin = json.loads(PIN_PATH.read_text())
     identity = tool_identity(args.archive.resolve(), args.verus_root.resolve(), pin)
     source = SOURCE.read_text(encoding="utf-8")
     forbidden = r"\b(?:assume|admit|unsafe|exec_spec_unverified)\b|verifier\s*::\s*(?:external\w*|exec_allows_no_decreases_clause)|include!"

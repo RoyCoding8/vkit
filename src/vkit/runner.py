@@ -183,6 +183,7 @@ def prepare(
         shutil.copytree(
             replay_source,
             retained,
+            symlinks=True,
             ignore=shutil.ignore_patterns(
                 "lock", "cancel", "worker.log", "worker.json", "replay"
             ),
@@ -250,7 +251,7 @@ def prepare_retry(
     snapshot.mkdir()
     source.materialize(snapshot)
     if (old_dir / "replay").is_dir():
-        shutil.copytree(old_dir / "replay", run_dir / "replay")
+        shutil.copytree(old_dir / "replay", run_dir / "replay", symlinks=True)
     record = _record_for_job(job, run_id)
     old_record = store.record(source_run)
     if old_record:

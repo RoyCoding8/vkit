@@ -61,13 +61,13 @@ def _passed(make_project):
     return project, body["runs"][0]
 
 
-@pytest.mark.parametrize("target", ["artifact", "receipt", "snapshot", "record"])
+@pytest.mark.parametrize("target", ["artifact", "receipt", "snapshot", "record", "unlisted"])
 def test_gate_rejects_tampered_retained_evidence(make_project, target):
     project, record = _passed(make_project)
     assert vkit(project, "gate")[0] == 0
     directory = project / ".git/vkit/runs" / record["run_id"]
     path = directory / {"artifact": "result.json", "receipt": "receipt.json",
-                        "snapshot": "snapshot/ok.py", "record": "record.json"}[target]
+                        "snapshot": "snapshot/ok.py", "record": "record.json", "unlisted": "unlisted.txt"}[target]
     if target == "record":
         value = json.loads(path.read_text())
         value["backend"] = {"forged": True}

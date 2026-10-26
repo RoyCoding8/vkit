@@ -11,7 +11,6 @@ import stat
 import subprocess
 import sys
 import uuid
-import zipfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -95,26 +94,11 @@ def _archive_identity(
     actual = _sha256(archive)
     if expected is None or actual != expected:
         raise ValueError("Verus archive does not match the package pin")
-    entries = {}
-    roots = set()
-    with zipfile.ZipFile(archive) as bundle:
-        for item in bundle.infolist():
-            if item.is_dir():
-                continue
-            path = PurePosixPath(item.filename)
-            if path.is_absolute() or ".." in path.parts or len(path.parts) < 2:
-                raise ValueError("Verus archive contains an unsafe path")
-            if item.external_attr >> 16 & 0o170000 not in {0, stat.S_IFREG}:
-                raise ValueError("Verus archive contains a non-regular tool")
-            roots.add(path.parts[0])
-            relative = PurePosixPath(*path.parts[1:]).as_posix()
-            if relative in entries:
-                raise ValueError("Verus archive contains duplicate tool paths")
-            entries[relative] = hashlib.sha256(bundle.read(item)).hexdigest()
-    if len(roots) != 1:
-        raise ValueError("Verus archive has an unexpected root layout")
     extracted = _tree_identity(tool_root)
-    if {item["path"]: item["sha256"] for item in extracted} != entries:
+    if any("symlink" in item for item in extracted):
+        raise ValueError("extracted Verus tools contain a filesystem link")
+    files_digest = canonical_digest({item["path"]: item["sha256"] for item in extracted})
+    if pins.get("expanded_files", {}).get(archive.name) != files_digest:
         raise ValueError("extracted Verus tools differ from the pinned archive")
     version_path = tool_root / "version.json"
     version_json = json.loads(version_path.read_text(encoding="utf-8"))
@@ -227,7 +211,7 @@ def resolve_execution(component: FormalComponent) -> dict[str, Any]:
                 "output_file_size_limit_bytes": 2 * 1024**3,
             },
         }
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+    except (OSError, ValueError, KeyError) as exc:
         raise ExecutionSetupError(BlockedReason.ARTIFACT_MALFORMED, str(exc)) from exc
     return {
         "semantic": semantic,
@@ -580,7 +564,6 @@ def execute_formal(
         OSError,
         ValueError,
         KeyError,
-        zipfile.BadZipFile,
         subprocess.SubprocessError,
     ) as exc:
         return Blocked(BlockedReason.ARTIFACT_MALFORMED, str(exc)), {}

@@ -116,4 +116,5 @@ jobs:
           name: verus-ledger-${{ github.sha }}
           path: ${{ runner.temp }}/verus-ledger-evidence
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 14

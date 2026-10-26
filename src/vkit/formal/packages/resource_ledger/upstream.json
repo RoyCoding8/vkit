@@ -7,5 +7,8 @@
   "archives": {
     "verus-0.2026.10.18.7d82994-x86-win.zip": "82b9558a3c4fa77673700507c066c711535d130c2789dcfcec30878168db20ec",
     "verus-0.2026.10.18.7d82994-x86-linux.zip": "e9af03732d4bdd32b93a8fcf471706739c24c1473fa5086618d96c47237845dd"
+  },
+  "expanded_files": {
+    "verus-0.2026.10.18.7d82994-x86-linux.zip": "efb48ce8cda7cea087de9a25ff22fc68f9fc31c917c11230741763078136e3f4"
   }
 }

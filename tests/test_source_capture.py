@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from dataclasses import replace
 
@@ -31,6 +32,16 @@ def _head(path):
             check=True,
             capture_output=True,
             **NO_WINDOW,
+        )
+        .stdout.decode("ascii")
+        .strip()
+    )
+
+
+def _git_output(path, *args):
+    return (
+        subprocess.run(
+            ["git", *args], cwd=path, check=True, capture_output=True, **NO_WINDOW
         )
         .stdout.decode("ascii")
         .strip()
@@ -107,18 +118,88 @@ def test_git_capture_supports_sha256_object_format(tmp_path):
     assert len(capture.files[0].blob_oid) == 64
 
 
+def test_git_capture_ignores_replacement_refs(tmp_path):
+    repo = _repository(tmp_path / "repo")
+    original_commit = _head(repo)
+    original_tree = _git_output(repo, "rev-parse", f"{original_commit}^{{tree}}")
+    (repo / "source.rs").write_bytes(b"replacement tree")
+    git(repo, "add", "source.rs")
+    git(repo, "commit", "-qm", "replacement")
+    replacement_commit = _head(repo)
+    git(repo, "checkout", "--detach", original_commit)
+    git(repo, "replace", original_commit, replacement_commit)
+    replaced_blob = _git_output(
+        repo, "ls-tree", "-r", "--format=%(objectname)", original_commit
+    )
+    original_blob = _git_output(
+        repo, "ls-tree", "-r", "--format=%(objectname)", original_tree
+    )
+    assert replaced_blob != original_blob
+
+    capture = capture_git_commit(repo, original_commit)
+    assert [file.path for file in capture.files] == ["run.sh", "source.rs"]
+    assert capture.files[1].content == b"fn main() {\r\n}\r\n"
+
+
 @pytest.mark.parametrize("kind", ["commit", "working_tree"])
-def test_formal_capture_rejects_secret_paths(tmp_path, kind):
+def test_formal_capture_rejects_secret_paths(tmp_path, kind, monkeypatch):
     repo = _repository(tmp_path / "repo")
     (repo / ".env.local").write_bytes(b"secret")
     if kind == "commit":
         git(repo, "add", ".env.local")
         git(repo, "commit", "-qm", "secret path")
+        monkeypatch.setattr(
+            "vkit.inputs._batch_blobs",
+            lambda *args: pytest.fail("secret blobs must not be read"),
+        )
         capture = lambda: capture_git_commit(repo, _head(repo))
     else:
         capture = lambda: capture_working_tree(repo)
     with pytest.raises(ProjectError, match="secret-matched"):
         capture()
+
+
+def test_working_tree_capture_rejects_symlink_files(tmp_path):
+    repo = _repository(tmp_path / "repo")
+    target = tmp_path / "outside.rs"
+    target.write_bytes(b"outside")
+    link = repo / "linked.rs"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1314:
+            raise
+        pytest.skip(
+            "creating a symlink requires Windows developer mode or elevated privileges"
+        )
+
+    with pytest.raises(ProjectError, match="symlink or reparse point"):
+        capture_working_tree(repo)
+
+
+def test_working_tree_capture_rejects_leaf_symlink_swap(tmp_path, monkeypatch):
+    repo = _repository(tmp_path / "repo")
+    link = repo / "source.rs"
+    outside = tmp_path / "outside.rs"
+    outside.write_bytes(b"outside")
+    real_open = os.open
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        if path == link:
+            link.unlink()
+            try:
+                link.symlink_to(outside)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == 1314:
+                    pytest.skip(
+                        "creating a symlink requires Windows developer mode or elevated privileges"
+                    )
+                raise
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr("vkit.inputs.os.open", swap_before_open)
+    with pytest.raises(ProjectError, match="safely read|changed during capture"):
+        capture_working_tree(repo)
 
 
 def test_capture_materialization_rejects_symlink_root_and_escaping_path(tmp_path):

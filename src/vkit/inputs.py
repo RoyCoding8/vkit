@@ -241,6 +241,11 @@ def capture_git_commit(
     commit, tree, parents = _commit_metadata(project_root, oid, object_format)
     result = _git(project_root, ["ls-tree", "-rz", "--full-tree", "-r", commit])
     entries = _parse_tree(result.stdout, object_format)
+    secrets = [path for path, _, _ in entries if is_secret(path)]
+    if secrets:
+        raise ProjectError(
+            f"formal source capture contains secret-matched paths: {', '.join(secrets)}"
+        )
     blobs = _batch_blobs(
         project_root, tuple(entry[2] for entry in entries), object_format
     )
@@ -248,11 +253,6 @@ def capture_git_commit(
         _captured_file(path, mode, blobs[blob_oid], object_format)
         for path, mode, blob_oid in entries
     )
-    if any(is_secret(file.path) for file in files):
-        names = ", ".join(file.path for file in files if is_secret(file.path))
-        raise ProjectError(
-            f"formal source capture contains secret-matched paths: {names}"
-        )
     return CapturedSource("git_commit", object_format, commit, tree, parents, files)
 
 
@@ -269,7 +269,6 @@ def capture_working_tree(root: str | os.PathLike[str] | Project) -> CapturedSour
     _validate_unique_paths(names)
     files: list[CapturedFile] = []
     for name in names:
-        _validate_relative_path(name)
         if is_secret(name):
             raise ProjectError(
                 f"formal source capture contains a secret-matched path: {name}"
@@ -278,11 +277,65 @@ def capture_working_tree(root: str | os.PathLike[str] | Project) -> CapturedSour
         _check_plain_path(project_root, path)
         try:
             info = path.lstat()
-            if not stat.S_ISREG(info.st_mode):
+            if not stat.S_ISREG(info.st_mode) or _is_reparse(info):
                 raise ProjectError(f"unsupported non-regular source path: {name}")
-            content = path.read_bytes()
+            flags = (
+                os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            )
+            with os.fdopen(os.open(path, flags), "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                before = (
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    info.st_ctime_ns,
+                )
+                during = (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                )
+                if (
+                    not opened.st_ino
+                    or not stat.S_ISREG(opened.st_mode)
+                    or _is_reparse(opened)
+                    or before != during
+                ):
+                    raise ProjectError(f"source path changed during capture: {name}")
+                content = stream.read()
+                finished = os.fstat(stream.fileno())
+                current = path.lstat()
+                after = (
+                    finished.st_dev,
+                    finished.st_ino,
+                    finished.st_size,
+                    finished.st_mtime_ns,
+                    finished.st_ctime_ns,
+                )
+                path_after = (
+                    current.st_dev,
+                    current.st_ino,
+                    current.st_size,
+                    current.st_mtime_ns,
+                    current.st_ctime_ns,
+                )
+                if (
+                    after != during
+                    or path_after != after
+                    or not stat.S_ISREG(current.st_mode)
+                    or _is_reparse(current)
+                    or len(content) != finished.st_size
+                ):
+                    raise ProjectError(f"source path changed during capture: {name}")
         except FileNotFoundError as exc:
             raise ProjectError(f"tracked source path is missing: {name}") from exc
+        except OSError as exc:
+            raise ProjectError(
+                f"could not safely read source path: {name}: {exc}"
+            ) from exc
         mode = "100755" if info.st_mode & 0o111 else "100644"
         files.append(_captured_file(name, mode, content, object_format))
     return CapturedSource("working_tree", object_format, *commit_info, tuple(files))
@@ -300,6 +353,7 @@ def _git(
         result = subprocess.run(
             ["git", *args],
             cwd=root,
+            env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"},
             input=input_bytes,
             stdin=subprocess.DEVNULL if input_bytes is None else None,
             capture_output=True,
@@ -350,6 +404,7 @@ def _head_metadata(
     result = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD"],
         cwd=root,
+        env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"},
         stdin=subprocess.DEVNULL,
         capture_output=True,
         timeout=30,
@@ -378,7 +433,6 @@ def _parse_tree(
             oid = oid_bytes.decode("ascii")
         except (ValueError, UnicodeDecodeError) as exc:
             raise ProjectError("Git returned an invalid tree entry") from exc
-        _validate_relative_path(path)
         _validate_oid(oid, object_format)
         if mode not in {"100644", "100755"} or kind != "blob":
             raise ProjectError(f"unsupported Git source entry {mode} {kind}: {path}")

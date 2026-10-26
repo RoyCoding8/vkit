@@ -7,8 +7,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from .formal.policy import FormalComponent, VerificationRequest, WorkingTree
 from .inputs import InputSet, Snapshot, capture_working_tree
-from .job import RegisteredCheck, seal_job
+from .job import FormalGoal, RegisteredCheck, seal_job
 from .manifest import Manifest
 from .store import Store
 from .verifiers.spec import CheckSpec
@@ -21,6 +22,7 @@ class Freshness(str, enum.Enum):
     STALE = "stale"
     MISSING = "missing"
     NOT_APPROVED = "not_approved"
+    BLOCKED = "blocked"
 
 
 class Verdict(str, enum.Enum):
@@ -84,6 +86,58 @@ class CheckState:
         }
 
 
+@dataclass(frozen=True)
+class FormalState:
+    component: FormalComponent
+    key: str | None
+    freshness: Freshness
+    current: dict[str, Any] | None
+    last: dict[str, Any] | None
+    running: tuple[str, ...]
+    detail: str | None = None
+
+    @property
+    def required(self) -> bool:
+        return self.component.required
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "id": self.component.id,
+            "kind": "formal_goal",
+            "description": self.component.contract,
+            "category": "source_verification",
+            "assurance": "trusted_engine",
+            "scope": "whole working tree",
+            "required": self.required,
+            "state": self.freshness.value,
+            "key": self.key,
+            "policy_sha256": self.component.digest,
+            "package_sha256": self.component.package.sha256,
+            "current": self.current,
+            "last": self.last,
+            "running": list(self.running),
+            "detail": self.detail,
+        }
+
+
+def _resolve_execution(component: FormalComponent) -> dict[str, Any]:
+    from .formal.verus import resolve_execution
+
+    return resolve_execution(component)
+
+
+def _formal_approval_matches(
+    approved: dict[str, Any], component: FormalComponent, checker_sha256: str | None = None
+) -> bool:
+    record = approved.get(component.digest, {})
+    return (
+        record.get("kind") == "formal_policy"
+        and record.get("policy_sha256") == component.digest
+        and record.get("package_sha256") == component.package.sha256
+        and (checker_sha256 is None or record.get("checker_sha256") == checker_sha256)
+    )
+
+
 def check_states(
     manifest: Manifest, store: Store, snapshot: Snapshot
 ) -> list[CheckState]:
@@ -93,7 +147,9 @@ def check_states(
     running: dict[str, list[str]] = {}
     for record in store.runs(limit=200):
         if record["state"] in ("queued", "running"):
-            running.setdefault(record["key"], []).append(record["run_id"])
+            running.setdefault(record.get("job_id", record["key"]), []).append(
+                record["run_id"]
+            )
     states = []
     for check_id in sorted(manifest.checks):
         check = manifest.checks[check_id]
@@ -109,7 +165,12 @@ def check_states(
             backend = {"unavailable": str(exc)}
         key = seal_job(
             RegisteredCheck.resolve(
-                manifest, check_id, baselines.get(check_id), backend, inputs.to_json(), source
+                manifest,
+                check_id,
+                baselines.get(check_id),
+                backend,
+                inputs.to_json(),
+                source,
             ).payload()
         )["job_id"]
         current = store.evidence(check_id, key)
@@ -140,32 +201,135 @@ def check_states(
     return states
 
 
-def needs_run(state: CheckState) -> bool:
-    return state.freshness in (Freshness.STALE, Freshness.MISSING) and not state.running
+def formal_states(
+    manifest: Manifest, store: Store, snapshot: Snapshot
+) -> list[FormalState]:
+    approved = store.approved()
+    running: dict[str, list[str]] = {}
+    for record in store.runs(limit=200):
+        if (
+            record["state"] in ("queued", "running")
+            and record.get("subject", {}).get("kind") == "formal_goal"
+        ):
+            running.setdefault(record.get("job_id", record["key"]), []).append(
+                record["run_id"]
+            )
+    states = []
+    for component_id in sorted(manifest.components):
+        component = manifest.components[component_id]
+        last = store.latest_for("formal_goal", component_id)
+        if not _formal_approval_matches(approved, component):
+            states.append(
+                FormalState(
+                    component,
+                    None,
+                    Freshness.NOT_APPROVED,
+                    None,
+                    last,
+                    (),
+                    "formal policy and package are not accepted",
+                )
+            )
+            continue
+        try:
+            source = capture_working_tree(snapshot.project)
+            identity = _resolve_execution(component)
+            from .inputs import canonical_digest
+
+            checker_sha256 = canonical_digest(identity["semantic"])
+            if not _formal_approval_matches(approved, component, checker_sha256):
+                states.append(
+                    FormalState(
+                        component,
+                        None,
+                        Freshness.NOT_APPROVED,
+                        None,
+                        last,
+                        (),
+                        "formal checker identity is not accepted",
+                    )
+                )
+                continue
+            request = VerificationRequest(component.id, WorkingTree())
+            job = seal_job(FormalGoal(request, component, identity, source).payload())
+            key = job["job_id"]
+            current = store.evidence_for("formal_goal", component_id, key)
+            freshness = (
+                _FRESH[current["result"]]
+                if current is not None
+                else Freshness.STALE if last is not None else Freshness.MISSING
+            )
+            states.append(
+                FormalState(
+                    component,
+                    key,
+                    freshness,
+                    current,
+                    last,
+                    tuple(running.get(key, ())),
+                )
+            )
+        except Exception as exc:
+            states.append(
+                FormalState(
+                    component,
+                    None,
+                    Freshness.BLOCKED,
+                    None,
+                    last,
+                    (),
+                    f"{type(exc).__name__}: {exc}",
+                )
+            )
+    return states
 
 
-def gate(states: Iterable[CheckState]) -> dict[str, Any]:
+def needs_run(state: CheckState | FormalState) -> bool:
+    if state.freshness not in (Freshness.STALE, Freshness.MISSING) or state.running:
+        return False
+    return not isinstance(state, FormalState) or state.key is not None
+
+
+def gate(
+    states: Iterable[CheckState], formal: Iterable[FormalState] = ()
+) -> dict[str, Any]:
     states = list(states)
-    if not states:
+    formal = list(formal)
+    required = [state for state in formal if state.required]
+    if not states and not required:
         verdict, reason = Verdict.BLOCKED, "no checks are registered"
-    elif any(s.freshness is Freshness.FRESH_FAIL for s in states):
-        verdict, reason = Verdict.REJECTED, "a check failed against the current inputs"
-    elif all(s.freshness is Freshness.FRESH_PASS for s in states):
-        verdict, reason = Verdict.READY, "every check passed against the current inputs"
+    elif any(
+        state.freshness is Freshness.FRESH_FAIL
+        for state in (*states, *required)
+    ):
+        verdict, reason = Verdict.REJECTED, "a required check failed against the current inputs"
+    elif all(state.freshness is Freshness.FRESH_PASS for state in states) and all(
+        state.freshness is Freshness.FRESH_PASS for state in required
+    ):
+        verdict, reason = Verdict.READY, "every required check passed against the current inputs"
     else:
         verdict, reason = (
             Verdict.BLOCKED,
-            "some checks have no passing evidence for the current inputs",
+            "some required checks have no passing evidence for the current inputs",
         )
     return {
         "verdict": verdict.value,
         "reason": reason,
         "checks": [
             {
-                "id": s.check.id,
-                "state": s.freshness.value,
-                "run_id": (s.current or {}).get("run_id"),
+                "id": state.check.id,
+                "state": state.freshness.value,
+                "run_id": (state.current or {}).get("run_id"),
             }
-            for s in states
+            for state in states
+        ],
+        "formal": [
+            {
+                "id": state.component.id,
+                "state": state.freshness.value,
+                "required": state.required,
+                "run_id": (state.current or {}).get("run_id"),
+            }
+            for state in formal
         ],
     }

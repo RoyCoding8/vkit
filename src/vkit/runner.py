@@ -151,6 +151,8 @@ def prepare(
         ).payload()
     )
     record = _record_for_job(job, run_id or new_run_id())
+    record.update(category=check.evidence_kind().value, description=check.description,
+                  claim_id=check.claim_id, worktree=str(project.root))
     run_dir = store.run_dir(record["run_id"])
     run_dir.mkdir(parents=True, exist_ok=False)
     snapshot = run_dir / "snapshot"
@@ -207,6 +209,7 @@ def prepare_formal(
         raise ValueError("unsupported formal candidate source")
     job = seal_job(FormalGoal(request, component, execution_identity, source).payload())
     record = _record_for_job(job, run_id or new_run_id())
+    record.update(category="source_verification", description=component.contract, claim_id=component.id)
     run_dir = store.run_dir(record["run_id"])
     run_dir.mkdir(parents=True, exist_ok=False)
     snapshot = run_dir / "snapshot"
@@ -233,8 +236,12 @@ def prepare_retry(
         shutil.copytree(old_dir / "replay", run_dir / "replay")
     record = _record_for_job(job, run_id)
     old_record = store.record(source_run)
-    if old_record and old_record.get("replayed_from"):
-        record["replayed_from"] = old_record["replayed_from"]
+    if old_record:
+        for name in ("category", "description", "claim_id", "worktree"):
+            if name in old_record:
+                record[name] = old_record[name]
+        if old_record.get("replayed_from"):
+            record["replayed_from"] = old_record["replayed_from"]
     write_json(run_dir / "job.json", job)
     store.save(record)
     return record

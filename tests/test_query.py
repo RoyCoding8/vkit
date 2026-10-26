@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import io
+import json
+import sys
+import types
 import os
 from pathlib import Path
 
 import pytest
 
-from helpers import McpClient
+from helpers import DRIVER, McpClient, git, scenario_check, vkit
 from vkit.paths import Project
-from vkit.query import Context, run_view
+from vkit.query import Context, doctor, open_context, run_view, status
 from vkit.store import Store, write_json
+from vkit.formal.policy import VerificationRequest, WorkingTree
+from vkit.inputs import canonical_digest
+from vkit.outcome import Passed
+from vkit.runner import execute, prepare_formal
 
 
 @pytest.mark.parametrize("run_id", ["", ".", "..", "../foreign", "nested/run", r"nested\run", "/absolute", "C:relative"])
@@ -108,3 +115,137 @@ def test_run_view_does_not_open_a_non_regular_log(tmp_path, monkeypatch, kind):
     assert run_view(context, "example-run")["log"] == {
         "stream": "stdout", "offset": 0, "size": 0, "text": "",
     }
+
+def _install_formal_component(project, *, required=True, reserve="api::reserve"):
+    path = project / "verification" / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["formal"] = {"components": [{
+        "id": "allocation",
+        "package": {"id": "vkit.resource-ledger", "version": "0.1.0", "sha256": "a" * 64},
+        "contract": "ledger.source.v1",
+        "source": {"entry": "src/allocation.rs"},
+        "profile": "verus-linux-x86_64-v1",
+        "parameters": {"max_records": 7},
+        "bindings": {"new": "api::new", "reserve": reserve, "release": "api::release",
+                      "reserve_batch": "api::reserve_batch", "apply_command": "api::apply_command",
+                      "run_commands": "api::run_commands"},
+        "required": required,
+    }]}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _formal_identity():
+    return {"semantic": {"profile": "verus-linux-x86_64-v1", "image_id": "sha256:" + "b" * 64},
+            "paths": {"archive": "archive.zip"}}
+
+
+def _accept_formal(store, component, identity):
+    store.approve({component.digest: {"kind": "formal_policy", "policy_sha256": component.digest,
+                                    "package_sha256": component.package.sha256,
+                                    "checker_sha256": canonical_digest(identity["semantic"]),
+                                    "accepted_at": "now"}})
+
+
+def _complete_formal(context, monkeypatch, identity):
+    from vkit import state
+
+    monkeypatch.setattr(state, "_resolve_execution", lambda _: identity)
+    component = context.manifest.require_component("allocation")
+    _accept_formal(context.store, component, identity)
+    ledger = types.ModuleType("vkit.formal.ledger")
+    def verify_package(_):
+        return None
+    ledger.verify_package = verify_package
+    verus = types.ModuleType("vkit.formal.verus")
+    def execute_formal(actual, snapshot, run_dir, actual_identity, should_cancel):
+        assert actual == component
+        assert (snapshot / component.entry).read_bytes() == (context.project.root / component.entry).read_bytes()
+        assert actual_identity == identity and not should_cancel()
+        return Passed(()), {"obligations": {"satisfied": ["allocation:reserve"], "counterexamples": []}}
+    verus.execute_formal = execute_formal
+    monkeypatch.setitem(sys.modules, "vkit.formal.ledger", ledger)
+    monkeypatch.setitem(sys.modules, "vkit.formal.verus", verus)
+    record = prepare_formal(context.project, VerificationRequest(component.id, WorkingTree()),
+                            component, identity, store=context.store)
+    return execute(None, record["run_id"], store=context.store)
+
+
+def test_required_formal_goal_blocks_a_passing_registered_check_when_unapproved(make_project):
+    project = make_project({"ok.py": DRIVER + 'report([("ok", True, "ok")])\n',
+                            "src/allocation.rs": "pub fn reserve() {}\n"},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    assert vkit(project, "check", "run", "--check", "ok")[0] == 0
+    _install_formal_component(project)
+    result = status(open_context(project))
+    assert result["checks"][0]["state"] == "fresh_pass"
+    assert result["formal"][0]["state"] == "not_approved"
+    assert result["gate"]["verdict"] == "BLOCKED"
+    assert result["gate"]["formal"] == [{"id": "allocation", "state": "not_approved",
+                                            "required": True, "run_id": None}]
+
+
+def test_optional_formal_goal_does_not_block_a_passing_check(make_project):
+    project = make_project({"ok.py": DRIVER + 'report([("ok", True, "ok")])\n',
+                            "src/allocation.rs": "pub fn reserve() {}\n"},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    assert vkit(project, "check", "run", "--check", "ok")[0] == 0
+    _install_formal_component(project, required=False)
+    result = status(open_context(project))
+    assert result["formal"][0]["state"] == "not_approved"
+    assert result["gate"]["verdict"] == "READY"
+
+
+def test_formal_source_and_policy_changes_make_evidence_stale(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "src").mkdir()
+    (project / "src/allocation.rs").write_bytes(b"pub fn reserve() {}\r\n")
+    (project / "verification").mkdir()
+    (project / "verification/manifest.json").write_text(json.dumps({"schema_version": 3, "checks": []}), encoding="utf-8")
+    git(project, "init", "-q")
+    git(project, "add", ".")
+    git(project, "commit", "-qm", "initial")
+    _install_formal_component(project)
+    context = open_context(project)
+    identity = _formal_identity()
+    completed = _complete_formal(context, monkeypatch, identity)
+    assert completed["outcome"]["result"] == "PASS"
+    assert status(context)["formal"][0]["state"] == "fresh_pass"
+    (project / "src/allocation.rs").write_text("pub fn reserve() { }\n", encoding="utf-8")
+    assert status(context)["formal"][0]["state"] == "stale"
+    (project / "src/allocation.rs").write_bytes(b"pub fn reserve() {}\r\n")
+    _install_formal_component(project, reserve="api::reserve_v2")
+    context = open_context(project)
+    component = context.manifest.require_component("allocation")
+    _accept_formal(context.store, component, identity)
+    assert status(context)["formal"][0]["state"] == "stale"
+
+
+def test_formal_setup_failure_is_a_blocked_status_and_doctor_finding(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "src").mkdir()
+    (project / "src/allocation.rs").write_bytes(b"pub fn reserve() {}\r\n")
+    (project / "verification").mkdir()
+    (project / "verification/manifest.json").write_text(json.dumps({"schema_version": 3, "checks": []}), encoding="utf-8")
+    git(project, "init", "-q")
+    git(project, "add", ".")
+    git(project, "commit", "-qm", "initial")
+    _install_formal_component(project)
+    context = open_context(project)
+    identity = _formal_identity()
+    component = context.manifest.require_component("allocation")
+    _accept_formal(context.store, component, identity)
+    from vkit import state
+    def unavailable(_):
+        raise RuntimeError("Docker or Verus unavailable")
+    monkeypatch.setattr(state, "_resolve_execution", unavailable)
+    import vkit.query as query
+    monkeypatch.setattr(query, "_resolve_execution", unavailable)
+    result = status(context)
+    assert result["gate"]["verdict"] == "BLOCKED"
+    assert result["formal"][0]["state"] == "blocked"
+    checked = doctor(context)
+    assert checked["ok"] is False
+    assert checked["findings"][-1]["kind"] == "formal_goal"
+    assert "Docker or Verus unavailable" in checked["findings"][-1]["detail"]

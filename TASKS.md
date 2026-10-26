@@ -13,6 +13,8 @@
 
 Latest source checkpoint is `aba3eb9`: [CI 40237404026](https://github.com/RoyCoding8/vkit/actions/runs/40237404026) passed in 57 seconds, with 50 verified functions, eleven rejected controls, compilation and runtime assertions. Root matched the captured source to the committed Git blob and report digest. The retained Python suite passed with 168 tests and four skips after removing the retired machinery.
 
+The binding checkpoint, `0cb26cf`, passed [CI 40258535126](https://github.com/RoyCoding8/vkit/actions/runs/40258535126) in 49 seconds. All 22 checks matched, including twelve rejected controls. Root matched the ledger and both strong fixture sources to Git and their report digests, confirmed the expected client is byte-identical across strong/weak cases, and read the runtime success marker. This qualifies the import mechanism for the reserve API; complete component coverage and protected package authority remain open.
+
 These are source-verification results under the Verus/Rust/vstd/SMT trusted computing base. No independent kernel certificate, accepted product ledger claim or operational resource bound is established. The stronger `ledger.total.v1` target remains open. The comparison driver is `scripts/check_verus_ledger.py`; it is not a new public utility.
 
 ## Earlier infrastructure refactor

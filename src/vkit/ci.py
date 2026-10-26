@@ -20,9 +20,6 @@ from .paths import MANIFEST_RELATIVE, Project
 from .store import Store, write_json
 from .verifiers import dispatch
 
-_EMPIRICAL_KINDS = frozenset({"scenario", "pytest", "property", "node_test", "static"})
-
-
 @dataclass(frozen=True)
 class TargetAuthority:
     target_commit: str
@@ -49,6 +46,12 @@ def validate_authority(job: dict[str, Any], project: Project) -> Manifest:
         raise ValueError("target authority belongs to a different VKit installation")
     if job["source"]["kind"] != "git_commit":
         raise ValueError("target authority requires an exact Git candidate")
+    actual = TargetAuthority.capture(capture_git_commit(project, authority["target_commit"]))
+    if actual.to_json() != authority:
+        raise ValueError("target authority differs from its raw Git policy")
+    source = capture_git_commit(project, job["source"]["commit"])
+    if {**source.to_json(), "digest": source.digest} != job["source"]:
+        raise ValueError("authority candidate differs from its raw Git source")
     manifest = parse_manifest_data(authority["manifest"], project=project, origin="target policy")
     subject = job["subject"]
     if subject["kind"] == "formal_goal":
@@ -65,8 +68,8 @@ def validate_authority(job: dict[str, Any], project: Project) -> Manifest:
 def empirical_identity(check, image: str | None = None) -> dict[str, Any]:
     if platform.system() != "Linux":
         raise ValueError("sealed CI empirical execution requires Linux and Docker")
-    if check.kind.value not in _EMPIRICAL_KINDS:
-        raise ValueError(f"the sealed CI profile does not support {check.kind.value}; provide a supported runtime profile")
+    if check.kind.value != "scenario" or check.argv[:3] != ("{{python}}", "-I", "-c"):
+        raise ValueError("sealed CI requires a target-policy Python driver declared as {{python}} -I -c CODE; candidate-owned checkers are unsupported")
     image = image or os.environ.get("VKIT_CI_IMAGE", "")
     if not image.startswith("sha256:") or container.image_id(image) is None:
         raise ValueError("VKIT_CI_IMAGE must name an installed immutable Docker image ID")
@@ -77,8 +80,6 @@ def empirical_identity(check, image: str | None = None) -> dict[str, Any]:
 
 def execute_empirical(check, store: Store, record: dict[str, Any], job: dict[str, Any]):
     from .runner import _derive
-    from .schemas import _schema_dir
-
     run_dir = store.run_dir(record["run_id"])
     snapshot = run_dir / "snapshot"
     backend = job["backend"]
@@ -87,14 +88,10 @@ def execute_empirical(check, store: Store, record: dict[str, Any], job: dict[str
     output = run_dir / "check-output"
     output.mkdir()
     output.chmod(0o777)
-    runtime = Path(__file__).resolve().parent
     options = [*container.sealed_options(),
                "--workdir", "/source/" + check.cwd.relative_to(snapshot).as_posix(),
-               "--env", "PYTHONPATH=/trusted/runtime:/source",
                "--env", "PYTHONDONTWRITEBYTECODE=1",
                *container.mount(snapshot, "/source", True),
-               *container.mount(runtime, "/trusted/runtime/vkit", True),
-               *container.mount(Path(str(_schema_dir())), "/trusted/schemas", True),
                *container.mount(output, "/output", False)]
     result = container.run_container(
         image=backend["image_id"], run_id=f"{run_dir.name}-{uuid.uuid4().hex}",
@@ -112,6 +109,8 @@ def execute_empirical(check, store: Store, record: dict[str, Any], job: dict[str
     if artifact.exists() and (not artifact.is_file() or artifact.stat().st_size > 16 * 1024 * 1024):
         raise ValueError("empirical artifact must be a regular file of at most 16 MiB")
     outcome, reading = _derive(check, result.exit, artifact, None)
+    if outcome.to_json()["result"] == "PASS" and result.exit.code != 0:
+        outcome, reading = Blocked(BlockedReason.ARTIFACT_MALFORMED, "a passing protected check must exit zero"), None
     load_capture(job["source"], snapshot)
     if empirical_identity(check, backend["image_id"]) != backend:
         raise ValueError("sealed empirical execution identity changed during execution")
@@ -149,7 +148,7 @@ def run_gate(project: Project, candidate: str, target: str, output: Path) -> dic
             else:
                 record = prepare(project, manifest, id, store=store, source=source,
                                  authority=authority, backend=empirical_identity(manifest.require(id)))
-            record = execute(None, record["run_id"], store=store)
+            record = execute(project, record["run_id"], store=store)
             valid = validate_record(record, store.run_dir(record["run_id"]))
             valid = valid and record.get("authority") == authority and record["source"] == {
                 **source.to_json(), "digest": source.digest}

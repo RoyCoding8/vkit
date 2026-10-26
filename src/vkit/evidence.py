@@ -45,6 +45,22 @@ def _retained_path(root: Path, relative: str) -> Path:
     return current
 
 
+def retained_files(root: Path):
+    count, total = 0, 0
+    if is_link(root):
+        raise ValueError("evidence root is a filesystem link")
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        if is_link(path) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+            raise ValueError("evidence contains a link or special file")
+        if stat.S_ISREG(info.st_mode):
+            count += 1
+            total += info.st_size
+            if count > 10000 or total > 512 * 1024 * 1024:
+                raise ValueError("retained evidence exceeds 10000 files or 512 MiB")
+            yield path
+
+
 def policy_identity() -> dict[str, str]:
     package = Path(__file__).parent
     files = [
@@ -136,7 +152,7 @@ def assurance(check) -> str:
 
 def seal(record: dict[str, Any], directory: Path, check=None) -> None:
     artifacts = {}
-    for path in sorted(directory.rglob("*")):
+    for path in retained_files(directory):
         relative = path.relative_to(directory).as_posix()
         if (
             path.is_file()
@@ -203,6 +219,7 @@ def seal(record: dict[str, Any], directory: Path, check=None) -> None:
 def validate_record(record: dict[str, Any], directory: Path) -> bool:
     """Local state is trusted; imported success flags are never sufficient for replay."""
     try:
+        list(retained_files(directory))
         link = record["receipt"]
         if (
             link["path"] != "receipt.json"
@@ -321,6 +338,7 @@ def export(store, run_id: str, destination: Path) -> dict[str, Any]:
     shutil.copytree(
         store.run_dir(run_id),
         destination,
+        symlinks=True,
         ignore=shutil.ignore_patterns("lock", "cancel", "worker.log", "worker.json"),
     )
     return {

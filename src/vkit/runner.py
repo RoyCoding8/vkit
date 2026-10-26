@@ -340,7 +340,9 @@ def execute(project: Project | None, run_id: str, *, store: Store) -> dict[str, 
         if "authority" in job:
             from .ci import validate_authority
 
-            validate_authority(job, Project(run_dir / "snapshot", store.root))
+            if project is None:
+                raise ValueError("target-policy execution requires its trusted host Git repository")
+            validate_authority(job, project)
         if record["subject"]["kind"] == "registered_check":
             if (job["check_digest"] != record["check_digest"]
                     or job["backend"] != record["backend"]

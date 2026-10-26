@@ -37,7 +37,7 @@ def _launch(
     project: Project | None, store: Store, record: dict[str, Any]
 ) -> dict[str, Any]:
     run_id = record["run_id"]
-    if record.get("subject", {}).get("kind") == "formal_goal":
+    if record.get("subject", {}).get("kind") == "formal_goal" and "authority" not in record:
         project = None
     options = hidden_window()
     if os.name == "nt":
@@ -209,7 +209,7 @@ def main() -> int:
         job = read_json(store.run_dir(args.run) / "job.json")
         project = (
             open_project(args.project)
-            if args.project and job["subject"]["kind"] == "registered_check"
+            if args.project and (job["subject"]["kind"] == "registered_check" or "authority" in job)
             else None
         )
         execute(project, args.run, store=store)

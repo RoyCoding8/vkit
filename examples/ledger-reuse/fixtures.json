@@ -1,0 +1,29 @@
+[
+  {
+    "id": "quota-admission",
+    "namespace": "quota_api",
+    "max_records": 3,
+    "capacity": 10,
+    "commands": [
+      {"reserve": [101, 11, 6], "expected": "Response::Reserved(Ok(()))"},
+      {"reserve": [102, 12, 5], "expected": "Response::Reserved(Err(LedgerError::CapacityExceeded))"},
+      {"release": [101, 99], "expected": "Response::Released(Err(LedgerError::OwnerMismatch))"},
+      {"release": [101, 11], "expected": "Response::Released(Ok(6))"},
+      {"reserve": [102, 12, 5], "expected": "Response::Reserved(Ok(()))"}
+    ]
+  },
+  {
+    "id": "worker-slot-reservations",
+    "namespace": "worker_api",
+    "max_records": 5,
+    "capacity": 2,
+    "commands": [
+      {"reserve": [501, 21, 1], "expected": "Response::Reserved(Ok(()))"},
+      {"reserve": [502, 22, 1], "expected": "Response::Reserved(Ok(()))"},
+      {"reserve": [503, 23, 1], "expected": "Response::Reserved(Err(LedgerError::CapacityExceeded))"},
+      {"release": [501, 22], "expected": "Response::Released(Err(LedgerError::OwnerMismatch))"},
+      {"release": [501, 21], "expected": "Response::Released(Ok(1))"},
+      {"reserve": [503, 23, 1], "expected": "Response::Reserved(Ok(()))"}
+    ]
+  }
+]

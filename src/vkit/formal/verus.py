@@ -235,7 +235,7 @@ def resolve_execution(component: FormalComponent) -> dict[str, Any]:
     }
 
 
-_CONTAINER_SCRIPT = """import hashlib, os, shutil, signal, subprocess, sys, json, re
+_CONTAINER_SCRIPT = """import hashlib, os, shutil, signal, subprocess, sys, json, re, time
 plan = json.loads(sys.argv[1])
 shutil.copyfile(plan['source'], '/output/candidate_api.rs')
 digestor = hashlib.sha256()
@@ -246,7 +246,9 @@ digest = digestor.hexdigest()
 if digest != plan['source_sha256']:
     print('source_mismatch', file=sys.stderr)
     sys.exit(13)
+timings = []
 for phase in plan['phases']:
+    started = time.monotonic()
     try:
         with open(phase['log'], 'wb') as stream:
             process = subprocess.Popen(phase['argv'], cwd='/output', stdout=stream,
@@ -271,6 +273,9 @@ for phase in plan['phases']:
     if phase.get('verified') and not re.search(r'verification results:: [1-9][0-9]* verified, 0 errors', text):
         print('formal_obligation:' + phase['id'], file=sys.stderr)
         sys.exit(12)
+    timings.append({'phase': phase['id'], 'seconds': time.monotonic() - started})
+with open('/output/timings.json', 'w') as output:
+    json.dump(timings, output)
 sys.exit(0)
 """
 

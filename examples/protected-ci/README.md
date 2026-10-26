@@ -14,7 +14,7 @@ The command exits successfully only when every target check and required formal 
 | --- | --- |
 | Trusted installation | Install a reviewed, pinned VKit wheel at `/opt/vkit` before checking candidate code. Never install VKit or its dependencies from the candidate. |
 | Verifier assets | Provision the official pinned Verus archive and extracted tools, Rust/Cargo homes and immutable Docker image IDs. The executor inventories their actual bytes. |
-| Empirical runtime | Set `VKIT_CI_IMAGE` to an installed `sha256:` image ID containing the runtimes required by the target's scenario, pytest, property, Node or static checks. Missing runtimes block. The initial sealed profile blocks Lean, TLC and external-check definitions. Their local routes remain available. |
+| Empirical runtime | Set `VKIT_CI_IMAGE` to an installed `sha256:` image ID containing `/usr/bin/python3`. The initial sealed profile accepts scenario commands shaped as `{{python}} -I -c CODE ...`, with driver code fixed in target policy. It blocks candidate-owned checker scripts and other registered-check profiles. Their local routes remain available. |
 | Execution | Use a disposable Linux x86_64 runner with Docker. Only the check command receives read-only candidate/runtime mounts and its own writable output. Host authority, credentials, job files and receipt publication stay outside. |
 | Policy governance | Protect the host workflow, VKit installation, runner configuration and changes to target policy. Configure the host's required check or organization-required workflow so a candidate cannot replace or remove it. |
 

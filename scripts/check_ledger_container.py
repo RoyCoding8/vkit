@@ -91,6 +91,9 @@ def cleanup_run(run_id: str, output: Path | None = None) -> list[str]:
         descriptors = list((output / "product/durable/project/.git/vkit/runs").glob("*/container-control/descriptor.json"))
         descriptors += list((output / "product/recovery/runs").glob("*/container-control/descriptor.json"))
         descriptors += list((output / "product/gate").glob("*/store/runs/*/container-control/descriptor.json"))
+        descriptors += list((output / "product/reuse").glob("*/project/.git/vkit/runs/*/container-control/descriptor.json"))
+        descriptors += list((output / "product/reuse").glob("*/runtime/container-control/descriptor.json"))
+        descriptors += list((output / "product/reuse/overhead").glob("direct-*/container-control/descriptor.json"))
         for descriptor in descriptors:
             recovery = recover_attempt(descriptor.parent.parent)
             if recovery["status"] == "blocked":
@@ -221,8 +224,11 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
     durable = run_durable_probe(directory / "durable", source, execution_identity)
     recovery = run_recovery_probe(directory / "recovery", image_id, run_id)
     gate = run_gate_probe(directory / "gate", source, image_id)
+    from qualify_ledger_reuse import qualify
+
+    reuse = qualify(directory / "reuse", source, execution_identity)
     return {"passed": True, "image_id": image_id, "cases": cases,
-            "durable": durable, "recovery": recovery, "gate": gate}
+            "durable": durable, "recovery": recovery, "gate": gate, "reuse": reuse}
 
 
 def run_gate_probe(directory: Path, source: str, image_id: str) -> dict:
@@ -256,11 +262,10 @@ else:
 pathlib.Path(sys.argv[1]).write_text(json.dumps({"schema_version":1,"scenarios":[
     {"id":"isolated","result":"PASS","observation":"candidate read-only; network and host secrets absent"}]}))
 '''
-    (root / "driver.py").write_text(driver, encoding="utf-8")
     check = {"id": "isolation", "kind": "scenario", "timeout_seconds": 30,
-             "artifact": "result.json", "command": ["{{python}}", "driver.py", "{{run_dir}}/result.json"],
-             "required_scenarios": ["isolated"], "inputs": ["driver.py", "candidate_api.rs"],
-             "subject": {"paths": ["driver.py", "candidate_api.rs"], "digest": None}, "claim_id": "isolation"}
+             "artifact": "result.json", "command": ["{{python}}", "-I", "-c", driver, "{{run_dir}}/result.json"],
+             "required_scenarios": ["isolated"], "inputs": ["candidate_api.rs"],
+             "subject": {"paths": ["candidate_api.rs"], "digest": None}, "claim_id": "isolation"}
     (root / "verification/manifest.json").write_text(json.dumps({
         "schema_version": 3, "checks": [check],
         "formal": {"components": [product_component(3).to_json()]}}), encoding="utf-8")

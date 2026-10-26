@@ -75,7 +75,7 @@ Use the pinned vstd sequence and finite-set laws rather than another map library
 4. Relate that key sequence to `active_ids` as a permutation. Reuse `lemma_fold_left_permutation`, the set-to-sequence laws and addition commutativity to show enumeration independence.
 5. Prove slot sum equals this map fold, then expose `ledger.view().used == map_used(ledger.reservations())` for valid states. Check initialization, insertion, removal and preservation through batches/traces.
 
-After these initial-profile properties and binding checks pass, delete the active `Model.v` and `ModelAudit.v`. Their broader Rocq statements and kernel evidence remain recoverable in Git and retained artifact 28. They are not a second active backend. No cross-language equivalence theorem is claimed.
+The initial-profile properties and binding checks passed, and the active `Model.v` and `ModelAudit.v` have been deleted. Their broader Rocq statements and kernel evidence remain recoverable in Git and retained artifact 28. No cross-language equivalence theorem is claimed.
 
 `ledger.total.v1` remains future work. Its stronger requirement permits a correct normal return or a constructor-justified resource abort within a proved operational bound, plus a resource-sufficient normal-execution witness. The owner's resource-abort decision remains recorded. Source-profile evidence cannot discharge that contract, and this research does not block delivery of the separately named source profile.
 

@@ -8,6 +8,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -87,8 +88,9 @@ def cleanup_run(run_id: str, output: Path | None = None) -> list[str]:
     if output is not None and output.is_dir():
         from vkit.container import recover_attempt
 
-        runs = output / "product/durable/project/.git/vkit/runs"
-        for descriptor in runs.glob("*/container-control/descriptor.json"):
+        descriptors = list((output / "product/durable/project/.git/vkit/runs").glob("*/container-control/descriptor.json"))
+        descriptors += list((output / "product/recovery/runs").glob("*/container-control/descriptor.json"))
+        for descriptor in descriptors:
             recovery = recover_attempt(descriptor.parent.parent)
             if recovery["status"] == "blocked":
                 raise RuntimeError(f"durable container cleanup failed: {recovery}")
@@ -216,7 +218,60 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
     if not isinstance(weakened, Blocked) or weakened.reason != BlockedReason.FORMAL_OBLIGATION:
         raise RuntimeError(f"product Verus negative probe did not block on the obligation: {weakened.to_json()}")
     durable = run_durable_probe(directory / "durable", source, execution_identity)
-    return {"passed": True, "image_id": image_id, "cases": cases, "durable": durable}
+    recovery = run_recovery_probe(directory / "recovery", image_id, run_id)
+    return {"passed": True, "image_id": image_id, "cases": cases, "durable": durable, "recovery": recovery}
+
+
+def run_recovery_probe(directory: Path, image_id: str, qualification_id: str) -> dict:
+    from vkit.container import control_path, recover_attempt
+    from vkit.store import Store
+
+    directory.mkdir()
+    attempt = qualification_id + "-recovery"
+    store = Store(directory)
+    run_dir = store.run_dir(attempt)
+    program = """import sys
+from pathlib import Path
+from vkit.container import run_container
+from vkit.store import Store
+store, attempt, image = Store(Path(sys.argv[1])), sys.argv[2], sys.argv[3]
+with store.hold(attempt):
+    store.save({'run_id': attempt, 'state': 'running'})
+    run_container(image=image, run_id=attempt+'-owned', options=['--network=none', '--read-only'],
+                  command=['sleep', '60'], run_dir=store.run_dir(attempt),
+                  timeout_seconds=90, should_cancel=lambda: False)
+"""
+    with (directory / "worker.log").open("wb") as log:
+        worker = subprocess.Popen([sys.executable, "-c", program, str(directory), attempt, image_id],
+                                  stdout=log, stderr=subprocess.STDOUT)
+        try:
+            cid_path = control_path(run_dir).parent / "container.cid"
+            deadline = time.monotonic() + 30
+            cid = None
+            while time.monotonic() < deadline and worker.poll() is None:
+                if cid_path.is_file():
+                    cid = cid_path.read_text(encoding="ascii").strip()
+                    running = run(["docker", "inspect", "--format", "{{.State.Running}}", cid], check=False)
+                    if running.returncode == 0 and running.stdout.strip() == "true":
+                        break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("recovery probe did not reach a running container")
+            worker.kill()
+            worker.wait(timeout=10)
+            record = store.record(attempt)
+            if (record["state"] != "interrupted" or record["container_cleanup"]["status"] != "removed"
+                    or run(["docker", "inspect", cid], check=False).returncode == 0):
+                raise RuntimeError(f"killed-worker container recovery failed: {record}")
+            return {"passed": True, "container_id": cid, "state": record["state"],
+                    "cleanup": record["container_cleanup"]}
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+                worker.wait(timeout=10)
+            cleanup = recover_attempt(run_dir)
+            if cleanup["status"] == "blocked":
+                raise RuntimeError(f"recovery probe cleanup failed: {cleanup}")
 
 
 def run_durable_probe(directory: Path, source: str, identity: dict) -> dict:

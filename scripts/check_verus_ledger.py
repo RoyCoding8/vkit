@@ -106,48 +106,106 @@ def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
     fixtures = ROOT / "examples/verus-qualification"
     candidate = (fixtures / "candidate_api.rs").read_text(encoding="utf-8")
     expected = (fixtures / "expected.rs").read_text(encoding="utf-8")
-    report["binding_scope"] = "Imported reserve contract over the fixed checked ledger library; not arbitrary source or representation correspondence"
+    report["binding_scope"] = "Six required_api bindings over the fixed checked ledger library; not arbitrary source or representation correspondence"
     report["binding_expected_sha256"] = digest(expected.encode())
     flags = ["--no-cheating", "--no-external-by-default", "--num-threads", "2"]
 
-    def verify(name: str, args: list[str], cwd: Path, *, reject: bool = False) -> bool:
+    def verify(name: str, args: list[str], cwd: Path, *, missing_symbol: str | None = None) -> dict:
         log_path = out / f"{name}.log"
         result = run([str(exe), "--crate-type=lib", *args, *flags], log_path, cwd)
         log = log_path.read_text(encoding="utf-8", errors="replace")
-        matched = bool(re.search(
-            r"verification results:: \d+ verified, [1-9]\d* errors" if reject
-            else r"verification results:: [1-9]\d* verified, 0 errors", log))
-        passed = matched and (result["returncode"] not in {None, 0} if reject
-                              else result["returncode"] == 0)
-        report["checks"].append({"name": name, "rejected" if reject else "verified": passed, **result})
-        return passed
+        proof_rejection = result["returncode"] not in {None, 0} and bool(re.search(
+            r"verification results:: \d+ verified, [1-9]\d* errors", log))
+        symbol_rejection = (missing_symbol is not None and result["returncode"] not in {None, 0}
+                            and not proof_rejection and "candidate_api" in log
+                            and missing_symbol.lower() in log.lower())
+        verified = result["returncode"] == 0 and bool(re.search(
+            r"verification results:: [1-9]\d* verified, 0 errors", log))
+        return {"result": result, "log": log, "verified": verified,
+                "proof_rejection": proof_rejection, "symbol_rejection": symbol_rejection}
 
-    if not verify("binding_ledger_export", [str(captured), "--export", str(root / "ledger.vir"),
-                                           "--compile"], root):
-        return False
-    imports = ["--import", f"ledger={root / 'ledger.vir'}",
-               "--extern", f"ledger={root / 'libledger.rlib'}", "-L", str(root)]
-    success = True
-    for variant in ("strong", "weak"):
-        directory = root / variant
-        directory.mkdir()
+    def record(name: str, outcome: dict) -> None:
+        report["checks"].append({"name": name, **outcome["result"],
+                                 "verified": outcome["verified"]})
+
+    def function_bounds(text: str, api: str) -> tuple[int, int]:
+        start = text.index(f"    pub fn {api}<")
+        next_function = text.find("\n    pub fn ", start + 1)
+        end = next_function if next_function >= 0 else text.rfind("\n}")
+        return start, end
+
+    def changed_candidate(api: str, mutation: str) -> str:
         text = candidate
-        if variant == "weak":
-            prefix, contract = candidate.split("        ensures\n", 1)
-            _, body = contract.split("    {\n", 1)
-            text = prefix + "        ensures true,\n    {\n" + body
+        start, end = function_bounds(text, api)
+        block = text[start:end]
+        signature_end = block.index("\n    {")
+        contract = block[:signature_end]
+        if mutation == "weak_contract":
+            contract, count = re.subn(
+                r"        ensures\n.*", "        ensures true,",
+                contract, count=1, flags=re.DOTALL,
+            )
+        elif mutation == "stronger_precondition":
+            contract, count = re.subn(
+                r"        requires [^\n]+,", "        requires false,", contract, count=1,
+            )
+        elif mutation == "missing_symbol":
+            return text[:start] + text[end:]
+        else:
+            raise ValueError(f"unknown binding mutation: {mutation}")
+        if count != 1:
+            raise ValueError(f"could not mutate {api} for {mutation}")
+        return text[:start] + contract + block[signature_end:end] + text[end:]
+
+    def export_and_claim(name: str, source: str, *, expected_rejection: str | None = None) -> bool:
+        directory = root / name
+        directory.mkdir()
         candidate_path = directory / "candidate_api.rs"
-        candidate_path.write_text(text, encoding="utf-8", newline="\n")
+        candidate_path.write_text(source, encoding="utf-8", newline="\n")
         expected_path = directory / "expected.rs"
         expected_path.write_text(expected, encoding="utf-8", newline="\n")
-        report[f"binding_{variant}_candidate_sha256"] = digest(candidate_path.read_bytes())
-        if not verify(f"binding_{variant}_export", [str(candidate_path), *imports, "--export",
-                                                  str(directory / "candidate_api.vir"), "--compile"], directory):
+        report[f"{name}_candidate_sha256"] = digest(candidate_path.read_bytes())
+        export = verify(f"{name}_export", [str(candidate_path), *imports, "--export",
+                                             str(directory / "candidate_api.vir"), "--compile"], directory)
+        record(f"{name}_export", export)
+        if not export["verified"]:
             return False
         client = [str(expected_path), *imports,
                   "--import", f"candidate_api={directory / 'candidate_api.vir'}",
                   "--extern", f"candidate_api={directory / 'libcandidate_api.rlib'}", "-L", str(directory)]
-        success = verify(f"binding_{variant}_claim", client, directory, reject=variant == "weak") and success
+        claim = verify(f"{name}_claim", client, directory,
+                       missing_symbol=name[len("binding_"):-len("_missing_symbol")]
+                       if expected_rejection == "compile_missing_symbol" else None)
+        if expected_rejection is None:
+            record(f"{name}_claim", claim)
+            return claim["verified"]
+        observed = ("proof" if claim["proof_rejection"] else
+                    "compile_missing_symbol" if claim["symbol_rejection"] else "unexpected")
+        accepted = observed == expected_rejection
+        report["checks"].append({
+            "name": f"{name}_claim",
+            "expected_rejection": expected_rejection,
+            "observed_rejection": observed,
+            "rejected": accepted,
+            **claim["result"],
+        })
+        return accepted
+
+    ledger = verify("binding_ledger_export", [str(captured), "--export", str(root / "ledger.vir"),
+                                              "--compile"], root)
+    record("binding_ledger_export", ledger)
+    if not ledger["verified"]:
+        return False
+    imports = ["--import", f"ledger={root / 'ledger.vir'}",
+               "--extern", f"ledger={root / 'libledger.rlib'}", "-L", str(root)]
+    success = export_and_claim("binding_positive", candidate)
+    for api in ("new", "reserve", "release", "reserve_batch", "apply_command", "run_commands"):
+        for mutation, rejection in (("weak_contract", "proof"),
+                                    ("stronger_precondition", "proof"),
+                                    ("missing_symbol", "compile_missing_symbol")):
+            name = f"binding_{api}_{mutation}"
+            success = export_and_claim(name, changed_candidate(api, mutation),
+                                       expected_rejection=rejection) and success
     return success
 
 

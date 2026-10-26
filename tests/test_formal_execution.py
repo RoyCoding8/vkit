@@ -83,7 +83,6 @@ def _fixture(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(ledger, "verify_package", lambda _component: package)
     monkeypatch.setattr(ledger, "render_expected", lambda _component: "verus! {}\n")
-    monkeypatch.setattr(ledger, "obligation_ids", lambda _component: verus._OPERATIONS)
     monkeypatch.setattr(verus.platform, "system", lambda: "Linux")
     monkeypatch.setattr(verus.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(verus.container, "image_id", lambda image: image)
@@ -141,9 +140,11 @@ def test_executor_runs_all_required_phases_in_one_sealed_container(
     )
 
     assert type(outcome).__name__ == "Passed", outcome
-    assert len(outcome.scenarios) == 6
+    assert len(outcome.scenarios) == 7
     assert metadata["scope"] == "required_api"
-    assert metadata["obligations"] == list(verus._OPERATIONS)
+    assert metadata["obligations"] == ["ledger:ledger_map_accounting", "ledger:new", "ledger:reserve",
+                                       "ledger:release", "ledger:reserve_batch", "ledger:apply_command",
+                                       "ledger:run_commands"]
     assert metadata["container"]["removed"] is True
     options = observed["options"]
     assert "--network=none" in options and "--read-only" in options

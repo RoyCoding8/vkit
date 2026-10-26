@@ -25,14 +25,6 @@ RUST_VERSION = "1.99.1"
 Z3_VERSION = "4.16.0"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _VERIFICATION = re.compile(r"verification results:: [1-9][0-9]* verified, 0 errors")
-_OPERATIONS = (
-    "new",
-    "reserve",
-    "release",
-    "reserve_batch",
-    "apply_command",
-    "run_commands",
-)
 _STRICT = ("--no-cheating", "--no-external-by-default", "--num-threads", "2")
 _DIAGNOSTICS = ("-V", "axiom-usage-info", "--log", "call-graph")
 
@@ -231,8 +223,6 @@ def resolve_execution(component: FormalComponent) -> dict[str, Any]:
                 "output_file_size_limit_bytes": 2 * 1024**3,
             },
         }
-    except ExecutionSetupError:
-        raise
     except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
         raise ExecutionSetupError(BlockedReason.ARTIFACT_MALFORMED, str(exc)) from exc
     return {
@@ -282,7 +272,6 @@ sys.exit(0)
 
 
 def _verus_phases(
-    component: FormalComponent,
     package_root: str,
     source: str,
     expected: str,
@@ -425,13 +414,6 @@ def execute_formal(
             ), {}
         source_sha256 = _sha256(source_path)
         obligations = tuple(ledger.obligation_ids(component))
-        if len(obligations) != len(_OPERATIONS) or len(set(obligations)) != len(
-            _OPERATIONS
-        ):
-            return Blocked(
-                BlockedReason.ARTIFACT_MALFORMED,
-                "the accepted package did not resolve all six unique operations",
-            ), {}
         run_dir.mkdir(parents=True, exist_ok=True)
         output = run_dir / "formal-output"
         if output.exists():
@@ -451,7 +433,6 @@ def execute_formal(
         package_root = Path(package.root).resolve(strict=True)
         toolchain = str(current["semantic"]["verus"]["version"]["toolchain"]).split()[0]
         phases = _verus_phases(
-            component,
             "/trusted/package",
             "/output/candidate_api.rs",
             "/trusted/rendered/expected.rs",

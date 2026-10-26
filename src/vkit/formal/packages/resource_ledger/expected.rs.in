@@ -3,7 +3,7 @@ extern crate ledger;
 extern crate candidate_api;
 
 verus! {
-    const N: usize = __VKIT_RECORDS__;
+    pub const N: usize = __VKIT_RECORDS__;
     pub fn expected_new(
         slots: [Option<ledger::ledger_api::Entry>; N],
         capacity: u32,

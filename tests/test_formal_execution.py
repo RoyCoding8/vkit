@@ -3,12 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from vkit.formal import verus
+from vkit.formal import ledger, verus
 from vkit.formal.policy import FormalComponent, LedgerBindings, PackageIdentity
 from vkit.proc import Exit
 
@@ -82,12 +81,9 @@ def _fixture(tmp_path: Path, monkeypatch):
         ),
         required=True,
     )
-    ledger = SimpleNamespace(
-        verify_package=lambda _component: package,
-        render_expected=lambda _component: "verus! {}\n",
-        obligation_ids=lambda _component: verus._OPERATIONS,
-    )
-    monkeypatch.setitem(sys.modules, "vkit.formal.ledger", ledger)
+    monkeypatch.setattr(ledger, "verify_package", lambda _component: package)
+    monkeypatch.setattr(ledger, "render_expected", lambda _component: "verus! {}\n")
+    monkeypatch.setattr(ledger, "obligation_ids", lambda _component: verus._OPERATIONS)
     monkeypatch.setattr(verus.platform, "system", lambda: "Linux")
     monkeypatch.setattr(verus.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(verus.container, "image_id", lambda image: image)

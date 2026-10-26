@@ -98,9 +98,12 @@ jobs:
         env:
           IMAGE_TAG: vkit-ledger-qualification-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          python3 scripts/check_ledger_container.py \
+          PYTHON=python3
+          if [ -x "$RUNNER_TEMP/vkit-venv/bin/python" ]; then PYTHON="$RUNNER_TEMP/vkit-venv/bin/python"; fi
+          "$PYTHON" scripts/check_ledger_container.py \
             --image "$IMAGE_TAG" \
-            --cleanup-run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            --cleanup-run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output "$RUNNER_TEMP/verus-ledger-evidence"
       - name: Retain the comparison evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

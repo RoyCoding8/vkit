@@ -63,6 +63,7 @@ def policy_identity() -> dict[str, str]:
             "schemas.py",
             "budgets.py",
             "claimkind.py",
+            "container.py",
         )
     ]
     files += [

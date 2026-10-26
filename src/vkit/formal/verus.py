@@ -9,6 +9,7 @@ import platform
 import re
 import stat
 import subprocess
+import sys
 import uuid
 import zipfile
 from collections.abc import Callable
@@ -199,6 +200,8 @@ def resolve_execution(component: FormalComponent) -> dict[str, Any]:
         if not (cargo_home / "bin" / "rustup").is_file():
             raise ValueError("configured Cargo home is missing the Rustup executable")
         package_identity = _package_identity(package)
+        from ..evidence import policy_identity
+
         semantic = {
             "protocol": 1,
             "profile": PROFILE,
@@ -210,6 +213,7 @@ def resolve_execution(component: FormalComponent) -> dict[str, Any]:
             "cargo_home": cargo_identity,
             "runtime_versions": {"rustc": RUST_VERSION, "z3": Z3_VERSION},
             "strict_flags": list(_STRICT),
+            "orchestrator": {"implementation": policy_identity(), "python": _file_identity(Path(sys.executable).resolve())},
             "execution": {
                 "network": "none",
                 "read_only_root": True,

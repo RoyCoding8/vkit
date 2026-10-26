@@ -37,6 +37,8 @@ def _launch(
     project: Project | None, store: Store, record: dict[str, Any]
 ) -> dict[str, Any]:
     run_id = record["run_id"]
+    if record.get("subject", {}).get("kind") == "formal_goal":
+        project = None
     options = hidden_window()
     if os.name == "nt":
         options["creationflags"] |= (

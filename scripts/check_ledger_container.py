@@ -79,11 +79,19 @@ def remove_owned(run_id: str) -> list[str]:
     return removed
 
 
-def cleanup_run(run_id: str) -> list[str]:
+def cleanup_run(run_id: str, output: Path | None = None) -> list[str]:
     removed = []
     for suffix in ("", "-probe", "-network", "-timeout", "-crash"):
         removed.extend(remove_owned(run_id + suffix))
     removed.extend(remove_formal_owned(f"{run_id}-product"))
+    if output is not None and output.is_dir():
+        from vkit.container import recover_attempt
+
+        runs = output / "product/durable/project/.git/vkit/runs"
+        for descriptor in runs.glob("*/container-control/descriptor.json"):
+            recovery = recover_attempt(descriptor.parent.parent)
+            if recovery["status"] == "blocked":
+                raise RuntimeError(f"durable container cleanup failed: {recovery}")
     return removed
 
 
@@ -207,7 +215,61 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
     weakened, _ = execute_case("weakened_reserve", 3, weaken_reserve_contract(source))
     if not isinstance(weakened, Blocked) or weakened.reason != BlockedReason.FORMAL_OBLIGATION:
         raise RuntimeError(f"product Verus negative probe did not block on the obligation: {weakened.to_json()}")
-    return {"passed": True, "image_id": image_id, "cases": cases}
+    durable = run_durable_probe(directory / "durable", source, execution_identity)
+    return {"passed": True, "image_id": image_id, "cases": cases, "durable": durable}
+
+
+def run_durable_probe(directory: Path, source: str, identity: dict) -> dict:
+    from vkit import evidence, jobs
+    from vkit.formal.policy import GitCommit, VerificationRequest
+    from vkit.formal.service import resolve_commit
+    from vkit.inputs import canonical_digest
+    from vkit.manifest import parse_manifest
+    from vkit.paths import open_project
+    from vkit.store import Store, now
+
+    root = directory / "project"
+    (root / "verification").mkdir(parents=True)
+    (root / "candidate_api.rs").write_text(source, encoding="utf-8", newline="\n")
+    component = product_component(3)
+    (root / "verification/manifest.json").write_text(json.dumps({
+        "schema_version": 3, "checks": [], "formal": {"components": [component.to_json()]}}), encoding="utf-8")
+    for arguments in (["init", "-q"], ["add", "."],
+                      ["-c", "user.name=VKit qualification", "-c", "user.email=ci@vkit.invalid", "commit", "-qm", "candidate"]):
+        run(["git", "-C", str(root), *arguments])
+    project = open_project(root)
+    manifest, store = parse_manifest(project), Store.of(project)
+    oid = resolve_commit(project, "HEAD")
+    store.approve({component.digest: {"kind": "formal_policy", "policy_sha256": component.digest,
+                                     "package_sha256": component.package.sha256,
+                                     "checker_sha256": canonical_digest(identity["semantic"]), "accepted_at": now()}})
+    request = VerificationRequest(component.id, GitCommit(oid))
+    submitted = jobs.submit_formal(project, request, component, identity, store=store)
+    first = jobs.wait(store, submitted["run_id"], 900)
+    bundle = directory / "bundle"
+    evidence.export(store, first["run_id"], bundle)
+    (root / "candidate_api.rs").write_text("deliberately broken live checkout", encoding="utf-8")
+    retried = jobs.wait(store, jobs.retry(project, first["run_id"], store=store)["run_id"], 900)
+    replayed = jobs.wait(store, jobs.replay(project, manifest, bundle, store=store)["run_id"], 900)
+    for record in (first, retried, replayed):
+        if (record["state"] != "done" or record["outcome"]["result"] != "PASS"
+                or record["job_id"] != first["job_id"]
+                or record["assurance"] != "trusted_engine" or record["method"] != "verus_source"
+                or not evidence.validate_record(record, store.run_dir(record["run_id"]))):
+            raise RuntimeError(f"durable product verification failed: {record}")
+    if len({record["run_id"] for record in (first, retried, replayed)}) != 3:
+        raise RuntimeError("retry and replay did not create distinct attempts")
+    vir = bundle / "formal-output/candidate_api.vir"
+    vir.write_bytes(vir.read_bytes() + b"tampered")
+    try:
+        jobs.replay(project, manifest, bundle, store=store)
+    except ValueError:
+        tamper_rejected = True
+    else:
+        raise RuntimeError("replay accepted changed verifier artifacts")
+    return {"job_id": first["job_id"], "candidate": oid, "tamper_rejected": tamper_rejected,
+            "attempts": [{"run_id": record["run_id"], "receipt": record["receipt"]}
+                         for record in (first, retried, replayed)]}
 
 
 def container_command(image_id: str, base: list[str], trusted: Path, source: Path, archive: Path,
@@ -340,7 +402,7 @@ def run_controls(image_id: str, run_id: str, cid_dir: Path, trusted: Path, sourc
 
 
 def cleanup(args: argparse.Namespace) -> int:
-    removed = cleanup_run(args.cleanup_run_id)
+    removed = cleanup_run(args.cleanup_run_id, args.output)
     print(json.dumps({"run_id": args.cleanup_run_id, "removed": removed}))
     return 0
 
@@ -439,15 +501,18 @@ def main() -> int:
         z3_text = (candidate_output / "evidence" / z3_log).read_text(encoding="utf-8", errors="replace")
         report["checks"]["rust_1_99_1"] = "rustc 1.99.1" in rust_text
         report["checks"]["z3_4_16_0"] = "Z3 version 4.16.0" in z3_text
+        report["product"] = run_product_probe(image_id, run_id, args.archive, args.verus_root,
+                                               args.rustup_home, args.cargo_home, args.output / "product")
+        report["checks"]["product_passed"] = report["product"]["passed"]
         report["qualification_passed"] = all(report["checks"][name] for name in
-                                              ("comparison_passed", "rust_1_99_1", "z3_4_16_0"))
+                                              ("comparison_passed", "rust_1_99_1", "z3_4_16_0", "product_passed"))
     except (OSError, RuntimeError, ValueError, KeyError, StopIteration,
             subprocess.SubprocessError, KeyboardInterrupt) as error:
         report["error"] = str(error)
         report["qualification_passed"] = False
     finally:
         try:
-            report["cleanup"] = {"removed": cleanup_run(run_id), "remaining": False}
+            report["cleanup"] = {"removed": cleanup_run(run_id, args.output), "remaining": False}
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             report["cleanup"] = {"remaining": True, "error": str(error)}
             report["qualification_passed"] = False

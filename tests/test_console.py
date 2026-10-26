@@ -9,7 +9,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from helpers import DRIVER, scenario_check, vkit
+from helpers import DRIVER, NO_WINDOW, scenario_check, vkit
 from vkit.console import bind
 from vkit.paths import open_project
 from vkit.settings import launcher_settings_path
@@ -154,7 +154,7 @@ def test_console_settings_default_save_restart_and_git_status(make_project):
         assert config["settings"] == saved
         assert config["settings_path"] == str(settings_path)
     status = subprocess.run(["git", "-C", str(project), "status", "--short"], capture_output=True,
-                            text=True, check=True)
+                            text=True, check=True, **NO_WINDOW)
     assert status.stdout == ""
 
 
@@ -183,7 +183,7 @@ def test_launch_defaults_save_restart_manual_edit_and_csrf(make_project):
     with _serve(project) as port:
         assert _config(port)["launcher_settings"] == edited
     assert subprocess.run(["git", "-C", str(project), "status", "--short"],
-                          capture_output=True, text=True, check=True).stdout == ""
+                          capture_output=True, text=True, check=True, **NO_WINDOW).stdout == ""
 
 
 def test_repository_category_settings_filter_calls_and_persist_mcp_configuration(make_project):
@@ -220,7 +220,7 @@ def test_repository_category_settings_filter_calls_and_persist_mcp_configuration
 def test_agent_configuration_and_settings_preserve_git_metadata(make_project):
     project = make_project({"README.md": "connection\n"}, [], accept=False)
     subprocess.run(["git", "-C", str(project), "remote", "add", "origin", "https://example.com/project.git"],
-                   check=True)
+                   check=True, **NO_WINDOW)
     metadata = {name: (project / ".git" / name).read_bytes() for name in ("config", "HEAD", "index")}
     with _serve(project) as port:
         config = _config(port)
@@ -235,9 +235,9 @@ def test_agent_configuration_and_settings_preserve_git_metadata(make_project):
         assert json.loads((project / ".git" / "vkit" / "config.json").read_text()) == saved
     assert {name: (project / ".git" / name).read_bytes() for name in metadata} == metadata
     assert subprocess.run(["git", "-C", str(project), "remote", "get-url", "origin"], check=True,
-                          capture_output=True, text=True).stdout.strip() == "https://example.com/project.git"
+                          capture_output=True, text=True, **NO_WINDOW).stdout.strip() == "https://example.com/project.git"
     assert subprocess.run(["git", "-C", str(project), "status", "--short"], check=True,
-                          capture_output=True, text=True).stdout == ""
+                          capture_output=True, text=True, **NO_WINDOW).stdout == ""
 
 
 def test_invalid_console_settings_are_reported_without_rewriting(make_project):

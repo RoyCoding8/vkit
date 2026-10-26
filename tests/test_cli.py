@@ -70,8 +70,10 @@ def test_a_required_test_that_does_not_exist_is_blocked_not_passed(make_project)
 
 SLOW_TREE = DRIVER + '''
 import subprocess, time
+from vkit.nowindow import hidden_window
 marker = sys.argv[1] + ".grandchild"
-subprocess.Popen([sys.executable, "-c", f"import time; time.sleep(4); open({marker!r}, 'w').write('alive')"])
+subprocess.Popen([sys.executable, "-c", f"import time; time.sleep(4); open({marker!r}, 'w').write('alive')"],
+                 **hidden_window())
 time.sleep(60)
 report([("never", True, "unreachable")])
 '''

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/evidence-record.v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "subject", "source", "inputs", "assurance", "claim_outcome", "outcome", "obligations", "artifacts"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "job_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["registered_check", "formal_goal"]},
+        "id": {"type": "string", "minLength": 1}
+      }
+    },
+    "source": {"$ref": "job.v2.json#/$defs/source"},
+    "inputs": {"type": "object"},
+    "assurance": {"type": "string", "minLength": 1},
+    "claim_outcome": {"enum": ["established", "refuted", "unknown"]},
+    "outcome": {
+      "type": "object",
+      "required": ["result"],
+      "properties": {"result": {"enum": ["PASS", "FAIL", "BLOCKED"]}}
+    },
+    "obligations": {"type": ["object", "array", "null"]},
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "check_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "backend": {"type": "object"},
+    "policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "checker_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

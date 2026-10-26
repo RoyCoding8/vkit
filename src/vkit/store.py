@@ -8,6 +8,7 @@ Layout under `<git common dir>/vkit/`:
   latest/<check_id>.json      the latest finished run of that check, any key
   approved.json               check digests a human accepted
 """
+
 from __future__ import annotations
 
 import json
@@ -15,25 +16,39 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .nowindow import is_windows
 from .paths import Project
 
 STATE_DIR = "vkit"
 _RUN_ID = re.compile(r"[A-Za-z0-9_-]+")
+_SUBJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 def new_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+
+
+def _subject_dir(subject: dict[str, Any]) -> Path:
+    if (
+        not isinstance(subject, dict)
+        or set(subject) != {"kind", "id"}
+        or subject["kind"] not in {"registered_check", "formal_goal"}
+        or not isinstance(subject["id"], str)
+        or not _SUBJECT_ID.fullmatch(subject["id"])
+    ):
+        raise ValueError("invalid evidence subject")
+    return Path(subject["kind"]) / subject["id"]
 
 
 def _process_alive(pid: int) -> bool:
@@ -44,7 +59,9 @@ def _process_alive(pid: int) -> bool:
         import win32process
 
         try:
-            handle = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION, False, pid)
+            handle = win32api.OpenProcess(
+                win32con.PROCESS_QUERY_INFORMATION, False, pid
+            )
             try:
                 return win32process.GetExitCodeProcess(handle) == 259
             finally:
@@ -121,17 +138,23 @@ class Store:
     root: Path
 
     @classmethod
-    def of(cls, project: Project) -> "Store":
+    def of(cls, project: Project) -> Store:
         return cls(project.git_common_dir / STATE_DIR)
 
     def run_dir(self, run_id: str) -> Path:
         if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
-            raise ValueError("run_id must contain only letters, digits, underscores, or hyphens")
+            raise ValueError(
+                "run_id must contain only letters, digits, underscores, or hyphens"
+            )
         return self.root / "runs" / run_id
 
     def record(self, run_id: str) -> dict[str, Any] | None:
         record = read_json(self.run_dir(run_id) / "record.json")
-        if record is not None and record["state"] == "running" and not self.is_alive(run_id):
+        if (
+            record is not None
+            and record["state"] == "running"
+            and not self.is_alive(run_id)
+        ):
             record = {**record, "state": "interrupted"}
         if record is not None and record["state"] == "queued":
             worker = read_json(self.run_dir(run_id) / "worker.json")
@@ -143,17 +166,70 @@ class Store:
         write_json(self.run_dir(record["run_id"]) / "record.json", record)
 
     def publish(self, record: dict[str, Any]) -> None:
-        """Save a finished record and point its evidence key and check at it."""
+        """Save a finished record and publish its typed evidence and latest pointers."""
         self.save(record)
         from .inputs import canonical_digest
 
-        pointer = {"run_id": record["run_id"], "result": record["outcome"]["result"],
-                   "record_sha256": canonical_digest(record),
-                   "ended_at": record["ended_at"], "key": record["key"]}
-        write_json(self.root / "evidence" / record["check_id"] / f"{record['key']}.json", pointer)
-        write_json(self.root / "latest" / f"{record['check_id']}.json", pointer)
+        subject = record["subject"]
+        subject_dir = _subject_dir(subject)
+        pointer = {
+            "run_id": record["run_id"],
+            "result": record["outcome"]["result"],
+            "record_sha256": canonical_digest(record),
+            "ended_at": record["ended_at"],
+            "key": record["key"],
+            "job_id": record["job_id"],
+            "subject": subject,
+        }
+        write_json(
+            self.root / "evidence" / subject_dir / f"{record['job_id']}.json", pointer
+        )
+        write_json(self.root / "latest" / subject_dir / "latest.json", pointer)
+
+    def evidence_for(
+        self, kind: str, subject_id: str, job_id: str
+    ) -> dict[str, Any] | None:
+        from .evidence import validate_record
+        from .inputs import canonical_digest
+
+        subject = {"kind": kind, "id": subject_id}
+        try:
+            if not re.fullmatch(r"[0-9a-f]{64}", job_id):
+                return None
+            directory = _subject_dir(subject)
+            pointer = read_json(self.root / "evidence" / directory / f"{job_id}.json")
+            if pointer is None:
+                return None
+            record = self.record(pointer["run_id"])
+            if (
+                record is None
+                or record["state"] != "done"
+                or record["job_id"] != job_id
+                or record["subject"] != subject
+                or record["outcome"]["result"] != pointer["result"]
+                or record["key"] != pointer["key"]
+                or canonical_digest(record) != pointer["record_sha256"]
+                or not validate_record(record, self.run_dir(pointer["run_id"]))
+            ):
+                return None
+        except (ValueError, KeyError, TypeError, OSError):
+            return None
+        return pointer
+
+    def latest_for(self, kind: str, subject_id: str) -> dict[str, Any] | None:
+        try:
+            directory = _subject_dir({"kind": kind, "id": subject_id})
+        except ValueError:
+            return None
+        return read_json(self.root / "latest" / directory / "latest.json")
 
     def evidence(self, check_id: str, key: str) -> dict[str, Any] | None:
+        pointer = self.evidence_for("registered_check", check_id, key)
+        if pointer is not None:
+            return pointer
+        return self._legacy_evidence(check_id, key)
+
+    def _legacy_evidence(self, check_id: str, key: str) -> dict[str, Any] | None:
         from .evidence import validate_record
         from .inputs import canonical_digest
 
@@ -162,24 +238,33 @@ class Store:
             return None
         try:
             record = self.record(pointer["run_id"])
-            if (record is None or record["state"] != "done" or record["key"] != key
-                    or record["check_id"] != check_id or record["outcome"]["result"] != pointer["result"]
-                    or canonical_digest(record) != pointer["record_sha256"]
-                    or not validate_record(record, self.run_dir(pointer["run_id"]))):
+            if (
+                record is None
+                or record["state"] != "done"
+                or record.get("key") != key
+                or record.get("check_id") != check_id
+                or record["outcome"]["result"] != pointer["result"]
+                or canonical_digest(record) != pointer["record_sha256"]
+                or not validate_record(record, self.run_dir(pointer["run_id"]))
+            ):
                 return None
         except (ValueError, KeyError, TypeError, OSError):
             return None
         return pointer
 
     def latest(self, check_id: str) -> dict[str, Any] | None:
-        return read_json(self.root / "latest" / f"{check_id}.json")
+        return self.latest_for("registered_check", check_id) or read_json(
+            self.root / "latest" / f"{check_id}.json"
+        )
 
     def runs(self, limit: int = 50) -> list[dict[str, Any]]:
         base = self.root / "runs"
         if not base.is_dir():
             return []
         out = []
-        for run_dir in sorted(base.iterdir(), key=lambda p: p.name, reverse=True)[:limit]:
+        for run_dir in sorted(base.iterdir(), key=lambda p: p.name, reverse=True)[
+            :limit
+        ]:
             record = self.record(run_dir.name)
             if record is not None:
                 out.append(record)
@@ -215,7 +300,9 @@ class Store:
         return read_json(self.root / "baselines.json") or {}
 
     def pin_baseline(self, check_id: str, baseline: dict[str, Any]) -> None:
-        write_json(self.root / "baselines.json", {**self.baselines(), check_id: baseline})
+        write_json(
+            self.root / "baselines.json", {**self.baselines(), check_id: baseline}
+        )
 
     def approved(self) -> dict[str, Any]:
         document = read_json(self.root / "approved.json") or {}
@@ -224,10 +311,15 @@ class Store:
         if "schema_version" not in document:
             if any(not isinstance(record, dict) for record in document.values()):
                 raise ValueError("legacy check approvals must be objects")
-            records = {key: {**record, "kind": "check_definition"}
-                       for key, record in document.items()}
+            records = {
+                key: {**record, "kind": "check_definition"}
+                for key, record in document.items()
+            }
         else:
-            if document.get("schema_version") != 2 or set(document) != {"schema_version", "records"}:
+            if document.get("schema_version") != 2 or set(document) != {
+                "schema_version",
+                "records",
+            }:
                 raise ValueError("unsupported approval document")
             records = document["records"]
         if not isinstance(records, dict):
@@ -240,11 +332,20 @@ class Store:
     def _validate_approval(record: Any) -> None:
         if not isinstance(record, dict):
             raise ValueError("approval record must be an object")
-        required = {"check_definition": {"check_id", "backend", "accepted_at"},
-                    "formal_policy": {"policy_sha256", "package_sha256", "checker_sha256", "accepted_at"}}
+        required = {
+            "check_definition": {"check_id", "backend", "accepted_at"},
+            "formal_policy": {
+                "policy_sha256",
+                "package_sha256",
+                "checker_sha256",
+                "accepted_at",
+            },
+        }
         fields = required.get(record.get("kind"))
         if fields is None or not fields <= record.keys():
-            raise ValueError("approval must be a complete check_definition or formal_policy record")
+            raise ValueError(
+                "approval must be a complete check_definition or formal_policy record"
+            )
 
     @contextmanager
     def _approval_lock(self) -> Iterator[None]:
@@ -269,4 +370,6 @@ class Store:
             self._validate_approval(record)
         with self._approval_lock():
             records = {**self.approved(), **entries}
-            write_json(self.root / "approved.json", {"schema_version": 2, "records": records})
+            write_json(
+                self.root / "approved.json", {"schema_version": 2, "records": records}
+            )

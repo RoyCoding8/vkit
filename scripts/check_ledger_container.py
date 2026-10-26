@@ -63,7 +63,7 @@ def inspect_label(container_id: str) -> str:
 
 
 def remove_owned(run_id: str) -> list[str]:
-    result = run(["docker", "ps", "-aq", "--filter", f"label={LABEL}={run_id}"], check=False)
+    result = run(["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={LABEL}={run_id}"], check=False)
     container_ids = [item for item in result.stdout.splitlines() if item]
     removed = []
     for container_id in container_ids:
@@ -71,7 +71,7 @@ def remove_owned(run_id: str) -> list[str]:
             raise RuntimeError(f"refusing to remove container with a different run label: {container_id}")
         run(["docker", "rm", "-f", container_id], check=False)
         removed.append(container_id)
-    remaining = run(["docker", "ps", "-aq", "--filter", f"label={LABEL}={run_id}"], check=False)
+    remaining = run(["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={LABEL}={run_id}"], check=False)
     if remaining.stdout.strip():
         raise RuntimeError(f"owned containers remain for run {run_id}")
     return removed

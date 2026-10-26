@@ -46,8 +46,8 @@ MUTATIONS = {
         "responses[i] = Response::Reserved(Ok(()));",
     ),
     "assumed_proof": (
-        "    Ledger { slots, used: 0, capacity }",
-        "    assume(false);\n    Ledger { slots, used: 0, capacity }",
+        "    let ledger = Ledger { slots, used: 0, capacity };",
+        "    assume(false);\n    let ledger = Ledger { slots, used: 0, capacity };",
     ),
 }
 

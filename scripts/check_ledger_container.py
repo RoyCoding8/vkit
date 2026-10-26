@@ -113,7 +113,7 @@ def container_command(image_id: str, base: list[str], trusted: Path, source: Pat
         *base,
         *mount(trusted, "/trusted"),
         *mount(source, f"/trusted/{SOURCE_REL.as_posix()}"),
-        *mount(archive, "/assets/verus.zip"),
+        *mount(archive, f"/assets/{archive.name}"),
         *mount(verus_root, "/assets/verus"),
         *mount(rustup_home, "/assets/rustup"),
         *mount(cargo_home, "/assets/cargo"),
@@ -197,9 +197,16 @@ def run_controls(image_id: str, run_id: str, cid_dir: Path, trusted: Path, sourc
 
     net_cmd = container_command(image_id, docker_base(f"{run_id}-network", cid_dir / "network.cid"),
                                 trusted, source, archive, verus_root, rustup_home, cargo_home,
-                                ["python3", "-c", "import socket; socket.create_connection(('1.1.1.1', 53), timeout=2)"])
+                                ["python3", "-c", "import errno,socket,sys\ntry:\n    socket.create_connection(('1.1.1.1', 53), timeout=2)\nexcept OSError as error:\n    if error.errno != errno.ENETUNREACH:\n        raise\n    print('network_denied:ENETUNREACH')\n    sys.exit(0)\nsys.exit(2)"])
     net_result = run(net_cmd, timeout=10, check=False)
-    controls["network_disabled"] = net_result.returncode != 0
+    network_cidfile = cid_dir / "network.cid"
+    network_cid = network_cidfile.read_text(encoding="utf-8").strip() if network_cidfile.is_file() else ""
+    network_mode = run(["docker", "inspect", "--format", "{{.HostConfig.NetworkMode}}", network_cid],
+                       check=False).stdout.strip() if network_cid else ""
+    controls["network_disabled"] = (net_result.returncode == 0
+                                    and "network_denied:ENETUNREACH" in net_result.stdout
+                                    and network_mode == "none"
+                                    and inspect_label(network_cid) == f"{run_id}-network")
 
     timeout_id = f"{run_id}-timeout"
     timeout_cidfile = cid_dir / "timeout.cid"
@@ -256,6 +263,10 @@ def main() -> int:
         raise RuntimeError("sealed ledger qualification requires a non-root Linux Docker host")
     if not (args.cargo_home / "bin/rustup").is_file():
         raise FileNotFoundError("the isolated Rust toolchain must include cargo/bin/rustup")
+    runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve()
+    assets = (args.archive, args.verus_root, args.rustup_home, args.cargo_home)
+    if any(runner_temp not in path.resolve().parents for path in assets):
+        raise RuntimeError("container tool assets must be staged under RUNNER_TEMP, outside the host home")
     args.output.mkdir(parents=True, exist_ok=False)
     os.chmod(args.output, 0o700)
     image_id = docker_image_id(args.image)
@@ -266,6 +277,7 @@ def main() -> int:
     report = {
         "profile": PROFILE,
         "image": {"reference": args.image, "id": image_id},
+        "tool_assets_root": str(runner_temp),
         "dockerfile_sha256": sha256(ROOT / "examples/verus-qualification/container/Dockerfile"),
         "orchestrator_sha256": sha256(Path(__file__).resolve()),
         "run_id": run_id,
@@ -273,7 +285,7 @@ def main() -> int:
         "mounts": [
             {"target": "/trusted", "read_only": True},
             {"target": f"/trusted/{SOURCE_REL.as_posix()}", "read_only": True},
-            {"target": "/assets/verus.zip", "read_only": True},
+            {"target": f"/assets/{args.archive.name}", "read_only": True},
             {"target": "/assets/verus", "read_only": True},
             {"target": "/assets/rustup", "read_only": True},
             {"target": "/assets/cargo", "read_only": True},
@@ -298,24 +310,31 @@ def main() -> int:
                                     args.archive, args.verus_root, args.rustup_home,
                                     args.cargo_home,
                                     ["python3", "/trusted/scripts/check_verus_ledger.py",
-                                     "--verus-root", "/assets/verus", "--archive", "/assets/verus.zip",
+                                     "--verus-root", "/assets/verus",
+                                     "--archive", f"/assets/{args.archive.name}",
                                      "--output", "/output/evidence"])
         execution = execute(image_id, run_id, cidfile, command,
                             args.output / "container.log", args.timeout, args.output)
         report["execution"] = execution
         evidence = args.output / "evidence/report.json"
+        report["checks"]["comparison_passed"] = False
+        evidence_report = json.loads(evidence.read_text(encoding="utf-8")) if evidence.is_file() else {}
+        report["checks"]["comparison_passed"] = evidence_report.get("comparison_passed") is True
+        report["driver_scope"] = evidence_report.get("scope")
         if (execution["returncode"] != 0 or execution["timed_out"]
                 or not execution["output_copied"] or not evidence.is_file()):
             raise RuntimeError("sealed Verus qualification failed")
-        checks = json.loads(evidence.read_text(encoding="utf-8"))["checks"]
+        checks = evidence_report["checks"]
         rust_log = next(item["log"] for item in checks if item["name"] == "rust_version")
         z3_log = next(item["log"] for item in checks if item["name"] == "solver_version")
         rust_text = (args.output / "evidence" / rust_log).read_text(encoding="utf-8", errors="replace")
         z3_text = (args.output / "evidence" / z3_log).read_text(encoding="utf-8", errors="replace")
         report["checks"]["rust_1_99_1"] = "rustc 1.99.1" in rust_text
         report["checks"]["z3_4_16_0"] = "Z3 version 4.16.0" in z3_text
-        report["qualification_passed"] = report["checks"]["rust_1_99_1"] and report["checks"]["z3_4_16_0"]
-    except (OSError, RuntimeError, subprocess.SubprocessError, KeyboardInterrupt) as error:
+        report["qualification_passed"] = all(report["checks"][name] for name in
+                                              ("comparison_passed", "rust_1_99_1", "z3_4_16_0"))
+    except (OSError, RuntimeError, ValueError, KeyError, StopIteration,
+            subprocess.SubprocessError, KeyboardInterrupt) as error:
         report["error"] = str(error)
         report["qualification_passed"] = False
     finally:

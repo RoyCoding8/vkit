@@ -30,6 +30,8 @@ class Proposal:
             lines += [f"check {entry['id']}:", json.dumps(entry, indent=2)]
         for entry in self.body.get("features", []):
             lines += [f"feature {entry['id']}:", json.dumps(entry, indent=2)]
+        if "formal" in self.body:
+            lines += ["formal policy (complete replacement):", json.dumps(self.body["formal"], indent=2)]
         for path, text in self.body.get("files", {}).items():
             lines += [f"new file {path}:", text]
         return "\n".join(lines)
@@ -48,28 +50,32 @@ def _relative_new_file(project: Project, raw: str) -> str:
 
 
 def validate(project: Project, body: Any) -> dict[str, Any]:
-    if not isinstance(body, dict) or set(body) - {"checks", "features", "files", "rationale"}:
-        raise ProposalError("a proposal is an object with checks, features, files and rationale")
+    if not isinstance(body, dict) or set(body) - {"checks", "features", "files", "formal", "rationale"}:
+        raise ProposalError("a proposal is an object with checks, features, files, optional formal policy and rationale")
     checks, features, files = body.get("checks", []), body.get("features", []), body.get("files", {})
     if not isinstance(body.get("rationale", ""), str) or not body.get("rationale"):
         raise ProposalError("a proposal needs a rationale a reviewer can read")
     if not isinstance(checks, list) or not isinstance(features, list) or not isinstance(files, dict):
         raise ProposalError("checks and features are lists; files maps paths to text")
-    if not (checks or features or files):
+    if not (checks or features or files or "formal" in body):
         raise ProposalError("a proposal must change something")
     try:
-        if checks:
-            parse_manifest_data({"schema_version": 3, "checks": checks}, project=project, origin="proposal")
         for entry in features:
             parse_feature(entry, "proposal")
     except (ManifestError, FeatureError) as exc:
         raise ProposalError(str(exc)) from exc
+    clean = {"rationale": body["rationale"], "checks": checks, "features": features, "files": {}}
+    if "formal" in body:
+        clean["formal"] = body["formal"]
+    if checks or "formal" in body:
+        _resulting_manifest(project, clean)
     clean_files = {}
     for raw, text in files.items():
         if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_FILE_BYTES:
             raise ProposalError(f"file {raw!r} must be text of at most {MAX_FILE_BYTES} bytes")
         clean_files[_relative_new_file(project, raw)] = text
-    return {"rationale": body["rationale"], "checks": checks, "features": features, "files": clean_files}
+    clean["files"] = clean_files
+    return clean
 
 
 def submit(project: Project, store: Store, body: Any) -> Proposal:
@@ -107,15 +113,58 @@ def _merge(entries: list[dict], updates: list[dict]) -> list[dict]:
     return merged
 
 
+def _resulting_manifest(project: Project, body: dict[str, Any]):
+    manifest_path = project.manifest_path
+    try:
+        document = (json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file()
+                    else {"schema_version": 3, "description": "", "checks": []})
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProposalError(f"could not read manifest {manifest_path}: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ProposalError("the project manifest must be a JSON object")
+    document["checks"] = _merge(document.get("checks", []), body["checks"])
+    if "formal" in body:
+        if body["formal"] == {"components": []}:
+            document.pop("formal", None)
+        else:
+            document["formal"] = body["formal"]
+    try:
+        manifest = parse_manifest_data(document, project=project, origin=str(manifest_path))
+    except ManifestError as exc:
+        raise ProposalError(str(exc)) from exc
+    return document, manifest
+
+
 def apply(project: Project, store: Store, proposal: Proposal) -> list[str]:
     """Write the proposal into this worktree and accept its check definitions. Returns the accepted check ids."""
     body = validate(project, proposal.body)
     manifest_path = project.manifest_path
+    document = manifest = None
+    if body["checks"] or "formal" in body:
+        document, manifest = _resulting_manifest(project, body)
+    approvals = {}
+    if "formal" in body:
+        from .formal import ledger, verus
+
+        try:
+            for component in manifest.components.values():
+                ledger.verify_package(component)
+                execution = verus.resolve_execution(component)
+                approvals[component.digest] = {
+                    "kind": "formal_policy",
+                    "policy_sha256": component.digest,
+                    "package_sha256": component.package.sha256,
+                    "checker_sha256": canonical_digest(execution["semantic"]),
+                    "accepted_at": now(),
+                }
+        except (ValueError, RuntimeError) as exc:
+            raise ProposalError(str(exc)) from exc
     if body["checks"]:
-        document = (json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file()
-                    else {"schema_version": 3, "description": "", "checks": []})
-        document["checks"] = _merge(document.get("checks", []), body["checks"])
-        manifest = parse_manifest_data(document, project=project, origin=str(manifest_path))
+        from .evidence import backend_identity
+
+        approvals.update({manifest.digest(e["id"]): {"kind": "check_definition", "check_id": e["id"], "accepted_at": now(),
+                                                       "backend": backend_identity(manifest.require(e["id"])),
+                                                       "proposal": proposal.digest} for e in body["checks"]})
     if body["features"]:
         features = read_document(project.root)
         features["features"] = _merge(features.get("features", []), body["features"])
@@ -123,14 +172,12 @@ def apply(project: Project, store: Store, proposal: Proposal) -> list[str]:
         target = project.root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
-    if body["checks"]:
+    if body["checks"] or "formal" in body:
+        assert document is not None
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-        from .evidence import backend_identity
-
-        store.approve({manifest.digest(e["id"]): {"kind": "check_definition", "check_id": e["id"], "accepted_at": now(),
-                                                  "backend": backend_identity(manifest.require(e["id"])),
-                                                  "proposal": proposal.digest} for e in body["checks"]})
+    if approvals:
+        store.approve(approvals)
     if body["features"]:
         path = project.root / FEATURES_RELATIVE
         path.parent.mkdir(parents=True, exist_ok=True)

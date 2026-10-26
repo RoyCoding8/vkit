@@ -15,13 +15,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = "verus-linux-x86_64-v1"
 LABEL = "vkit.ledger.run_id"
-SOURCE_REL = Path("formal/packages/resource_ledger/ledger.rs")
+SOURCE_REL = Path("src/vkit/formal/packages/resource_ledger/ledger.rs")
 TRUSTED_FILES = (
     Path("scripts/check_verus_ledger.py"),
-    Path("examples/verus-qualification/upstream.json"),
+    Path("src/vkit/formal/packages/resource_ledger/upstream.json"),
     Path("examples/verus-qualification/smoke.rs"),
     Path("examples/verus-qualification/candidate_api.rs"),
-    Path("examples/verus-qualification/expected.rs"),
+    Path("src/vkit/formal/packages/resource_ledger/expected.rs.in"),
 )
 
 

@@ -7,14 +7,14 @@ on:
       - .github/workflows/ledger-qualification.yml
       - examples/verus-qualification/**
       - scripts/check_ledger_container.py
-      - formal/packages/resource_ledger/ledger.rs
+      - src/vkit/formal/packages/resource_ledger/**
       - scripts/check_verus_ledger.py
   pull_request:
     paths:
       - .github/workflows/ledger-qualification.yml
       - examples/verus-qualification/**
       - scripts/check_ledger_container.py
-      - formal/packages/resource_ledger/ledger.rs
+      - src/vkit/formal/packages/resource_ledger/**
       - scripts/check_verus_ledger.py
   workflow_dispatch:
 
@@ -53,7 +53,7 @@ jobs:
           import urllib.request
           import zipfile
 
-          pin = json.loads(pathlib.Path("examples/verus-qualification/upstream.json").read_text())
+          pin = json.loads(pathlib.Path("src/vkit/formal/packages/resource_ledger/upstream.json").read_text())
           name = f"verus-{pin['version']}-x86-linux.zip"
           archive = pathlib.Path(os.environ["RUNNER_TEMP"]) / name
           urllib.request.urlretrieve(f"{pin['repository']}/releases/download/{pin['release']}/{name}", archive)

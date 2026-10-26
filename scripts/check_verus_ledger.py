@@ -13,8 +13,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PIN_PATH = ROOT / "examples/verus-qualification/upstream.json"
-SOURCE = ROOT / "formal/packages/resource_ledger/ledger.rs"
+PACKAGE = ROOT / "src/vkit/formal/packages/resource_ledger"
+PIN_PATH = PACKAGE / "upstream.json"
+SOURCE = PACKAGE / "ledger.rs"
 SMOKE = ROOT / "examples/verus-qualification/smoke.rs"
 MUTATIONS = {
     "lost_accounting": ("next.used = next.used + amount;", "next.used = amount;"),
@@ -105,7 +106,11 @@ def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
     root.mkdir()
     fixtures = ROOT / "examples/verus-qualification"
     candidate = (fixtures / "candidate_api.rs").read_text(encoding="utf-8")
-    expected = (fixtures / "expected.rs").read_text(encoding="utf-8")
+    template = (PACKAGE / "expected.rs.in").read_text(encoding="utf-8")
+    expected = template.replace("__VKIT_RECORDS__", "3")
+    for operation in ("new", "reserve", "release", "reserve_batch", "apply_command", "run_commands"):
+        expected = expected.replace(f"__VKIT_BIND_{operation.upper()}__", operation)
+    report["binding_template_sha256"] = digest(template.encode())
     report["binding_scope"] = "Six required_api bindings over the fixed checked ledger library; not arbitrary source or representation correspondence"
     report["binding_expected_sha256"] = digest(expected.encode())
     flags = ["--no-cheating", "--no-external-by-default", "--num-threads", "2"]

@@ -45,6 +45,17 @@ jobs:
           build: false
           test: false
           lint: false
+      - name: Use the pinned Lean binary in disposable projects
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import subprocess
+
+          binary = subprocess.run(["elan", "which", "lean"], cwd="examples/lean-proof",
+                                  check=True, capture_output=True, text=True).stdout.strip()
+          with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as output:
+              output.write(str(pathlib.Path(binary).parent) + "\n")
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

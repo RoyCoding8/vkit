@@ -128,7 +128,7 @@ Extend `verification/manifest.json` to v3. Keep existing checks and add `formal.
 | `package` | Installed package ID, version and actual SHA-256 content digest. |
 | `contract` | Exactly `ledger.source.v1` for the initial package. |
 | `source.entry` | Normalized repository-relative Rust entry file. Candidate crate alias is fixed by the executor. |
-| `profile` | Exactly `verus-linux-x86_64-v1`, resolving target, tool pins, image digest and arguments from accepted package metadata. No arbitrary build options. |
+| `profile` | Exactly `verus-linux-x86_64-v1`, resolving target, tool pins and arguments from package metadata. Bind the actual immutable image and mounted-tool bytes in the separately accepted checker identity. No request-supplied build options. |
 | `parameters.max_records` | Positive integer used by trusted const/type instantiation. Batch limit is a package constant, not another configurable field. |
 | `bindings` | All six operation keys mapped to validated relative Rust paths. Missing or additional operation keys are rejected. |
 | `required` | Whether protected repository policy requires this component at the integration gate. |

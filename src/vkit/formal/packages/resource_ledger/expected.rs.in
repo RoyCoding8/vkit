@@ -3,7 +3,8 @@ extern crate ledger;
 extern crate candidate_api;
 
 verus! {
-    pub fn expected_new<const N: usize>(
+    const N: usize = __VKIT_RECORDS__;
+    pub fn expected_new(
         slots: [Option<ledger::ledger_api::Entry>; N],
         capacity: u32,
     ) -> (out: ledger::ledger_api::Ledger<N>)
@@ -15,10 +16,10 @@ verus! {
             forall |i: int| 0 <= i < N ==> out.view().slots[i] == None,
             out.reservations() == Map::empty(),
     {
-        candidate_api::new(slots, capacity)
+        candidate_api::__VKIT_BIND_NEW__(slots, capacity)
     }
 
-    pub fn expected_reserve<const N: usize>(
+    pub fn expected_reserve(
         input: ledger::ledger_api::Ledger<N>,
         id: u32,
         owner: u32,
@@ -40,10 +41,10 @@ verus! {
                 Err(_) => ledger::ledger_api::same_state(out.0, input),
             },
     {
-        candidate_api::reserve(input, id, owner, amount)
+        candidate_api::__VKIT_BIND_RESERVE__(input, id, owner, amount)
     }
 
-    pub fn expected_release<const N: usize>(
+    pub fn expected_release(
         input: ledger::ledger_api::Ledger<N>,
         id: u32,
         owner: u32,
@@ -65,10 +66,10 @@ verus! {
                 Err(_) => ledger::ledger_api::same_state(out.0, input),
             },
     {
-        candidate_api::release(input, id, owner)
+        candidate_api::__VKIT_BIND_RELEASE__(input, id, owner)
     }
 
-    pub fn expected_reserve_batch<const N: usize>(
+    pub fn expected_reserve_batch(
         input: ledger::ledger_api::Ledger<N>,
         requests: [ledger::ledger_api::Request; 3],
         count: u32,
@@ -82,10 +83,10 @@ verus! {
                 ledger::ledger_api::batch_model(input.view(), requests@, count).0,
             ),
     {
-        candidate_api::reserve_batch(input, requests, count)
+        candidate_api::__VKIT_BIND_RESERVE_BATCH__(input, requests, count)
     }
 
-    pub fn expected_apply_command<const N: usize>(
+    pub fn expected_apply_command(
         input: ledger::ledger_api::Ledger<N>,
         command: ledger::ledger_api::Command,
     ) -> (out: (ledger::ledger_api::Ledger<N>, ledger::ledger_api::Response))
@@ -98,10 +99,10 @@ verus! {
                 ledger::ledger_api::apply_model(input.view(), command).0,
             ),
     {
-        candidate_api::apply_command(input, command)
+        candidate_api::__VKIT_BIND_APPLY_COMMAND__(input, command)
     }
 
-    pub fn expected_run_commands<const N: usize, const M: usize>(
+    pub fn expected_run_commands<const M: usize>(
         initial: ledger::ledger_api::Ledger<N>,
         commands: [ledger::ledger_api::Command; M],
         responses: &mut [ledger::ledger_api::Response; M],
@@ -123,24 +124,24 @@ verus! {
                         == ledger::ledger_api::apply_model(states[j], commands@[j]).1
             },
     {
-        candidate_api::run_commands(initial, commands, responses)
+        candidate_api::__VKIT_BIND_RUN_COMMANDS__(initial, commands, responses)
     }
 
     pub fn witness_empty_m() {
-        let initial = expected_new::<3>([None; 3], 8);
+        let initial = expected_new([None; N], 8);
         let mut responses: [ledger::ledger_api::Response; 0] = [];
-        let final_ledger = expected_run_commands::<3, 0>(initial, [], &mut responses);
+        let final_ledger = expected_run_commands::<0>(initial, [], &mut responses);
         assert(ledger::ledger_api::same_view(final_ledger.view(), initial.view()));
     }
 
     pub fn witness_nonempty_m() {
-        let initial = expected_new::<3>([None; 3], 8);
+        let initial = expected_new([None; N], 8);
         let commands = [ledger::ledger_api::Command::Reserve {
             id: 1,
             owner: 2,
             amount: 3,
         }];
         let mut responses = [ledger::ledger_api::Response::Reserved(Ok(()))];
-        let _ = expected_run_commands::<3, 1>(initial, commands, &mut responses);
+        let _ = expected_run_commands::<1>(initial, commands, &mut responses);
     }
 }

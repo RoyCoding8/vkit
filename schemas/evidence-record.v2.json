@@ -5,6 +5,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "job_id", "subject", "source", "inputs", "assurance", "claim_outcome", "outcome", "obligations", "artifacts"],
   "properties": {
+    "authority": {"$ref":"job.v2.json#/$defs/authority"},
     "schema_version": {"const": 2},
     "job_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "subject": {

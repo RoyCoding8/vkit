@@ -142,6 +142,8 @@ def replay(
         raise ValueError("bundle is incomplete or its evidence digests do not match")
     if source.get("schema_version") != 2:
         raise ValueError("historical evidence is available for inspection, not replay")
+    if source.get("authority") is not None:
+        raise ValueError("target-policy evidence requires a fresh trusted-host gate; it cannot grant local authority")
     if source["subject"]["kind"] == "formal_goal":
         from .formal.policy import GitCommit, VerificationRequest
         from .formal.verus import resolve_execution

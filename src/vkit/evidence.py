@@ -64,6 +64,8 @@ def policy_identity() -> dict[str, str]:
             "budgets.py",
             "claimkind.py",
             "container.py",
+            "ci.py",
+            "cli.py",
         )
     ]
     files += [
@@ -178,6 +180,7 @@ def seal(record: dict[str, Any], directory: Path, check=None) -> None:
         "policy_sha256",
         "package_sha256",
         "checker_sha256",
+        "authority",
     ):
         if field in record:
             receipt[field] = record[field]
@@ -234,6 +237,8 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
                 or job["source"] != record["source"]
                 or source.digest != record["source"]["digest"]
                 or record["job_id"] != record["key"]
+                or job.get("authority") != record.get("authority")
+                or receipt.get("authority") != record.get("authority")
             ):
                 return False
             fields = (

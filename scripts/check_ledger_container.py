@@ -90,6 +90,7 @@ def cleanup_run(run_id: str, output: Path | None = None) -> list[str]:
 
         descriptors = list((output / "product/durable/project/.git/vkit/runs").glob("*/container-control/descriptor.json"))
         descriptors += list((output / "product/recovery/runs").glob("*/container-control/descriptor.json"))
+        descriptors += list((output / "product/gate").glob("*/store/runs/*/container-control/descriptor.json"))
         for descriptor in descriptors:
             recovery = recover_attempt(descriptor.parent.parent)
             if recovery["status"] == "blocked":
@@ -219,7 +220,90 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
         raise RuntimeError(f"product Verus negative probe did not block on the obligation: {weakened.to_json()}")
     durable = run_durable_probe(directory / "durable", source, execution_identity)
     recovery = run_recovery_probe(directory / "recovery", image_id, run_id)
-    return {"passed": True, "image_id": image_id, "cases": cases, "durable": durable, "recovery": recovery}
+    gate = run_gate_probe(directory / "gate", source, image_id)
+    return {"passed": True, "image_id": image_id, "cases": cases,
+            "durable": durable, "recovery": recovery, "gate": gate}
+
+
+def run_gate_probe(directory: Path, source: str, image_id: str) -> dict:
+    from vkit.ci import run_gate
+    from vkit.formal.service import resolve_commit
+    from vkit.paths import open_project
+
+    root = directory / "project"
+    (root / "verification").mkdir(parents=True)
+    source = source.replace("verus! {", "verus! {\n    const ADJUST: bool = false;", 1)
+    source = source.rsplit("}", 1)[0] + "    const DELTA: u32 = 0;\n}\n"
+    source = source.replace("        ledger::ledger_api::reserve(input, id, owner, amount)",
+                            "        let amount = if ADJUST && DELTA > 0 && amount > 0 { amount - 1 } else { amount };\n"
+                            "        ledger::ledger_api::reserve(input, id, owner, amount)", 1)
+    (root / "candidate_api.rs").write_text(source, encoding="utf-8")
+    driver = '''import json, os, pathlib, socket, sys
+assert "VKIT_QUALIFICATION_SECRET" not in os.environ
+assert not pathlib.Path("/output/../job.json").exists()
+try:
+    pathlib.Path("candidate_api.rs").write_text("must not be writable")
+except OSError:
+    pass
+else:
+    raise AssertionError("candidate mount is writable")
+try:
+    socket.create_connection(("1.1.1.1", 443), timeout=0.2)
+except OSError:
+    pass
+else:
+    raise AssertionError("network is available")
+pathlib.Path(sys.argv[1]).write_text(json.dumps({"schema_version":1,"scenarios":[
+    {"id":"isolated","result":"PASS","observation":"candidate read-only; network and host secrets absent"}]}))
+'''
+    (root / "driver.py").write_text(driver, encoding="utf-8")
+    check = {"id": "isolation", "kind": "scenario", "timeout_seconds": 30,
+             "artifact": "result.json", "command": ["{{python}}", "driver.py", "{{run_dir}}/result.json"],
+             "required_scenarios": ["isolated"], "inputs": ["driver.py", "candidate_api.rs"]}
+    (root / "verification/manifest.json").write_text(json.dumps({
+        "schema_version": 3, "checks": [check],
+        "formal": {"components": [product_component(3).to_json()]}}), encoding="utf-8")
+
+    def git(*args):
+        return run(["git", "-C", str(root), "-c", "user.name=VKit CI", "-c", "user.email=ci@vkit.invalid", *args])
+
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-qm", "target policy and feature interaction")
+    project = open_project(root)
+    target = resolve_commit(project, "HEAD")
+    git("checkout", "-qb", "branch-a")
+    (root / "candidate_api.rs").write_text(source.replace("ADJUST: bool = false", "ADJUST: bool = true"), encoding="utf-8")
+    (root / "verification/manifest.json").unlink()
+    git("add", "-u")
+    git("commit", "-qm", "enable adjustment and delete candidate policy")
+    branch_a = resolve_commit(project, "HEAD")
+    git("checkout", "-qb", "branch-b", target)
+    (root / "candidate_api.rs").write_text(source.replace("DELTA: u32 = 0", "DELTA: u32 = 1"), encoding="utf-8")
+    git("add", "-u")
+    git("commit", "-qm", "change adjustment amount")
+    branch_b = resolve_commit(project, "HEAD")
+    git("checkout", "branch-a")
+    git("merge", "--no-ff", "-qm", "combined candidate", "branch-b")
+    combined = resolve_commit(project, "HEAD")
+    os.environ["VKIT_CI_IMAGE"] = image_id
+    os.environ["VKIT_QUALIFICATION_SECRET"] = "host-only-control"
+    reports = {}
+    try:
+        for name, oid in (("branch_a", branch_a), ("branch_b", branch_b), ("combined", combined)):
+            report = run_gate(project, oid, target, directory / name)
+            expected = "BLOCKED" if name == "combined" else "READY"
+            if report["verdict"] != expected or len(report["checks"]) != 2:
+                raise RuntimeError(f"gate control {name} failed: {report['checks']}")
+            if any(not c["receipt_valid"] for c in report["checks"]):
+                raise RuntimeError(f"gate control {name} has invalid receipts")
+            reports[name] = {"candidate": oid, "verdict": report["verdict"], "checks": report["checks"]}
+        formal = next(c for c in reports["combined"]["checks"] if c["kind"] == "formal_goal")
+        if formal["outcome"].get("reason") != "formal_obligation":
+            raise RuntimeError("combined candidate did not fail on its formal obligation")
+    finally:
+        os.environ.pop("VKIT_QUALIFICATION_SECRET", None)
+    return {"passed": True, "target": target, "candidate_policy_deleted": True, "cases": reports}
 
 
 def run_recovery_probe(directory: Path, image_id: str, qualification_id: str) -> dict:

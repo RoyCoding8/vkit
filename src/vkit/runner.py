@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import platform
 import shutil
 import sys
@@ -14,12 +15,15 @@ from .budgets import evaluate
 from .evidence import backend_identity, seal
 from .formal.policy import FormalComponent, GitCommit, VerificationRequest, WorkingTree
 from .inputs import (
+    CapturedSource,
+    InputSet,
     Snapshot,
     canonical_digest,
     capture_git_commit,
     capture_working_tree,
     file_digest,
     load_capture,
+    matches,
 )
 from .job import FormalGoal, RegisteredCheck, seal_job, validate_job
 from .manifest import Manifest, parse_check_definition
@@ -138,16 +142,24 @@ def prepare(
     run_id: str | None = None,
     replay_source: Path | None = None,
     replay_receipt: str | None = None,
+    source: CapturedSource | None = None,
+    authority: dict[str, Any] | None = None,
+    backend: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist an immutable job and a separate queued execution attempt."""
     check = manifest.require(check_id)
-    inputs = Snapshot(project).inputs(check.inputs)
-    source = capture_working_tree(project, [name for name, _ in inputs.files])
-    baseline = store.baselines().get(check_id)
-    backend = backend_identity(check)
+    if source is None:
+        inputs = Snapshot(project).inputs(check.inputs)
+        source = capture_working_tree(project, [name for name, _ in inputs.files])
+    else:
+        chosen = [f for f in source.files if not check.inputs or any(matches(f.path, p) for p in check.inputs)]
+        inputs = InputSet(check.inputs, tuple((f.path, hashlib.sha256(f.content.replace(b"\r\n", b"\n")).hexdigest()) for f in chosen),
+                          tuple(p for p in check.inputs if not any(matches(f.path, p) for f in source.files)))
+    baseline = None if authority else store.baselines().get(check_id)
+    backend = backend if backend is not None else backend_identity(check)
     job = seal_job(
         RegisteredCheck.resolve(
-            manifest, check_id, baseline, backend, inputs.to_json(), source
+            manifest, check_id, baseline, backend, inputs.to_json(), source, authority
         ).payload()
     )
     record = _record_for_job(job, run_id or new_run_id())
@@ -194,10 +206,15 @@ def prepare_formal(
     *,
     store: Store,
     run_id: str | None = None,
+    source: CapturedSource | None = None,
+    authority: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if request.component != component.id:
         raise ValueError("verification request and formal component IDs differ")
-    if isinstance(request.candidate, GitCommit):
+    if source is not None:
+        if not isinstance(request.candidate, GitCommit) or source.commit != request.candidate.oid:
+            raise ValueError("provided capture differs from the requested Git candidate")
+    elif isinstance(request.candidate, GitCommit):
         source = capture_git_commit(project, request.candidate.oid)
         if request.candidate.target_commit is not None:
             target = request.candidate.target_commit
@@ -207,7 +224,7 @@ def prepare_formal(
         source = capture_working_tree(project)
     else:
         raise ValueError("unsupported formal candidate source")
-    job = seal_job(FormalGoal(request, component, execution_identity, source).payload())
+    job = seal_job(FormalGoal(request, component, execution_identity, source, authority).payload())
     record = _record_for_job(job, run_id or new_run_id())
     record.update(category="source_verification", description=component.contract, claim_id=component.id)
     run_dir = store.run_dir(record["run_id"])
@@ -287,6 +304,8 @@ def _record_for_job(job: dict[str, Any], run_id: str) -> dict[str, Any]:
             "platform": platform.platform(),
         },
     }
+    if "authority" in job:
+        record["authority"] = job["authority"]
     if formal:
         for name in ("policy_sha256", "package_sha256", "checker_sha256"):
             record[name] = job[name]
@@ -314,19 +333,24 @@ def execute(project: Project | None, run_id: str, *, store: Store) -> dict[str, 
             or job["source"] != record["source"]
             or _record_for_job(job, run_id)["inputs"] != record["inputs"]
             or job["job_id"] != record["key"]
+            or job.get("authority") != record.get("authority")
         ):
             raise ValueError("persisted job does not match its queued run record")
         load_capture(job["source"], run_dir / "snapshot")
+        if "authority" in job:
+            from .ci import validate_authority
+
+            validate_authority(job, Project(run_dir / "snapshot", store.root))
         if record["subject"]["kind"] == "registered_check":
             if (job["check_digest"] != record["check_digest"]
                     or job["backend"] != record["backend"]
                     or job["baseline"] != record["baseline"]):
                 raise ValueError("registered-check record does not match its persisted job")
-            if project is None:
+            if project is None and "authority" not in job:
                 raise ValueError(
                     "registered-check worker requires its live project for freshness"
                 )
-            snapshot_project = Project(run_dir / "snapshot", project.git_common_dir)
+            snapshot_project = Project(run_dir / "snapshot", project.git_common_dir if project else store.root)
             check = parse_check_definition(job["definition"], snapshot_project)
             if check.id != record["subject"]["id"] or job[
                 "check_digest"
@@ -355,6 +379,9 @@ def execute(project: Project | None, run_id: str, *, store: Store) -> dict[str, 
                 outcome, unchecked = _apply_budgets(
                     check, outcome, reading, record["baseline"]
                 )
+                if "authority" in job and unchecked:
+                    outcome = Blocked(BlockedReason.INPUT_MISSING,
+                                      "target policy budgets lack a trusted baseline: " + ", ".join(unchecked))
         except Exception as exc:
             outcome = Blocked(
                 BlockedReason.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}"
@@ -373,7 +400,7 @@ def execute(project: Project | None, run_id: str, *, store: Store) -> dict[str, 
                 "exit_code": None if exit is None else exit.code,
                 "argv": None
                 if exit is None or check is None
-                else list(
+                else metadata["argv"] if "authority" in job else list(
                     dispatch.argv_for(
                         check, run_dir, None, input_digest=record["inputs"]["digest"]
                     )
@@ -420,7 +447,7 @@ def _execute_formal(
             f"formal entry file is missing: {component.entry}",
         ), {}
     approval = store.approved().get(component.digest, {})
-    if (
+    if "authority" not in job and (
         approval.get("kind") != "formal_policy"
         or approval.get("policy_sha256") != component.digest
         or approval.get("package_sha256") != component.package.sha256
@@ -476,7 +503,7 @@ def run_check(
 
 
 def _execute(
-    project: Project,
+    project: Project | None,
     check: CheckSpec,
     store: Store,
     record: dict[str, Any],
@@ -485,6 +512,12 @@ def _execute(
     run_id, digest = record["run_id"], record["check_digest"]
     if store.cancel_requested(run_id):
         return Blocked(BlockedReason.CANCELLED, "stopped on request"), None, None, {}
+    if "authority" in resolved_job:
+        from .ci import execute_empirical
+
+        if record["inputs"]["unmatched"]:
+            return Blocked(BlockedReason.INPUT_MISSING, "target policy inputs are missing"), None, None, {}
+        return execute_empirical(check, store, record, resolved_job)
     approval = store.approved().get(digest, {})
     if (
         approval.get("kind") != "check_definition"

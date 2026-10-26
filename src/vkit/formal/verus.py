@@ -363,11 +363,6 @@ def _verus_phases(
     return phases
 
 
-def _mount(source: Path, target: str, readonly: bool) -> list[str]:
-    spec = f"type=bind,src={source.resolve()},dst={target}"
-    return ["--mount", spec + (",readonly" if readonly else "")]
-
-
 def _expected_logs(
     output: Path, phases: list[dict[str, Any]]
 ) -> tuple[bool, str | None]:
@@ -463,40 +458,21 @@ def execute_formal(
             ],
         }
         options = [
-            "--network=none",
-            "--read-only",
-            "--cap-drop=ALL",
-            "--security-opt=no-new-privileges",
-            "--pids-limit=256",
-            "--memory=4g",
-            "--cpus=2",
-            "--ulimit",
-            "nofile=1024:1024",
-            "--ulimit",
-            "fsize=2147483648:2147483648",
-            "--tmpfs",
-            "/tmp:rw,noexec,nosuid,nodev,size=128m",
-            "--user",
-            "65532:65532",
-            "--workdir",
-            "/work",
-            "--env",
-            "HOME=/tmp",
-            "--env",
-            "TMPDIR=/tmp",
+            *container.sealed_options(),
+            "--workdir", "/work",
             "--env",
             "RUSTUP_HOME=/assets/rustup",
             "--env",
             "CARGO_HOME=/assets/cargo",
             "--env",
             "PATH=/assets/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            *_mount(source_root, "/source", True),
-            *_mount(package_root, "/trusted/package", True),
-            *_mount(trusted, "/trusted/rendered", True),
-            *_mount(Path(current["paths"]["verus_root"]), "/assets/verus", True),
-            *_mount(Path(current["paths"]["rustup_home"]), "/assets/rustup", True),
-            *_mount(Path(current["paths"]["cargo_home"]), "/assets/cargo", True),
-            *_mount(output, "/output", False),
+            *container.mount(source_root, "/source", True),
+            *container.mount(package_root, "/trusted/package", True),
+            *container.mount(trusted, "/trusted/rendered", True),
+            *container.mount(Path(current["paths"]["verus_root"]), "/assets/verus", True),
+            *container.mount(Path(current["paths"]["rustup_home"]), "/assets/rustup", True),
+            *container.mount(Path(current["paths"]["cargo_home"]), "/assets/cargo", True),
+            *container.mount(output, "/output", False),
         ]
         run_id = f"{run_dir.name}-{uuid.uuid4().hex}"
         result = container.run_container(

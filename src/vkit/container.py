@@ -23,6 +23,21 @@ _CID = re.compile(r"^[0-9a-f]{64}$")
 _RUN_ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
 
+def mount(source: Path, target: str, readonly: bool) -> list[str]:
+    if "," in str(source) or "," in target:
+        raise ValueError("Docker bind paths cannot contain commas")
+    return ["--mount", f"type=bind,source={source},target={target}" + (",readonly" if readonly else "")]
+
+
+def sealed_options() -> list[str]:
+    return ["--network=none", "--read-only", "--cap-drop=ALL",
+            "--security-opt=no-new-privileges", "--pids-limit=256", "--memory=4g",
+            "--cpus=2", "--ulimit", "nofile=1024:1024", "--ulimit",
+            "fsize=2147483648:2147483648", "--tmpfs",
+            "/tmp:rw,noexec,nosuid,nodev,size=128m", "--user", "65532:65532",
+            "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp"]
+
+
 @dataclass(frozen=True)
 class ContainerRun:
     exit: proc.Exit

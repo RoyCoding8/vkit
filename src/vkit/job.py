@@ -25,6 +25,7 @@ class RegisteredCheck:
     backend: dict[str, Any]
     inputs: dict[str, Any]
     source: CapturedSource
+    authority: dict[str, Any] | None = None
 
     @classmethod
     def resolve(
@@ -35,6 +36,7 @@ class RegisteredCheck:
         backend: dict[str, Any],
         inputs: dict[str, Any],
         source: CapturedSource,
+        authority: dict[str, Any] | None = None,
     ) -> RegisteredCheck:
         return cls(
             manifest.require(check_id),
@@ -44,6 +46,7 @@ class RegisteredCheck:
             backend,
             inputs,
             source,
+            authority,
         )
 
     def payload(self) -> dict[str, Any]:
@@ -56,6 +59,7 @@ class RegisteredCheck:
             "backend": self.backend,
             "inputs": self.inputs,
             "source": _source_json(self.source),
+            **({"authority": self.authority} if self.authority is not None else {}),
         }
 
 
@@ -65,6 +69,7 @@ class FormalGoal:
     component: FormalComponent
     execution_identity: dict[str, Any]
     source: CapturedSource
+    authority: dict[str, Any] | None = None
 
     def payload(self) -> dict[str, Any]:
         semantic = self.execution_identity["semantic"]
@@ -78,6 +83,7 @@ class FormalGoal:
             "checker_sha256": canonical_digest(semantic),
             "execution_identity": self.execution_identity,
             "source": _source_json(self.source),
+            **({"authority": self.authority} if self.authority is not None else {}),
         }
 
 

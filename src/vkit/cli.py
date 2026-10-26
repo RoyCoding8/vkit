@@ -85,6 +85,15 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_gate(args: argparse.Namespace) -> int:
+    if args.candidate is not None or args.target is not None or args.output is not None:
+        from .ci import run_gate
+        from .paths import open_project
+
+        if not all((args.candidate, args.target, args.output)):
+            raise Refused("the committed gate requires --candidate, --target and --output", EXIT_INVALID)
+        report = run_gate(open_project(args.project), args.candidate, args.target, Path(args.output))
+        _emit(report, args.json, f"{report['verdict']}: {report['reason']}")
+        return EXIT_OK if report["verdict"] == "READY" else EXIT_FAILED if report["verdict"] == "FAILED" else EXIT_BLOCKED
     report = query.status(_context(args))["gate"]
     lines = [f"{report['verdict']}: {report['reason']}"]
     lines += [f"  {c['state']:<14} {c['id']}" for c in report["checks"]]
@@ -437,7 +446,10 @@ def build_parser() -> argparse.ArgumentParser:
     command(sub, "doctor", "report whether this project's checks could run")
     status = command(sub, "status", "show every check's freshness and the gate")
     status.add_argument("--path", action="append", help="only checks that read this path (repeatable)")
-    command(sub, "gate", "READY only if every check passed against the current inputs")
+    gate = command(sub, "gate", "check current inputs, or freshly check a committed candidate under target policy")
+    gate.add_argument("--candidate", help="exact full combined-candidate commit supplied by the trusted host")
+    gate.add_argument("--target", help="exact full protected target commit supplied by the trusted host")
+    gate.add_argument("--output", help="new private evidence directory outside the candidate repository")
     command(sub, "features", "show the feature map and which features are verified now")
     tools = command(sub, "tools", "discover enabled tools or change their saved availability")
     tools.add_argument("--query", default="", help="filter enabled tools by words")

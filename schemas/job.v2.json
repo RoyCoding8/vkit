@@ -5,6 +5,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "job_id", "subject", "source"],
   "properties": {
+    "authority": {"$ref":"#/$defs/authority"},
     "schema_version": {"const": 2},
     "job_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "subject": {
@@ -54,6 +55,7 @@
     }
   ],
   "$defs": {
+    "authority": {"type":"object","additionalProperties":false,"required":["kind","target_commit","target_tree","manifest_blob_oid","manifest","implementation"],"properties":{"kind":{"const":"target_policy"},"target_commit":{"type":"string","pattern":"^([0-9a-f]{40}|[0-9a-f]{64})$"},"target_tree":{"type":"string","pattern":"^([0-9a-f]{40}|[0-9a-f]{64})$"},"manifest_blob_oid":{"type":"string","pattern":"^([0-9a-f]{40}|[0-9a-f]{64})$"},"manifest":{"type":"object"},"implementation":{"type":"object","additionalProperties":{"type":"string","pattern":"^[0-9a-f]{64}$"}}}},
     "source": {
       "type": "object",
       "additionalProperties": false,

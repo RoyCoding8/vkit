@@ -256,6 +256,22 @@ def capture_git_commit(
     return CapturedSource("git_commit", object_format, commit, tree, parents, files)
 
 
+def git_ancestor(root: str | os.PathLike[str] | Project, ancestor: str, source: CapturedSource) -> bool:
+    """Read hashed parent objects directly, without grafts or shallow-history shortcuts."""
+    project_root = _root(root)
+    pending = [source.commit]
+    seen = set()
+    while pending:
+        oid = pending.pop()
+        if oid == ancestor:
+            return True
+        if oid not in seen:
+            seen.add(oid)
+            _, _, parents = _commit_metadata(project_root, oid, source.object_format)
+            pending.extend(parents)
+    return False
+
+
 def capture_working_tree(
     root: str | os.PathLike[str] | Project, paths: Iterable[str] | None = None
 ) -> CapturedSource:

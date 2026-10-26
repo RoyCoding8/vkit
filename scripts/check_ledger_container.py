@@ -117,7 +117,7 @@ def container_command(image_id: str, base: list[str], trusted: Path, source: Pat
         *mount(verus_root, "/assets/verus"),
         *mount(rustup_home, "/assets/rustup"),
         *mount(cargo_home, "/assets/cargo"),
-        "--tmpfs", "/output:rw,nosuid,nodev,size=2048m",
+        "--tmpfs", "/output:rw,exec,nosuid,nodev,size=2048m",
         "--env", "RUSTUP_HOME=/assets/rustup", "--env", "CARGO_HOME=/assets/cargo",
         "--env", "PATH=/assets/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         image_id, *command,
@@ -171,6 +171,7 @@ def execute(image_id: str, run_id: str, cidfile: Path, command: list[str],
         if cidfile.is_file():
             container_id = cidfile.read_text(encoding="utf-8").strip()
             if container_id and inspect_label(container_id) == run_id:
+                owned_label = True
                 if output is not None:
                     output.mkdir(parents=True, exist_ok=True)
                     copied = run(["docker", "cp", f"{container_id}:/output/.", str(output)], check=False)
@@ -289,12 +290,13 @@ def main() -> int:
             {"target": "/assets/verus", "read_only": True},
             {"target": "/assets/rustup", "read_only": True},
             {"target": "/assets/cargo", "read_only": True},
-            {"target": "/tmp", "kind": "tmpfs", "size": "128 MiB"},
-            {"target": "/output", "kind": "tmpfs", "size": "2 GiB"},
+            {"target": "/tmp", "kind": "tmpfs", "size": "128 MiB", "exec": False},
+            {"target": "/output", "kind": "tmpfs", "size": "2 GiB", "exec": True},
         ],
         "container_policy": {"network": "none", "user": "65532:65532", "cap_drop": "ALL",
                              "no_new_privileges": True, "rootfs_read_only": True,
-                             "tmpfs": {"/tmp": "128 MiB", "/output": "2 GiB"},
+                             "tmpfs": {"/tmp": {"size": "128 MiB", "exec": False},
+                                       "/output": {"size": "2 GiB", "exec": True}},
                              "memory": "4 GiB", "cpus": 2, "pids": 256,
                              "home_token_socket_mounts": []},
         "checks": {},

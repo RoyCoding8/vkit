@@ -90,7 +90,7 @@ def test_startup_scope_cannot_be_widened_by_discovery_or_known_names(make_projec
         if exposure == "named":
             assert {tool["name"] for tool in listed} <= {
                 "help", "status", "features", "check_run", "run_get", "run_cancel", "run_wait",
-                "evidence_export", "evidence_replay", "propose", "gate"}
+                "evidence_export", "evidence_replay", "propose", "gate", "verify"}
             if not scope:
                 assert [tool["name"] for tool in listed] == ["help"]
         result, error = client.call("help", all=True, limit=25)

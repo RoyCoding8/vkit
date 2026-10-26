@@ -325,7 +325,7 @@ def test_console_lists_only_core_repository_tools(make_project):
         config = _config(port)
         names = {tool["name"] for tool in config["managed_tools"]}
         assert names == {"status", "features", "check_run", "run_get", "run_cancel", "run_wait",
-                         "evidence_export", "evidence_replay", "propose", "gate"}
+                         "evidence_export", "evidence_replay", "propose", "gate", "verify"}
         assert "operations" not in config
         assert all(tool["category"] == "repository" for tool in config["managed_tools"])
         status, raw, _ = _post(port, "/api/call", {

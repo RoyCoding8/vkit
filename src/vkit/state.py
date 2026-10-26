@@ -11,6 +11,7 @@ from .formal.policy import FormalComponent, VerificationRequest, WorkingTree
 from .inputs import InputSet, Snapshot, capture_working_tree
 from .job import FormalGoal, RegisteredCheck, seal_job
 from .manifest import Manifest
+from .paths import ProjectError
 from .store import Store
 from .verifiers.spec import CheckSpec
 
@@ -107,7 +108,7 @@ class FormalState:
             "description": self.component.contract,
             "category": "source_verification",
             "assurance": "trusted_engine",
-            "scope": "whole working tree",
+            "scope": "required_api",
             "required": self.required,
             "state": self.freshness.value,
             "key": self.key,
@@ -201,86 +202,39 @@ def check_states(
     return states
 
 
-def formal_states(
-    manifest: Manifest, store: Store, snapshot: Snapshot
-) -> list[FormalState]:
+def formal_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[FormalState]:
     approved = store.approved()
     running: dict[str, list[str]] = {}
     for record in store.runs(limit=200):
-        if (
-            record["state"] in ("queued", "running")
-            and record.get("subject", {}).get("kind") == "formal_goal"
-        ):
-            running.setdefault(record.get("job_id", record["key"]), []).append(
-                record["run_id"]
-            )
+        if (record["state"] in ("queued", "running")
+                and record.get("subject", {}).get("kind") == "formal_goal"):
+            running.setdefault(record["job_id"], []).append(record["run_id"])
     states = []
-    for component_id in sorted(manifest.components):
-        component = manifest.components[component_id]
-        last = store.latest_for("formal_goal", component_id)
-        if not _formal_approval_matches(approved, component):
-            states.append(
-                FormalState(
-                    component,
-                    None,
-                    Freshness.NOT_APPROVED,
-                    None,
-                    last,
-                    (),
-                    "formal policy and package are not accepted",
-                )
-            )
-            continue
-        try:
-            source = capture_working_tree(snapshot.project)
-            identity = _resolve_execution(component)
-            from .inputs import canonical_digest
+    source = None
+    for component in sorted(manifest.components.values(), key=lambda item: item.id):
+        last = store.latest_for("formal_goal", component.id)
+        key, current, detail = None, None, "formal policy and package are not accepted"
+        freshness = Freshness.NOT_APPROVED
+        if _formal_approval_matches(approved, component):
+            try:
+                identity = _resolve_execution(component)
+                from .inputs import canonical_digest
 
-            checker_sha256 = canonical_digest(identity["semantic"])
-            if not _formal_approval_matches(approved, component, checker_sha256):
-                states.append(
-                    FormalState(
-                        component,
-                        None,
-                        Freshness.NOT_APPROVED,
-                        None,
-                        last,
-                        (),
-                        "formal checker identity is not accepted",
-                    )
-                )
-                continue
-            request = VerificationRequest(component.id, WorkingTree())
-            job = seal_job(FormalGoal(request, component, identity, source).payload())
-            key = job["job_id"]
-            current = store.evidence_for("formal_goal", component_id, key)
-            freshness = (
-                _FRESH[current["result"]]
-                if current is not None
-                else Freshness.STALE if last is not None else Freshness.MISSING
-            )
-            states.append(
-                FormalState(
-                    component,
-                    key,
-                    freshness,
-                    current,
-                    last,
-                    tuple(running.get(key, ())),
-                )
-            )
-        except Exception as exc:
-            states.append(
-                FormalState(
-                    component,
-                    None,
-                    Freshness.BLOCKED,
-                    None,
-                    last,
-                    (),
-                    f"{type(exc).__name__}: {exc}",
-                )
-            )
+                if _formal_approval_matches(approved, component, canonical_digest(identity["semantic"])):
+                    if source is None:
+                        source = capture_working_tree(snapshot.project)
+                    request = VerificationRequest(component.id, WorkingTree())
+                    key = seal_job(FormalGoal(request, component, identity, source).payload())["job_id"]
+                    current = store.evidence_for("formal_goal", component.id, key)
+                    freshness = (_FRESH[current["result"]] if current is not None else
+                                 Freshness.STALE if last is not None else Freshness.MISSING)
+                    detail = None
+                else:
+                    detail = "formal checker identity is not accepted"
+            except (OSError, ValueError, RuntimeError, ProjectError) as exc:
+                freshness, detail = Freshness.BLOCKED, str(exc)
+        states.append(FormalState(component, key, freshness, current, last,
+                                  tuple(running.get(key, ())), detail))
     return states
 
 

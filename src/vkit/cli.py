@@ -72,6 +72,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     lines = [f"gate: {report['gate']['verdict']} - {report['gate']['reason']}"]
     for check in report["checks"]:
         lines.append(f"  {check['state']:<14} {check['id']}  [{check['category']}] {check['inputs']['scope']}")
+    for component in report["formal"]:
+        lines.append(f"  {component['state']:<14} {component['id']}  [verus_source, required_api]")
+        if component["detail"]:
+            lines.append(f"    {component['detail']}")
     for path in report["unmapped_paths"]:
         lines.append(f"  no check reads {path}")
     if report["needs_run"]:
@@ -84,6 +88,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
     report = query.status(_context(args))["gate"]
     lines = [f"{report['verdict']}: {report['reason']}"]
     lines += [f"  {c['state']:<14} {c['id']}" for c in report["checks"]]
+    lines += [f"  {c['state']:<14} {c['id']} [formal]" for c in report.get("formal", [])]
     _emit(report, args.json, "\n".join(lines))
     return _VERDICT_EXIT[report["verdict"]]
 

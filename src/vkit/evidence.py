@@ -125,20 +125,6 @@ def backend_identity(check) -> dict[str, Any]:
     }
 
 
-def freeze(root: Path, inputs: dict[str, Any], destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=False)
-    for item in inputs["files"]:
-        relative = item["path"]
-        source = (root / relative).resolve()
-        if not source.is_relative_to(root.resolve()):
-            raise ValueError(f"input escapes repository: {relative}")
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(source.read_bytes())
-        if file_digest(target) != item["sha256"]:
-            raise ValueError(f"input changed while capturing snapshot: {relative}")
-
-
 def assurance(check) -> str:
     return {"lean": "kernel_proof", "tlc": "finite_model"}.get(
         check.kind.value, getattr(check, "assurance", "empirical")

@@ -321,13 +321,26 @@ function activityRow(run) {
   const box = el("div", null, "activity-row"),
     copy = el("div", null, "row-copy");
   copy.append(
-    link(run.check_id, () => {
+    link(run.subject?.id || run.check_id, () => {
       location.hash = `runs/${encodeURIComponent(run.run_id)}`;
     }),
     el("p", date(run.ended_at || run.started_at)),
   );
   box.append(copy, badge(run.result || run.state));
   return box;
+}
+function formalPanel() {
+  return panel(
+    "Formal components",
+    "Required API contracts checked by Verus under the recorded trusted engine. Each pass covers its declared component.",
+    report.formal.map((component) => {
+      const row = el("div", null, "check-row"), copy = el("div", null, "row-copy");
+      copy.append(el("strong", component.id), el("p", component.detail || component.description));
+      if (component.last) copy.append(action("Inspect last run", `runs/${encodeURIComponent(component.last.run_id)}`));
+      row.append(copy, badge(checkState(component)));
+      return row;
+    }),
+  );
 }
 function overview() {
   const fragment = document.createDocumentFragment(),
@@ -381,6 +394,7 @@ function overview() {
     metrics.append(metric);
   }
   fragment.append(metrics);
+  if (report.formal?.length) fragment.append(formalPanel());
   const grid = el("div", null, "overview-grid"),
     left = el("div", null, "stack"),
     right = el("div", null, "stack");
@@ -601,6 +615,7 @@ function checks() {
     grid.wrap,
   );
   update();
+  if (report.formal?.length) fragment.append(formalPanel());
   return fragment;
 }
 function runHistory() {
@@ -619,7 +634,7 @@ function runHistory() {
       ...shown.map((r) => {
         const copy = el("div");
         copy.append(
-          link(r.check_id, () => {
+          link(r.subject?.id || r.check_id, () => {
             location.hash = `runs/${encodeURIComponent(r.run_id)}`;
           }),
           el("p", r.run_id),
@@ -1427,7 +1442,7 @@ async function refreshRun() {
   box.replaceChildren();
   const header = el("div", null, "panel-header"),
     title = el("div");
-  title.append(el("h2", detail.check_id), el("p", id));
+  title.append(el("h2", detail.subject?.id || detail.check_id), el("p", id));
   header.append(title, badge(detail.outcome?.result || detail.state));
   box.append(header);
   const body = el("div", null, "panel-body"),

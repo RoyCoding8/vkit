@@ -160,6 +160,22 @@ class Store:
             worker = read_json(self.run_dir(run_id) / "worker.json")
             if worker is not None and not _process_alive(worker["pid"]):
                 record = {**record, "state": "interrupted"}
+        if (record is not None and record["state"] == "interrupted"
+                and record.get("container_cleanup", {}).get("status") not in {"removed", "absent"}):
+            from .container import control_path, recover_attempt
+
+            if control_path(self.run_dir(run_id)).is_file():
+                try:
+                    with self.hold(run_id):
+                        current = read_json(self.run_dir(run_id) / "record.json")
+                        if current["state"] in {"queued", "running", "interrupted"}:
+                            record = {**current, "state": "interrupted", "ended_at": now(),
+                                      "container_cleanup": recover_attempt(self.run_dir(run_id))}
+                            self.save(record)
+                        else:
+                            record = current
+                except RuntimeError:
+                    record = read_json(self.run_dir(run_id) / "record.json")
         return record
 
     def save(self, record: dict[str, Any]) -> None:
@@ -224,33 +240,7 @@ class Store:
         return read_json(self.root / "latest" / directory / "latest.json")
 
     def evidence(self, check_id: str, key: str) -> dict[str, Any] | None:
-        pointer = self.evidence_for("registered_check", check_id, key)
-        if pointer is not None:
-            return pointer
-        return self._legacy_evidence(check_id, key)
-
-    def _legacy_evidence(self, check_id: str, key: str) -> dict[str, Any] | None:
-        from .evidence import validate_record
-        from .inputs import canonical_digest
-
-        pointer = read_json(self.root / "evidence" / check_id / f"{key}.json")
-        if pointer is None:
-            return None
-        try:
-            record = self.record(pointer["run_id"])
-            if (
-                record is None
-                or record["state"] != "done"
-                or record.get("key") != key
-                or record.get("check_id") != check_id
-                or record["outcome"]["result"] != pointer["result"]
-                or canonical_digest(record) != pointer["record_sha256"]
-                or not validate_record(record, self.run_dir(pointer["run_id"]))
-            ):
-                return None
-        except (ValueError, KeyError, TypeError, OSError):
-            return None
-        return pointer
+        return self.evidence_for("registered_check", check_id, key)
 
     def latest(self, check_id: str) -> dict[str, Any] | None:
         return self.latest_for("registered_check", check_id) or read_json(

@@ -124,7 +124,7 @@ def run_view(ctx: Context, run_id: str, *, log: str = "stdout", offset: int = 0,
 
 
 def runs(ctx: Context, limit: int = 50) -> list[dict[str, Any]]:
-    return [{k: r.get(k) for k in ("run_id", "check_id", "state", "started_at", "ended_at", "worktree")}
+    return [{k: r.get(k) for k in ("run_id", "subject", "check_id", "state", "started_at", "ended_at", "worktree")}
             | {"result": (r.get("outcome") or {}).get("result"),
                "reason": (r.get("outcome") or {}).get("reason")}
             for r in ctx.store.runs(limit)]

@@ -2,7 +2,7 @@ name: Ledger qualification
 
 on:
   push:
-    branches: [main, codex/formal-qualification]
+    branches: [main]
     paths:
       - .github/workflows/ledger-qualification.yml
       - examples/verus-qualification/**

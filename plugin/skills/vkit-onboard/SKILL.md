@@ -17,7 +17,7 @@ description: Set up vkit verification for a repository. Use when the user asks t
 
 1. Run `vkit project inspect --project <root>`.
 2. Review the declared test commands and their source file and line. Report ambiguity rather than choosing silently.
-3. Draft schema version 2 checks with the user.
+3. Draft checks and any supported formal components using the installed version-3 manifest schema.
 4. Draft the feature map.
 5. Submit both through `propose`, including any new driver files.
 6. Stop and ask the user to review with `vkit proposals` and apply with `vkit accept --proposal <digest>`.
@@ -27,6 +27,7 @@ description: Set up vkit verification for a repository. Use when the user asks t
 | Artifact | Required content |
 | --- | --- |
 | Check | Prefer a scenario driver that runs the real application. |
+| Formal component | Bind supported source APIs to the installed package's fixed contracts. Keep model assumptions and coverage explicit. |
 | Scenario report | Scenario ID, PASS or FAIL, and the observed result. |
 | `inputs` | Files read by the check. Unrelated edits should not make its evidence stale. |
 | Feature entry | User-visible behavior, how the user reaches it, entry points, covering checks, and unverified gaps. |

@@ -12,12 +12,19 @@ from typing import Any
 FIXABLE = {"stale", "missing", "fresh_fail"}
 
 
+def _required(status: dict[str, Any]) -> list[dict[str, Any]]:
+    return status["checks"] + [item for item in status["formal"] if item["required"]]
+
+
 def _summary(status: dict[str, Any]) -> str:
     gate = status["gate"]
     lines = [f"vkit gate: {gate['verdict']} - {gate['reason']}"]
-    lines += [f"  {c['state']}: {c['id']}" for c in status["checks"] if c["state"] != "fresh_pass"]
+    lines += [f"  {c['state']}: {c['id']}" for c in _required(status) if c["state"] != "fresh_pass"]
     if status["needs_run"]:
         lines.append("Run the stale checks with the vkit check_run tool (needed=true), then read the gate.")
+    for item in status["formal"]:
+        if item["required"] and item["state"] in FIXABLE:
+            lines.append(f"Run vkit verify {item['id']} --working-tree, or the MCP verify tool, then inspect the run and gate.")
     return "\n".join(lines)
 
 
@@ -27,7 +34,7 @@ def handle(event: str, payload: dict[str, Any], project: str) -> dict[str, Any]:
     status = query.status(query.open_context(project))
     if event == "SessionStart":
         return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": _summary(status)}}
-    fixable = [c["id"] for c in status["checks"] if c["state"] in FIXABLE]
+    fixable = any(c["state"] in FIXABLE for c in _required(status))
     if status["gate"]["verdict"] == "READY" or payload.get("stop_hook_active") or not fixable:
         return {} if status["gate"]["verdict"] == "READY" else {"systemMessage": _summary(status)}
     return {"decision": "block", "reason": _summary(status)}

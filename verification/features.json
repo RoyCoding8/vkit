@@ -3,7 +3,7 @@
   "features": [
     {
       "id": "status",
-      "behavior": "Shows each check's freshness against the current files, what its evidence establishes, and which checks read a path.",
+      "behavior": "Shows registered checks and formal components, their evidence freshness, and affected source paths.",
       "how_to_reach": [
         "vkit status --project <repo> [--path <file>]",
         "MCP tool status"
@@ -37,20 +37,22 @@
         "vkit-tests"
       ],
       "gaps": [
-        "Linux process-group containment is untested locally; CI covers it"
+        "Platform-specific process containment is exercised in CI."
       ]
     },
     {
       "id": "gate",
-      "behavior": "READY only when every registered check passed against the current inputs.",
+      "behavior": "Requires current passing evidence for registered checks and required formal components; the protected CLI gate freshly checks exact Git candidates under target policy.",
       "how_to_reach": [
         "vkit gate",
+        "vkit gate --candidate <full-oid> --target <full-oid> --output <new-private-directory>",
         "MCP tool gate",
         "plugin Stop hook"
       ],
       "entry_points": [
         "src/vkit/state.py",
-        "plugin/scripts/vkit_hook.py"
+        "plugin/scripts/vkit_hook.py",
+        "src/vkit/ci.py"
       ],
       "covered_by": [
         "vkit-e2e",
@@ -60,7 +62,7 @@
     },
     {
       "id": "acceptance",
-      "behavior": "Only a human-accepted check definition runs; agents can only propose.",
+      "behavior": "Local acceptance binds check or formal policy and checker identity; MCP clients can propose changes.",
       "how_to_reach": [
         "vkit accept",
         "vkit proposals",
@@ -129,7 +131,7 @@
     },
     {
       "id": "console",
-      "behavior": "A local console for evidence, registered check runs and cancellation, built-in computations, and saved display settings.",
+      "behavior": "A local console for evidence, registered check runs and cancellation, gates, and saved display settings.",
       "how_to_reach": [
         "vkit console --project <repo>"
       ],
@@ -172,7 +174,26 @@
       ],
       "covered_by": [],
       "gaps": [
-        "no check exercises TLC: Java is not installed here and the old self-verification model was deleted with the design it described"
+        "Real TLC controls run in the formal CI workflow; no registered self-check invokes TLC."
+      ]
+    },
+    {
+      "id": "formal-components",
+      "behavior": "Checks six declared resource-ledger APIs against the owned mathematical package and fixed contracts, with frozen source and scoped evidence.",
+      "how_to_reach": [
+        "vkit verify <component> --candidate <ref>",
+        "MCP tool verify"
+      ],
+      "entry_points": [
+        "src/vkit/formal/service.py",
+        "src/vkit/formal/verus.py",
+        "src/vkit/formal/packages/resource_ledger/ledger.rs"
+      ],
+      "covered_by": [
+        "vkit-tests"
+      ],
+      "gaps": [
+        "Actual source proofs and deliberate-defect controls run in Ledger qualification CI; the self-check covers orchestration behavior."
       ]
     }
   ]

@@ -10,6 +10,7 @@ description: Make a change in a repository vkit verifies and prove it with recor
 | Item | Meaning |
 | --- | --- |
 | Registered check | Records scoped evidence about the current accepted definition and inputs. |
+| Formal component | Checks declared source APIs against an accepted owned mathematical package. |
 | Input edit | Makes evidence stale for checks that read those inputs. |
 | Checker or policy change | Can also invalidate evidence and require renewed acceptance. |
 | Passing evidence | Retains the check's category and scope. It does not establish general correctness. |
@@ -30,6 +31,7 @@ description: Make a change in a repository vkit verifies and prove it with recor
 2. If the report is vague, use `features` with a query to find the behavior and how a user reaches it.
 3. Make the change.
 4. Call `check_run` with `needed: true` to run the needed checks.
+   For required components listed in `formal_needs_run`, call `verify` with the component, the `implements` goal and the intended source selector. Read its exact schema first.
 5. Read each attempt with `run_get`. A FAIL reports the failed scenarios or tests and their observations.
 6. Fix failures and repeat until `gate` returns READY.
 
@@ -37,7 +39,7 @@ description: Make a change in a repository vkit verifies and prove it with recor
 
 | Gate | Meaning | Action |
 | --- | --- | --- |
-| READY | Every registered check passed against current inputs. | Report the evidence category and scope of each check. |
+| READY | All registered checks and required formal components have current passing evidence. | Report the evidence category and scope of each result. |
 | REJECTED | A check ran and failed. | Fix the code. Do not weaken the check. |
 | BLOCKED | No valid answer yet. | Read the reason and resolve it before claiming a pass. |
 

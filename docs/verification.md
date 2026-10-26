@@ -1,156 +1,110 @@
 # Verification semantics
 
-## Core terms
+VKit separates accepted requirements, candidate source, verification execution and retained evidence. A passing result establishes only the property and scope recorded by its method.
 
-| Term | Meaning |
+## Components
+
+| Component | Responsibility |
 | --- | --- |
-| Check | Registered entry in `verification/manifest.json`, schema version 3. Acceptance binds its definition and checker identity. |
-| Formal component | Candidate source and six API bindings checked against a fixed owned package and accepted policy. |
-| Job | Content-derived identity binding the subject, frozen source, accepted policy/checker and any baseline. |
-| Run | Unique execution attempt for a job. |
+| Mathematical package | Own the model, expected contracts, proof sources and verifier pins. |
+| Component policy | Bind candidate API names, source entrypoint and parameters to that package. |
+| Job | Freeze source and bind accepted policy, package and checker identities. |
+| Worker | Check actual tools, execute the required procedure and publish evidence. |
+| Receipt | Record obligations, scope, actual tool inventory and retained artifact hashes. |
+| Gate | Require intact passing evidence for the intended source and policy authority. |
 
-## Read each result dimension separately
+CLI and MCP share the same job service, store and worker lifecycle. Formal requests select a component, the `implements` goal and a source selector. They cannot supply replacement formulas, checker commands or a smaller obligation set.
 
-| Dimension | Values and meaning |
+## Resource-ledger contract
+
+`vkit.resource-ledger` provides one generic positive-sized `Ledger<N>` model. Its invariant requires positive active amounts, unique reservation IDs, bounded record count, cached usage equal to the map's reservation total, and usage at most capacity. IDs, owners, capacities and amounts are `u32`; batch capacity is three; command arrays have compile-time length `M`.
+
+| Binding | Required behavior |
 | --- | --- |
-| Execution | `queued`, `running`, `done`, `interrupted`. |
-| Check outcome | `PASS`: required evidence accepted. `FAIL`: check policy failed. `BLOCKED`: no valid decision. |
-| Claim outcome | `established`, `refuted`, or `unknown`, within the recorded model and assumptions. |
-| Assurance | `empirical`, `finite_model`, `kernel_proof`, or `trusted_engine`, according to the method. |
-| Freshness | `fresh_pass`, `fresh_fail`, `fresh_blocked`, `stale`, `missing`, `not_approved`. |
+| `new` | Clear supplied preallocated slots and construct a valid empty ledger. |
+| `reserve` | Reject zero amount, duplicate ID, full storage or exceeded capacity in that order. Success inserts the exact record; rejection preserves state. |
+| `release` | Check existence before ownership. Success removes the ID and returns its amount; rejection preserves state. |
+| `reserve_batch` | Check count first, process requests in order and return the first failing index. Commit all requests together or preserve the original state. |
+| `apply_command` | Match the model's operation and tagged response. |
+| `run_commands` | Relate every state and response in an `M+1` trace to the command model. Empty traces preserve the initial state. |
 
-| Example | Check outcome | Claim outcome |
-| --- | --- | --- |
-| Rejected Lean proof | `FAIL` | `unknown`. The theorem has not been refuted. |
-| Real TLC counterexample | `FAIL` | `refuted` in the finite model. |
-| External rejection or uncertainty | `BLOCKED` | `unknown`. |
-| Rejected Verus obligation | `BLOCKED` | `unknown`. No validated source counterexample is claimed. |
+The verifier freshly checks and exports the owned library, then the candidate, then an unchanged expected client that imports both. The client calls all six bound symbols under the accepted preconditions and requires the owned postconditions. Stronger candidate preconditions or weaker postconditions do not discharge that check. Fixed strict arguments reject unchecked bodies and partial verification.
 
-## Gate decisions
+The result is `ledger.source.v1`, method `verus_source`, assurance `trusted_engine`, coverage `required_api`. Extra exports and surrounding application code are unclaimed. The trust boundary includes Verus, Rust, vstd and SMT solving. This is source verification, not independently checked kernel-certificate evidence or a source-to-binary theorem. Resource aborts remain possible; source loop measures do not establish an operational step bound.
 
-| Gate | Condition |
+## Component configuration
+
+A version-3 manifest has `checks` and an optional `formal.components` list. Each component follows this shape:
+
+```json
+{
+  "id": "allocation",
+  "package": {
+    "id": "vkit.resource-ledger",
+    "version": "0.1.0",
+    "sha256": "<installed-package-sha256>"
+  },
+  "contract": "ledger.source.v1",
+  "source": {"entry": "src/allocation.rs"},
+  "profile": "verus-linux-x86_64-v1",
+  "parameters": {"max_records": 3},
+  "bindings": {
+    "new": "api::new",
+    "reserve": "api::reserve",
+    "release": "api::release",
+    "reserve_batch": "api::reserve_batch",
+    "apply_command": "api::apply_command",
+    "run_commands": "api::run_commands"
+  },
+  "required": true
+}
+```
+
+Bindings are relative Rust identifier paths in the candidate library. The source uses the fixed owned ledger type; this profile does not translate arbitrary Rust representations. See the [schema](../schemas/manifest.v3.json) and [API reuse fixtures](../examples/ledger-reuse/README.md).
+
+Read the installed package digest with:
+
+```sh
+uv run python -c "from vkit.formal.ledger import load_package; print(load_package().identity.sha256)"
+```
+
+Acceptance binds policy, package and checker digests. Changing any of them requires renewed acceptance. Submission retains the accepted checker digest; the worker hashes actual tool bytes before verification and records their inventory in the receipt. Host paths do not affect a formal job's semantic identity.
+
+The initial profile requires Linux x86_64 and Docker. Host configuration supplies `VKIT_VERUS_IMAGE`, `VKIT_VERUS_ARCHIVE`, `VKIT_VERUS_ROOT`, `VKIT_RUSTUP_HOME` and `VKIT_CARGO_HOME`. The image must be an installed full `sha256:` ID. The [package pins](../src/vkit/formal/packages/resource_ledger/upstream.json) specify official Verus `0.2026.10.18.7d82994`, Rust `1.99.1` and Z3 `4.16.0`. Missing or changed assets block checking. Dependency acquisition and candidate build scripts do not run inside verification.
+
+## Source and execution
+
+| Source | Identity and capture |
 | --- | --- |
-| `READY` | All registered checks and required formal components have intact passing evidence for the intended source. |
-| `REJECTED` | A current check failed its policy. |
-| `BLOCKED` | Any other state. |
+| Formal working tree | Raw tracked and untracked nonignored bytes. Provisional evidence. |
+| Formal Git commit | Immutable raw commit, tree and blob identities, file modes and bytes. Dirty checkout edits cannot change the subject. |
+| Registered local check | Selected declared inputs, with CRLF normalized to LF for content identity. |
 
-A READY gate preserves each check's evidence category. It does not promote tests into proofs.
+Formal capture rejects secret-looking paths, links, submodules and unsupported files. Registered local selectors exclude secret-looking paths. Neither policy detects secret content. Declare source, specification, configuration and trusted dependencies; VKit cannot infer arbitrary dependency closures.
 
-## Supported checks
+Formal attempts run in restricted containers with read-only source/tools, no network, non-root execution and private output. Cancellation and recovery address only the attempt's owned container. Retained evidence rejects links, special files and unlisted artifacts, and has a post-execution limit of 10,000 files and 512 MiB. This is not an aggregate execution-time disk quota. Local registered adapters retain service-user filesystem permissions.
 
-| Kind | Evidence and scope |
+## Results and evidence
+
+| Dimension | Meaning |
 | --- | --- |
-| `scenario` | Named observations in a structured artifact, with optional measurement budgets. |
-| `pytest`, `node_test` | Reports for every required test. |
-| `property` | Sampled Hypothesis tests with accepted generator settings. |
-| `static` | SARIF findings compared with an accepted baseline. |
-| `lean` | Kernel-checked theorems and an axiom audit. Supports reviewed-source and unreviewed-comparator profiles. |
-| `tlc` | Exhaustive finite-model checking at recorded bounds and configuration. |
-| `external` | Pinned producer and independently pinned checker with a claim-bound receipt. |
+| Execution state | `queued`, `running`, `done` or `interrupted`. |
+| Outcome | `PASS`, `FAIL` or `BLOCKED`, according to the method. |
+| Claim outcome | `established`, `refuted` or `unknown`, within recorded assumptions and scope. |
+| Assurance | `empirical`, `finite_model`, `kernel_proof` or `trusted_engine`. |
+| Freshness | Whether retained evidence still matches the intended source, policy and checker. |
 
-See the [backend protocol](backend-protocol.md) for extension. The installed package excludes the retired utility catalog and build check.
+A rejected Lean proof leaves its theorem unknown. A TLC counterexample refutes a property in that finite configuration. A failed Verus obligation is `BLOCKED` with an unknown claim; VKit does not present it as a validated source counterexample. Tests retain empirical assurance.
 
-## Owned formal package
+Each submission creates a unique run for a content-derived job. Retry creates a new run for the same frozen job. Worker loss is interrupted execution, never a pass. A bounded wait can time out while its worker continues.
 
-| Field | Initial contract |
-| --- | --- |
-| Package | `vkit.resource-ledger`, containing one generic `Ledger<N>` model and fixed expected contracts. |
-| Claim | `ledger.source.v1`, method `verus_source`, assurance `trusted_engine`, scope `required_api`. |
-| Required bindings | `new`, `reserve`, `release`, `reserve_batch`, `apply_command`, `run_commands`. |
-| Properties | Map accounting, capacity, owner checks, exact error/result behavior, atomic batches and command traces. |
-| Procedure | Fresh model verification/export, candidate verification/export, unchanged expected-client import/check. |
-| Limits | No whole-application proof, kernel certificate, binary correspondence or operational resource bound. Resource aborts remain possible. |
+Receipts bind the job, source, outcome, obligations, checker and artifact digests. Export validates the bundle. Replay independently captures the candidate, requires matching accepted identities and runs checking again. Imported success flags cannot satisfy replay. Hashes provide integrity relative to trusted state; they do not authenticate an external writer or prove verifier soundness.
 
-The expected client prevents a candidate from satisfying the request by weakening its own contract. VKit supplies the model and required statements; the agent supplies an implementation and binding names. Application-to-model correspondence still needs its own evidence.
+## Gates and CI
 
-## Declare the input closure
+A local gate is `READY` only when all registered checks and required formal components have intact current passing evidence. A failed empirical check can produce `REJECTED`; missing, stale or inconclusive evidence produces `BLOCKED`. Display filters cannot reduce requirements.
 
-The following selectors apply to registered local checks. Formal working-tree capture instead retains the complete nonignored tree as raw bytes; Git capture retains immutable commit blobs and their Git identities. Formal capture rejects secret-looking paths, links, submodules and unsupported files rather than silently omitting them. A CRLF-only edit changes a formal source identity.
-
-| Rule | Behavior |
-| --- | --- |
-| `inputs` selectors | Files, directories, or globs from tracked and untracked nonignored source. |
-| Empty `inputs` | Selects the whole nonignored tree. |
-| Secret-looking paths | Excluded. |
-| Content identity | Normalizes CRLF to LF. |
-| Capture | Copies selected bytes before execution and verifies copied digests. |
-| Missing patterns | Block execution. |
-| External specification | Included automatically. |
-
-Declare every required source, specification, model, configuration, and dependency.
-
-| Outside the snapshot by default | How to account for it |
-| --- | --- |
-| Ignored files | Capture or pin separately when required. |
-| Remote services and environment state | Capture or pin separately when possible. |
-| Runtime libraries | Declare trusted dependencies. Native runtime libraries remain environment assumptions. |
-| Arbitrary code dependencies | Declare the closure. VKit does not infer it. |
-
-## Freshness and acceptance
-
-| Event | Effect |
-| --- | --- |
-| Selected content, accepted policy, checker identity, or baseline changes | Existing evidence no longer satisfies the current gate. |
-| Checker changes | Requires renewed acceptance. |
-| Source changes during execution | Registered local freshness changes. Formal execution continues against frozen bytes; a moved checkout cannot rewrite its committed subject. |
-| Native Lean unreviewed profile | Also binds the challenge digest. The comparator checks the solution against accepted statements. |
-
-## Run lifecycle
-
-| Command or event | Behavior |
-| --- | --- |
-| `check run` | Submit and wait. |
-| `check run --detach` | Return after capture and worker launch. |
-| `verify COMPONENT --candidate REF --wait 0` | Capture an immutable Git subject and launch a formal worker. |
-| `verify COMPONENT --working-tree --wait 0` | Capture provisional raw source and launch a formal worker. |
-| `run show`, `run wait`, `run cancel`, `run retry` | Operate independently of the submitting client. |
-| Cancellation or deadline | Stop descendants through a Windows Job Object or POSIX process group. |
-| Worker loss | Report interrupted execution. Never a pass. |
-| Formal cancellation/recovery | Stop or reconcile only the attempt's exact owned Docker container. |
-| Explicit submission | Creates a separate attempt. Identical content retains the job ID. |
-
-## Retained evidence
-
-| Attempt type | Retained files |
-| --- | --- |
-| Finished attempt | `job.json`, `record.json`, `snapshot/`, reports, logs, and `receipt.json`. |
-| External attempt | Also `evidence/`, checker requests, and checker receipts. |
-
-The integrity chain is:
-
-1. Evidence pointer hashes the final record.
-2. Record hashes the receipt.
-3. Receipt hashes retained artifacts and binds input closure and backend identity.
-
-## Export and replay
-
-| Operation | Requirements and result |
-| --- | --- |
-| `evidence export` | Refuses incomplete or damaged evidence. |
-| `evidence replay` | Requires matching current source, accepted definition, and checker identity. Captures the bundle and launches a fresh checker. |
-| Replay output | New attempt and receipt. |
-| Portability limit | Accepted tool identities must match. Formal identities exclude host paths; registered adapters retain their own path semantics. |
-
-## Trust and scope
-
-| Item | Boundary |
-| --- | --- |
-| Assurance labels | Describe the accepted checker contract. They do not establish that arbitrary code is a sound proof kernel. |
-| Acceptance review | Review the checker, specification, and dependencies. |
-| File hashes | Establish integrity relative to trusted local state. They are not signatures. |
-| Installation and store | Protect them from untrusted writers. |
-| Worker containment | Local registered checks control the process tree. Formal and protected-CI commands use restricted containers. |
-| Formal proof | Covers the accepted statement under recorded assumptions. |
-| Model checking | Covers the declared finite configuration. |
-| Unestablished properties | Unmodeled implementation behavior, source-to-binary correspondence, termination, and correctness of undeclared dependencies. |
-
-## CI integration
-
-1. Run `check run` for the required checks.
-2. Export and archive evidence bundles.
-3. Use `gate --json` for the strict decision against current inputs.
-
-For protected committed checking, use `gate --candidate FULL_OID --target FULL_OID --output NEW_PRIVATE_DIR --json`. VKit loads requirements from target policy, captures the exact candidate, runs fresh jobs and seals receipts outside candidate execution. It does not combine branch receipts or trust candidate policy deletion. The [host workflow example](../examples/protected-ci/README.md) describes required authority protection; this repository has not configured enforced branch protection.
+The [protected CI gate](../examples/protected-ci/README.md) loads requirements from the exact target commit and freshly checks the combined candidate. It uses a private store outside candidate execution and imports neither local approvals nor branch receipts. Host workflow, installation, policy governance and merge enforcement must be protected separately.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -161,14 +115,6 @@ For protected committed checking, use `gate --candidate FULL_OID --target FULL_O
 | `4` | Internal error. |
 | `5` | Unavailable interface. |
 
-A bounded `run wait` timeout returns BLOCKED and leaves the worker running.
+## Foundations
 
-| Required formal CI control | Purpose |
-| --- | --- |
-| Real Lean proof | Accept a kernel-checked theorem. |
-| Lean `sorry` and disallowed axiom | Reject unfinished or unapproved proof assumptions. |
-| Exhaustive TLC check | Establish the property within the finite configuration. |
-| TLC counterexample | Refute the property within that configuration. |
-| Missing toolchain | Fail the script rather than skip. |
-
-A local core test pass alone does not establish formal backend execution.
+The design draws on [Anthropic's formal-verification research](https://www.anthropic.com/research/formal-verification) and [Verus's checking and trust model](https://verus-lang.github.io/verus/guide/tcb.html). VKit reuses the pinned [vstd map](https://github.com/verus-lang/verus/blob/7d829946231d6413a398f6e4160cdfe951261dad/source/vstd/map_lib.rs) and [sequence laws](https://github.com/verus-lang/verus/blob/7d829946231d6413a398f6e4160cdfe951261dad/source/vstd/seq_lib.rs) for ledger accounting. Those sources do not expand the scope of VKit's recorded claim.

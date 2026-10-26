@@ -207,7 +207,14 @@
         "tests/test_plugin.py::test_stop_is_not_held_for_evidence_the_agent_cannot_produce",
         "tests/test_proposals.py::test_an_agent_proposes_a_rule_and_only_acceptance_makes_it_run",
         "tests/test_static.py::test_only_findings_outside_the_pinned_baseline_fail",
-        "tests/test_source_hygiene.py::test_source_describes_what_the_code_does_now_not_how_it_got_here"
+        "tests/test_source_hygiene.py::test_source_describes_what_the_code_does_now_not_how_it_got_here",
+        "tests/test_formal_interface.py::test_cli_and_mcp_share_formal_jobs_and_receipts",
+        "tests/test_formal_interface.py::test_formal_replay_runs_checker_again_and_rejects_changed_working_tree",
+        "tests/test_ci_gate.py::test_changed_authority_and_working_tree_are_rejected",
+        "tests/test_ci_gate.py::test_protected_profile_rejects_candidate_owned_checker",
+        "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[True-True-True]",
+        "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[False-True-False]",
+        "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[True-False-False]"
       ],
       "runner": {
         "executable": "{{python}}",

@@ -27,7 +27,7 @@ await copyFile(
   new URL("roboto.woff2", output),
 );
 await copyFile(
-  new URL("../../docs/assets/logo.svg", import.meta.url),
+  new URL("logo.svg", import.meta.url),
   new URL("logo.svg", output),
 );
 await copyFile(

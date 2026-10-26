@@ -192,7 +192,9 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
     for name, records in (("positive_n3", 3), ("positive_n5", 5)):
         outcome, metadata = execute_case(name, records, source)
         expected = list(ledger.obligation_ids(product_component(records)))
+        outcome_ids = [scenario.scenario_id for scenario in outcome.scenarios] if isinstance(outcome, Passed) else []
         if (not isinstance(outcome, Passed) or len(outcome.scenarios) != 7
+                or outcome_ids != expected or any(not scenario.passed for scenario in outcome.scenarios)
                 or metadata.get("obligations") != expected
                 or metadata.get("method") != "verus_source"
                 or metadata.get("assurance") != "trusted_engine"

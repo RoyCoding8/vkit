@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = "verus-linux-x86_64-v1"
 LABEL = "vkit.ledger.run_id"
+FORMAL_LABEL = "vkit.formal.run_id"
 SOURCE_REL = Path("src/vkit/formal/packages/resource_ledger/ledger.rs")
 TRUSTED_FILES = (
     Path("scripts/check_verus_ledger.py"),
@@ -82,6 +83,29 @@ def cleanup_run(run_id: str) -> list[str]:
     removed = []
     for suffix in ("", "-probe", "-network", "-timeout", "-crash"):
         removed.extend(remove_owned(run_id + suffix))
+    removed.extend(remove_formal_owned(f"{run_id}-product"))
+    return removed
+
+
+def formal_label(container_id: str) -> str:
+    result = run(["docker", "inspect", "--format", f'{{{{ index .Config.Labels "{FORMAL_LABEL}" }}}}',
+                  container_id], check=False)
+    return result.stdout.strip()
+
+
+def remove_formal_owned(prefix: str) -> list[str]:
+    listing = run(["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={FORMAL_LABEL}"],
+                  check=False)
+    removed = []
+    for container_id in listing.stdout.splitlines():
+        if container_id and formal_label(container_id).startswith(prefix + "-"):
+            run(["docker", "rm", "-f", container_id], check=False)
+            removed.append(container_id)
+    remaining = run(["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={FORMAL_LABEL}"],
+                    check=False)
+    for container_id in remaining.stdout.splitlines():
+        if container_id and formal_label(container_id).startswith(prefix + "-"):
+            raise RuntimeError(f"product verifier container remains for {prefix}")
     return removed
 
 
@@ -96,6 +120,11 @@ def stage_trusted(directory: Path, source: Path) -> tuple[Path, Path, dict[str, 
         target = trusted / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, target)
+    from vkit.formal.ledger import render_expected
+
+    expected = trusted / "examples/verus-qualification/expected.rs"
+    expected.parent.mkdir(parents=True, exist_ok=True)
+    expected.write_text(render_expected(product_component(3)), encoding="utf-8", newline="\n")
     source_target = trusted / SOURCE_REL
     source_target.parent.mkdir(parents=True, exist_ok=True)
     source_target.touch()
@@ -103,8 +132,80 @@ def stage_trusted(directory: Path, source: Path) -> tuple[Path, Path, dict[str, 
     captured_source.parent.mkdir(parents=True)
     shutil.copyfile(source, captured_source)
     hashes = {relative.as_posix(): sha256(trusted / relative) for relative in TRUSTED_FILES}
+    hashes["examples/verus-qualification/expected.rs"] = sha256(expected)
     hashes[SOURCE_REL.as_posix()] = sha256(captured_source)
     return trusted, captured_source, hashes
+
+
+def product_component(max_records: int):
+    from vkit.formal import ledger
+    from vkit.formal.policy import FormalComponent, LedgerBindings
+
+    return FormalComponent(
+        id="resource-ledger", package=ledger.load_package().identity,
+        contract=ledger.CONTRACT, entry="candidate_api.rs", profile=ledger.PROFILE,
+        max_records=max_records,
+        bindings=LedgerBindings("new", "reserve", "release", "reserve_batch",
+                                "apply_command", "run_commands"),
+        required=True,
+    )
+
+
+def weaken_reserve_contract(source: str) -> str:
+    start = source.index("pub fn reserve<")
+    body = source.index("\n    {", start)
+    signature = source[start:body]
+    ensures = signature.index("        ensures\n")
+    return source[:start + ensures] + "        ensures true,\n" + source[body:]
+
+
+def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Path,
+                      rustup_home: Path, cargo_home: Path, directory: Path) -> dict:
+    from vkit.formal import ledger, verus
+    from vkit.outcome import Blocked, BlockedReason, Passed
+
+    os.environ.update({
+        "VKIT_VERUS_IMAGE": image_id,
+        "VKIT_VERUS_ARCHIVE": str(archive),
+        "VKIT_VERUS_ROOT": str(verus_root),
+        "VKIT_RUSTUP_HOME": str(rustup_home),
+        "VKIT_CARGO_HOME": str(cargo_home),
+    })
+    component = product_component(3)
+    execution_identity = verus.resolve_execution(component)
+    source = (ROOT / "examples/verus-qualification/candidate_api.rs").read_text(encoding="utf-8")
+    cases = {}
+    directory.mkdir(parents=True, exist_ok=False)
+
+    def execute_case(name: str, records: int, candidate_source: str):
+        snapshot = directory / "snapshots" / name
+        snapshot.mkdir(parents=True)
+        (snapshot / "candidate_api.rs").write_text(candidate_source, encoding="utf-8", newline="\n")
+        policy = product_component(records)
+        outcome, metadata = verus.execute_formal(
+            policy, snapshot, directory / f"{run_id}-product-{name}",
+            execution_identity, should_cancel=lambda: False
+        )
+        cases[name] = {"outcome": outcome.to_json(), "metadata": metadata}
+        return outcome, metadata
+
+    for name, records in (("positive_n3", 3), ("positive_n5", 5)):
+        outcome, metadata = execute_case(name, records, source)
+        expected = list(ledger.obligation_ids(product_component(records)))
+        if (not isinstance(outcome, Passed) or len(outcome.scenarios) != 7
+                or metadata.get("obligations") != expected
+                or metadata.get("method") != "verus_source"
+                or metadata.get("assurance") != "trusted_engine"
+                or metadata.get("category") != "source_verification"
+                or metadata.get("scope") != "required_api"
+                or len(metadata.get("evidence", [])) != 6
+                or metadata.get("container", {}).get("removed") is not True):
+            raise RuntimeError(f"product Verus probe failed for {name}: {outcome.to_json()}")
+
+    weakened, _ = execute_case("weakened_reserve", 3, weaken_reserve_contract(source))
+    if not isinstance(weakened, Blocked) or weakened.reason != BlockedReason.FORMAL_OBLIGATION:
+        raise RuntimeError(f"product Verus negative probe did not block on the obligation: {weakened.to_json()}")
+    return {"passed": True, "image_id": image_id, "cases": cases}
 
 
 def container_command(image_id: str, base: list[str], trusted: Path, source: Path, archive: Path,

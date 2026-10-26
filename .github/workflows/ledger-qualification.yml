@@ -7,14 +7,16 @@ on:
       - .github/workflows/ledger-qualification.yml
       - examples/verus-qualification/**
       - scripts/check_ledger_container.py
-      - src/vkit/formal/packages/resource_ledger/**
+      - src/vkit/formal/**
+      - src/vkit/container.py
       - scripts/check_verus_ledger.py
   pull_request:
     paths:
       - .github/workflows/ledger-qualification.yml
       - examples/verus-qualification/**
       - scripts/check_ledger_container.py
-      - src/vkit/formal/packages/resource_ledger/**
+      - src/vkit/formal/**
+      - src/vkit/container.py
       - scripts/check_verus_ledger.py
   workflow_dispatch:
 
@@ -75,11 +77,15 @@ jobs:
           env["RUSTUP_HOME"] = str(rustup_home)
           env["CARGO_HOME"] = str(cargo_home)
           subprocess.run([str(rustup_binary), "toolchain", "install", pin["rust"], "--profile", "minimal"], check=True, env=env)
+      - name: Install the VKit runtime for product execution
+        run: |
+          python3 -m venv "$RUNNER_TEMP/vkit-venv"
+          "$RUNNER_TEMP/vkit-venv/bin/python" -m pip install --disable-pip-version-check --editable .
       - name: Verify and challenge the ledger
         env:
           IMAGE_TAG: vkit-ledger-qualification-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          python3 scripts/check_ledger_container.py \
+          "$RUNNER_TEMP/vkit-venv/bin/python" scripts/check_ledger_container.py \
             --image "$IMAGE_TAG" \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --verus-root "$RUNNER_TEMP/verus/verus-x86-linux" \

@@ -155,9 +155,11 @@ def test_formal_capture_rejects_secret_paths(tmp_path, kind, monkeypatch):
             "vkit.inputs._batch_blobs",
             lambda *args: pytest.fail("secret blobs must not be read"),
         )
-        capture = lambda: capture_git_commit(repo, _head(repo))
+        def capture():
+            return capture_git_commit(repo, _head(repo))
     else:
-        capture = lambda: capture_working_tree(repo)
+        def capture():
+            return capture_working_tree(repo)
     with pytest.raises(ProjectError, match="secret-matched"):
         capture()
 

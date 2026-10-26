@@ -17,6 +17,8 @@ from referencing import Registry, Resource
 MANIFEST = "manifest.v3.json"
 VERIFICATION_REQUEST = "verification-request.v1.json"
 CHECK_ARTIFACT = "check-artifact.v1.json"
+JOB = "job.v2.json"
+EVIDENCE_RECORD = "evidence-record.v2.json"
 
 
 class SchemaValidationError(Exception):

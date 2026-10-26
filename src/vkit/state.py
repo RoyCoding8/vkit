@@ -1,12 +1,14 @@
 """What is known about each check right now, and whether the tree is ready."""
+
 from __future__ import annotations
 
 import enum
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
-from . import __version__
-from .inputs import InputSet, Snapshot, canonical_digest
+from .inputs import InputSet, Snapshot, capture_working_tree
+from .job import RegisteredCheck, seal_job
 from .manifest import Manifest
 from .store import Store
 from .verifiers.spec import CheckSpec
@@ -27,18 +29,15 @@ class Verdict(str, enum.Enum):
     BLOCKED = "BLOCKED"
 
 
-_FRESH = {"PASS": Freshness.FRESH_PASS, "FAIL": Freshness.FRESH_FAIL, "BLOCKED": Freshness.FRESH_BLOCKED}
+_FRESH = {
+    "PASS": Freshness.FRESH_PASS,
+    "FAIL": Freshness.FRESH_FAIL,
+    "BLOCKED": Freshness.FRESH_BLOCKED,
+}
 
 
 def check_digests(manifest: Manifest) -> dict[str, str]:
     return {check_id: manifest.digest(check_id) for check_id in manifest.checks}
-
-
-def evidence_key(check_digest: str, inputs: InputSet, baseline: dict[str, Any] | None = None,
-                 backend: dict[str, Any] | None = None) -> str:
-    return canonical_digest({"vkit": __version__, "check": check_digest, "inputs": inputs.digest,
-                             "backend": backend, "baseline": None if baseline is None else
-                             {k: v for k, v in baseline.items() if k in ("measurements", "findings")}})
 
 
 @dataclass(frozen=True)
@@ -63,20 +62,31 @@ class CheckState:
             "category": category.value,
             "assurance": assurance(self.check),
             "model_scope": getattr(self.check, "model_scope", category.establishes),
-            "assumptions": list(getattr(self.check, "assumptions", getattr(self.check, "permitted_axioms", ()))),
+            "assumptions": list(
+                getattr(
+                    self.check,
+                    "assumptions",
+                    getattr(self.check, "permitted_axioms", ()),
+                )
+            ),
             "establishes": category.establishes,
             "does_not_establish": category.does_not_establish,
             "state": self.freshness.value,
             "key": self.key,
-            "inputs": {"scope": self.inputs.scope, "declared": list(self.inputs.declared),
-                       "unmatched": list(self.inputs.unmatched)},
+            "inputs": {
+                "scope": self.inputs.scope,
+                "declared": list(self.inputs.declared),
+                "unmatched": list(self.inputs.unmatched),
+            },
             "current": self.current,
             "last": self.last,
             "running": list(self.running),
         }
 
 
-def check_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[CheckState]:
+def check_states(
+    manifest: Manifest, store: Store, snapshot: Snapshot
+) -> list[CheckState]:
     digests = check_digests(manifest)
     approved = store.approved()
     baselines = store.baselines()
@@ -88,17 +98,26 @@ def check_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[C
     for check_id in sorted(manifest.checks):
         check = manifest.checks[check_id]
         inputs = snapshot.inputs(check.inputs)
+        source = capture_working_tree(
+            snapshot.project, [name for name, _ in inputs.files]
+        )
         from .evidence import backend_identity
 
         try:
             backend = backend_identity(check)
         except (OSError, ValueError) as exc:
             backend = {"unavailable": str(exc)}
-        key = evidence_key(digests[check_id], inputs, baselines.get(check_id), backend)
+        key = seal_job(
+            RegisteredCheck.resolve(
+                manifest, check_id, baselines.get(check_id), backend, inputs.to_json(), source
+            ).payload()
+        )["job_id"]
         current = store.evidence(check_id, key)
         last = store.latest(check_id)
-        if (approved.get(digests[check_id], {}).get("kind") != "check_definition" or
-                approved[digests[check_id]].get("backend") != backend):
+        if (
+            approved.get(digests[check_id], {}).get("kind") != "check_definition"
+            or approved[digests[check_id]].get("backend") != backend
+        ):
             freshness = Freshness.NOT_APPROVED
         elif current is not None:
             freshness = _FRESH[current["result"]]
@@ -106,8 +125,18 @@ def check_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[C
             freshness = Freshness.STALE
         else:
             freshness = Freshness.MISSING
-        states.append(CheckState(check, digests[check_id], key, inputs, freshness, current, last,
-                                 tuple(running.get(key, ()))))
+        states.append(
+            CheckState(
+                check,
+                digests[check_id],
+                key,
+                inputs,
+                freshness,
+                current,
+                last,
+                tuple(running.get(key, ())),
+            )
+        )
     return states
 
 
@@ -124,10 +153,19 @@ def gate(states: Iterable[CheckState]) -> dict[str, Any]:
     elif all(s.freshness is Freshness.FRESH_PASS for s in states):
         verdict, reason = Verdict.READY, "every check passed against the current inputs"
     else:
-        verdict, reason = Verdict.BLOCKED, "some checks have no passing evidence for the current inputs"
+        verdict, reason = (
+            Verdict.BLOCKED,
+            "some checks have no passing evidence for the current inputs",
+        )
     return {
         "verdict": verdict.value,
         "reason": reason,
-        "checks": [{"id": s.check.id, "state": s.freshness.value,
-                    "run_id": (s.current or {}).get("run_id")} for s in states],
+        "checks": [
+            {
+                "id": s.check.id,
+                "state": s.freshness.value,
+                "run_id": (s.current or {}).get("run_id"),
+            }
+            for s in states
+        ],
     }

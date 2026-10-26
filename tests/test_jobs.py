@@ -6,12 +6,17 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 import pytest
 
 from helpers import DRIVER, NO_WINDOW, git, scenario_check, vkit
 from test_external import _project
 from vkit.paths import open_project
+from vkit.formal.policy import FormalComponent, GitCommit, LedgerBindings, PackageIdentity, VerificationRequest
+from vkit.outcome import Passed
+from vkit.runner import execute, prepare_formal
+from vkit.job import job_id
 from vkit.store import Store, write_json
 
 
@@ -144,3 +149,58 @@ def test_external_jobs_export_and_replay_with_a_fresh_checker_receipt(tmp_path):
     checker.write_text(checker.read_text() + "\n# changed trusted code\n", encoding="utf-8")
     assert vkit(root, "gate")[0] == 3
     assert vkit(root, "evidence", "replay", "--bundle", str(bundle))[0] == 2
+
+
+def test_formal_job_executes_from_captured_commit_without_opening_checkout(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    (root / "source.rs").write_bytes(b"pub fn reserve() {}\r\n")
+    git(root, "add", "source.rs")
+    git(root, "commit", "-qm", "initial")
+    project = open_project(root)
+    oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True, **NO_WINDOW
+    ).stdout.strip()
+    component = FormalComponent(
+        "ledger",
+        PackageIdentity("ledger-core", "1.0.0", "a" * 64),
+        "reserve safety",
+        "source.rs",
+        "strict",
+        4,
+        LedgerBindings("Ledger::new", "Ledger::reserve", "Ledger::release", "Ledger::reserve_batch", "Ledger::apply_command", "Ledger::run_commands"),
+        True,
+    )
+    request = VerificationRequest("ledger", GitCommit(oid))
+    identity = {"semantic": {"profile": "strict", "image_digest": "b" * 64}, "paths": {"verus_root": "C:/verus"}}
+    store = Store.of(project)
+    record = prepare_formal(project, request, component, identity, store=store)
+    job = json.loads((store.run_dir(record["run_id"]) / "job.json").read_text(encoding="utf-8"))
+    assert job["source"]["commit"] == oid
+    assert job["source"]["files"][0]["raw_sha256"]
+    assert job["job_id"] == job_id({**job, "execution_identity": {**identity, "paths": {"verus_root": "different"}}})
+    store.approve({component.digest: {"kind": "formal_policy", "policy_sha256": component.digest,
+                                    "package_sha256": component.package.sha256,
+                                    "checker_sha256": job["checker_sha256"], "accepted_at": "now"}})
+    moved = tmp_path / "moved-repo"
+    root.rename(moved)
+    store = Store(moved / ".git" / "vkit")
+    assert not root.exists()
+    ledger = types.ModuleType("vkit.formal.ledger")
+    def verify_package(_):
+        return None
+    ledger.verify_package = verify_package
+    verus = types.ModuleType("vkit.formal.verus")
+    def execute_formal(actual_component, snapshot_root, run_dir, execution_identity, should_cancel):
+        assert actual_component == component
+        assert (snapshot_root / "source.rs").read_bytes() == b"pub fn reserve() {}\r\n"
+        assert execution_identity == identity and not should_cancel()
+        return Passed(()), {"obligations": {"satisfied": ["ledger:reserve"], "counterexamples": []}}
+    verus.execute_formal = execute_formal
+    monkeypatch.setitem(sys.modules, "vkit.formal.ledger", ledger)
+    monkeypatch.setitem(sys.modules, "vkit.formal.verus", verus)
+    result = execute(None, record["run_id"], store=store)
+    assert result["outcome"]["result"] == "PASS"
+    assert result["subject"] == {"kind": "formal_goal", "id": "ledger"}
+    assert (store.root / "evidence" / "formal_goal" / "ledger" / f"{job['job_id']}.json").is_file()

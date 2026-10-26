@@ -256,20 +256,29 @@ def capture_git_commit(
     return CapturedSource("git_commit", object_format, commit, tree, parents, files)
 
 
-def capture_working_tree(root: str | os.PathLike[str] | Project) -> CapturedSource:
-    """Capture tracked and unignored untracked regular files, preserving their exact bytes."""
+def capture_working_tree(
+    root: str | os.PathLike[str] | Project, paths: Iterable[str] | None = None
+) -> CapturedSource:
+    """Capture the whole working tree or an explicit, already-selected input inventory."""
     project_root = _root(root)
     _check_plain_directory(project_root)
     object_format = _object_format(project_root)
-    commit_info = _head_metadata(project_root, object_format)
-    result = _git(
-        project_root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
-    )
-    names = sorted({_decode_path(raw) for raw in result.stdout.split(b"\0") if raw})
+    if paths is None:
+        result = _git(
+            project_root,
+            ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        )
+        names = sorted({_decode_path(raw) for raw in result.stdout.split(b"\0") if raw})
+    else:
+        names = list(paths)
+        for name in names:
+            _validate_relative_path(name)
+        if names != sorted(set(names)):
+            raise ProjectError("explicit source paths must be unique and ordered")
     _validate_unique_paths(names)
     files: list[CapturedFile] = []
     for name in names:
-        if is_secret(name):
+        if paths is None and is_secret(name):
             raise ProjectError(
                 f"formal source capture contains a secret-matched path: {name}"
             )
@@ -338,7 +347,79 @@ def capture_working_tree(root: str | os.PathLike[str] | Project) -> CapturedSour
             ) from exc
         mode = "100755" if info.st_mode & 0o111 else "100644"
         files.append(_captured_file(name, mode, content, object_format))
-    return CapturedSource("working_tree", object_format, *commit_info, tuple(files))
+    return CapturedSource("working_tree", object_format, None, None, (), tuple(files))
+
+
+def load_capture(metadata: dict[str, Any], snapshot_root: Path) -> CapturedSource:
+    """Rebuild and verify a persisted capture from its closed metadata and retained bytes."""
+    if set(metadata) != {
+        "kind",
+        "object_format",
+        "commit",
+        "tree",
+        "parents",
+        "files",
+        "digest",
+    }:
+        raise ProjectError("source capture metadata has unexpected fields")
+    kind, object_format = metadata["kind"], metadata["object_format"]
+    if kind not in {"git_commit", "working_tree"} or object_format not in {
+        "sha1",
+        "sha256",
+    }:
+        raise ProjectError(
+            "source capture metadata has an invalid source kind or object format"
+        )
+    commit, tree = metadata["commit"], metadata["tree"]
+    parents = tuple(metadata["parents"])
+    if kind == "git_commit" and commit is None:
+        raise ProjectError("Git source capture has no commit")
+    if kind == "working_tree" and (commit is not None or tree is not None or parents):
+        raise ProjectError("working-tree source metadata contains commit identity")
+    if commit is not None:
+        _validate_oid(commit, object_format)
+        if tree is None:
+            raise ProjectError("source capture commit has no tree")
+        _validate_oid(tree, object_format)
+        for parent in parents:
+            _validate_oid(parent, object_format)
+    elif tree is not None or parents:
+        raise ProjectError("source capture has commit metadata without a commit")
+    _check_plain_directory(snapshot_root)
+    files = []
+    names = []
+    for item in metadata["files"]:
+        if not isinstance(item, dict) or set(item) != {
+            "path",
+            "mode",
+            "blob_oid",
+            "raw_sha256",
+        }:
+            raise ProjectError("source capture file metadata has unexpected fields")
+        path = item["path"]
+        _validate_relative_path(path)
+        if is_secret(path):
+            raise ProjectError(f"source capture contains a secret-matched path: {path}")
+        if item["mode"] not in {"100644", "100755"}:
+            raise ProjectError(f"unsupported captured file mode: {path}")
+        _validate_oid(item["blob_oid"], object_format)
+        if re.fullmatch(r"[0-9a-f]{64}", item["raw_sha256"]) is None:
+            raise ProjectError(f"invalid raw-byte digest: {path}")
+        file_path = snapshot_root.joinpath(*path.split("/"))
+        _check_plain_path(snapshot_root, file_path)
+        content = file_path.read_bytes()
+        file = _captured_file(path, item["mode"], content, object_format)
+        if file.to_json() != item:
+            raise ProjectError(f"captured source bytes do not match metadata: {path}")
+        names.append(path)
+        files.append(file)
+    _validate_unique_paths(names)
+    if names != sorted(names):
+        raise ProjectError("source capture file inventory is not ordered")
+    source = CapturedSource(kind, object_format, commit, tree, parents, tuple(files))
+    if source.digest != metadata["digest"]:
+        raise ProjectError("source capture digest does not match metadata")
+    return source
 
 
 def _root(root: str | os.PathLike[str] | Project) -> Path:
@@ -396,25 +477,6 @@ def _commit_metadata(
     for parent in parents:
         _validate_oid(parent, object_format)
     return oid, trees[0], parents
-
-
-def _head_metadata(
-    root: Path, object_format: Literal["sha1", "sha256"]
-) -> tuple[str | None, str | None, tuple[str, ...]]:
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", "HEAD"],
-        cwd=root,
-        env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"},
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        timeout=30,
-        check=False,
-        **hidden_window(),
-    )
-    if result.returncode:
-        return None, None, ()
-    oid = result.stdout.decode("ascii", "strict").strip()
-    return _commit_metadata(root, oid, object_format)
 
 
 def _parse_tree(

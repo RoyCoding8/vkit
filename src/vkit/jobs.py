@@ -1,4 +1,5 @@
 """Durable local jobs. CLI, MCP, and CI share this process-independent service."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,12 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from .evidence import backend_identity, validate_record
+from .formal.policy import FormalComponent, VerificationRequest
 from .inputs import Snapshot
-from .manifest import Manifest, parse_manifest_data
+from .manifest import Manifest
 from .nowindow import hidden_window
 from .outcome import Blocked, BlockedReason
 from .paths import Project, open_project
-from .runner import _child_env, execute, prepare
+from .runner import _child_env, execute, prepare, prepare_formal, prepare_retry
 from .store import Store, now, read_json, write_json
 
 
@@ -31,32 +33,83 @@ def _failed_submission(store: Store, run_id: str, outcome: Blocked) -> None:
         return
 
 
-def _launch(project: Project, store: Store, record: dict[str, Any]) -> dict[str, Any]:
+def _launch(
+    project: Project | None, store: Store, record: dict[str, Any]
+) -> dict[str, Any]:
     run_id = record["run_id"]
     options = hidden_window()
     if os.name == "nt":
-        options["creationflags"] |= subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        options["creationflags"] |= (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
     else:
         options["start_new_session"] = True
     try:
         with (store.run_dir(run_id) / "worker.log").open("ab") as log:
-            worker = subprocess.Popen([sys.executable, "-m", "vkit.jobs", "--project", str(project.root),
-                              "--run", run_id], cwd=project.root, env=_child_env(),
-                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True, **options)
+            command = [
+                sys.executable,
+                "-m",
+                "vkit.jobs",
+                "--store-root",
+                str(store.root),
+                "--run",
+                run_id,
+            ]
+            if project is not None:
+                command.extend(("--project", str(project.root)))
+            worker = subprocess.Popen(
+                command,
+                cwd=project.root if project else store.root,
+                env=_child_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                close_fds=True,
+                **options,
+            )
             write_json(store.run_dir(run_id) / "worker.json", {"pid": worker.pid})
     except OSError as exc:
         # Submission failure is durable and visible; it never publishes passing evidence.
-        _failed_submission(store, run_id, Blocked(BlockedReason.LAUNCH_FAILED, str(exc)))
+        _failed_submission(
+            store, run_id, Blocked(BlockedReason.LAUNCH_FAILED, str(exc))
+        )
         record = store.record(run_id)
     return record
 
 
-def submit(project: Project, manifest: Manifest, check_id: str, *, store: Store | None = None) -> dict[str, Any]:
+def submit(
+    project: Project, manifest: Manifest, check_id: str, *, store: Store | None = None
+) -> dict[str, Any]:
     store = store or Store.of(project)
     return _launch(project, store, prepare(project, manifest, check_id, store=store))
 
 
-def wait(store: Store, run_id: str, timeout_seconds: float | None = None) -> dict[str, Any]:
+def submit_formal(
+    project: Project,
+    request: VerificationRequest,
+    component: FormalComponent,
+    execution_identity: dict[str, Any],
+    *,
+    store: Store | None = None,
+) -> dict[str, Any]:
+    store = store or Store.of(project)
+    return _launch(
+        project,
+        store,
+        prepare_formal(project, request, component, execution_identity, store=store),
+    )
+
+
+def retry(project: Project | None, run_id: str, *, store: Store) -> dict[str, Any]:
+    previous = store.record(run_id)
+    if previous is None or previous["state"] in ("queued", "running"):
+        raise ValueError("retry requires a finished or interrupted attempt")
+    return _launch(project, store, prepare_retry(run_id, store=store))
+
+
+def wait(
+    store: Store, run_id: str, timeout_seconds: float | None = None
+) -> dict[str, Any]:
     if timeout_seconds is not None and timeout_seconds < 0:
         raise ValueError("timeout_seconds must be nonnegative")
     deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
@@ -64,47 +117,77 @@ def wait(store: Store, run_id: str, timeout_seconds: float | None = None) -> dic
         record = store.record(run_id)
         if record is None:
             raise ValueError(f"no run {run_id!r}")
-        pending = (record["state"] in ("queued", "running")
-                   or (record["state"] == "done" and store.is_alive(run_id)))
+        pending = record["state"] in ("queued", "running") or (
+            record["state"] == "done" and store.is_alive(run_id)
+        )
         if not pending or (deadline is not None and time.monotonic() >= deadline):
             return record
         time.sleep(0.05)
 
 
-def replay(project: Project, manifest: Manifest, bundle: Path, *, store: Store | None = None) -> dict[str, Any]:
+def replay(
+    project: Project, manifest: Manifest, bundle: Path, *, store: Store | None = None
+) -> dict[str, Any]:
     """Recheck evidence with the current accepted checker, never commands from a bundle."""
     store = store or Store.of(project)
     bundle = bundle.resolve()
     source = read_json(bundle / "record.json")
-    if not isinstance(source, dict) or source.get("state") != "done" or not validate_record(source, bundle):
+    if (
+        not isinstance(source, dict)
+        or source.get("state") != "done"
+        or not validate_record(source, bundle)
+    ):
         raise ValueError("bundle is incomplete or its evidence digests do not match")
     check = manifest.require(source["check_id"])
-    if (manifest.digest(check.id) != source["check_digest"]
-            or Snapshot(project).inputs(check.inputs).digest != source["inputs"]["digest"]
-            or backend_identity(check) != source["backend"]):
-        raise ValueError("bundle does not match the current specification, inputs, and checker identity")
+    if (
+        manifest.digest(check.id) != source["check_digest"]
+        or Snapshot(project).inputs(check.inputs).digest != source["inputs"]["digest"]
+        or backend_identity(check) != source["backend"]
+    ):
+        raise ValueError(
+            "bundle does not match the current specification, inputs, and checker identity"
+        )
     if check.kind.value not in ("external", "lean", "tlc"):
         raise ValueError("evidence replay requires an external, Lean, or TLC checker")
-    record = prepare(project, manifest, check.id, store=store, replay_source=bundle,
-                     replay_receipt=source["receipt"]["sha256"])
+    record = prepare(
+        project,
+        manifest,
+        check.id,
+        store=store,
+        replay_source=bundle,
+        replay_receipt=source["receipt"]["sha256"],
+    )
     return _launch(project, store, record)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", required=True)
+    parser.add_argument("--project")
+    parser.add_argument("--store-root")
     parser.add_argument("--run", required=True)
     args = parser.parse_args()
-    project = open_project(args.project)
-    store = Store.of(project)
+    store = None
     try:
+        if args.store_root:
+            store = Store(Path(args.store_root))
+        elif args.project:
+            store = Store.of(open_project(args.project))
+        else:
+            raise ValueError("worker requires --store-root or --project")
         job = read_json(store.run_dir(args.run) / "job.json")
-        manifest = parse_manifest_data({"schema_version": 3, "checks": [job["entry"]]},
-                                       project=project, origin="persisted job")
-        execute(project, manifest, args.run, store=store)
+        project = (
+            open_project(args.project)
+            if args.project and job["subject"]["kind"] == "registered_check"
+            else None
+        )
+        execute(project, args.run, store=store)
     except Exception as exc:
-        _failed_submission(store, args.run, Blocked(
-            BlockedReason.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}"))
+        if store is not None:
+            _failed_submission(
+                store,
+                args.run,
+                Blocked(BlockedReason.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}"),
+            )
         raise
     return 0
 

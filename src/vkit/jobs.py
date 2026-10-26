@@ -138,6 +138,34 @@ def replay(
         or not validate_record(source, bundle)
     ):
         raise ValueError("bundle is incomplete or its evidence digests do not match")
+    if source.get("schema_version") != 2:
+        raise ValueError("historical evidence is available for inspection, not replay")
+    if source["subject"]["kind"] == "formal_goal":
+        from .formal.policy import GitCommit, VerificationRequest
+        from .formal.verus import resolve_execution
+        from .inputs import capture_git_commit, capture_working_tree
+        from .job import validate_job
+
+        job = validate_job(read_json(bundle / "job.json"))
+        component = manifest.require_component(source["subject"]["id"])
+        if component.to_json() != job["component"]:
+            raise ValueError("bundle formal policy differs from the current component")
+        request = VerificationRequest.from_json(job["request"])
+        identity = resolve_execution(component)
+        if identity["semantic"] != job["execution_identity"]["semantic"]:
+            raise ValueError("bundle checker differs from the current verifier")
+        captured = (capture_git_commit(project, request.candidate.oid)
+                    if isinstance(request.candidate, GitCommit) else capture_working_tree(project))
+        if captured.digest != job["source"]["digest"]:
+            raise ValueError("bundle source differs from independently captured candidate files")
+        record = prepare_formal(project, request, component, identity, store=store)
+        if record["job_id"] != job["job_id"]:
+            _failed_submission(store, record["run_id"], Blocked(
+                BlockedReason.SOURCE_CHANGED, "candidate changed while preparing formal evidence replay"))
+            raise ValueError("candidate changed while preparing formal evidence replay")
+        record["replayed_from"] = {"run_id": source["run_id"], "receipt": source["receipt"]["sha256"]}
+        store.save(record)
+        return _launch(project, store, record)
     check = manifest.require(source["check_id"])
     if (
         manifest.digest(check.id) != source["check_digest"]

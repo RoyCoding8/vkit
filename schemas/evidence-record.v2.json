@@ -34,6 +34,18 @@
     "backend": {"type": "object"},
     "policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "checker_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-  }
+    "checker_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "method": {"const": "verus_source"},
+    "category": {"const": "source_verification"},
+    "scope": {"const": "required_api"},
+    "verification": {"type": "object"}
+  },
+  "allOf": [{
+    "if": {"properties": {"subject": {"properties": {"kind": {"const": "formal_goal"}}}}},
+    "then": {
+      "required": ["policy_sha256", "package_sha256", "checker_sha256", "method", "category", "scope", "verification"],
+      "properties": {"assurance": {"const": "trusted_engine"}}
+    },
+    "else": {"required": ["check_digest", "backend"]}
+  }]
 }

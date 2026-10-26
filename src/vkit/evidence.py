@@ -176,12 +176,15 @@ def seal(record: dict[str, Any], directory: Path, check=None) -> None:
         "subject": record["subject"],
         "source": record["source"],
         "inputs": record["inputs"],
-        "assurance": assurance(check) if check else "verus_source",
+        "assurance": assurance(check) if check else "trusted_engine",
         "claim_outcome": claim_outcome,
         "outcome": record["outcome"],
         "obligations": record["obligations"],
         "artifacts": artifacts,
     }
+    if check is None:
+        receipt.update(method="verus_source", category="source_verification", scope="required_api",
+                       verification=record.get("verification", {}))
     for field in (
         "check_digest",
         "backend",
@@ -196,6 +199,8 @@ def seal(record: dict[str, Any], directory: Path, check=None) -> None:
     validate("evidence receipt", EVIDENCE_RECORD, receipt)
     write_json(directory / "receipt.json", receipt)
     record["assurance"] = receipt["assurance"]
+    if check is None:
+        record.update({key: receipt[key] for key in ("method", "category", "scope")})
     record["claim_outcome"] = receipt["claim_outcome"]
     record["receipt"] = {
         "path": "receipt.json",
@@ -256,6 +261,10 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
                 "policy_sha256",
                 "package_sha256",
                 "checker_sha256",
+                "method",
+                "category",
+                "scope",
+                "verification",
             )
             if any(
                 name in receipt and receipt[name] != record.get(name) for name in fields
@@ -301,7 +310,8 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
                 return False
         for item in record["inputs"]["files"]:
             path = _retained_path(directory, "snapshot/" + item["path"])
-            if file_digest(path) != item["sha256"]:
+            digest = sha256(path) if record.get("subject", {}).get("kind") == "formal_goal" else file_digest(path)
+            if digest != item["sha256"]:
                 return False
         return True
     except (OSError, ValueError, KeyError, TypeError, ProjectError, SchemaValidationError):

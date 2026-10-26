@@ -17,6 +17,7 @@ from .. import __version__, evidence, jobs, query
 from ..manifest import ManifestError
 from ..paths import Project, open_project
 from ..settings import load_settings
+from ..schemas import SchemaValidationError, VERIFICATION_REQUEST, schema
 
 MAX_WAIT_SECONDS = 60
 INSTRUCTIONS = (
@@ -129,7 +130,7 @@ class Server:
                 return {"error": "unknown or unavailable tool"}, True
             _check(arguments, tool.input_schema)
             return tool.handler(self, arguments), False
-        except (OSError, Refusal, ManifestError, ValueError) as exc:
+        except (OSError, Refusal, ManifestError, ValueError, SchemaValidationError) as exc:
             return {"error": str(exc)}, True
 
 
@@ -191,7 +192,8 @@ def _help(server: Server, args: dict[str, Any]) -> Any:
 
 
 def _summary_record(record: dict[str, Any]) -> dict[str, Any]:
-    return {key: record.get(key) for key in ("job_id", "run_id", "check_id", "state", "outcome",
+    return {key: record.get(key) for key in ("job_id", "run_id", "subject", "check_id", "state", "outcome",
+                                            "method", "category", "scope",
                                             "assurance", "claim_outcome", "receipt")}
 
 
@@ -232,6 +234,12 @@ def _run_get(server: Server, args: dict[str, Any]) -> Any:
     if view is None:
         raise Refusal(f"no run {args['run_id']!r}")
     return view
+
+
+def _verify(server: Server, args: dict[str, Any]) -> Any:
+    from ..formal.service import verify
+
+    return verify(server.context(), args)
 
 
 def _run_wait(server: Server, args: dict[str, Any]) -> Any:
@@ -302,6 +310,11 @@ _BASE_TOOLS = (
          {"check_ids": {"type": "array", "items": _STR}, "needed": {"type": "boolean"},
           "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECONDS}},
          _check_run, read_only=False, category="repository"),
+    Tool("verify", "Verify one accepted component against VKit's owned mathematical contract. Captures the "
+         "whole source tree and submits a durable job. The Verus source result covers the six required API "
+         "bindings under the recorded trusted engine; working-tree results are provisional.",
+         schema(VERIFICATION_REQUEST)["properties"], _verify, read_only=False,
+         required=tuple(schema(VERIFICATION_REQUEST)["required"]), category="repository"),
     Tool("run_get", "One run: state, outcome, obligations, inputs, and a window of its stdout or stderr.",
          {"run_id": _STR, "log": {"type": "string", "enum": ["stdout", "stderr"]},
           "log_offset": {"type": "integer", "description": "negative counts from the end"}, "log_limit": {"type": "integer"}}, _run_get, category="repository"),
@@ -326,6 +339,9 @@ _BASE_TOOLS = (
          "the trust ladder: a recurring mistake becomes a static rule or a scenario check.",
          {"checks": {"type": "array", "items": {"type": "object"}}, "features": {"type": "array",
           "items": {"type": "object"}}, "files": {"type": "object", "description": "new path -> text"},
+          "formal": {"type": "object", "additionalProperties": False,
+                     "required": ["components"], "properties": {
+                         "components": {"type": "array", "items": {"type": "object"}}}},
           "rationale": _STR}, _propose, read_only=False, category="repository"),
     Tool("gate", "READY only when every registered check passed against the current inputs; REJECTED when one "
          "failed; otherwise BLOCKED with the checks that lack fresh evidence.", {}, _gate, category="repository"),

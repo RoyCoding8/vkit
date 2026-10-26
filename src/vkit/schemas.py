@@ -55,6 +55,10 @@ def _validator(name: str) -> Draft202012Validator:
     return Draft202012Validator(json.loads(text), registry=_registry())
 
 
+def schema(name: str) -> dict[str, Any]:
+    return json.loads(_schema_dir().joinpath(name).read_text(encoding="utf-8"))
+
+
 @lru_cache(maxsize=1)
 def _registry() -> Registry:
     entries = []

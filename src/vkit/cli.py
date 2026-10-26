@@ -14,6 +14,7 @@ from typing import Any, Sequence
 from . import query
 from .manifest import ManifestError
 from .paths import ProjectError
+from .schemas import SchemaValidationError
 from .settings import load_launcher_settings, load_settings, save_settings
 from .store import now
 
@@ -47,7 +48,8 @@ def _context(args: argparse.Namespace) -> query.Context:
 
 def _outcome_line(record: dict[str, Any]) -> str:
     outcome = record.get("outcome") or {}
-    line = f"{record['check_id']}: {outcome.get('result', record['state'].upper())}"
+    subject_id = record.get("subject", {}).get("id", record.get("check_id"))
+    line = f"{subject_id}: {outcome.get('result', record['state'].upper())}"
     if outcome.get("reason"):
         line += f" ({outcome['reason']}) {outcome.get('detail', '')}".rstrip()
     for scenario in outcome.get("scenarios", []):
@@ -115,6 +117,22 @@ def cmd_check_run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    from .formal.service import resolve_commit, verify
+    from .formal.verus import ExecutionSetupError
+
+    ctx = _context(args)
+    candidate = ({"kind": "working_tree"} if args.working_tree else
+                 {"kind": "git_commit", "oid": resolve_commit(ctx.project, args.candidate)})
+    try:
+        record = verify(ctx, {"component": args.component, "goal": {"kind": "implements"},
+                              "candidate": candidate, "wait_seconds": args.wait})
+    except ExecutionSetupError as exc:
+        raise Refused(str(exc), EXIT_BLOCKED) from exc
+    _emit(record, args.json, _outcome_line(record))
+    return _RESULT_EXIT.get((record.get("outcome") or {}).get("result"), EXIT_OK)
+
+
 def cmd_run_show(args: argparse.Namespace) -> int:
     view = query.run_view(_context(args), args.run, log=args.log, offset=args.offset, limit=args.limit)
     if view is None:
@@ -154,7 +172,7 @@ def cmd_run_retry(args: argparse.Namespace) -> int:
     previous = ctx.store.record(args.run)
     if previous is None or previous["state"] in ("queued", "running"):
         raise Refused("retry requires a finished or interrupted attempt", EXIT_INVALID)
-    record = jobs.submit(ctx.project, ctx.require_manifest(), previous["check_id"], store=ctx.store)
+    record = jobs.retry(ctx.project, args.run, store=ctx.store)
     if not args.detach:
         record = jobs.wait(ctx.store, record["run_id"])
     _emit(record, args.json, _outcome_line(record))
@@ -233,9 +251,13 @@ def cmd_accept(args: argparse.Namespace) -> int:
         return _accept_proposal(args, ctx)
     try:
         manifest = ctx.require_manifest()
-        wanted = args.check or sorted(manifest.checks)
+        explicit = bool(args.check or args.component)
+        wanted = args.check or ([] if explicit else sorted(manifest.checks))
+        components = args.component or ([] if explicit else sorted(manifest.components))
         for check_id in wanted:
             manifest.require(check_id)
+        for component_id in components:
+            manifest.require_component(component_id)
     except ManifestError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
     approved = ctx.store.approved()
@@ -244,20 +266,46 @@ def cmd_accept(args: argparse.Namespace) -> int:
     identities = {c: backend_identity(manifest.require(c)) for c in wanted}
     pending = [c for c in wanted if approved.get(manifest.digest(c), {}).get("kind") != "check_definition"
                or approved.get(manifest.digest(c), {}).get("backend") != identities[c]]
+    from .formal.verus import ExecutionSetupError, resolve_execution
+    from .inputs import canonical_digest
+
+    formal_records = {}
+    for component_id in components:
+        component = manifest.require_component(component_id)
+        try:
+            execution = resolve_execution(component)
+        except ExecutionSetupError as exc:
+            raise Refused(str(exc), EXIT_BLOCKED) from exc
+        record = {"kind": "formal_policy", "policy_sha256": component.digest,
+                  "package_sha256": component.package.sha256,
+                  "checker_sha256": canonical_digest(execution["semantic"])}
+        if any(approved.get(component.digest, {}).get(key) != value for key, value in record.items()):
+            formal_records[component_id] = (record, execution["semantic"])
     lines = []
     for check_id in pending:
         lines.append(f"{check_id} ({manifest.digest(check_id)[:12]})")
         lines.append(json.dumps(manifest.entries[check_id], indent=2))
         lines.append("checker identity: " + json.dumps(identities[check_id], sort_keys=True))
-    if not pending:
-        _emit({"accepted": [], "pending": []}, args.json, "every named check is already accepted")
+    for component_id, (record, execution) in formal_records.items():
+        component = manifest.require_component(component_id)
+        lines += [f"formal component {component_id} ({component.digest[:12]})",
+                  json.dumps(component.to_json(), indent=2),
+                  "coverage: required_api; assurance: trusted_engine; method: verus_source",
+                  "checker identity: " + json.dumps(execution, sort_keys=True)]
+    if not pending and not formal_records:
+        _emit({"accepted": [], "accepted_components": [], "pending": []}, args.json,
+              "every named definition is already accepted")
         return EXIT_OK
-    if not _confirm(args, "\n".join(lines), f"accept {len(pending)} check definition(s)?"):
+    if not _confirm(args, "\n".join(lines), f"accept {len(pending) + len(formal_records)} definition(s)?"):
         print("nothing accepted")
         return EXIT_BLOCKED
-    ctx.store.approve({manifest.digest(c): {"kind": "check_definition", "check_id": c, "accepted_at": now(),
-                                          "backend": identities[c]} for c in pending})
-    _emit({"accepted": pending}, args.json, f"accepted: {', '.join(pending)}")
+    records = {manifest.digest(c): {"kind": "check_definition", "check_id": c, "accepted_at": now(),
+                                    "backend": identities[c]} for c in pending}
+    records.update({manifest.require_component(c).digest: {**entry, "accepted_at": now()}
+                    for c, (entry, _) in formal_records.items()})
+    ctx.store.approve(records)
+    _emit({"accepted": pending, "accepted_components": list(formal_records)}, args.json,
+          f"accepted: {', '.join(pending + list(formal_records))}")
     return EXIT_OK
 
 
@@ -400,6 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
     availability.add_argument("--disable-category", choices=list(CATEGORIES))
     accept = command(sub, "accept", "review and accept check definitions so they may run")
     accept.add_argument("--check", action="append", help="a check id (repeatable); default every check")
+    accept.add_argument("--component", action="append", help="a formal component id (repeatable)")
     accept.add_argument("--proposal", help="apply a pending proposal by digest prefix instead")
     accept.add_argument("--yes", action="store_true", help="accept without the interactive prompt")
     command(sub, "proposals", "list changes agents proposed and nobody has accepted or rejected")
@@ -416,6 +465,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_check.add_argument("--needed", action="store_true", help="run every check that is stale or missing")
     run_check.add_argument("--detach", action="store_true", help="return after durable submission")
 
+    verify = command(sub, "verify", "verify a component against its accepted mathematical contract")
+    verify.add_argument("component")
+    candidate = verify.add_mutually_exclusive_group(required=True)
+    candidate.add_argument("--working-tree", action="store_true", help="capture current files provisionally")
+    candidate.add_argument("--candidate", help="capture a Git revision as raw immutable objects")
+    verify.add_argument("--wait", type=int, default=0, help="wait up to 60 seconds; zero returns the durable job")
+
     run = sub.add_parser("run", help="read or stop a run").add_subparsers(dest="run_command", required=True)
     show = command(run, "show", "show a run, its outcome and a window of its log")
     show.add_argument("--run", required=True)
@@ -427,7 +483,7 @@ def build_parser() -> argparse.ArgumentParser:
     waiting = command(run, "wait", "wait for a submitted attempt")
     waiting.add_argument("--run", required=True)
     waiting.add_argument("--timeout", type=float, help="maximum wait in seconds; leaves the job running")
-    retry = command(run, "retry", "submit a new attempt using the current check and inputs")
+    retry = command(run, "retry", "retry the same captured job as a new execution attempt")
     retry.add_argument("--run", required=True)
     retry.add_argument("--detach", action="store_true")
 
@@ -468,6 +524,7 @@ _DISPATCH = {
     ("run", "wait"): cmd_run_wait, ("run", "retry"): cmd_run_retry,
     ("evidence", "export"): cmd_evidence_export, ("evidence", "replay"): cmd_evidence_replay,
     ("project", "inspect"): cmd_project_inspect,
+    ("verify", None): cmd_verify,
     ("proposals", None): cmd_proposals, ("reject", None): cmd_reject,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
     ("tools", None): cmd_tools,
@@ -499,7 +556,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(str(exc), file=sys.stderr)
         return exc.code
-    except ValueError as exc:
+    except (ValueError, ManifestError, SchemaValidationError) as exc:
         _emit({"error": str(exc), "exit_code": EXIT_INVALID}, args.json, str(exc))
         return EXIT_INVALID
     except Exception as exc:  # noqa: BLE001

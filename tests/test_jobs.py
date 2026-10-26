@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -12,6 +13,27 @@ from helpers import DRIVER, NO_WINDOW, git, scenario_check, vkit
 from test_external import _project
 from vkit.paths import open_project
 from vkit.store import Store, write_json
+
+
+def test_wait_does_not_finish_before_the_worker_releases_its_attempt(tmp_path):
+    from vkit.jobs import wait
+
+    store = Store(tmp_path / "state")
+    store.save({"run_id": "published", "state": "done"})
+    finished = threading.Event()
+    result = []
+
+    def client():
+        result.append(wait(store, "published", timeout_seconds=2))
+        finished.set()
+
+    with store.hold("published"):
+        thread = threading.Thread(target=client)
+        thread.start()
+        assert not finished.wait(0.1)
+    thread.join(timeout=3)
+    assert finished.is_set()
+    assert result == [{"run_id": "published", "state": "done"}]
 
 
 def test_queued_attempt_reports_a_dead_worker_as_interrupted(tmp_path):

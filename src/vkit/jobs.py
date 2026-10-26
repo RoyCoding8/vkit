@@ -64,7 +64,9 @@ def wait(store: Store, run_id: str, timeout_seconds: float | None = None) -> dic
         record = store.record(run_id)
         if record is None:
             raise ValueError(f"no run {run_id!r}")
-        if record["state"] not in ("queued", "running") or (deadline is not None and time.monotonic() >= deadline):
+        pending = (record["state"] in ("queued", "running")
+                   or (record["state"] == "done" and store.is_alive(run_id)))
+        if not pending or (deadline is not None and time.monotonic() >= deadline):
             return record
         time.sleep(0.05)
 

@@ -1,0 +1,41 @@
+name: VKit candidate gate
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: [self-hosted, linux, x64, vkit-sealed]
+    timeout-minutes: 15
+    env:
+      CANDIDATE: ${{ github.event.merge_group.head_sha || github.sha }}
+      TARGET: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      VKIT_CI_IMAGE: ${{ vars.VKIT_CI_IMAGE }}
+      VKIT_VERUS_IMAGE: ${{ vars.VKIT_VERUS_IMAGE }}
+      VKIT_VERUS_ARCHIVE: /opt/vkit/assets/verus-0.2026.10.18.7d82994-x86-linux.zip
+      VKIT_VERUS_ROOT: /opt/vkit/assets/verus-x86-linux
+      VKIT_RUSTUP_HOME: /opt/vkit/assets/rustup
+      VKIT_CARGO_HOME: /opt/vkit/assets/cargo
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.CANDIDATE }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the combined candidate under target policy
+        working-directory: ${{ runner.temp }}
+        run: |
+          /opt/vkit/bin/vkit gate --project "$GITHUB_WORKSPACE" \
+            --candidate "$CANDIDATE" --target "$TARGET" \
+            --output "$RUNNER_TEMP/vkit-gate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: vkit-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vkit-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error

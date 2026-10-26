@@ -259,7 +259,8 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps({"schema_version":1,"scenarios":
     (root / "driver.py").write_text(driver, encoding="utf-8")
     check = {"id": "isolation", "kind": "scenario", "timeout_seconds": 30,
              "artifact": "result.json", "command": ["{{python}}", "driver.py", "{{run_dir}}/result.json"],
-             "required_scenarios": ["isolated"], "inputs": ["driver.py", "candidate_api.rs"]}
+             "required_scenarios": ["isolated"], "inputs": ["driver.py", "candidate_api.rs"],
+             "subject": {"paths": ["driver.py", "candidate_api.rs"], "digest": None}, "claim_id": "isolation"}
     (root / "verification/manifest.json").write_text(json.dumps({
         "schema_version": 3, "checks": [check],
         "formal": {"components": [product_component(3).to_json()]}}), encoding="utf-8")

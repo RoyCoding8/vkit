@@ -12,6 +12,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
+from referencing import Registry, Resource
 
 MANIFEST = "manifest.v3.json"
 VERIFICATION_REQUEST = "verification-request.v1.json"
@@ -49,7 +50,17 @@ def _schema_dir():
 @lru_cache(maxsize=None)
 def _validator(name: str) -> Draft202012Validator:
     text = _schema_dir().joinpath(name).read_text(encoding="utf-8")
-    return Draft202012Validator(json.loads(text))
+    return Draft202012Validator(json.loads(text), registry=_registry())
+
+
+@lru_cache(maxsize=1)
+def _registry() -> Registry:
+    entries = []
+    for path in _schema_dir().iterdir():
+        if path.name.endswith(".json"):
+            schema = json.loads(path.read_text(encoding="utf-8"))
+            entries.append((schema["$id"], Resource.from_contents(schema)))
+    return Registry().with_resources(entries)
 
 
 def _describe(error: ValidationError, depth: int = 0) -> str:

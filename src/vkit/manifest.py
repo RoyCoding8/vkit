@@ -1,4 +1,4 @@
-"""Parse `verification/manifest.json` into checks. The manifest is the only source of commands."""
+"""Parse accepted check definitions and owned formal component policies."""
 from __future__ import annotations
 
 import json
@@ -73,7 +73,7 @@ def parse_manifest_data(raw: Any, *, project: Project, origin: str) -> Manifest:
     for entry in raw["checks"]:
         if entry["id"] in checks:
             raise ManifestError(f"duplicate check id {entry['id']!r} in {origin}")
-        checks[entry["id"]] = _build_check(entry, project)
+        checks[entry["id"]] = parse_check_definition(entry, project)
         entries[entry["id"]] = entry
     components = {}
     for entry in raw.get("formal", {}).get("components", []):
@@ -121,7 +121,7 @@ def _command(check_id: str, raw: list) -> tuple[str, ...]:
     return command
 
 
-def _build_check(entry: dict, project: Project) -> CheckSpec:
+def parse_check_definition(entry: dict, project: Project) -> CheckSpec:
     check_id = entry["id"]
     timeout = float(entry["timeout_seconds"])
     if not 0 < timeout <= MAX_TIMEOUT_SECONDS:

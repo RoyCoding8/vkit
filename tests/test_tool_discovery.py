@@ -148,7 +148,7 @@ def test_core_tools_share_one_repository_descriptor_registry(make_project):
     assert advertised == set(mcp.BY_NAME)
     assert mcp.BY_NAME["help"].category is None
     assert all(tool.category == "repository" for name, tool in mcp.BY_NAME.items() if name != "help")
-    assert {tool["name"] for tool in server.call("help", {"all": True})[0]["tools"]} == advertised - {"help"}
+    assert {tool["name"] for tool in server.call("help", {"all": True, "limit": 25})[0]["tools"]} == advertised - {"help"}
 
 
 def test_old_config_is_preserved_and_visibility_changes_are_idempotent(make_project):

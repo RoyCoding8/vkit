@@ -1,6 +1,7 @@
 """A run concludes Passed, Failed, or Blocked; Blocked always carries a reason, so PASS-with-reason
 and BLOCKED-without-one cannot be built.
 """
+
 from __future__ import annotations
 
 import enum
@@ -20,6 +21,7 @@ class BlockedReason(str, enum.Enum):
     ARTIFACT_EMPTY = "artifact_empty"
     SCENARIO_UNKNOWN = "scenario_unknown"
     SOURCE_CHANGED = "source_changed"
+    FORMAL_OBLIGATION = "formal_obligation"
     NOT_APPROVED = "not_approved"
     INPUT_MISSING = "input_missing"
     LAUNCH_FAILED = "launch_failed"

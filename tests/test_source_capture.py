@@ -79,7 +79,7 @@ def test_working_tree_capture_is_separate_from_commit_and_materializes_bytes(tmp
 
     capture = capture_working_tree(repo)
     assert capture.kind == "working_tree"
-    assert capture.commit == _head(repo)
+    assert capture.commit is None and capture.tree is None and capture.parents == ()
     assert [file.path for file in capture.files] == [
         ".gitignore",
         "new.rs",
@@ -87,6 +87,9 @@ def test_working_tree_capture_is_separate_from_commit_and_materializes_bytes(tmp
         "source.rs",
     ]
     assert capture.files[-1].content == b"working\r\n"
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-qm", "commit working-tree metadata")
+    assert capture_working_tree(repo).digest == capture.digest
     target = tmp_path / "captured"
     target.mkdir()
     written = capture.materialize(target)

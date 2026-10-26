@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/job.v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "subject", "source"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "job_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["registered_check", "formal_goal"]},
+        "id": {"type": "string", "minLength": 1}
+      }
+    },
+    "source": {"$ref": "#/$defs/source"},
+    "definition": {"type": "object"},
+    "check_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "baseline": {"type": ["object", "null"]},
+    "backend": {"type": "object"},
+    "inputs": {"type": "object"},
+    "request": {"type": "object"},
+    "component": {"type": "object"},
+    "policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "checker_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "execution_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantic", "paths"],
+      "properties": {
+        "semantic": {"type": "object"},
+        "paths": {"type": "object"}
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "subject": {"properties": {"kind": {"const": "registered_check"}}}
+      },
+      "required": ["definition", "check_digest", "baseline", "backend", "inputs"],
+      "not": {"anyOf": [{"required": ["request"]}, {"required": ["component"]}, {"required": ["policy_sha256"]}, {"required": ["package_sha256"]}, {"required": ["checker_sha256"]}, {"required": ["execution_identity"]}]}
+    },
+    {
+      "properties": {
+        "subject": {"properties": {"kind": {"const": "formal_goal"}}}
+      },
+      "required": ["request", "component", "policy_sha256", "package_sha256", "checker_sha256", "execution_identity"],
+      "not": {"anyOf": [{"required": ["definition"]}, {"required": ["check_digest"]}, {"required": ["baseline"]}, {"required": ["backend"]}, {"required": ["inputs"]}]}
+    }
+  ],
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "object_format", "commit", "tree", "parents", "files", "digest"],
+      "properties": {
+        "kind": {"enum": ["working_tree", "git_commit"]},
+        "object_format": {"enum": ["sha1", "sha256"]},
+        "commit": {"type": ["string", "null"]},
+        "tree": {"type": ["string", "null"]},
+        "parents": {"type": "array", "items": {"type": "string"}},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "mode", "blob_oid", "raw_sha256"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "mode": {"enum": ["100644", "100755"]},
+              "blob_oid": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+              "raw_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

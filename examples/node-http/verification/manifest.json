@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "description": "A small HTTP service where creating an item is only observable by reading the list back, verified over real sockets.",
   "checks": [
     {

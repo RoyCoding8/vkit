@@ -12,6 +12,7 @@ from typing import Any
 from .evidence import backend_identity, validate_record
 from .inputs import Snapshot
 from .manifest import Manifest, parse_manifest_data
+from .nowindow import hidden_window
 from .outcome import Blocked, BlockedReason
 from .paths import Project, open_project
 from .runner import _child_env, execute, prepare
@@ -32,8 +33,11 @@ def _failed_submission(store: Store, run_id: str, outcome: Blocked) -> None:
 
 def _launch(project: Project, store: Store, record: dict[str, Any]) -> dict[str, Any]:
     run_id = record["run_id"]
-    options: dict[str, Any] = {"start_new_session": True} if os.name != "nt" else {
-        "creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+    options = hidden_window()
+    if os.name == "nt":
+        options["creationflags"] |= subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        options["start_new_session"] = True
     try:
         with (store.run_dir(run_id) / "worker.log").open("ab") as log:
             worker = subprocess.Popen([sys.executable, "-m", "vkit.jobs", "--project", str(project.root),
@@ -93,7 +97,7 @@ def main() -> int:
     store = Store.of(project)
     try:
         job = read_json(store.run_dir(args.run) / "job.json")
-        manifest = parse_manifest_data({"schema_version": 2, "checks": [job["entry"]]},
+        manifest = parse_manifest_data({"schema_version": 3, "checks": [job["entry"]]},
                                        project=project, origin="persisted job")
         execute(project, manifest, args.run, store=store)
     except Exception as exc:

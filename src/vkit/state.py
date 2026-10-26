@@ -97,7 +97,7 @@ def check_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[C
         key = evidence_key(digests[check_id], inputs, baselines.get(check_id), backend)
         current = store.evidence(check_id, key)
         last = store.latest(check_id)
-        if (digests[check_id] not in approved or
+        if (approved.get(digests[check_id], {}).get("kind") != "check_definition" or
                 approved[digests[check_id]].get("backend") != backend):
             freshness = Freshness.NOT_APPROVED
         elif current is not None:

@@ -23,7 +23,7 @@ def make_project(tmp_path: Path):
             path = project / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(textwrap.dedent(text), encoding="utf-8")
-        manifest = {"schema_version": 2, "description": "test project", "checks": checks}
+        manifest = {"schema_version": 3, "description": "test project", "checks": checks}
         (project / "verification").mkdir(parents=True, exist_ok=True)
         (project / "verification" / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         git(project, "init", "-q")

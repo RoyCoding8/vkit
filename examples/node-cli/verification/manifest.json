@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "description": "A small real Node CLI that splits a bill owed in cents between people, verified by running it.",
   "checks": [
     {

@@ -1,6 +1,6 @@
 # VKit implementation tasks
 
-The [implementation plan](PLAN.md) is complete. The product integration is unfinished.
+Implementation of the [plan](PLAN.md) is in progress. The product integration is unfinished.
 Follow P1 through P6 in order; update this file with each unit's actual evidence.
 
 ## Established foundation
@@ -21,8 +21,8 @@ Follow P1 through P6 in order; update this file with each unit's actual evidence
 
 | Task | State | Required completion evidence |
 | --- | --- | --- |
-| P1. Complete the mathematical package and qualification | [ ] Next | Explicit map lookup/fold accounting; all six required bindings; positive and adversarial controls; sealed Linux execution and actual-container cancellation. Then delete active Rocq model/audit. |
-| P2. Define and package accepted policy | [ ] Pending P1 | Closed manifest/proposal types; distinct check/formal approval records; concurrent acceptance preserves both updates; one installed copy of sources/templates/pins/schemas. |
+| P1. Complete the mathematical package and qualification | [ ] In progress | Map accounting: strict local Verus 59 verified, zero errors. All six bindings: [CI 40263389004](https://github.com/RoyCoding8/vkit/actions/runs/40263389004), 56 checks and 29 rejected controls. Combined sealed Linux run needs its container failure fixed. Then delete active Rocq model/audit. |
+| P2. Define and package accepted policy | [ ] Foundation implemented | Closed v3 component/request types and distinct approval records implemented; concurrent process acceptance preserves both updates. Thirty focused tests and Ruff pass. Formal proposal acceptance, installed assets and wheel qualification remain. |
 | P3. Persist immutable job subjects | [ ] Pending P2 | Registered/formal tagged jobs; raw-byte working-tree/Git capture; detach, locking and retry; committed jobs unaffected by checkout movement. Delete worker manifest reconstruction and v2 production parsing. |
 | P4. Execute, seal and replay | [ ] Pending P3 | One container lifecycle and Verus procedure; complete typed receipts; tampering/staleness blocks; replay reruns checking; cancellation/restart leaves no owned orphan. |
 | P5. Connect CLI, MCP and the protected gate | [ ] Pending P4 | Identical request identities; existing settings/status/console consumers work; target authority cannot be replaced by candidate policy; exact combined-candidate checking. |

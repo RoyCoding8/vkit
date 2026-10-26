@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://vkit.local/schemas/manifest.v2.json",
-  "title": "vkit manifest, schema version 2",
-  "description": "Every check declares a `kind`, and each kind is validated by its own branch in a `oneOf`. Each branch is a self-contained object with `additionalProperties: false`, so a `scenario` check cannot carry `theorems` and a `lean` check cannot carry `required_scenarios`. The refusal happens here, before a process is launched. There is deliberately no `evidence_kind` property on any branch: the category is a consequence of which interpreter ran, never a field a candidate writes. The branches do not use `allOf`; combining it with `additionalProperties: false` in one object stops `additionalProperties` from seeing the contributed keys, which is the opposite of what these branches are for.",
+  "$id": "https://vkit.local/schemas/manifest.v3.json",
+  "title": "VKit manifest, schema version 3",
+  "description": "Registered checks and owned formal component policies. Evidence methods are determined by the executor.",
   "type": "object",
   "required": [
     "schema_version",
@@ -11,14 +11,14 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": 2
+      "const": 3
     },
     "description": {
       "type": "string"
     },
     "checks": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 0,
       "items": {
         "oneOf": [
           {
@@ -46,6 +46,22 @@
             "$ref": "#/$defs/external"
           }
         ]
+      }
+    },
+    "formal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "components"
+      ],
+      "properties": {
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/formal_component"
+          }
+        }
       }
     }
   },
@@ -227,21 +243,46 @@
     },
     "pinnedFile": {
       "type": "object",
-      "required": ["path", "sha256"],
+      "required": [
+        "path",
+        "sha256"
+      ],
       "additionalProperties": false,
       "properties": {
-        "path": {"type": "string", "minLength": 1},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     },
     "pinnedCommand": {
       "type": "object",
-      "required": ["executable"],
+      "required": [
+        "executable"
+      ],
       "additionalProperties": false,
       "properties": {
-        "executable": {"$ref": "#/$defs/pinnedFile"},
-        "argv": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "dependencies": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/pinnedFile"}}
+        "executable": {
+          "$ref": "#/$defs/pinnedFile"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/pinnedFile"
+          }
+        }
       },
       "description": "One argument-vector command. The executable and each declared script/dependency are content-pinned; supported argument placeholders are documented in backend-protocol.md."
     },
@@ -860,31 +901,241 @@
     },
     "external": {
       "type": "object",
-      "required": ["id", "kind", "specification", "obligations", "assumptions", "model_scope", "assurance", "evidence_artifacts", "backend", "checker", "timeout_seconds", "artifact", "subject", "claim_id"],
+      "required": [
+        "id",
+        "kind",
+        "specification",
+        "obligations",
+        "assumptions",
+        "model_scope",
+        "assurance",
+        "evidence_artifacts",
+        "backend",
+        "checker",
+        "timeout_seconds",
+        "artifact",
+        "subject",
+        "claim_id"
+      ],
       "additionalProperties": false,
       "description": "A pinned evidence producer and an independently pinned checker. A producer status or exit code alone never establishes an obligation.",
       "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "kind": {"const": "external"},
-        "description": {"type": "string"},
-        "cwd": {"$ref": "#/$defs/cwd"},
-        "timeout_seconds": {"$ref": "#/$defs/timeout"},
-        "artifact": {"$ref": "#/$defs/artifact"},
-        "prerequisites": {"$ref": "#/$defs/prerequisites"},
-        "inputs": {"$ref": "#/$defs/inputs"},
-        "expectations": {"$ref": "#/$defs/expectations"},
-        "subject": {"$ref": "#/$defs/subject"},
-        "claim_id": {"$ref": "#/$defs/claim_id"},
-        "specification": {"type": "string", "minLength": 1, "description": "Repository-relative frozen specification file."},
-        "obligations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "assumptions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "model_scope": {"type": "string", "minLength": 1},
-        "assurance": {"enum": ["kernel_proof", "trusted_engine"]},
-        "evidence_artifacts": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "backend": {"$ref": "#/$defs/pinnedCommand"},
-        "checker": {"$ref": "#/$defs/pinnedCommand"},
-        "trusted_tool_dependencies": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/pinnedFile"}}
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "external"
+        },
+        "description": {
+          "type": "string"
+        },
+        "cwd": {
+          "$ref": "#/$defs/cwd"
+        },
+        "timeout_seconds": {
+          "$ref": "#/$defs/timeout"
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact"
+        },
+        "prerequisites": {
+          "$ref": "#/$defs/prerequisites"
+        },
+        "inputs": {
+          "$ref": "#/$defs/inputs"
+        },
+        "expectations": {
+          "$ref": "#/$defs/expectations"
+        },
+        "subject": {
+          "$ref": "#/$defs/subject"
+        },
+        "claim_id": {
+          "$ref": "#/$defs/claim_id"
+        },
+        "specification": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repository-relative frozen specification file."
+        },
+        "obligations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "model_scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assurance": {
+          "enum": [
+            "kernel_proof",
+            "trusted_engine"
+          ]
+        },
+        "evidence_artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "backend": {
+          "$ref": "#/$defs/pinnedCommand"
+        },
+        "checker": {
+          "$ref": "#/$defs/pinnedCommand"
+        },
+        "trusted_tool_dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/pinnedFile"
+          }
+        }
+      }
+    },
+    "formal_component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "package",
+        "contract",
+        "source",
+        "profile",
+        "parameters",
+        "bindings",
+        "required"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "package": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version",
+            "sha256"
+          ],
+          "properties": {
+            "id": {
+              "const": "vkit.resource-ledger"
+            },
+            "version": {
+              "const": "0.1.0"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "contract": {
+          "const": "ledger.source.v1"
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entry"
+          ],
+          "properties": {
+            "entry": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "profile": {
+          "const": "verus-linux-x86_64-v1"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_records"
+          ],
+          "properties": {
+            "max_records": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            }
+          }
+        },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "new",
+            "reserve",
+            "release",
+            "reserve_batch",
+            "apply_command",
+            "run_commands"
+          ],
+          "properties": {
+            "new": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$"
+            },
+            "reserve": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$"
+            },
+            "release": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$"
+            },
+            "reserve_batch": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$"
+            },
+            "apply_command": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$"
+            },
+            "run_commands": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$"
+            }
+          }
+        },
+        "required": {
+          "type": "boolean"
+        }
       }
     }
-  }
+  },
+  "anyOf": [
+    {
+      "properties": {
+        "checks": {
+          "minItems": 1
+        }
+      }
+    },
+    {
+      "required": [
+        "formal"
+      ]
+    }
+  ]
 }

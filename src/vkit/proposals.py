@@ -59,7 +59,7 @@ def validate(project: Project, body: Any) -> dict[str, Any]:
         raise ProposalError("a proposal must change something")
     try:
         if checks:
-            parse_manifest_data({"schema_version": 2, "checks": checks}, project=project, origin="proposal")
+            parse_manifest_data({"schema_version": 3, "checks": checks}, project=project, origin="proposal")
         for entry in features:
             parse_feature(entry, "proposal")
     except (ManifestError, FeatureError) as exc:
@@ -113,7 +113,7 @@ def apply(project: Project, store: Store, proposal: Proposal) -> list[str]:
     manifest_path = project.manifest_path
     if body["checks"]:
         document = (json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file()
-                    else {"schema_version": 2, "description": "", "checks": []})
+                    else {"schema_version": 3, "description": "", "checks": []})
         document["checks"] = _merge(document.get("checks", []), body["checks"])
         manifest = parse_manifest_data(document, project=project, origin=str(manifest_path))
     if body["features"]:
@@ -128,7 +128,7 @@ def apply(project: Project, store: Store, proposal: Proposal) -> list[str]:
         manifest_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         from .evidence import backend_identity
 
-        store.approve({manifest.digest(e["id"]): {"check_id": e["id"], "accepted_at": now(),
+        store.approve({manifest.digest(e["id"]): {"kind": "check_definition", "check_id": e["id"], "accepted_at": now(),
                                                   "backend": backend_identity(manifest.require(e["id"])),
                                                   "proposal": proposal.digest} for e in body["checks"]})
     if body["features"]:

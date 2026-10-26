@@ -49,7 +49,7 @@ def policy_identity() -> dict[str, str]:
     from .schemas import _schema_dir
 
     result = {p.relative_to(package).as_posix(): sha256(p) for p in sorted(files)}
-    for name in ("manifest.v2.json", "check-artifact.v1.json"):
+    for name in ("manifest.v3.json", "check-artifact.v1.json"):
         result["schemas/" + name] = hashlib.sha256(_schema_dir().joinpath(name).read_bytes()).hexdigest()
     return result
 

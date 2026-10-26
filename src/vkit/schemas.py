@@ -13,7 +13,8 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-MANIFEST_V2 = "manifest.v2.json"
+MANIFEST = "manifest.v3.json"
+VERIFICATION_REQUEST = "verification-request.v1.json"
 CHECK_ARTIFACT = "check-artifact.v1.json"
 
 
@@ -92,11 +93,11 @@ def _branch_at(schema_path: deque) -> dict | None:
 
 @lru_cache(maxsize=None)
 def _branches() -> tuple[dict, ...]:
-    """The check branches of the v2 manifest in `oneOf` order, which is the order `schema_path`
+    """The check branches of the v3 manifest in `oneOf` order, which is the order `schema_path`
     indices refer to.
     """
-    one_of = _validator(MANIFEST_V2).schema["properties"]["checks"]["items"]["oneOf"]
-    defs = _validator(MANIFEST_V2).schema["$defs"]
+    one_of = _validator(MANIFEST).schema["properties"]["checks"]["items"]["oneOf"]
+    defs = _validator(MANIFEST).schema["$defs"]
     resolved = []
     for entry in one_of:
         resolved.append(defs[entry["$ref"].rsplit("/", 1)[-1]])

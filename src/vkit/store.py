@@ -218,7 +218,55 @@ class Store:
         write_json(self.root / "baselines.json", {**self.baselines(), check_id: baseline})
 
     def approved(self) -> dict[str, Any]:
-        return read_json(self.root / "approved.json") or {}
+        document = read_json(self.root / "approved.json") or {}
+        if not isinstance(document, dict):
+            raise ValueError("approved.json must contain an object")
+        if "schema_version" not in document:
+            if any(not isinstance(record, dict) for record in document.values()):
+                raise ValueError("legacy check approvals must be objects")
+            records = {key: {**record, "kind": "check_definition"}
+                       for key, record in document.items()}
+        else:
+            if document.get("schema_version") != 2 or set(document) != {"schema_version", "records"}:
+                raise ValueError("unsupported approval document")
+            records = document["records"]
+        if not isinstance(records, dict):
+            raise ValueError("approval records must be an object")
+        for record in records.values():
+            self._validate_approval(record)
+        return records
+
+    @staticmethod
+    def _validate_approval(record: Any) -> None:
+        if not isinstance(record, dict):
+            raise ValueError("approval record must be an object")
+        required = {"check_definition": {"check_id", "backend", "accepted_at"},
+                    "formal_policy": {"policy_sha256", "package_sha256", "checker_sha256", "accepted_at"}}
+        fields = required.get(record.get("kind"))
+        if fields is None or not fields <= record.keys():
+            raise ValueError("approval must be a complete check_definition or formal_policy record")
+
+    @contextmanager
+    def _approval_lock(self) -> Iterator[None]:
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / "approval.lock").open("a+b") as handle:
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            deadline = time.monotonic() + 10
+            while not _try_lock(handle):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("timed out waiting for the shared approval lock")
+                time.sleep(0.02)
+            try:
+                yield
+            finally:
+                _unlock(handle)
 
     def approve(self, entries: dict[str, dict[str, Any]]) -> None:
-        write_json(self.root / "approved.json", {**self.approved(), **entries})
+        for record in entries.values():
+            self._validate_approval(record)
+        with self._approval_lock():
+            records = {**self.approved(), **entries}
+            write_json(self.root / "approved.json", {"schema_version": 2, "records": records})

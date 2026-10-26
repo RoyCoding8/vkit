@@ -92,7 +92,7 @@ def _project(tmp_path: Path, *, producer_mode: str = "write", checker_mode: str 
         encoding="utf-8",
     )
     raw = {
-        "schema_version": 2,
+        "schema_version": 3,
         "description": "external verifier test",
         "checks": [
             {

@@ -12,7 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+from vkit.nowindow import hidden_window
+
 TAIL = 4000
 
 
@@ -25,7 +26,7 @@ def sandbox() -> str:
     if landrun is None:
         return "missing"
     try:
-        done = subprocess.run([landrun, "--version"], capture_output=True, text=True, timeout=30, **NO_WINDOW)
+        done = subprocess.run([landrun, "--version"], capture_output=True, text=True, timeout=30, **hidden_window())
     except OSError:
         return "missing"
     return "none (landrun passthrough)" if "passthrough" in done.stdout + done.stderr else "landrun"
@@ -52,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
             "permitted_axioms": [a for a in args.axioms.split(",") if a],
         }), encoding="utf-8")
         done = subprocess.run(["lake", "env", args.comparator, str(config)], cwd=project, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", **NO_WINDOW)
+                              text=True, encoding="utf-8", errors="replace", **hidden_window())
         output = (done.stdout + done.stderr).strip()
         report.update({"status": "accepted" if done.returncode == 0 else "rejected",
                        "exit_code": done.returncode, "output": output[-TAIL:]})

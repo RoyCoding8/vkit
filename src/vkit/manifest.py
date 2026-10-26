@@ -7,9 +7,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .budgets import Budget
+from .formal.policy import FormalComponent
 from .inputs import canonical_digest
 from .paths import Project
-from .schemas import MANIFEST_V2, SchemaValidationError, validate
+from .schemas import MANIFEST, SchemaValidationError, validate
 from .verifiers.obligation import CaseObligation, PropertyObligation, TheoremObligation
 from .verifiers.spec import (Assurance, CheckKind, CheckSpec, DomainBounds, ExternalCheck, FingerprintSpec,
                              HypothesisSettings, LeanCheck, LeanProfile, ModuleRef, NodeTestCheck,
@@ -30,6 +31,7 @@ class Manifest:
     description: str
     checks: dict[str, CheckSpec]
     entries: dict[str, dict[str, Any]]
+    components: dict[str, FormalComponent]
 
     def require(self, check_id: str) -> CheckSpec:
         try:
@@ -40,6 +42,12 @@ class Manifest:
 
     def digest(self, check_id: str) -> str:
         return canonical_digest(self.entries[check_id])
+
+    def require_component(self, component_id: str) -> FormalComponent:
+        try:
+            return self.components[component_id]
+        except KeyError:
+            raise ManifestError(f"unknown formal component {component_id!r}") from None
 
 
 def parse_manifest(project: Project, path: Path | None = None) -> Manifest:
@@ -54,10 +62,10 @@ def parse_manifest(project: Project, path: Path | None = None) -> Manifest:
 
 
 def parse_manifest_data(raw: Any, *, project: Project, origin: str) -> Manifest:
-    if not isinstance(raw, dict) or raw.get("schema_version") != 2:
-        raise ManifestError(f"{origin}: expected a JSON object with schema_version 2")
+    if not isinstance(raw, dict) or raw.get("schema_version") != 3:
+        raise ManifestError(f"{origin}: expected a JSON object with schema_version 3")
     try:
-        validate(origin, MANIFEST_V2, raw)
+        validate(origin, MANIFEST, raw)
     except SchemaValidationError as exc:
         raise ManifestError(f"{origin} rejected: {exc.reason}") from exc
     checks: dict[str, CheckSpec] = {}
@@ -67,7 +75,15 @@ def parse_manifest_data(raw: Any, *, project: Project, origin: str) -> Manifest:
             raise ManifestError(f"duplicate check id {entry['id']!r} in {origin}")
         checks[entry["id"]] = _build_check(entry, project)
         entries[entry["id"]] = entry
-    return Manifest(project, raw.get("description", ""), checks, entries)
+    components = {}
+    for entry in raw.get("formal", {}).get("components", []):
+        if entry["id"] in components:
+            raise ManifestError(f"duplicate formal component id {entry['id']!r} in {origin}")
+        try:
+            components[entry["id"]] = FormalComponent.from_json(entry)
+        except ValueError as exc:
+            raise ManifestError(f"{origin}: component {entry['id']!r}: {exc}") from exc
+    return Manifest(project, raw.get("description", ""), checks, entries, components)
 
 
 def _inside(root: Path, raw: str, what: str, check_id: str) -> Path:

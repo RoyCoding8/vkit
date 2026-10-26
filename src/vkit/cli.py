@@ -242,7 +242,8 @@ def cmd_accept(args: argparse.Namespace) -> int:
     from .evidence import backend_identity
 
     identities = {c: backend_identity(manifest.require(c)) for c in wanted}
-    pending = [c for c in wanted if approved.get(manifest.digest(c), {}).get("backend") != identities[c]]
+    pending = [c for c in wanted if approved.get(manifest.digest(c), {}).get("kind") != "check_definition"
+               or approved.get(manifest.digest(c), {}).get("backend") != identities[c]]
     lines = []
     for check_id in pending:
         lines.append(f"{check_id} ({manifest.digest(check_id)[:12]})")
@@ -254,7 +255,7 @@ def cmd_accept(args: argparse.Namespace) -> int:
     if not _confirm(args, "\n".join(lines), f"accept {len(pending)} check definition(s)?"):
         print("nothing accepted")
         return EXIT_BLOCKED
-    ctx.store.approve({manifest.digest(c): {"check_id": c, "accepted_at": now(),
+    ctx.store.approve({manifest.digest(c): {"kind": "check_definition", "check_id": c, "accepted_at": now(),
                                           "backend": identities[c]} for c in pending})
     _emit({"accepted": pending}, args.json, f"accepted: {', '.join(pending)}")
     return EXIT_OK

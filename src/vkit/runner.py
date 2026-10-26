@@ -183,7 +183,8 @@ def _execute(project: Project, check: CheckSpec, frozen: CheckSpec, store: Store
     run_id, digest = record["run_id"], record["check_digest"]
     if store.cancel_requested(run_id):
         return Blocked(BlockedReason.CANCELLED, "stopped on request"), None, None, {}
-    if store.approved().get(digest, {}).get("backend") != record["backend"]:
+    approval = store.approved().get(digest, {})
+    if approval.get("kind") != "check_definition" or approval.get("backend") != record["backend"]:
         return Blocked(BlockedReason.NOT_APPROVED,
                        "this check and checker identity have not been accepted; run `vkit accept`"), None, None, {}
     if backend_identity(check) != record["backend"]:

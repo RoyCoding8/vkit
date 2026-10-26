@@ -192,7 +192,7 @@ def _run_case(
             shutil.copyfile(source, destination)
         verification = project / "verification"
         verification.mkdir()
-        manifest = {"schema_version": 2, "description": name, "checks": [check]}
+        manifest = {"schema_version": 3, "description": name, "checks": [check]}
         (verification / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )

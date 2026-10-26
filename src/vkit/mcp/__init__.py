@@ -321,7 +321,7 @@ _BASE_TOOLS = (
          {"bundle": {"type": "string", "description": "source bundle directory"},
           "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECONDS}},
          _evidence_replay, read_only=False, required=("bundle",), category="repository"),
-    Tool("propose", "Suggest new or changed checks (manifest v2 entries), feature map entries, and new files they "
+    Tool("propose", "Suggest new or changed checks (manifest v3 entries), feature map entries, and new files they "
          "need, with a rationale. Nothing runs or changes until a human accepts it. Use it to move a lesson up "
          "the trust ladder: a recurring mistake becomes a static rule or a scenario check.",
          {"checks": {"type": "array", "items": {"type": "object"}}, "features": {"type": "array",

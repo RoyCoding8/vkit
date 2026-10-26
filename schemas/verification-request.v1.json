@@ -1,0 +1,71 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "component",
+    "goal",
+    "candidate"
+  ],
+  "properties": {
+    "component": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "goal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "implements"
+        }
+      }
+    },
+    "candidate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "working_tree"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "oid"
+          ],
+          "properties": {
+            "kind": {
+              "const": "git_commit"
+            },
+            "oid": {
+              "type": "string",
+              "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+            },
+            "target_commit": {
+              "type": "string",
+              "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+            }
+          }
+        }
+      ]
+    },
+    "wait_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 60
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/verification-request.v1.json"
+}

@@ -4,6 +4,11 @@ verus! {
 
 pub mod ledger_api {
     use super::*;
+    use vstd::seq_lib::{
+        commutative_foldl,
+        lemma_fold_left_permutation,
+        lemma_seq_contains_after_push,
+    };
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -121,6 +126,31 @@ pub open spec fn reservations_from(
 
 pub open spec fn slots_map(slots: Seq<Option<Entry>>) -> Map<u32, (u32, u32)> {
     reservations_from(slots, slots.len() as int)
+}
+
+pub open spec fn active_ids_from(slots: Seq<Option<Entry>>, n: int) -> Seq<u32>
+    recommends 0 <= n <= slots.len(),
+    decreases n,
+{
+    if n <= 0 {
+        seq![]
+    } else {
+        match slots[n - 1] {
+            None => active_ids_from(slots, n - 1),
+            Some(entry) => active_ids_from(slots, n - 1).push(entry.id),
+        }
+    }
+}
+
+pub open spec fn active_ids(slots: Seq<Option<Entry>>) -> Seq<u32> {
+    active_ids_from(slots, slots.len() as int)
+}
+
+pub open spec fn map_used(map: Map<u32, (u32, u32)>) -> nat {
+    map.dom().to_seq().fold_left(
+        0nat,
+        |used: nat, id: u32| used + map[id].1 as nat,
+    )
 }
 
 pub open spec fn slot_has_id(slot: Option<Entry>, id: u32) -> bool {
@@ -593,6 +623,233 @@ pub proof fn reservations_dom_iff(slots: Seq<Option<Entry>>, n: int, id: u32)
     }
 }
 
+proof fn active_ids_contains_prefix(slots: Seq<Option<Entry>>, n: int, id: u32)
+    requires 0 <= n <= slots.len(),
+    ensures active_ids_from(slots, n).contains(id) == slots_have_id_prefix(slots, n, id),
+    decreases n,
+{
+    if n > 0 {
+        active_ids_contains_prefix(slots, n - 1, id);
+        reveal(active_ids_from);
+        reveal(slots_have_id_prefix);
+        assert(slots_have_id_prefix(slots, n, id)
+            == (slots_have_id_prefix(slots, n - 1, id) || slot_has_id(slots[n - 1], id)));
+        match slots[n - 1] {
+            None => {
+                assert(!slot_has_id(slots[n - 1], id)) by { reveal(slot_has_id); }
+            },
+            Some(entry) => {
+                lemma_seq_contains_after_push(active_ids_from(slots, n - 1), entry.id, id);
+                assert(slot_has_id(slots[n - 1], id) == (entry.id == id)) by {
+                    reveal(slot_has_id);
+                }
+            },
+        }
+    }
+}
+
+proof fn active_ids_no_duplicates_prefix(slots: Seq<Option<Entry>>, n: int)
+    requires
+        0 <= n <= slots.len(),
+        slots_unique_ids(slots),
+    ensures active_ids_from(slots, n).no_duplicates(),
+    decreases n,
+{
+    if n > 0 {
+        active_ids_no_duplicates_prefix(slots, n - 1);
+        reveal(active_ids_from);
+        match slots[n - 1] {
+            None => {},
+            Some(entry) => {
+                active_ids_contains_prefix(slots, n - 1, entry.id);
+                assert forall |i: int| 0 <= i < n - 1
+                    implies !slot_has_id(slots[i], entry.id) by {
+                    assert(distinct_pair(slots[i], slots[n - 1]));
+                }
+                assert(!slots_have_id_prefix(slots, n - 1, entry.id)) by {
+                    reveal(slots_have_id_prefix);
+                }
+                assert(!active_ids_from(slots, n - 1).contains(entry.id));
+                let before = active_ids_from(slots, n - 1);
+                assert forall |i: int, j: int|
+                    0 <= i < j < before.push(entry.id).len()
+                        implies before.push(entry.id)[i] != before.push(entry.id)[j]
+                by {
+                    if j < before.len() {
+                        assert(before.push(entry.id)[i] == before[i]);
+                        assert(before.push(entry.id)[j] == before[j]);
+                    } else {
+                        assert(j == before.len());
+                        assert(before.push(entry.id)[i] == before[i]);
+                        assert(before.push(entry.id)[j] == entry.id);
+                        assert(before.contains(before[i]));
+                        assert(before[i] != entry.id);
+                    }
+                }
+            },
+        }
+    }
+}
+
+proof fn reservations_lookup_prefix(
+    slots: Seq<Option<Entry>>,
+    n: int,
+    index: int,
+    entry: Entry,
+)
+    requires
+        0 <= index < n <= slots.len(),
+        slots[index] == Some(entry),
+        slots_unique_ids(slots),
+    ensures reservations_from(slots, n)[entry.id] == (entry.owner, entry.amount),
+    decreases n - index,
+{
+    if index + 1 < n {
+        reservations_lookup_prefix(slots, n - 1, index, entry);
+        reveal(reservations_from);
+        match slots[n - 1] {
+            None => {},
+            Some(last) => {
+                assert(distinct_pair(slots[index], slots[n - 1]));
+                assert(entry.id != last.id);
+                assert(reservations_from(slots, n - 1).insert(
+                    last.id,
+                    (last.owner, last.amount),
+                )[entry.id] == reservations_from(slots, n - 1)[entry.id]);
+            },
+        }
+    } else {
+        assert(index + 1 == n);
+        assert(slots[n - 1] == Some(entry));
+        assert forall |j: int| 0 <= j < index
+            implies !slot_has_id(slots[j], entry.id) by {
+            assert(distinct_pair(slots[j], slots[index]));
+        }
+        assert(!slots_have_id_prefix(slots, index, entry.id)) by {
+            reveal(slots_have_id_prefix);
+        }
+        reservations_dom_iff(slots, index, entry.id);
+        assert(!reservations_from(slots, index).dom().contains(entry.id));
+        reveal(reservations_from);
+        assert(reservations_from(slots, n)
+            == reservations_from(slots, index).insert(entry.id, (entry.owner, entry.amount)));
+        assert(reservations_from(slots, n)[entry.id] == (entry.owner, entry.amount));
+    }
+}
+
+proof fn active_ids_domain_permutation(slots: Seq<Option<Entry>>)
+    requires slots_unique_ids(slots),
+    ensures active_ids(slots).to_multiset()
+        == slots_map(slots).dom().to_seq().to_multiset(),
+{
+    let ids = active_ids(slots);
+    let domain = slots_map(slots).dom();
+    let keys = domain.to_seq();
+    active_ids_no_duplicates_prefix(slots, slots.len() as int);
+    domain.lemma_to_seq_no_duplicates();
+    domain.lemma_to_seq_to_set_id();
+    ids.lemma_multiset_has_no_duplicates();
+    keys.lemma_multiset_has_no_duplicates();
+    assert forall |id: u32| ids.to_set().contains(id) == domain.contains(id) by {
+        ids.to_set_ensures();
+        active_ids_contains_prefix(slots, slots.len() as int, id);
+        reservations_dom_iff(slots, slots.len() as int, id);
+    }
+    assert forall |id: u32| ids.to_multiset().count(id) == keys.to_multiset().count(id) by {
+        ids.to_set_ensures();
+        keys.to_set_ensures();
+        ids.to_multiset_ensures();
+        keys.to_multiset_ensures();
+        assert(ids.to_set().contains(id) == domain.contains(id));
+        assert(keys.to_set() =~= domain);
+        assert(keys.to_set().contains(id) == domain.contains(id));
+        assert(ids.to_set().contains(id) == ids.contains(id));
+        assert(keys.to_set().contains(id) == keys.contains(id));
+        assert(ids.contains(id) == keys.contains(id));
+        if ids.contains(id) {
+            assert(ids.to_multiset().count(id) == 1);
+            assert(keys.to_multiset().count(id) == 1);
+        } else {
+            assert(ids.to_multiset().count(id) == 0);
+            assert(keys.to_multiset().count(id) == 0);
+        }
+    }
+    assert(ids.to_multiset() == keys.to_multiset());
+}
+
+proof fn slots_used_equals_active_map_fold_from(slots: Seq<Option<Entry>>, n: int)
+    requires
+        0 <= n <= slots.len(),
+        slots_unique_ids(slots),
+    ensures slots_used_from(slots, n) == active_ids_from(slots, n).fold_left(
+        0nat,
+        |used: nat, id: u32| used + slots_map(slots)[id].1 as nat,
+    ),
+    decreases n,
+{
+    if n > 0 {
+        slots_used_equals_active_map_fold_from(slots, n - 1);
+        reveal(slots_used_from);
+        reveal(active_ids_from);
+        match slots[n - 1] {
+            None => {},
+            Some(entry) => {
+                reservations_lookup_prefix(slots, slots.len() as int, n - 1, entry);
+                let before = active_ids_from(slots, n - 1);
+                let fold = |used: nat, id: u32| used + slots_map(slots)[id].1 as nat;
+                let pushed = before.push(entry.id);
+                vstd::seq::lemma_seq_push_len(before, entry.id);
+                vstd::seq::lemma_seq_push_index_same(before, entry.id, before.len() as int);
+                assert(pushed[..before.len()] =~= before);
+                assert(pushed[before.len()..] =~= seq![entry.id]);
+                pushed.lemma_fold_left_split(0nat, fold, before.len() as int);
+                assert(pushed[before.len()..].fold_left(before.fold_left(0nat, fold), fold)
+                    == fold(before.fold_left(0nat, fold), entry.id)) by {
+                    reveal(Seq::fold_left);
+                }
+                assert(fold(before.fold_left(0nat, fold), entry.id)
+                    == before.fold_left(0nat, fold) + entry.amount as nat);
+                assert(entry.amount as nat + slots_used_from(slots, n - 1)
+                    == slots_used_from(slots, n - 1) + entry.amount as nat);
+            },
+        }
+    }
+}
+
+proof fn slots_used_equals_active_map_fold(slots: Seq<Option<Entry>>)
+    requires slots_unique_ids(slots),
+    ensures slots_used(slots) == active_ids(slots).fold_left(
+        0nat,
+        |used: nat, id: u32| used + slots_map(slots)[id].1 as nat,
+    ),
+{
+    slots_used_equals_active_map_fold_from(slots, slots.len() as int);
+}
+
+proof fn active_map_fold_is_map_used(slots: Seq<Option<Entry>>)
+    requires slots_unique_ids(slots),
+    ensures active_ids(slots).fold_left(
+        0nat,
+        |used: nat, id: u32| used + slots_map(slots)[id].1 as nat,
+    ) == map_used(slots_map(slots)),
+{
+    let map = slots_map(slots);
+    let ids = active_ids(slots);
+    let keys = map.dom().to_seq();
+    let fold = |used: nat, id: u32| used + map[id].1 as nat;
+    active_ids_domain_permutation(slots);
+    assert(commutative_foldl(fold)) by {
+        assert forall |x: u32, y: u32, used: nat|
+            #[trigger] fold(fold(used, x), y) == fold(fold(used, y), x) by {
+            assert(used + map[x].1 as nat + map[y].1 as nat
+                == used + map[y].1 as nat + map[x].1 as nat);
+        }
+    }
+    assert(fold =~= |used: nat, id: u32| used + map[id].1 as nat);
+    lemma_fold_left_permutation(ids, keys, fold, 0nat);
+    reveal(map_used);
+}
+
 pub proof fn map_insert_remove_absent(
     map: Map<u32, (u32, u32)>,
     id: u32,
@@ -683,6 +940,18 @@ impl<const N: usize> Ledger<N> {
             && slots_unique_ids(state.slots)
             && slots_positive(state.slots)
     }
+}
+
+pub proof fn ledger_map_accounting<const N: usize>(ledger: &Ledger<N>)
+    requires ledger.valid(),
+    ensures ledger.view().used as nat == map_used(ledger.reservations()),
+{
+    reveal(Ledger::valid);
+    let slots = ledger.view().slots;
+    slots_used_equals_active_map_fold(slots);
+    active_map_fold_is_map_used(slots);
+    assert(ledger.reservations() == slots_map(slots));
+    assert(ledger.view().used as nat == slots_used(slots));
 }
 
 pub open spec fn same_view(a: LedgerView, b: LedgerView) -> bool {
@@ -875,7 +1144,12 @@ pub fn new<const N: usize>(mut slots: [Option<Entry>; N], capacity: u32) -> (led
         slots_count_none_prefix(slots@, N as int);
         reservations_none_prefix(slots@, N as int);
     }
-    Ledger { slots, used: 0, capacity }
+    let ledger = Ledger { slots, used: 0, capacity };
+    proof {
+        assert(ledger.valid());
+        ledger_map_accounting(&ledger);
+    }
+    ledger
 }
 
 pub fn reserve<const N: usize>(
@@ -900,6 +1174,7 @@ pub fn reserve<const N: usize>(
             Err(_) => same_state(out.0, ledger),
         },
 {
+    proof { ledger_map_accounting(&ledger); }
     if amount == 0 {
         return (ledger, Err(LedgerError::ZeroAmount));
     }
@@ -960,6 +1235,8 @@ pub fn reserve<const N: usize>(
         slots_used_update_none_prefix(ledger.slots@, index as int, entry, N as int);
         slots_count_update_none_prefix(ledger.slots@, index as int, entry, N as int);
         reservations_update_none_prefix(ledger.slots@, index as int, entry, N as int);
+        assert(next.valid());
+        ledger_map_accounting(&next);
     }
     (next, Ok(()))
 }
@@ -982,6 +1259,7 @@ pub fn release<const N: usize>(
             Err(_) => same_state(out.0, ledger),
         },
 {
+    proof { ledger_map_accounting(&ledger); }
     let mut i: usize = 0;
     while i < N
         invariant
@@ -1029,6 +1307,8 @@ pub fn release<const N: usize>(
                     reservations_remove_some_prefix(
                         ledger.slots@, i as int, entry, N as int,
                     );
+                    assert(next.valid());
+                    ledger_map_accounting(&next);
                     reveal(release_result_for);
                 }
                 return (next, Ok(entry.amount));
@@ -1057,6 +1337,7 @@ pub fn reserve_batch<const N: usize>(
         reveal(reserve_result);
         reveal(reserve_state);
         reveal(Ledger::view);
+        ledger_map_accounting(&ledger);
     }
     if count > 3 {
         return (ledger, BatchResponse::TooManyRequests);
@@ -1096,6 +1377,10 @@ pub fn reserve_batch<const N: usize>(
             Ok(()) => current = next,
         }
     }
+    proof {
+        assert(current.valid());
+        ledger_map_accounting(&current);
+    }
     (current, BatchResponse::Applied { count })
 }
 
@@ -1121,8 +1406,9 @@ pub fn apply_command<const N: usize>(
         reveal_with_fuel(batch_model_from, 4);
         reveal(same_state);
         reveal(Ledger::view);
+        ledger_map_accounting(&ledger);
     }
-    match command {
+    let out = match command {
         Command::Reserve { id, owner, amount } => {
             let (next, result) = reserve(ledger, id, owner, amount);
             (next, Response::Reserved(result))
@@ -1135,7 +1421,12 @@ pub fn apply_command<const N: usize>(
             let (next, result) = reserve_batch(ledger, requests, count);
             (next, Response::Batched(result))
         }
+    };
+    proof {
+        assert(out.0.valid());
+        ledger_map_accounting(&out.0);
     }
+    out
 }
 
 pub fn run_commands<const N: usize, const M: usize>(
@@ -1159,6 +1450,7 @@ pub fn run_commands<const N: usize, const M: usize>(
                     ==> final(responses)@[j] == apply_model(states[j], commands@[j]).1
         },
 {
+    proof { ledger_map_accounting(&initial); }
     let mut current = initial;
     let ghost mut states: Seq<LedgerView> = seq![initial.view()];
     let mut i: usize = 0;
@@ -1185,6 +1477,7 @@ pub fn run_commands<const N: usize, const M: usize>(
         let ghost responses_before = responses@;
         let ghost states_before = states;
         let (next, response) = apply_command(current, command);
+        proof { ledger_map_accounting(&next); }
         responses[i] = response;
         assert(responses@[i as int] == response);
         proof {
@@ -1258,6 +1551,7 @@ pub fn run_commands<const N: usize, const M: usize>(
         current = next;
         i = i + 1;
     }
+    proof { ledger_map_accounting(&current); }
     current
 }
 }

@@ -107,9 +107,7 @@ def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
     fixtures = ROOT / "examples/verus-qualification"
     candidate = (fixtures / "candidate_api.rs").read_text(encoding="utf-8")
     template = (PACKAGE / "expected.rs.in").read_text(encoding="utf-8")
-    expected = template.replace("__VKIT_RECORDS__", "3")
-    for operation in ("new", "reserve", "release", "reserve_batch", "apply_command", "run_commands"):
-        expected = expected.replace(f"__VKIT_BIND_{operation.upper()}__", operation)
+    expected = (fixtures / "expected.rs").read_text(encoding="utf-8")
     report["binding_template_sha256"] = digest(template.encode())
     report["binding_scope"] = "Six required_api bindings over the fixed checked ledger library; not arbitrary source or representation correspondence"
     report["binding_expected_sha256"] = digest(expected.encode())

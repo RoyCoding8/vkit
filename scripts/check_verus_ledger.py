@@ -100,6 +100,57 @@ def tool_identity(archive: Path, tool_root: Path, pin: dict) -> dict:
     return {"archive_sha256": expected, "version": version, "files": hashes}
 
 
+def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
+    root = out / "binding"
+    root.mkdir()
+    fixtures = ROOT / "examples/verus-qualification"
+    candidate = (fixtures / "candidate_api.rs").read_text(encoding="utf-8")
+    expected = (fixtures / "expected.rs").read_text(encoding="utf-8")
+    report["binding_scope"] = "Imported reserve contract over the fixed checked ledger library; not arbitrary source or representation correspondence"
+    report["binding_expected_sha256"] = digest(expected.encode())
+    flags = ["--no-cheating", "--no-external-by-default", "--num-threads", "2"]
+
+    def verify(name: str, args: list[str], cwd: Path, *, reject: bool = False) -> bool:
+        log_path = out / f"{name}.log"
+        result = run([str(exe), "--crate-type=lib", *args, *flags], log_path, cwd)
+        log = log_path.read_text(encoding="utf-8", errors="replace")
+        matched = bool(re.search(
+            r"verification results:: \d+ verified, [1-9]\d* errors" if reject
+            else r"verification results:: [1-9]\d* verified, 0 errors", log))
+        passed = matched and (result["returncode"] not in {None, 0} if reject
+                              else result["returncode"] == 0)
+        report["checks"].append({"name": name, "rejected" if reject else "verified": passed, **result})
+        return passed
+
+    if not verify("binding_ledger_export", [str(captured), "--export", str(root / "ledger.vir"),
+                                           "--compile"], root):
+        return False
+    imports = ["--import", f"ledger={root / 'ledger.vir'}",
+               "--extern", f"ledger={root / 'libledger.rlib'}", "-L", str(root)]
+    success = True
+    for variant in ("strong", "weak"):
+        directory = root / variant
+        directory.mkdir()
+        text = candidate
+        if variant == "weak":
+            prefix, contract = candidate.split("        ensures\n", 1)
+            _, body = contract.split("    {\n", 1)
+            text = prefix + "        ensures true,\n    {\n" + body
+        candidate_path = directory / "candidate_api.rs"
+        candidate_path.write_text(text, encoding="utf-8", newline="\n")
+        expected_path = directory / "expected.rs"
+        expected_path.write_text(expected, encoding="utf-8", newline="\n")
+        report[f"binding_{variant}_candidate_sha256"] = digest(candidate_path.read_bytes())
+        if not verify(f"binding_{variant}_export", [str(candidate_path), *imports, "--export",
+                                                  str(directory / "candidate_api.vir"), "--compile"], directory):
+            return False
+        client = [str(expected_path), *imports,
+                  "--import", f"candidate_api={directory / 'candidate_api.vir'}",
+                  "--extern", f"candidate_api={directory / 'libcandidate_api.rlib'}", "-L", str(directory)]
+        success = verify(f"binding_{variant}_claim", client, directory, reject=variant == "weak") and success
+    return success
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verus-root", type=Path, required=True)
@@ -163,6 +214,8 @@ def main() -> int:
             report["checks"].append({"name": name, "rejected": rejected,
                                      "source_sha256": digest(mutated.read_bytes()), **check})
             success = success and rejected
+        report["binding_passed"] = check_binding(exe, captured, out, report)
+        success = success and report["binding_passed"]
         compiled = run([str(exe), str(smoke), "--no-cheating", "--num-threads", "2",
                         "--compile", "-o", str(binary)], out / "compile.log", out)
         report["checks"].append({"name": "compiled_verified_source", **compiled})

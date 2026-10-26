@@ -1,6 +1,23 @@
 # Verification infrastructure refactor
 
-## Session status
+## Current formal-core work
+
+- [x] Replace the unqualified RefinedRust build/probe path with the official pinned Verus release. Archive the Rocq compatibility worktree; retain its Git history and the separately checked generic Rocq model.
+- [x] Verify one generic positive-sized Rust ledger with exact initialization, reserve/release errors, map updates and slot-sum accounting.
+- [x] Verify atomic batches of up to three requests and command arrays of any representable compile-time length, including exact intermediate states and responses.
+- [x] Reject eleven deliberately incorrect bodies or trust escapes. Compile and run the same captured source in clean Linux CI.
+- [x] Qualify Verus import/export against an unchanged reserve statement. A fully checked candidate with a weakened contract is rejected by the separate client. No verification filters are used.
+- [ ] Bind every required operation to accepted package statements and protected policy. The import probe covers one reserve API over the fixed checked ledger library, not arbitrary source or representation correspondence.
+- [ ] Resolve explicit map-fold accounting equivalence before claiming it.
+- [ ] Integrate an explicitly accepted source-verification profile through the existing manifest, durable worker, evidence store and protected gate.
+
+Latest source checkpoint is `aba3eb9`: [CI 40237404026](https://github.com/RoyCoding8/vkit/actions/runs/40237404026) passed in 57 seconds, with 50 verified functions, eleven rejected controls, compilation and runtime assertions. Root matched the captured source to the committed Git blob and report digest. The retained Python suite passed with 168 tests and four skips after removing the retired machinery.
+
+These are source-verification results under the Verus/Rust/vstd/SMT trusted computing base. No independent kernel certificate, accepted product ledger claim or operational resource bound is established. The stronger `ledger.total.v1` target remains open. The comparison driver is `scripts/check_verus_ledger.py`; it is not a new public utility.
+
+## Earlier infrastructure refactor
+
+The following table records the earlier VKit 0.3.0 infrastructure work. It does not report completion of the owned mathematical package above.
 
 | Item | Status | Result |
 | --- | --- | --- |

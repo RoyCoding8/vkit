@@ -67,12 +67,11 @@ class RegisteredCheck:
 class FormalGoal:
     request: VerificationRequest
     component: FormalComponent
-    execution_identity: dict[str, Any]
+    checker_sha256: str
     source: CapturedSource
     authority: dict[str, Any] | None = None
 
     def payload(self) -> dict[str, Any]:
-        semantic = self.execution_identity["semantic"]
         return {
             "schema_version": 2,
             "subject": {"kind": "formal_goal", "id": self.component.id},
@@ -80,8 +79,7 @@ class FormalGoal:
             "component": self.component.to_json(),
             "policy_sha256": self.component.digest,
             "package_sha256": self.component.package.sha256,
-            "checker_sha256": canonical_digest(semantic),
-            "execution_identity": self.execution_identity,
+            "checker_sha256": self.checker_sha256,
             "source": _source_json(self.source),
             **({"authority": self.authority} if self.authority is not None else {}),
         }
@@ -92,10 +90,6 @@ ResolvedJob: TypeAlias = RegisteredCheck | FormalGoal
 
 def job_id(payload: dict[str, Any]) -> str:
     semantic = {key: value for key, value in payload.items() if key != "job_id"}
-    if payload.get("subject", {}).get("kind") == "formal_goal":
-        identity = dict(semantic["execution_identity"])
-        identity.pop("paths", None)
-        semantic["execution_identity"] = identity
     return canonical_digest(semantic)
 
 

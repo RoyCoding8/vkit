@@ -27,7 +27,6 @@ def formal_project(tmp_path, monkeypatch):
     git(root, "add", ".")
     git(root, "commit", "-qm", "initial")
     identity = {"semantic": {"profile": "test-checker", "tool_sha256": "b" * 64}, "paths": {}}
-    monkeypatch.setattr(service, "resolve_execution", lambda _: identity)
     monkeypatch.setattr(verus, "resolve_execution", lambda _: identity)
     calls = []
 
@@ -36,7 +35,8 @@ def formal_project(tmp_path, monkeypatch):
         obligations = ledger.obligation_ids(component)
         return Passed(tuple(ScenarioResult(item, True, "checked") for item in obligations)), {
             "method": "verus_source", "assurance": "trusted_engine",
-            "category": "source_verification", "scope": "required_api", "obligations": list(obligations)}
+            "category": "source_verification", "scope": "required_api", "obligations": list(obligations),
+            "execution_identity": {"semantic": identity["semantic"], "digest": execution}}
 
     monkeypatch.setattr(verus, "execute_formal", execute)
     monkeypatch.setattr(jobs, "_launch", lambda project, store, record:

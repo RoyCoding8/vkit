@@ -16,7 +16,7 @@ from vkit.paths import open_project
 from vkit.formal.policy import FormalComponent, GitCommit, LedgerBindings, PackageIdentity, VerificationRequest
 from vkit.outcome import Passed
 from vkit.runner import execute, prepare_formal
-from vkit.job import job_id
+from vkit.inputs import canonical_digest
 from vkit.store import Store, write_json
 
 
@@ -175,11 +175,12 @@ def test_formal_job_executes_from_captured_commit_without_opening_checkout(tmp_p
     request = VerificationRequest("ledger", GitCommit(oid))
     identity = {"semantic": {"profile": "strict", "image_digest": "b" * 64}, "paths": {"verus_root": "C:/verus"}}
     store = Store.of(project)
-    record = prepare_formal(project, request, component, identity, store=store)
+    checker = canonical_digest(identity["semantic"])
+    record = prepare_formal(project, request, component, checker, store=store)
     job = json.loads((store.run_dir(record["run_id"]) / "job.json").read_text(encoding="utf-8"))
     assert job["source"]["commit"] == oid
     assert job["source"]["files"][0]["raw_sha256"]
-    assert job["job_id"] == job_id({**job, "execution_identity": {**identity, "paths": {"verus_root": "different"}}})
+    assert job["checker_sha256"] == checker
     store.approve({component.digest: {"kind": "formal_policy", "policy_sha256": component.digest,
                                     "package_sha256": component.package.sha256,
                                     "checker_sha256": job["checker_sha256"], "accepted_at": "now"}})
@@ -192,11 +193,12 @@ def test_formal_job_executes_from_captured_commit_without_opening_checkout(tmp_p
         return None
     ledger.verify_package = verify_package
     verus = types.ModuleType("vkit.formal.verus")
-    def execute_formal(actual_component, snapshot_root, run_dir, execution_identity, should_cancel):
+    def execute_formal(actual_component, snapshot_root, run_dir, actual_checker, should_cancel):
         assert actual_component == component
         assert (snapshot_root / "source.rs").read_bytes() == b"pub fn reserve() {}\r\n"
-        assert execution_identity == identity and not should_cancel()
-        return Passed(()), {"obligations": {"satisfied": ["ledger:reserve"], "counterexamples": []}}
+        assert actual_checker == checker and not should_cancel()
+        return Passed(()), {"obligations": {"satisfied": ["ledger:reserve"], "counterexamples": []},
+                            "execution_identity": {"semantic": identity["semantic"], "digest": checker}}
     verus.execute_formal = execute_formal
     monkeypatch.setitem(sys.modules, "vkit.formal.ledger", ledger)
     monkeypatch.setitem(sys.modules, "vkit.formal.verus", verus)

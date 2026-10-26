@@ -177,6 +177,7 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
                       rustup_home: Path, cargo_home: Path, directory: Path) -> dict:
     from vkit.formal import ledger, verus
     from vkit.outcome import Blocked, BlockedReason, Passed
+    from vkit.inputs import canonical_digest
 
     os.environ.update({
         "VKIT_VERUS_IMAGE": image_id,
@@ -198,7 +199,7 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
         policy = product_component(records)
         outcome, metadata = verus.execute_formal(
             policy, snapshot, directory / f"{run_id}-product-{name}",
-            execution_identity, should_cancel=lambda: False
+            canonical_digest(execution_identity["semantic"]), should_cancel=lambda: False
         )
         cases[name] = {"outcome": outcome.to_json(), "metadata": metadata}
         return outcome, metadata
@@ -391,7 +392,7 @@ def run_durable_probe(directory: Path, source: str, identity: dict) -> dict:
                                      "package_sha256": component.package.sha256,
                                      "checker_sha256": canonical_digest(identity["semantic"]), "accepted_at": now()}})
     request = VerificationRequest(component.id, GitCommit(oid))
-    submitted = jobs.submit_formal(project, request, component, identity, store=store)
+    submitted = jobs.submit_formal(project, request, component, canonical_digest(identity["semantic"]), store=store)
     first = jobs.wait(store, submitted["run_id"], 900)
     bundle = directory / "bundle"
     evidence.export(store, first["run_id"], bundle)

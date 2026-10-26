@@ -139,7 +139,7 @@ def qualify(directory, source, identity):
         project, oid = project_for(directory / fixture["id"] / "project", component, candidate)
         store = Store.of(project)
         approve(store, component, identity)
-        record = prepare_formal(project, VerificationRequest(component.id, GitCommit(oid)), component, identity, store=store)
+        record = prepare_formal(project, VerificationRequest(component.id, GitCommit(oid)), component, canonical_digest(identity["semantic"]), store=store)
         record = execute(None, record["run_id"], store=store)
         run_dir = store.run_dir(record["run_id"])
         if record["outcome"]["result"] != "PASS" or not evidence.validate_record(record, run_dir):
@@ -163,8 +163,8 @@ def qualify(directory, source, identity):
                 pair[mode] = direct(component, project.root, identity, directory / "overhead" / f"direct-{i}")
             else:
                 started = time.monotonic()
-                current = verus.resolve_execution(component)
-                record = prepare_formal(project, VerificationRequest(component.id, GitCommit(oid)), component, current, store=store)
+                checker = store.approved()[component.digest]["checker_sha256"]
+                record = prepare_formal(project, VerificationRequest(component.id, GitCommit(oid)), component, checker, store=store)
                 record = execute(None, record["run_id"], store=store)
                 wall = time.monotonic() - started
                 run_dir = store.run_dir(record["run_id"])

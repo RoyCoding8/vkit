@@ -371,7 +371,7 @@ def execute_formal(
     component: FormalComponent,
     snapshot_root: Path,
     run_dir: Path,
-    execution_identity: dict[str, Any],
+    checker_sha256: str,
     should_cancel: Callable[[], bool],
 ) -> tuple[Outcome, dict[str, Any]]:
     """Recheck accepted tools, then prove the captured candidate against the fixed package."""
@@ -379,9 +379,7 @@ def execute_formal(
         return Blocked(BlockedReason.CANCELLED, "formal verification was cancelled"), {}
     try:
         current = resolve_execution(component)
-        if canonical_digest(current["semantic"]) != canonical_digest(
-            execution_identity["semantic"]
-        ):
+        if canonical_digest(current["semantic"]) != checker_sha256:
             return Blocked(
                 BlockedReason.NOT_APPROVED,
                 "Verus execution identity changed after the job was accepted",

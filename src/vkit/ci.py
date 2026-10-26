@@ -13,7 +13,7 @@ from typing import Any
 from . import container
 from .evidence import _retained_path, policy_identity, validate_record
 from .formal.policy import GitCommit, VerificationRequest
-from .inputs import CapturedSource, capture_git_commit, git_ancestor, load_capture
+from .inputs import CapturedSource, canonical_digest, capture_git_commit, git_ancestor, load_capture
 from .manifest import Manifest, parse_manifest_data
 from .outcome import Blocked, BlockedReason
 from .paths import MANIFEST_RELATIVE, Project
@@ -145,7 +145,7 @@ def run_gate(project: Project, candidate: str, target: str, output: Path) -> dic
                 component = manifest.require_component(id)
                 record = prepare_formal(
                     project, VerificationRequest(id, GitCommit(candidate, target)), component,
-                    resolve_execution(component), store=store, source=source, authority=authority,
+                    canonical_digest(resolve_execution(component)["semantic"]), store=store, source=source, authority=authority,
                 )
             else:
                 record = prepare(project, manifest, id, store=store, source=source,

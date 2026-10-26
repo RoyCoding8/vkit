@@ -113,6 +113,24 @@ def test_resolved_identity_binds_artifacts_but_not_host_paths(tmp_path, monkeypa
     assert Path(identity["paths"]["archive"]).name.endswith("x86-linux.zip")
 
 
+def test_executor_blocks_changed_checker_before_launch(tmp_path, monkeypatch):
+    component, _, snapshot = _fixture(tmp_path, monkeypatch)
+    checker = canonical_digest(verus.resolve_execution(component)["semantic"])
+    image = "sha256:" + "2" * 64
+    monkeypatch.setenv("VKIT_VERUS_IMAGE", image)
+    launched = []
+    monkeypatch.setattr(verus.container, "run_container", lambda **kwargs: launched.append(kwargs))
+
+    outcome, metadata = verus.execute_formal(
+        component, snapshot, tmp_path / "run", checker, should_cancel=lambda: False
+    )
+
+    assert outcome.to_json()["result"] == "BLOCKED"
+    assert "identity changed" in outcome.to_json()["detail"]
+    assert launched == []
+    assert metadata == {}
+
+
 def test_executor_runs_all_required_phases_in_one_sealed_container(
     tmp_path, monkeypatch
 ):
@@ -138,7 +156,7 @@ def test_executor_runs_all_required_phases_in_one_sealed_container(
 
     monkeypatch.setattr(verus.container, "run_container", run_container)
     outcome, metadata = verus.execute_formal(
-        component, snapshot, run_dir, execution_identity, should_cancel=lambda: False
+        component, snapshot, run_dir, canonical_digest(execution_identity["semantic"]), should_cancel=lambda: False
     )
 
     assert type(outcome).__name__ == "Passed", outcome

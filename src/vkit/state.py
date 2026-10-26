@@ -220,11 +220,12 @@ def formal_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[
                 identity = _resolve_execution(component)
                 from .inputs import canonical_digest
 
-                if _formal_approval_matches(approved, component, canonical_digest(identity["semantic"])):
+                checker = canonical_digest(identity["semantic"])
+                if _formal_approval_matches(approved, component, checker):
                     if source is None:
                         source = capture_working_tree(snapshot.project)
                     request = VerificationRequest(component.id, WorkingTree())
-                    key = seal_job(FormalGoal(request, component, identity, source).payload())["job_id"]
+                    key = seal_job(FormalGoal(request, component, checker, source).payload())["job_id"]
                     current = store.evidence_for("formal_goal", component.id, key)
                     freshness = (_FRESH[current["result"]] if current is not None else
                                  Freshness.STALE if last is not None else Freshness.MISSING)

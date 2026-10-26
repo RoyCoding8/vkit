@@ -12,7 +12,7 @@ from typing import Any
 
 from .evidence import backend_identity, validate_record
 from .formal.policy import FormalComponent, VerificationRequest
-from .inputs import Snapshot
+from .inputs import Snapshot, canonical_digest
 from .manifest import Manifest
 from .nowindow import hidden_window
 from .outcome import Blocked, BlockedReason
@@ -90,7 +90,7 @@ def submit_formal(
     project: Project,
     request: VerificationRequest,
     component: FormalComponent,
-    execution_identity: dict[str, Any],
+    checker_sha256: str,
     *,
     store: Store | None = None,
 ) -> dict[str, Any]:
@@ -98,7 +98,7 @@ def submit_formal(
     return _launch(
         project,
         store,
-        prepare_formal(project, request, component, execution_identity, store=store),
+        prepare_formal(project, request, component, checker_sha256, store=store),
     )
 
 
@@ -156,13 +156,13 @@ def replay(
             raise ValueError("bundle formal policy differs from the current component")
         request = VerificationRequest.from_json(job["request"])
         identity = resolve_execution(component)
-        if identity["semantic"] != job["execution_identity"]["semantic"]:
+        if canonical_digest(identity["semantic"]) != job["checker_sha256"]:
             raise ValueError("bundle checker differs from the current verifier")
         captured = (capture_git_commit(project, request.candidate.oid)
                     if isinstance(request.candidate, GitCommit) else capture_working_tree(project))
         if captured.digest != job["source"]["digest"]:
             raise ValueError("bundle source differs from independently captured candidate files")
-        record = prepare_formal(project, request, component, identity, store=store)
+        record = prepare_formal(project, request, component, job["checker_sha256"], store=store)
         if record["job_id"] != job["job_id"]:
             _failed_submission(store, record["run_id"], Blocked(
                 BlockedReason.SOURCE_CHANGED, "candidate changed while preparing formal evidence replay"))

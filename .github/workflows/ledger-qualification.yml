@@ -9,8 +9,8 @@ on:
       - scripts/check_ledger_container.py
       - scripts/qualify_ledger_reuse.py
       - examples/ledger-reuse/**
-      - src/vkit/formal/**
-      - src/vkit/container.py
+      - src/vkit/**
+      - schemas/**
       - scripts/check_verus_ledger.py
   pull_request:
     paths:
@@ -19,8 +19,8 @@ on:
       - scripts/check_ledger_container.py
       - scripts/qualify_ledger_reuse.py
       - examples/ledger-reuse/**
-      - src/vkit/formal/**
-      - src/vkit/container.py
+      - src/vkit/**
+      - schemas/**
       - scripts/check_verus_ledger.py
   workflow_dispatch:
 

@@ -10,7 +10,6 @@ from ..nowindow import hidden_window
 from ..paths import Project
 from ..query import Context
 from .policy import VerificationRequest
-from .verus import resolve_execution
 
 
 def resolve_commit(project: Project, revision: str) -> str:
@@ -27,8 +26,10 @@ def resolve_commit(project: Project, revision: str) -> str:
 def verify(ctx: Context, raw: Any) -> dict[str, Any]:
     request = VerificationRequest.from_json(raw)
     component = ctx.require_manifest().require_component(request.component)
-    identity = resolve_execution(component)
-    record = jobs.submit_formal(ctx.project, request, component, identity, store=ctx.store)
+    approval = ctx.store.approved().get(component.digest, {})
+    if approval.get("kind") != "formal_policy":
+        raise ValueError("formal policy is not accepted; run `vkit accept --component " + component.id + "`")
+    record = jobs.submit_formal(ctx.project, request, component, approval["checker_sha256"], store=ctx.store)
     if request.wait_seconds:
         record = jobs.wait(ctx.store, record["run_id"], request.wait_seconds)
     return record

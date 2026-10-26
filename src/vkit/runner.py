@@ -203,7 +203,7 @@ def prepare_formal(
     project: Project,
     request: VerificationRequest,
     component: FormalComponent,
-    execution_identity: dict[str, Any],
+    checker_sha256: str,
     *,
     store: Store,
     run_id: str | None = None,
@@ -225,7 +225,7 @@ def prepare_formal(
         source = capture_working_tree(project)
     else:
         raise ValueError("unsupported formal candidate source")
-    job = seal_job(FormalGoal(request, component, execution_identity, source, authority).payload())
+    job = seal_job(FormalGoal(request, component, checker_sha256, source, authority).payload())
     record = _record_for_job(job, run_id or new_run_id())
     record.update(category="source_verification", description=component.contract, claim_id=component.id)
     run_dir = store.run_dir(record["run_id"])
@@ -424,8 +424,6 @@ def _execute_formal(
         request.component != component.id
         or component.digest != job["policy_sha256"]
         or component.package.sha256 != job["package_sha256"]
-        or canonical_digest(job["execution_identity"]["semantic"])
-        != job["checker_sha256"]
     ):
         return Blocked(
             BlockedReason.NOT_APPROVED, "formal job policy or checker identity changed"
@@ -473,7 +471,7 @@ def _execute_formal(
         component,
         run_dir / "snapshot",
         run_dir,
-        job["execution_identity"],
+        job["checker_sha256"],
         lambda: store.cancel_requested(run_id),
     )
 

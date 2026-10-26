@@ -287,6 +287,12 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
             from .schemas import EVIDENCE_RECORD, validate
 
             validate("evidence receipt", EVIDENCE_RECORD, receipt)
+            if record["subject"]["kind"] == "formal_goal" and record["outcome"]["result"] == "PASS":
+                from .inputs import canonical_digest
+
+                identity = receipt["verification"]["execution_identity"]
+                if identity["digest"] != record["checker_sha256"] or canonical_digest(identity["semantic"]) != record["checker_sha256"]:
+                    return False
         else:
             return False
         if (

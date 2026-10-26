@@ -27,16 +27,7 @@
     "component": {"type": "object"},
     "policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "checker_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "execution_identity": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["semantic", "paths"],
-      "properties": {
-        "semantic": {"type": "object"},
-        "paths": {"type": "object"}
-      }
-    }
+    "checker_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   },
   "oneOf": [
     {
@@ -44,13 +35,13 @@
         "subject": {"properties": {"kind": {"const": "registered_check"}}}
       },
       "required": ["definition", "check_digest", "baseline", "backend", "inputs"],
-      "not": {"anyOf": [{"required": ["request"]}, {"required": ["component"]}, {"required": ["policy_sha256"]}, {"required": ["package_sha256"]}, {"required": ["checker_sha256"]}, {"required": ["execution_identity"]}]}
+      "not": {"anyOf": [{"required": ["request"]}, {"required": ["component"]}, {"required": ["policy_sha256"]}, {"required": ["package_sha256"]}, {"required": ["checker_sha256"]}]}
     },
     {
       "properties": {
         "subject": {"properties": {"kind": {"const": "formal_goal"}}}
       },
-      "required": ["request", "component", "policy_sha256", "package_sha256", "checker_sha256", "execution_identity"],
+      "required": ["request", "component", "policy_sha256", "package_sha256", "checker_sha256"],
       "not": {"anyOf": [{"required": ["definition"]}, {"required": ["check_digest"]}, {"required": ["baseline"]}, {"required": ["backend"]}, {"required": ["inputs"]}]}
     }
   ],

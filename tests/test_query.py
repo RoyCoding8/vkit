@@ -160,13 +160,14 @@ def _complete_formal(context, monkeypatch, identity):
     def execute_formal(actual, snapshot, run_dir, actual_identity, should_cancel):
         assert actual == component
         assert (snapshot / component.entry).read_bytes() == (context.project.root / component.entry).read_bytes()
-        assert actual_identity == identity and not should_cancel()
-        return Passed(()), {"obligations": {"satisfied": ["allocation:reserve"], "counterexamples": []}}
+        assert actual_identity == canonical_digest(identity["semantic"]) and not should_cancel()
+        return Passed(()), {"obligations": {"satisfied": ["allocation:reserve"], "counterexamples": []},
+                            "execution_identity": {"semantic": identity["semantic"], "digest": actual_identity}}
     verus.execute_formal = execute_formal
     monkeypatch.setitem(sys.modules, "vkit.formal.ledger", ledger)
     monkeypatch.setitem(sys.modules, "vkit.formal.verus", verus)
     record = prepare_formal(context.project, VerificationRequest(component.id, WorkingTree()),
-                            component, identity, store=context.store)
+                            component, canonical_digest(identity["semantic"]), store=context.store)
     return execute(None, record["run_id"], store=context.store)
 
 

@@ -6,12 +6,14 @@ on:
     paths:
       - .github/workflows/ledger-qualification.yml
       - examples/verus-qualification/**
+      - scripts/check_ledger_container.py
       - formal/packages/resource_ledger/ledger.rs
       - scripts/check_verus_ledger.py
   pull_request:
     paths:
       - .github/workflows/ledger-qualification.yml
       - examples/verus-qualification/**
+      - scripts/check_ledger_container.py
       - formal/packages/resource_ledger/ledger.rs
       - scripts/check_verus_ledger.py
   workflow_dispatch:
@@ -29,6 +31,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Require the Docker runtime
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            echo "BLOCKED: Docker daemon is unavailable; the qualification cannot run without isolation." >&2
+            exit 1
+          fi
+      - name: Build the qualification image before sealed execution
+        env:
+          IMAGE_TAG: vkit-ledger-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker build --file examples/verus-qualification/container/Dockerfile --tag "$IMAGE_TAG" examples/verus-qualification/container
       - name: Install the official pinned Verus release
         shell: python
         run: |
@@ -36,6 +48,7 @@ jobs:
           import json
           import os
           import pathlib
+          import shutil
           import subprocess
           import urllib.request
           import zipfile
@@ -52,13 +65,36 @@ jobs:
           for entry in tool.iterdir():
               if entry.is_file() and entry.suffix == "":
                   entry.chmod(entry.stat().st_mode | 0o111)
-          subprocess.run(["rustup", "toolchain", "install", pin["rust"], "--profile", "minimal"], check=True)
+          rustup_home = pathlib.Path(os.environ["RUNNER_TEMP"]) / "vkit-rustup"
+          cargo_home = pathlib.Path(os.environ["RUNNER_TEMP"]) / "vkit-cargo"
+          rustup_binary = cargo_home / "bin/rustup"
+          rustup_binary.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2(shutil.which("rustup"), rustup_binary)
+          rustup_binary.chmod(0o755)
+          env = os.environ.copy()
+          env["RUSTUP_HOME"] = str(rustup_home)
+          env["CARGO_HOME"] = str(cargo_home)
+          subprocess.run([str(rustup_binary), "toolchain", "install", pin["rust"], "--profile", "minimal"], check=True, env=env)
       - name: Verify and challenge the ledger
+        env:
+          IMAGE_TAG: vkit-ledger-qualification-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          python3 scripts/check_verus_ledger.py \
+          python3 scripts/check_ledger_container.py \
+            --image "$IMAGE_TAG" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --verus-root "$RUNNER_TEMP/verus/verus-x86-linux" \
             --archive "$RUNNER_TEMP/verus-0.2026.10.18.7d82994-x86-linux.zip" \
+            --rustup-home "$RUNNER_TEMP/vkit-rustup" \
+            --cargo-home "$RUNNER_TEMP/vkit-cargo" \
             --output "$RUNNER_TEMP/verus-ledger-evidence"
+      - name: Remove only this run's containers
+        if: always()
+        env:
+          IMAGE_TAG: vkit-ledger-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python3 scripts/check_ledger_container.py \
+            --image "$IMAGE_TAG" \
+            --cleanup-run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
       - name: Retain the comparison evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

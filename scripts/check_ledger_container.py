@@ -1,0 +1,334 @@
+"""Run the pinned Verus ledger qualification in a sealed Docker container."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import signal
+import subprocess
+import time
+import uuid
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PROFILE = "verus-linux-x86_64-v1"
+LABEL = "vkit.ledger.run_id"
+SOURCE_REL = Path("formal/packages/resource_ledger/ledger.rs")
+TRUSTED_FILES = (
+    Path("scripts/check_verus_ledger.py"),
+    Path("examples/verus-qualification/upstream.json"),
+    Path("examples/verus-qualification/smoke.rs"),
+    Path("examples/verus-qualification/candidate_api.rs"),
+    Path("examples/verus-qualification/expected.rs"),
+)
+
+
+def run(command: list[str], *, timeout: float = 30, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+    if check and result.returncode:
+        raise RuntimeError(f"command failed ({result.returncode}): {result.stderr.strip() or result.stdout.strip()}")
+    return result
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def docker_image_id(image: str) -> str:
+    image_id = run(["docker", "image", "inspect", "--format", "{{.Id}}", image]).stdout.strip()
+    if not image_id.startswith("sha256:"):
+        raise ValueError("Docker did not return an image content digest")
+    return image_id
+
+
+def docker_base(run_id: str, cidfile: Path) -> list[str]:
+    return [
+        "docker", "run", "--cidfile", str(cidfile), "--label", f"{LABEL}={run_id}",
+        "--label", f"vkit.ledger.profile={PROFILE}", "--network=none", "--read-only",
+        "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=256",
+        "--memory=4g", "--cpus=2", "--ulimit", "nofile=1024:1024",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=128m", "--user", "65532:65532",
+        "--workdir", "/work", "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp",
+    ]
+
+
+def inspect_label(container_id: str) -> str:
+    return run(["docker", "inspect", "--format", f'{{{{ index .Config.Labels "{LABEL}" }}}}', container_id]).stdout.strip()
+
+
+def remove_owned(run_id: str) -> list[str]:
+    result = run(["docker", "ps", "-aq", "--filter", f"label={LABEL}={run_id}"], check=False)
+    container_ids = [item for item in result.stdout.splitlines() if item]
+    removed = []
+    for container_id in container_ids:
+        if inspect_label(container_id) != run_id:
+            raise RuntimeError(f"refusing to remove container with a different run label: {container_id}")
+        run(["docker", "rm", "-f", container_id], check=False)
+        removed.append(container_id)
+    remaining = run(["docker", "ps", "-aq", "--filter", f"label={LABEL}={run_id}"], check=False)
+    if remaining.stdout.strip():
+        raise RuntimeError(f"owned containers remain for run {run_id}")
+    return removed
+
+
+def cleanup_run(run_id: str) -> list[str]:
+    removed = []
+    for suffix in ("", "-probe", "-network", "-timeout", "-crash"):
+        removed.extend(remove_owned(run_id + suffix))
+    return removed
+
+
+def mount(source: Path, destination: str, readonly: bool = True) -> list[str]:
+    spec = f"type=bind,src={source.resolve()},dst={destination}"
+    return ["--mount", spec + (",readonly" if readonly else "")]
+
+
+def stage_trusted(directory: Path, source: Path) -> tuple[Path, Path, dict[str, str]]:
+    trusted = directory / "trusted"
+    for relative in TRUSTED_FILES:
+        target = trusted / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+    source_target = trusted / SOURCE_REL
+    source_target.parent.mkdir(parents=True, exist_ok=True)
+    source_target.touch()
+    captured_source = directory / "source" / "ledger.rs"
+    captured_source.parent.mkdir(parents=True)
+    shutil.copyfile(source, captured_source)
+    hashes = {relative.as_posix(): sha256(trusted / relative) for relative in TRUSTED_FILES}
+    hashes[SOURCE_REL.as_posix()] = sha256(captured_source)
+    return trusted, captured_source, hashes
+
+
+def container_command(image_id: str, base: list[str], trusted: Path, source: Path, archive: Path,
+                      verus_root: Path, rustup_home: Path, cargo_home: Path,
+                      command: list[str]) -> list[str]:
+    return [
+        *base,
+        *mount(trusted, "/trusted"),
+        *mount(source, f"/trusted/{SOURCE_REL.as_posix()}"),
+        *mount(archive, "/assets/verus.zip"),
+        *mount(verus_root, "/assets/verus"),
+        *mount(rustup_home, "/assets/rustup"),
+        *mount(cargo_home, "/assets/cargo"),
+        "--tmpfs", "/output:rw,nosuid,nodev,size=2048m",
+        "--env", "RUSTUP_HOME=/assets/rustup", "--env", "CARGO_HOME=/assets/cargo",
+        "--env", "PATH=/assets/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        image_id, *command,
+    ]
+
+
+def execute(image_id: str, run_id: str, cidfile: Path, command: list[str],
+            log_path: Path, timeout: float, output: Path | None = None) -> dict:
+    process = None
+    container_id = None
+    start = time.monotonic()
+    timeout_started = None
+    owned_label = False
+    removed = False
+    output_copied = None
+    previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+    def terminate(signum, frame):
+        if cidfile.is_file():
+            cid = cidfile.read_text(encoding="utf-8").strip()
+            if cid and inspect_label(cid) == run_id:
+                run(["docker", "stop", "--time", "2", cid], check=False)
+                run(["docker", "kill", cid], check=False)
+        raise KeyboardInterrupt(f"received signal {signum}")
+
+    for signum in previous_handlers:
+        signal.signal(signum, terminate)
+    try:
+        with log_path.open("w", encoding="utf-8") as log:
+            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timeout_started = time.monotonic()
+                if cidfile.is_file():
+                    container_id = cidfile.read_text(encoding="utf-8").strip()
+                    if container_id:
+                        owned_label = inspect_label(container_id) == run_id
+                    if container_id and owned_label:
+                        run(["docker", "stop", "--time", "2", container_id], check=False)
+                        run(["docker", "kill", container_id], check=False)
+                process.kill()
+                process.wait()
+                code = None
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+        if cidfile.is_file():
+            container_id = cidfile.read_text(encoding="utf-8").strip()
+            if container_id and inspect_label(container_id) == run_id:
+                if output is not None:
+                    output.mkdir(parents=True, exist_ok=True)
+                    copied = run(["docker", "cp", f"{container_id}:/output/.", str(output)], check=False)
+                    output_copied = copied.returncode == 0
+                run(["docker", "rm", "-f", container_id], check=False)
+                removed = run(["docker", "inspect", container_id], check=False).returncode != 0
+    return {"returncode": code, "container_id": container_id, "label_owned": owned_label,
+            "seconds": round(time.monotonic() - start, 3), "log": log_path.name,
+            "timed_out": code is None, "container_removed": removed,
+            "output_copied": output_copied,
+            "cancel_seconds": round(time.monotonic() - timeout_started, 3) if timeout_started else None}
+
+
+def run_controls(image_id: str, run_id: str, cid_dir: Path, trusted: Path, source: Path,
+                 archive: Path, verus_root: Path, rustup_home: Path, cargo_home: Path,
+                 output: Path) -> dict:
+    controls = {}
+    probe_base = docker_base(f"{run_id}-probe", cid_dir / "probe.cid")
+    ro_cmd = container_command(image_id, probe_base, trusted, source, archive, verus_root,
+                               rustup_home, cargo_home,
+                               ["python3", "-c", f"from pathlib import Path; Path('/trusted/{SOURCE_REL.as_posix()}').write_text('changed')"])
+    ro_result = run(ro_cmd, check=False)
+    controls["source_read_only"] = ro_result.returncode != 0 and "Read-only file system" in ro_result.stderr + ro_result.stdout
+
+    net_cmd = container_command(image_id, docker_base(f"{run_id}-network", cid_dir / "network.cid"),
+                                trusted, source, archive, verus_root, rustup_home, cargo_home,
+                                ["python3", "-c", "import socket; socket.create_connection(('1.1.1.1', 53), timeout=2)"])
+    net_result = run(net_cmd, timeout=10, check=False)
+    controls["network_disabled"] = net_result.returncode != 0
+
+    timeout_id = f"{run_id}-timeout"
+    timeout_cidfile = cid_dir / "timeout.cid"
+    timeout_execution = execute(image_id, timeout_id, timeout_cidfile,
+                                [*docker_base(timeout_id, timeout_cidfile), image_id, "sleep", "60"],
+                                cid_dir / "timeout.log", 1)
+    controls["timeout_cid_external"] = timeout_cidfile.parent != output and bool(timeout_execution["container_id"])
+    controls["timeout_label_owned"] = timeout_execution["label_owned"]
+    controls["timeout_observed"] = timeout_execution["timed_out"]
+    controls["timeout_removed"] = timeout_execution["container_removed"]
+    controls["cancel_seconds"] = timeout_execution["cancel_seconds"]
+    controls["cancel_under_five_seconds"] = bool(controls["cancel_seconds"] is not None
+                                                  and controls["cancel_seconds"] <= 5)
+
+    crash_id = f"{run_id}-crash"
+    crash_cidfile = cid_dir / "crash.cid"
+    crash_cmd = [*docker_base(crash_id, crash_cidfile), "--detach", image_id,
+                 "python3", "-c", "raise SystemExit(23)"]
+    run(crash_cmd)
+    crash_cid = crash_cidfile.read_text(encoding="utf-8").strip()
+    crash_exit = run(["docker", "wait", crash_cid]).stdout.strip()
+    controls["crash_exit_seen"] = crash_exit == "23"
+    controls["crash_label_owned"] = inspect_label(crash_cid) == crash_id
+    controls["crash_removed"] = crash_cid in remove_owned(crash_id)
+    controls["all_passed"] = all(value for key, value in controls.items()
+                                  if key not in {"all_passed", "cancel_seconds"})
+    return controls
+
+
+def cleanup(args: argparse.Namespace) -> int:
+    removed = cleanup_run(args.cleanup_run_id)
+    print(json.dumps({"run_id": args.cleanup_run_id, "removed": removed}))
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--archive", type=Path)
+    parser.add_argument("--verus-root", type=Path)
+    parser.add_argument("--rustup-home", type=Path)
+    parser.add_argument("--cargo-home", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--timeout", type=int, default=780)
+    parser.add_argument("--run-id", default=f"{os.environ.get('GITHUB_RUN_ID', 'local')}-{uuid.uuid4().hex[:12]}")
+    parser.add_argument("--cleanup-run-id")
+    args = parser.parse_args()
+    if args.cleanup_run_id:
+        return cleanup(args)
+    required = (args.archive, args.verus_root, args.rustup_home, args.cargo_home, args.output)
+    if any(path is None for path in required):
+        parser.error("archive, verus-root, rustup-home, cargo-home and output are required")
+    if os.name != "posix" or os.geteuid() == 0:
+        raise RuntimeError("sealed ledger qualification requires a non-root Linux Docker host")
+    if not (args.cargo_home / "bin/rustup").is_file():
+        raise FileNotFoundError("the isolated Rust toolchain must include cargo/bin/rustup")
+    args.output.mkdir(parents=True, exist_ok=False)
+    os.chmod(args.output, 0o700)
+    image_id = docker_image_id(args.image)
+    run_id = args.run_id
+    cid_dir = args.output.parent / f"{args.output.name}-control"
+    cid_dir.mkdir(parents=True, exist_ok=True)
+    trusted, source, input_hashes = stage_trusted(cid_dir, ROOT / SOURCE_REL)
+    report = {
+        "profile": PROFILE,
+        "image": {"reference": args.image, "id": image_id},
+        "dockerfile_sha256": sha256(ROOT / "examples/verus-qualification/container/Dockerfile"),
+        "orchestrator_sha256": sha256(Path(__file__).resolve()),
+        "run_id": run_id,
+        "input_sha256": input_hashes,
+        "mounts": [
+            {"target": "/trusted", "read_only": True},
+            {"target": f"/trusted/{SOURCE_REL.as_posix()}", "read_only": True},
+            {"target": "/assets/verus.zip", "read_only": True},
+            {"target": "/assets/verus", "read_only": True},
+            {"target": "/assets/rustup", "read_only": True},
+            {"target": "/assets/cargo", "read_only": True},
+            {"target": "/tmp", "kind": "tmpfs", "size": "128 MiB"},
+            {"target": "/output", "kind": "tmpfs", "size": "2 GiB"},
+        ],
+        "container_policy": {"network": "none", "user": "65532:65532", "cap_drop": "ALL",
+                             "no_new_privileges": True, "rootfs_read_only": True,
+                             "tmpfs": {"/tmp": "128 MiB", "/output": "2 GiB"},
+                             "memory": "4 GiB", "cpus": 2, "pids": 256,
+                             "home_token_socket_mounts": []},
+        "checks": {},
+    }
+    try:
+        controls = run_controls(image_id, run_id, cid_dir, trusted, source, args.archive,
+                                args.verus_root, args.rustup_home, args.cargo_home, args.output)
+        report["checks"].update(controls)
+        if not controls["all_passed"]:
+            raise RuntimeError("container isolation negative probe failed")
+        cidfile = cid_dir / "qualification.cid"
+        command = container_command(image_id, docker_base(run_id, cidfile), trusted, source,
+                                    args.archive, args.verus_root, args.rustup_home,
+                                    args.cargo_home,
+                                    ["python3", "/trusted/scripts/check_verus_ledger.py",
+                                     "--verus-root", "/assets/verus", "--archive", "/assets/verus.zip",
+                                     "--output", "/output/evidence"])
+        execution = execute(image_id, run_id, cidfile, command,
+                            args.output / "container.log", args.timeout, args.output)
+        report["execution"] = execution
+        evidence = args.output / "evidence/report.json"
+        if (execution["returncode"] != 0 or execution["timed_out"]
+                or not execution["output_copied"] or not evidence.is_file()):
+            raise RuntimeError("sealed Verus qualification failed")
+        checks = json.loads(evidence.read_text(encoding="utf-8"))["checks"]
+        rust_log = next(item["log"] for item in checks if item["name"] == "rust_version")
+        z3_log = next(item["log"] for item in checks if item["name"] == "solver_version")
+        rust_text = (args.output / "evidence" / rust_log).read_text(encoding="utf-8", errors="replace")
+        z3_text = (args.output / "evidence" / z3_log).read_text(encoding="utf-8", errors="replace")
+        report["checks"]["rust_1_99_1"] = "rustc 1.99.1" in rust_text
+        report["checks"]["z3_4_16_0"] = "Z3 version 4.16.0" in z3_text
+        report["qualification_passed"] = report["checks"]["rust_1_99_1"] and report["checks"]["z3_4_16_0"]
+    except (OSError, RuntimeError, subprocess.SubprocessError, KeyboardInterrupt) as error:
+        report["error"] = str(error)
+        report["qualification_passed"] = False
+    finally:
+        try:
+            report["cleanup"] = {"removed": cleanup_run(run_id), "remaining": False}
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            report["cleanup"] = {"remaining": True, "error": str(error)}
+            report["qualification_passed"] = False
+        (args.output / "container-qualification.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"qualification_passed": report["qualification_passed"],
+                      "image_id": image_id, "run_id": run_id}, indent=2))
+    return 0 if report["qualification_passed"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

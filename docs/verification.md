@@ -60,7 +60,7 @@ A version-3 manifest has `checks` and an optional `formal.components` list. Each
 }
 ```
 
-Bindings are relative Rust identifier paths in the candidate library. The source uses the fixed owned ledger type; this profile does not translate arbitrary Rust representations. See the [schema](../schemas/manifest.v3.json) and [API reuse fixtures](../examples/ledger-reuse/README.md).
+Bindings are relative Rust identifier paths in the candidate library. The default state type is the owned `Ledger<N>`. An optional `"representation": "columns::Columns"` selects a candidate type with the same ordered `LedgerView`. The expected client checks the owned invariant and all six contracts against that view. The [split-column example](../examples/ledger-refinement/columns.rs) uses verified conversions with O(N) cost. This profile does not translate arbitrary Rust code. See the [schema](../schemas/manifest.v3.json) and [API reuse fixtures](../examples/ledger-reuse/README.md).
 
 Read the installed package digest with:
 
@@ -98,7 +98,15 @@ A rejected Lean proof leaves its theorem unknown. A TLC counterexample refutes a
 
 Each submission creates a unique run for a content-derived job. Retry creates a new run for the same frozen job. Worker loss is interrupted execution, never a pass. A bounded wait can time out while its worker continues.
 
+CLI and MCP run responses default to a summary with identities, status, obligation counts and the next action. CLI `--section` flags and MCP `sections` select `diagnostics`, `obligations`, `provenance`, `artifacts` or `log`. Request one, several, or `all`. Selection reads retained results without changing verification scope or starting another run. Logs and artifact lists are bounded and support paging.
+
+```sh
+vkit run show <run-id> --section diagnostics --section provenance --json
+```
+
 Receipts bind the job, source, outcome, obligations, checker and artifact digests. Export validates the bundle. Replay independently captures the candidate, requires matching accepted identities and runs checking again. Imported success flags cannot satisfy replay. Hashes provide integrity relative to trusted state; they do not authenticate an external writer or prove verifier soundness.
+
+Package qualification classifies deliberate mutations as detected rejections, survivors or inconclusive runs. Package comparisons report changed assets, obligations and trust identities. They leave semantic equivalence unknown. The ledger qualification script accepts `--compare-package` with an earlier report or package snapshot.
 
 ## Gates and CI
 

@@ -14,8 +14,7 @@ import time
 import zipfile
 from pathlib import Path, PurePosixPath
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from vkit.formal.ledger import CONTRACT, PACKAGE_ID, PROFILE, VERSION
 from vkit.formal.qualification import (
     compare_package_snapshots,
@@ -24,6 +23,8 @@ from vkit.formal.qualification import (
     package_snapshot,
 )
 from vkit.nowindow import hidden_window
+
+ROOT = Path(__file__).resolve().parents[1]
 
 PACKAGE = ROOT / "src/vkit/formal/packages/resource_ledger"
 PIN_PATH = PACKAGE / "upstream.json"

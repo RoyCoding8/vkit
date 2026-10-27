@@ -9,6 +9,8 @@ on:
       - scripts/check_ledger_container.py
       - scripts/qualify_ledger_reuse.py
       - examples/ledger-reuse/**
+      - examples/ledger-refinement/**
+      - scripts/check_ledger_refinement.py
       - src/vkit/**
       - schemas/**
       - scripts/check_verus_ledger.py
@@ -19,6 +21,8 @@ on:
       - scripts/check_ledger_container.py
       - scripts/qualify_ledger_reuse.py
       - examples/ledger-reuse/**
+      - examples/ledger-refinement/**
+      - scripts/check_ledger_refinement.py
       - src/vkit/**
       - schemas/**
       - scripts/check_verus_ledger.py
@@ -105,7 +109,7 @@ jobs:
         run: |
           PYTHON=python3
           if [ -x "$RUNNER_TEMP/vkit-venv/bin/python" ]; then PYTHON="$RUNNER_TEMP/vkit-venv/bin/python"; fi
-          "$PYTHON" scripts/check_ledger_container.py \
+          PYTHONPATH="$GITHUB_WORKSPACE/src" "$PYTHON" scripts/check_ledger_container.py \
             --image "$IMAGE_TAG" \
             --cleanup-run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output "$RUNNER_TEMP/verus-ledger-evidence"

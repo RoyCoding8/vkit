@@ -13,9 +13,9 @@ import time
 import uuid
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 from vkit.nowindow import hidden_window
+
+ROOT = Path(__file__).resolve().parents[1]
 
 PROFILE = "verus-linux-x86_64-v1"
 LABEL = "vkit.ledger.run_id"
@@ -103,6 +103,8 @@ def cleanup_run(run_id: str, output: Path | None = None) -> list[str]:
         descriptors += list((output / "product/reuse").glob("*/project/.git/vkit/runs/*/container-control/descriptor.json"))
         descriptors += list((output / "product/reuse").glob("*/runtime/container-control/descriptor.json"))
         descriptors += list((output / "product/reuse/overhead").glob("direct-*/container-control/descriptor.json"))
+        descriptors += list((output / "product/refinement").glob("*/project/.git/vkit/runs/*/container-control/descriptor.json"))
+        descriptors += list((output / "product/refinement/runtime").glob("container-control/descriptor.json"))
         for descriptor in descriptors:
             recovery = recover_attempt(descriptor.parent.parent)
             if recovery["status"] == "blocked":
@@ -237,8 +239,12 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
     from qualify_ledger_reuse import qualify
 
     reuse = qualify(directory / "reuse", source, execution_identity)
+    from check_ledger_refinement import qualify_product
+
+    refinement = qualify_product(directory / "refinement")
     return {"passed": True, "image_id": image_id, "cases": cases,
-            "durable": durable, "recovery": recovery, "gate": gate, "reuse": reuse}
+            "durable": durable, "recovery": recovery, "gate": gate, "reuse": reuse,
+            "refinement": refinement}
 
 
 def run_gate_probe(directory: Path, source: str, image_id: str) -> dict:

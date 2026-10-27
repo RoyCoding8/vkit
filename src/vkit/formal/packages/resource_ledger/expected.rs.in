@@ -7,76 +7,76 @@ verus! {
     pub fn expected_new(
         slots: [Option<ledger::ledger_api::Entry>; N],
         capacity: u32,
-    ) -> (out: ledger::ledger_api::Ledger<N>)
+    ) -> (out: __VKIT_STATE__)
         requires N > 0,
         ensures
-            out.valid(),
+            ledger::ledger_api::valid_view::<N>(out.view()),
             out.view().used == 0,
             out.view().capacity == capacity,
             forall |i: int| 0 <= i < N ==> out.view().slots[i] == None,
-            out.reservations() == Map::empty(),
+            ledger::ledger_api::slots_map(out.view().slots) == Map::empty(),
     {
         candidate_api::__VKIT_BIND_NEW__(slots, capacity)
     }
 
     pub fn expected_reserve(
-        input: ledger::ledger_api::Ledger<N>,
+        input: __VKIT_STATE__,
         id: u32,
         owner: u32,
         amount: u32,
-    ) -> (out: (ledger::ledger_api::Ledger<N>, Result<(), ledger::ledger_api::LedgerError>))
-        requires N > 0 && input.valid(),
+    ) -> (out: (__VKIT_STATE__, Result<(), ledger::ledger_api::LedgerError>))
+        requires N > 0 && ledger::ledger_api::valid_view::<N>(input.view()),
         ensures
-            out.0.valid(),
-            out.1 == ledger::ledger_api::reserve_result(input, id, amount),
+            ledger::ledger_api::valid_view::<N>(out.0.view()),
+            out.1 == ledger::ledger_api::reserve_result_view(input.view(), id, amount),
             match out.1 {
                 Ok(()) => out.0.view().slots == ledger::ledger_api::slots_after_reserve(
                     input.view().slots,
                     ledger::ledger_api::Entry { id, owner, amount },
                 )
-                    && out.0.reservations()
-                        == input.reservations().insert(id, (owner, amount))
+                    && ledger::ledger_api::slots_map(out.0.view().slots)
+                        == ledger::ledger_api::slots_map(input.view().slots).insert(id, (owner, amount))
                     && out.0.view().used == input.view().used + amount
                     && out.0.view().capacity == input.view().capacity,
-                Err(_) => ledger::ledger_api::same_state(out.0, input),
+                Err(_) => ledger::ledger_api::same_view(out.0.view(), input.view()),
             },
     {
         candidate_api::__VKIT_BIND_RESERVE__(input, id, owner, amount)
     }
 
     pub fn expected_release(
-        input: ledger::ledger_api::Ledger<N>,
+        input: __VKIT_STATE__,
         id: u32,
         owner: u32,
-    ) -> (out: (ledger::ledger_api::Ledger<N>, Result<u32, ledger::ledger_api::LedgerError>))
-        requires N > 0 && input.valid(),
+    ) -> (out: (__VKIT_STATE__, Result<u32, ledger::ledger_api::LedgerError>))
+        requires N > 0 && ledger::ledger_api::valid_view::<N>(input.view()),
         ensures
-            out.0.valid(),
-            out.1 == ledger::ledger_api::release_result_for(input, id, owner),
+            ledger::ledger_api::valid_view::<N>(out.0.view()),
+            out.1 == ledger::ledger_api::release_result_view(input.view(), id, owner),
             match out.1 {
                 Ok(amount) => out.0.view().slots == ledger::ledger_api::slots_after_release(
                     input.view().slots,
                     id,
                 )
-                    && out.0.reservations() == input.reservations().remove(id)
+                    && ledger::ledger_api::slots_map(out.0.view().slots) == ledger::ledger_api::slots_map(input.view().slots).remove(id)
                     && out.0.view().used == input.view().used - amount
                     && out.0.view().capacity == input.view().capacity
                     && ledger::ledger_api::slots_count(out.0.view().slots) + 1
                         == ledger::ledger_api::slots_count(input.view().slots),
-                Err(_) => ledger::ledger_api::same_state(out.0, input),
+                Err(_) => ledger::ledger_api::same_view(out.0.view(), input.view()),
             },
     {
         candidate_api::__VKIT_BIND_RELEASE__(input, id, owner)
     }
 
     pub fn expected_reserve_batch(
-        input: ledger::ledger_api::Ledger<N>,
+        input: __VKIT_STATE__,
         requests: [ledger::ledger_api::Request; 3],
         count: u32,
-    ) -> (out: (ledger::ledger_api::Ledger<N>, ledger::ledger_api::BatchResponse))
-        requires N > 0 && input.valid(),
+    ) -> (out: (__VKIT_STATE__, ledger::ledger_api::BatchResponse))
+        requires N > 0 && ledger::ledger_api::valid_view::<N>(input.view()),
         ensures
-            out.0.valid(),
+            ledger::ledger_api::valid_view::<N>(out.0.view()),
             out.1 == ledger::ledger_api::batch_model(input.view(), requests@, count).1,
             ledger::ledger_api::same_view(
                 out.0.view(),
@@ -87,12 +87,12 @@ verus! {
     }
 
     pub fn expected_apply_command(
-        input: ledger::ledger_api::Ledger<N>,
+        input: __VKIT_STATE__,
         command: ledger::ledger_api::Command,
-    ) -> (out: (ledger::ledger_api::Ledger<N>, ledger::ledger_api::Response))
-        requires N > 0 && input.valid(),
+    ) -> (out: (__VKIT_STATE__, ledger::ledger_api::Response))
+        requires N > 0 && ledger::ledger_api::valid_view::<N>(input.view()),
         ensures
-            out.0.valid(),
+            ledger::ledger_api::valid_view::<N>(out.0.view()),
             out.1 == ledger::ledger_api::apply_model(input.view(), command).1,
             ledger::ledger_api::same_view(
                 out.0.view(),
@@ -103,13 +103,13 @@ verus! {
     }
 
     pub fn expected_run_commands<const M: usize>(
-        initial: ledger::ledger_api::Ledger<N>,
+        initial: __VKIT_STATE__,
         commands: [ledger::ledger_api::Command; M],
         responses: &mut [ledger::ledger_api::Response; M],
-    ) -> (final_ledger: ledger::ledger_api::Ledger<N>)
-        requires N > 0 && initial.valid(),
+    ) -> (final_ledger: __VKIT_STATE__)
+        requires N > 0 && ledger::ledger_api::valid_view::<N>(initial.view()),
         ensures
-            final_ledger.valid(),
+            ledger::ledger_api::valid_view::<N>(final_ledger.view()),
             M == 0 ==> ledger::ledger_api::same_view(final_ledger.view(), initial.view()),
             exists |states: Seq<ledger::ledger_api::LedgerView>| {
                 states.len() == M as int + 1

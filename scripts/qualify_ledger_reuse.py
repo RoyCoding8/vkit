@@ -187,12 +187,12 @@ def qualify(directory, source, identity):
         "candidate": {"kind": "git_commit", "oid": oid}, "wait_seconds": 60})
     if error:
         raise RuntimeError(f"installed MCP verification failed: {mcp}")
-    surface_records = [jobs.wait(store, r["run_id"], 900) for r in (cli, mcp)]
+    surface_records = [jobs.wait(store, r["summary"]["run_id"], 900) for r in (cli, mcp)]
     if (len({r["job_id"] for r in surface_records}) != 1
             or len({r["run_id"] for r in surface_records}) != 2
             or any(r["outcome"]["result"] != "PASS" or not evidence.validate_record(r, store.run_dir(r["run_id"])) for r in surface_records)):
         raise RuntimeError("installed CLI and MCP did not establish the same job in distinct attempts")
-    report["surfaces"] = {"job_id": cli["job_id"], "attempts": [r["run_id"] for r in surface_records],
+    report["surfaces"] = {"job_id": cli["summary"]["job_id"], "attempts": [r["run_id"] for r in surface_records],
                           "cli_and_mcp_passed": True}
     (directory / "reuse-qualification.json").write_text(json.dumps(report, indent=2) + "\n")
     if median > 2.0:

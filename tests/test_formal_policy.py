@@ -57,6 +57,22 @@ def test_binding_paths_cannot_inject_rust_or_replace_the_crate_prefix(tmp_path, 
         parse(tmp_path, entry)
 
 
+def test_representation_is_accepted_policy_and_round_trips(tmp_path):
+    entry = component()
+    entry["representation"] = "columns::Columns"
+    parsed = parse(tmp_path, entry).require_component("allocation")
+    assert parsed.representation == "columns::Columns"
+    assert parsed.to_json() == entry
+
+
+@pytest.mark.parametrize("representation", ["unsafe::State", "_", "State<u32>", "State; assume(false)"])
+def test_representation_cannot_inject_rust_or_set_a_concrete_size(tmp_path, representation):
+    entry = component()
+    entry["representation"] = representation
+    with pytest.raises(ManifestError):
+        parse(tmp_path, entry)
+
+
 def test_duplicate_components_and_unknown_obligations_are_rejected(tmp_path):
     entry = component()
     raw = {"schema_version": 3, "checks": [], "formal": {"components": [entry, deepcopy(entry)]}}

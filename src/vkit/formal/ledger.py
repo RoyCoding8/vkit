@@ -46,6 +46,9 @@ def verify_package(component: FormalComponent) -> LedgerPackage:
 def render_expected(component: FormalComponent) -> str:
     template = (_ROOT / "expected.rs.in").read_text(encoding="utf-8")
     expected = template.replace("__VKIT_RECORDS__", str(component.max_records))
+    state = (f"candidate_api::{component.representation}<N>" if component.representation else
+             "ledger::ledger_api::Ledger<N>")
+    expected = expected.replace("__VKIT_STATE__", state)
     for operation, path in asdict(component.bindings).items():
         expected = expected.replace(f"__VKIT_BIND_{operation.upper()}__", path)
     if "__VKIT_" in expected:

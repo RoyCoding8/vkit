@@ -932,14 +932,30 @@ impl<const N: usize> Ledger<N> {
     }
 
     pub open spec fn valid(&self) -> bool {
-        let state = self.view();
-        state.slots.len() == N as int
-            && state.used as nat == slots_used(state.slots)
-            && state.used <= state.capacity
-            && slots_count(state.slots) <= N as nat
-            && slots_unique_ids(state.slots)
-            && slots_positive(state.slots)
+        valid_view::<N>(self.view())
     }
+}
+
+pub open spec fn valid_view<const N: usize>(state: LedgerView) -> bool {
+    state.slots.len() == N as int
+        && state.used as nat == slots_used(state.slots)
+        && state.used <= state.capacity
+        && slots_count(state.slots) <= N as nat
+        && slots_unique_ids(state.slots)
+        && slots_positive(state.slots)
+}
+
+pub fn from_parts<const N: usize>(slots: [Option<Entry>; N], used: u32, capacity: u32) -> (out: Ledger<N>)
+    requires valid_view::<N>(LedgerView { slots: slots@, used, capacity }),
+    ensures out.valid(), out.view() == (LedgerView { slots: slots@, used, capacity }),
+{
+    Ledger { slots, used, capacity }
+}
+
+pub fn into_parts<const N: usize>(input: Ledger<N>) -> (out: ([Option<Entry>; N], u32, u32))
+    ensures out.0@ == input.view().slots, out.1 == input.view().used, out.2 == input.view().capacity,
+{
+    (input.slots, input.used, input.capacity)
 }
 
 pub proof fn ledger_map_accounting<const N: usize>(ledger: &Ledger<N>)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import Any
@@ -29,8 +30,13 @@ class LedgerBindings:
 
     def __post_init__(self) -> None:
         for operation, path in asdict(self).items():
-            if any(part in _RUST_KEYWORDS or part == "_" for part in path.split("::")):
-                raise ValueError(f"{operation}: binding must be a relative Rust identifier path")
+            _rust_path(path, operation)
+
+
+def _rust_path(path: str, label: str) -> None:
+    if (re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*", path) is None
+            or any(part in _RUST_KEYWORDS or part == "_" for part in path.split("::"))):
+        raise ValueError(f"{label}: binding must be a relative Rust identifier path")
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,11 @@ class FormalComponent:
     max_records: int
     bindings: LedgerBindings
     required: bool
+    representation: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.representation is not None:
+            _rust_path(self.representation, "representation")
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> FormalComponent:
@@ -54,13 +65,16 @@ class FormalComponent:
             raise ValueError("formal source.entry must be a normalized repository-relative Rust file")
         return cls(raw["id"], PackageIdentity(**raw["package"]), raw["contract"], entry,
                    raw["profile"], raw["parameters"]["max_records"],
-                   LedgerBindings(**raw["bindings"]), raw["required"])
+                   LedgerBindings(**raw["bindings"]), raw["required"], raw.get("representation"))
 
     def to_json(self) -> dict[str, Any]:
-        return {"id": self.id, "package": asdict(self.package), "contract": self.contract,
+        value = {"id": self.id, "package": asdict(self.package), "contract": self.contract,
                 "source": {"entry": self.entry}, "profile": self.profile,
                 "parameters": {"max_records": self.max_records},
                 "bindings": asdict(self.bindings), "required": self.required}
+        if self.representation is not None:
+            value["representation"] = self.representation
+        return value
 
     @property
     def digest(self) -> str:

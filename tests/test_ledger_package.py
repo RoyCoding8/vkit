@@ -28,7 +28,7 @@ def test_owned_package_binds_the_complete_required_surface():
     expected = ledger.render_expected(policy)
     assert "const N: usize = 7;" in expected
     assert "candidate_api::api::reserve(input, id, owner, amount)" in expected
-    assert "ledger::ledger_api::reserve_result(input, id, amount)" in expected
+    assert "ledger::ledger_api::reserve_result_view(input.view(), id, amount)" in expected
     assert "pub fn expected_run_commands<const M: usize>" in expected
     assert "__VKIT_" not in expected
 
@@ -39,6 +39,18 @@ def test_changing_an_api_binding_cannot_replace_its_expected_statement():
     assert ledger.render_expected(other).replace("candidate_api::replacement::reserve(",
                                                 "candidate_api::api::reserve(") == ledger.render_expected(policy)
     assert other.digest != policy.digest
+
+
+def test_custom_representation_keeps_owned_invariants_and_operation_contracts():
+    native = accepted_component()
+    columns = replace(native, representation="columns::Columns")
+    expected = ledger.render_expected(columns)
+    assert "candidate_api::columns::Columns<N>" in expected
+    assert "ledger::ledger_api::valid_view::<N>(input.view())" in expected
+    assert "ledger::ledger_api::valid_view::<N>(out.0.view())" in expected
+    assert "input.valid()" not in expected
+    assert expected.replace("candidate_api::columns::Columns<N>", "ledger::ledger_api::Ledger<N>") == ledger.render_expected(native)
+    assert columns.digest != native.digest
 
 
 def test_package_identity_binds_raw_model_and_template_bytes(tmp_path, monkeypatch):

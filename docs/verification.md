@@ -98,6 +98,8 @@ A rejected Lean proof leaves its theorem unknown. A TLC counterexample refutes a
 
 Each submission creates a unique run for a content-derived job. Retry creates a new run for the same frozen job. Worker loss is interrupted execution, never a pass. A bounded wait can time out while its worker continues.
 
+The [lifecycle model](../verification/lifecycle/Attempts.tla) checks a finite abstraction with at most three attempts. Its [conformance check](../scripts/check_lifecycle.py) captures cancellation, worker loss, recovery and retries through the production job API, then checks that event sequence with TLC. This covers the declared model and observed trace, not every runtime interleaving.
+
 CLI and MCP run responses default to a summary with identities, status, obligation counts and the next action. CLI `--section` flags and MCP `sections` select `diagnostics`, `obligations`, `provenance`, `artifacts` or `log`. Request one, several, or `all`. Selection reads retained results without changing verification scope or starting another run. Logs and artifact lists are bounded and support paging.
 
 ```sh

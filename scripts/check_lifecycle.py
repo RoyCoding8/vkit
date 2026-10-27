@@ -160,7 +160,7 @@ def _wait_state(store: Any, run_id: str, state: str, timeout: float = 20) -> dic
 
 
 def _stop_worker(run_id: str, store: Any, env: dict[str, str]) -> None:
-    from vkit.store import read_json
+    from vkit.store import _process_alive, read_json
 
     worker = read_json(store.run_dir(run_id) / "worker.json")
     if not worker or not isinstance(worker.get("pid"), int):
@@ -169,8 +169,8 @@ def _stop_worker(run_id: str, store: Any, env: dict[str, str]) -> None:
     if os.name == "nt":
         done = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                               capture_output=True, text=True, check=False, env=env,
-                              **_hidden_window())
-        if done.returncode != 0:
+                              timeout=15, **_hidden_window())
+        if done.returncode != 0 and _process_alive(pid):
             raise RuntimeError(f"could not stop worker {pid}: {done.stdout} {done.stderr}")
     else:
         os.killpg(pid, signal.SIGKILL)

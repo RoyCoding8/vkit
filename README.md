@@ -82,4 +82,4 @@ uv run pytest
 uv build
 ```
 
-[Core CI](.github/workflows/ci.yml) runs the retained suite on Windows, Linux and macOS, checks wheel installation, and exercises real Lean/TLC controls. [Ledger qualification](.github/workflows/ledger-qualification.yml) checks the installed Verus procedure, deliberate defects, durable execution, protected candidate gates, reuse and orchestration cost. See [console assets](tools/console/README.md) for frontend builds.
+[Core CI](.github/workflows/ci.yml) runs the retained suite on Windows, Linux and macOS, checks wheel installation, and exercises real Lean/TLC controls and the bounded job-lifecycle model. [Ledger qualification](.github/workflows/ledger-qualification.yml) checks the installed Verus procedure, deliberate defects, verified representation conversions, durable execution, protected candidate gates, reuse and orchestration cost. See [console assets](tools/console/README.md) for frontend builds.

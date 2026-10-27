@@ -80,3 +80,4 @@ jobs:
               output.write(f"VKIT_TLA2TOOLS_JAR={jar}\n")
       - run: uv sync --python 3.11 --extra test
       - run: uv run python scripts/verify_formal.py --backend all
+      - run: uv run python scripts/check_lifecycle.py

@@ -52,13 +52,15 @@ def test_cli_and_mcp_share_formal_jobs_and_receipts(formal_project, capsys):
     policy = ctx.require_manifest().require_component("allocation")
     assert ctx.store.approved()[policy.digest]["checker_sha256"] == canonical_digest(identity["semantic"])
     assert cli.main(["verify", "allocation", "--working-tree", "--project", str(root), "--json"]) == 0
-    cli_record = json.loads(capsys.readouterr().out)
-    mcp_record, error = Server(root).call("verify", {
+    cli_view = json.loads(capsys.readouterr().out)
+    mcp_view, error = Server(root).call("verify", {
         "component": "allocation", "goal": {"kind": "implements"}, "candidate": {"kind": "working_tree"}})
     assert error is False
-    assert mcp_record["job_id"] == cli_record["job_id"]
-    assert mcp_record["run_id"] != cli_record["run_id"]
+    assert mcp_view["summary"]["job_id"] == cli_view["summary"]["job_id"]
+    assert mcp_view["summary"]["run_id"] != cli_view["summary"]["run_id"]
     assert len(calls) == 2
+    mcp_record = ctx.store.record(mcp_view["summary"]["run_id"])
+    assert mcp_record is not None
     assert mcp_record["assurance"] == "trusted_engine"
     assert mcp_record["method"] == "verus_source"
     assert evidence.validate_record(mcp_record, ctx.store.run_dir(mcp_record["run_id"]))

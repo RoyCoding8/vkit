@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +18,8 @@ from .state import CheckState, FormalState, Freshness, _resolve_execution, check
 from .store import Store
 
 DEFAULT_LOG_LIMIT = 16_000
+MAX_ARTIFACTS = 100
+RUN_SECTIONS = ("summary", "diagnostics", "obligations", "provenance", "artifacts", "log")
 
 
 @dataclass(frozen=True)
@@ -101,11 +105,7 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
     }
 
 
-def run_view(ctx: Context, run_id: str, *, log: str = "stdout", offset: int = 0,
-             limit: int = DEFAULT_LOG_LIMIT) -> dict[str, Any] | None:
-    record = ctx.store.record(run_id)
-    if record is None:
-        return None
+def _run_log(ctx: Context, run_id: str, log: str, offset: int, limit: int) -> dict[str, Any]:
     if log not in ("stdout", "stderr"):
         raise ValueError("log must be stdout or stderr")
     path = ctx.store.run_dir(run_id) / f"{log}.log"
@@ -119,8 +119,160 @@ def run_view(ctx: Context, run_id: str, *, log: str = "stdout", offset: int = 0,
                 window = handle.read(max(0, limit))
         except FileNotFoundError:
             pass
-    return {**record, "log": {"stream": log, "offset": start, "size": size,
-                              "text": window.decode("utf-8", "replace")}}
+    return {"stream": log, "offset": start, "size": size,
+            "text": window.decode("utf-8", "replace")}
+
+
+def _obligation_counts(record: dict[str, Any]) -> dict[str, int]:
+    obligations = record.get("obligations")
+    if isinstance(obligations, dict):
+        satisfied = obligations.get("satisfied") or []
+        failed = obligations.get("counterexamples") or []
+        total = len(satisfied) + len(failed)
+        return {"total": total, "satisfied": len(satisfied), "failed": len(failed), "unknown": 0}
+    outcome = record.get("outcome") or {}
+    scenarios = outcome.get("scenarios", [])
+    if isinstance(obligations, list):
+        observed = {item.get("id"): item.get("result") for item in scenarios
+                    if item.get("result") in ("PASS", "FAIL") and item.get("id") in obligations}
+        satisfied = sum(result == "PASS" for result in observed.values())
+        failed = sum(result == "FAIL" for result in observed.values())
+        return {"total": len(obligations), "satisfied": satisfied, "failed": failed,
+                "unknown": len(obligations) - satisfied - failed}
+    satisfied = sum(item.get("result") == "PASS" for item in scenarios)
+    failed = sum(item.get("result") == "FAIL" for item in scenarios)
+    return {"total": len(scenarios), "satisfied": satisfied, "failed": failed, "unknown": 0}
+
+
+def run_summary(record: dict[str, Any]) -> dict[str, Any]:
+    outcome = record.get("outcome") or {}
+    scenarios = outcome.get("scenarios", [])
+    failed = [item.get("id") for item in scenarios if item.get("result") == "FAIL" and item.get("id")]
+    obligations = record.get("obligations")
+    if isinstance(obligations, dict):
+        failed.extend(item.get("obligation", {}).get("obligation") for item in obligations.get("counterexamples", [])
+                      if item.get("obligation", {}).get("obligation"))
+    result = {key: record.get(key) for key in (
+        "job_id", "run_id", "subject", "check_id", "state", "method", "category", "scope",
+        "assurance", "claim_outcome", "receipt")}
+    result["outcome"] = {key: outcome[key] for key in ("result", "reason") if key in outcome}
+    result["counts"] = {"obligations": _obligation_counts(record)}
+    result["failure_ids"] = list(dict.fromkeys(failed))
+    result["next_action"] = (
+        "poll" if record.get("state") in ("queued", "running") else
+        "inspect_diagnostics" if outcome.get("result") == "BLOCKED" else
+        "inspect_obligations" if outcome.get("result") == "FAIL" else "none")
+    return result
+
+
+def _diagnostics(ctx: Context, run_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    run_dir = ctx.store.run_dir(run_id)
+    outcome = record.get("outcome") or {}
+    container_log = run_dir / "container.stderr"
+    detail = ""
+    if container_log.is_file() and not container_log.is_symlink() and container_log.stat().st_size <= 1_048_576:
+        detail = container_log.read_text(encoding="utf-8", errors="replace")
+    phase = None
+    for token in ("phase_exit:", "formal_obligation:", "phase_timeout:", "tool_launch_error:"):
+        match = re.search(rf"{re.escape(token)}([A-Za-z0-9_-]+)", detail)
+        if match:
+            phase = match.group(1)
+            break
+    diagnostics = []
+    if outcome.get("detail"):
+        diagnostics.append({"kind": outcome.get("reason", "blocked"), "summary": outcome["detail"][:500]})
+    if phase:
+        log_path = run_dir / "formal-output" / f"{phase}.log"
+        phase_detail = ""
+        if log_path.is_file() and not log_path.is_symlink():
+            with log_path.open("rb") as handle:
+                size = handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, size - 2048))
+                phase_detail = handle.read(2048).decode("utf-8", "replace").strip()[-500:]
+        item = {"phase": phase, "summary": phase_detail or detail.strip()[-500:],
+                "artifact": f"formal-output/{phase}.log", "container_log": "container.stderr"}
+        if log_path.is_file():
+            item["size"] = log_path.stat().st_size
+        diagnostics.append(item)
+    return {"diagnostics": diagnostics, "container_log": "container.stderr" if detail else None}
+
+
+def _provenance(record: dict[str, Any]) -> dict[str, Any]:
+    source = record.get("source") or {}
+    inputs = record.get("inputs") or {}
+    verification = record.get("verification") or {}
+    return {
+        "job_id": record.get("job_id"), "subject": record.get("subject"),
+        "source": {key: source.get(key) for key in ("kind", "digest", "commit") if key in source}
+                  | {"file_count": len(source.get("files") or [])},
+        "inputs": {key: inputs.get(key) for key in ("digest", "unmatched") if key in inputs}
+                  | {"file_count": len(inputs.get("files") or [])},
+        "policy_sha256": record.get("policy_sha256"), "package_sha256": record.get("package_sha256"),
+        "checker_sha256": record.get("checker_sha256"),
+        "execution_identity": (verification.get("execution_identity") or {}).get("digest"),
+        "receipt": record.get("receipt"),
+    }
+
+
+def _artifacts(ctx: Context, run_id: str, record: dict[str, Any], offset: int, limit: int) -> dict[str, Any]:
+    refs = []
+    for item in (record.get("verification") or {}).get("evidence", []):
+        if isinstance(item, dict) and isinstance(item.get("path"), str):
+            refs.append({"path": item["path"], "sha256": item.get("sha256"), "kind": "verification"})
+    receipt_path = ctx.store.run_dir(run_id) / "receipt.json"
+    if receipt_path.is_file() and not receipt_path.is_symlink() and receipt_path.stat().st_size <= 1_048_576:
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            refs.extend({"path": path, "sha256": digest, "kind": "receipt"}
+                        for path, digest in receipt.get("artifacts", {}).items())
+        except (OSError, ValueError, AttributeError):
+            pass
+    unique = {item["path"]: item for item in refs}
+    items = sorted(unique.values(), key=lambda item: item["path"])
+    start = max(0, offset)
+    page = items[start:start + min(max(0, limit), MAX_ARTIFACTS)]
+    next_offset = start + len(page) if start + len(page) < len(items) else None
+    return {"items": page, "total": len(items), "offset": start, "next_offset": next_offset}
+
+
+def run_view(ctx: Context, run_id: str, *, sections: Iterable[str] | None = None,
+             log: str = "stdout", offset: int = 0, limit: int = DEFAULT_LOG_LIMIT,
+             artifact_offset: int = 0, artifact_limit: int = MAX_ARTIFACTS) -> dict[str, Any] | None:
+    record = ctx.store.record(run_id)
+    if record is None:
+        return None
+    selected = set(normalize_run_sections(sections))
+    view = {"sections": [section for section in RUN_SECTIONS if section in selected],
+            "summary": run_summary(record)}
+    if "diagnostics" in selected:
+        view["diagnostics"] = _diagnostics(ctx, run_id, record)
+    if "obligations" in selected:
+        view["obligations"] = record.get("obligations")
+    if "provenance" in selected:
+        view["provenance"] = _provenance(record)
+    if "artifacts" in selected:
+        view["artifacts"] = _artifacts(ctx, run_id, record, artifact_offset, artifact_limit)
+    if "log" in selected:
+        view["log"] = _run_log(ctx, run_id, log, offset, min(max(0, limit), 64_000))
+    return view
+
+
+def normalize_run_sections(sections: Iterable[str] | None) -> tuple[str, ...]:
+    selected = {"summary"} if sections is None else set(sections)
+    if not selected or selected - set(RUN_SECTIONS) - {"all"} or ("all" in selected and len(selected) != 1):
+        raise ValueError("sections must select known sections; all must be selected alone")
+    if "all" in selected:
+        return RUN_SECTIONS
+    return tuple(section for section in RUN_SECTIONS if section in selected)
+
+
+def run_view_full(ctx: Context, run_id: str, *, log: str = "stdout", offset: int = 0,
+                  limit: int = DEFAULT_LOG_LIMIT) -> dict[str, Any] | None:
+    """Internal full record view for the console, which needs historical detail."""
+    record = ctx.store.record(run_id)
+    if record is None:
+        return None
+    return {**record, "log": _run_log(ctx, run_id, log, offset, limit)}
 
 
 def runs(ctx: Context, limit: int = 50) -> list[dict[str, Any]]:

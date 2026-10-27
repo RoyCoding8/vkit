@@ -141,7 +141,34 @@ def test_a_run_survives_its_submitting_client(make_project):
     client.kill()
     client.wait(timeout=30)
     code, body = vkit(project, "run", "wait", "--run", run_id, "--timeout", "30")
-    assert (code, body["state"], body["outcome"]["result"]) == (0, "done", "PASS")
+    assert (code, body["summary"]["state"], body["summary"]["outcome"]["result"]) == (0, "done", "PASS")
+    assert "log" not in body
+
+
+def test_run_show_selects_log_without_submitting_another_run(make_project):
+    project = make_project({"ok.py": DRIVER + 'report([("ok", True, "printed ok")])\nprint("run log marker")\n'},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    _, submitted = vkit(project, "check", "run", "--check", "ok")
+    run_id = only_run(submitted)["run_id"]
+    run_root = project / ".git" / "vkit" / "runs"
+    before = sorted(path.name for path in run_root.iterdir())
+
+    code, summary = vkit(project, "run", "show", "--run", run_id)
+    assert code == 0 and summary["summary"]["run_id"] == run_id
+    assert "log" not in summary
+    code, details = vkit(project, "run", "show", "--run", run_id, "--section", "log")
+    assert code == 0 and details["log"]["text"]
+    code, multiple = vkit(project, "run", "show", "--run", run_id,
+                          "--section", "summary", "--section", "obligations")
+    assert code == 0 and multiple["sections"] == ["summary", "obligations"]
+    assert "obligations" in multiple
+    assert sorted(path.name for path in run_root.iterdir()) == before
+
+
+def test_run_show_rejects_all_with_other_sections(make_project):
+    project = make_project({"README.md": "selectors\n"}, [], accept=False)
+    code, body = vkit(project, "run", "show", "--run", "missing", "--section", "all", "--section", "log")
+    assert code == 2 and "all must be selected alone" in body["error"]
 
 
 def test_a_run_whose_worker_died_reads_as_interrupted(make_project):
@@ -152,14 +179,15 @@ def test_a_run_whose_worker_died_reads_as_interrupted(make_project):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         _, record = vkit(project, "run", "show", "--run", run_id)
-        if record["state"] == "running":
+        if record["summary"]["state"] == "running":
             break
         time.sleep(0.1)
-    assert record["state"] == "running"
-    os.kill(record["worker_pid"], signal.SIGTERM)
+    assert record["summary"]["state"] == "running"
+    worker = json.loads((project / ".git" / "vkit" / "runs" / run_id / "worker.json").read_text())
+    os.kill(worker["pid"], signal.SIGTERM)
     runner.communicate(timeout=30)
     code, body = vkit(project, "run", "show", "--run", run_id)
-    assert (code, body["state"]) == (3, "interrupted")
+    assert (code, body["summary"]["state"]) == (3, "interrupted")
 
 
 EDITS_ITS_INPUT = DRIVER + '''

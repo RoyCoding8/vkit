@@ -164,7 +164,7 @@
     },
     {
       "id": "tlc",
-      "behavior": "Runs TLC on a finite TLA+ model.",
+      "behavior": "Runs TLC on a finite TLA+ model and checks captured VKit attempt traces.",
       "how_to_reach": [
         "a tlc check"
       ],
@@ -172,9 +172,11 @@
         "src/vkit/verifiers/tlc_adapter.py",
         "src/vkit/verifiers/tlc_runner.py"
       ],
-      "covered_by": [],
+      "covered_by": [
+        "lifecycle-model"
+      ],
       "gaps": [
-        "Real TLC controls run in the formal CI workflow; no registered self-check invokes TLC."
+        "The finite model and one captured trace do not establish behavior for every runtime interleaving."
       ]
     },
     {

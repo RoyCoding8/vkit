@@ -48,9 +48,10 @@ jobs:
             exit 1
           fi
       - name: Build the qualification image before sealed execution
+        timeout-minutes: 5
         env:
           IMAGE_TAG: vkit-ledger-qualification-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker build --file examples/verus-qualification/container/Dockerfile --tag "$IMAGE_TAG" examples/verus-qualification/container
+        run: docker build --build-arg UBUNTU_ARCHIVE=azure.archive.ubuntu.com --file examples/verus-qualification/container/Dockerfile --tag "$IMAGE_TAG" examples/verus-qualification/container
       - name: Install the official pinned Verus release
         shell: python
         run: |

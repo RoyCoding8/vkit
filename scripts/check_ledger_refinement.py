@@ -95,7 +95,7 @@ def qualify_product(directory: Path) -> dict:
     cases = []
     for name, text, expected in (("columns", source, "PASS"), ("broken_conversion", broken, "BLOCKED")):
         project, commit = project_for(directory / name / "project", policy, text)
-        store = Store(project.state_root)
+        store = Store.of(project)
         approve(store, policy, identity)
         record = prepare_formal(project, VerificationRequest(policy.id, GitCommit(commit)), policy,
                                 canonical_digest(identity["semantic"]), store=store)

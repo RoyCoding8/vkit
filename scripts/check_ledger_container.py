@@ -14,12 +14,20 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from vkit.nowindow import hidden_window
+
 PROFILE = "verus-linux-x86_64-v1"
 LABEL = "vkit.ledger.run_id"
 FORMAL_LABEL = "vkit.formal.run_id"
 SOURCE_REL = Path("src/vkit/formal/packages/resource_ledger/ledger.rs")
 TRUSTED_FILES = (
     Path("scripts/check_verus_ledger.py"),
+    Path("src/vkit/__init__.py"),
+    Path("src/vkit/nowindow.py"),
+    Path("src/vkit/formal/__init__.py"),
+    Path("src/vkit/formal/ledger.py"),
+    Path("src/vkit/formal/qualification.py"),
     Path("src/vkit/formal/packages/resource_ledger/upstream.json"),
     Path("examples/verus-qualification/smoke.rs"),
     Path("examples/verus-qualification/candidate_api.rs"),
@@ -28,7 +36,8 @@ TRUSTED_FILES = (
 
 
 def run(command: list[str], *, timeout: float = 30, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False,
+                            **hidden_window())
     if check and result.returncode:
         raise RuntimeError(f"command failed ({result.returncode}): {result.stderr.strip() or result.stdout.strip()}")
     return result
@@ -336,7 +345,7 @@ with store.hold(attempt):
 """
     with (directory / "worker.log").open("wb") as log:
         worker = subprocess.Popen([sys.executable, "-c", program, str(directory), attempt, image_id],
-                                  stdout=log, stderr=subprocess.STDOUT)
+                                  stdout=log, stderr=subprocess.STDOUT, **hidden_window())
         try:
             cid_path = control_path(run_dir).parent / "container.cid"
             deadline = time.monotonic() + 30
@@ -461,7 +470,8 @@ def execute(image_id: str, run_id: str, cidfile: Path, command: list[str],
         signal.signal(signum, terminate)
     try:
         with log_path.open("w", encoding="utf-8") as log:
-            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                       **hidden_window())
             try:
                 code = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -639,6 +649,12 @@ def main() -> int:
         evidence_report = json.loads(evidence.read_text(encoding="utf-8")) if evidence.is_file() else {}
         report["checks"]["comparison_passed"] = evidence_report.get("comparison_passed") is True
         report["driver_scope"] = evidence_report.get("scope")
+        report["mutation_controls"] = evidence_report.get("mutation_controls", [])
+        report["package_identity"] = evidence_report.get("package_identity")
+        report["package_identity_sha256"] = evidence_report.get("package_identity_sha256")
+        report["tool_identity_sha256"] = evidence_report.get("tool_identity_sha256")
+        report["checks"]["mutation_controls_passed"] = (
+            evidence_report.get("mutation_controls_passed") is True)
         if (execution["returncode"] != 0 or execution["timed_out"]
                 or not execution["output_retained"] or not evidence.is_file()):
             raise RuntimeError("sealed Verus qualification failed")
@@ -653,7 +669,8 @@ def main() -> int:
                                                args.rustup_home, args.cargo_home, args.output / "product")
         report["checks"]["product_passed"] = report["product"]["passed"]
         report["qualification_passed"] = all(report["checks"][name] for name in
-                                              ("comparison_passed", "rust_1_99_1", "z3_4_16_0", "product_passed"))
+                                              ("comparison_passed", "mutation_controls_passed",
+                                               "rust_1_99_1", "z3_4_16_0", "product_passed"))
     except (OSError, RuntimeError, ValueError, KeyError, StopIteration,
             subprocess.SubprocessError, KeyboardInterrupt) as error:
         report["error"] = str(error)

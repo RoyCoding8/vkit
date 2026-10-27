@@ -9,11 +9,22 @@ import re
 import signal
 import stat
 import subprocess
+import sys
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from vkit.formal.ledger import CONTRACT, PACKAGE_ID, PROFILE, VERSION
+from vkit.formal.qualification import (
+    compare_package_snapshots,
+    mutation_control,
+    normalize_package_snapshot,
+    package_snapshot,
+)
+from vkit.nowindow import hidden_window
+
 PACKAGE = ROOT / "src/vkit/formal/packages/resource_ledger"
 PIN_PATH = PACKAGE / "upstream.json"
 SOURCE = PACKAGE / "ledger.rs"
@@ -92,14 +103,22 @@ def run(command: list[str], output: Path, cwd: Path) -> dict:
     env = os.environ.copy()
     env.pop("VERUS_Z3_PATH", None)
     with output.open("w", encoding="utf-8") as log:
-        with subprocess.Popen(command, cwd=cwd, env=env, stdout=log,
-                              stderr=subprocess.STDOUT, start_new_session=os.name != "nt") as process:
+        try:
+            process = subprocess.Popen(command, cwd=cwd, env=env, stdout=log,
+                                       stderr=subprocess.STDOUT, start_new_session=os.name != "nt",
+                                       **hidden_window())
+        except OSError as exc:
+            return {"command": command, "returncode": None,
+                    "seconds": round(time.monotonic() - start, 3), "log": output.name,
+                    "error": f"{type(exc).__name__}: {exc}"}
+        with process:
             try:
                 code = process.wait(timeout=180)
             except subprocess.TimeoutExpired:
                 if os.name == "nt":
                     subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                                   stdout=log, stderr=subprocess.STDOUT, check=False)
+                                   stdout=log, stderr=subprocess.STDOUT, check=False,
+                                   **hidden_window())
                 else:
                     os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
@@ -125,7 +144,8 @@ def tool_identity(archive: Path, tool_root: Path, pin: dict) -> dict:
     return {"archive_sha256": expected, "version": version, "files": hashes}
 
 
-def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
+def check_binding(exe: Path, captured: Path, out: Path, report: dict,
+                  package_identity_sha256: str, tool_identity_sha256: str) -> bool:
     root = out / "binding"
     root.mkdir()
     fixtures = ROOT / "examples/verus-qualification"
@@ -136,6 +156,19 @@ def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
     report["binding_scope"] = "Six required_api bindings over the fixed checked ledger library; not arbitrary source or representation correspondence"
     report["binding_expected_sha256"] = digest(expected.encode())
     flags = ["--no-cheating", "--no-external-by-default", "--num-threads", "2"]
+
+    def control(name: str, mutation_path: Path, result: dict, diagnostic: str | None,
+                evidence_present: bool) -> dict:
+        row = mutation_control(
+            name=name, mutation_sha256=digest(mutation_path.read_bytes()),
+            package_identity_sha256=package_identity_sha256,
+            tool_identity_sha256=tool_identity_sha256,
+            returncode=result["returncode"], timed_out=result["returncode"] is None and
+            "error" not in result, diagnostic=diagnostic, evidence_present=evidence_present,
+            infrastructure_error="error" in result,
+        )
+        report["mutation_controls"].append(row)
+        return row
 
     def verify(name: str, args: list[str], cwd: Path, *, missing_symbol: str | None = None) -> dict:
         log_path = out / f"{name}.log"
@@ -184,7 +217,7 @@ def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
             raise ValueError(f"could not mutate {api} for {mutation}")
         return text[:start] + contract + block[signature_end:end] + text[end:]
 
-    def export_and_claim(name: str, source: str, *, expected_rejection: str | None = None) -> bool:
+    def export_and_claim(name: str, source: str, *, expected_diagnostic: str | None = None) -> bool:
         directory = root / name
         directory.mkdir()
         candidate_path = directory / "candidate_api.rs"
@@ -196,24 +229,32 @@ def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
                                              str(directory / "candidate_api.vir"), "--compile"], directory)
         record(f"{name}_export", export)
         if not export["verified"]:
+            control(f"{name}_export", candidate_path, export["result"], None,
+                    export["result"].get("returncode") is not None and bool(export["log"].strip()))
             return False
         client = [str(expected_path), *imports,
                   "--import", f"candidate_api={directory / 'candidate_api.vir'}",
                   "--extern", f"candidate_api={directory / 'libcandidate_api.rlib'}", "-L", str(directory)]
         claim = verify(f"{name}_claim", client, directory,
                        missing_symbol=name[len("binding_"):-len("_missing_symbol")]
-                       if expected_rejection == "compile_missing_symbol" else None)
-        if expected_rejection is None:
+                       if expected_diagnostic == "compile_missing_symbol" else None)
+        if expected_diagnostic is None:
             record(f"{name}_claim", claim)
             return claim["verified"]
         observed = ("proof" if claim["proof_rejection"] else
                     "compile_missing_symbol" if claim["symbol_rejection"] else "unexpected")
-        accepted = observed == expected_rejection
+        accepted = observed == expected_diagnostic
+        diagnostic = ("proof_rejection" if observed == "proof" else
+                      "missing_symbol" if observed == "compile_missing_symbol" else
+                      "verified" if claim["verified"] else None)
+        control(f"{name}_claim", candidate_path, claim["result"], diagnostic,
+                claim["result"].get("returncode") is not None and bool(claim["log"].strip()))
         report["checks"].append({
             "name": f"{name}_claim",
-            "expected_rejection": expected_rejection,
-            "observed_rejection": observed,
-            "rejected": accepted,
+            "expected_diagnostic": expected_diagnostic,
+            "observed_diagnostic": diagnostic or "unclassified",
+            "accepted_qualification_diagnostic": accepted,
+            "qualification_status": report["mutation_controls"][-1]["status"],
             **claim["result"],
         })
         return accepted
@@ -232,7 +273,7 @@ def check_binding(exe: Path, captured: Path, out: Path, report: dict) -> bool:
                                     ("missing_symbol", "compile_missing_symbol")):
             name = f"binding_{api}_{mutation}"
             success = export_and_claim(name, changed_candidate(api, mutation),
-                                       expected_rejection=rejection) and success
+                                       expected_diagnostic=rejection) and success
     return success
 
 
@@ -241,6 +282,8 @@ def main() -> int:
     parser.add_argument("--verus-root", type=Path)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--compare-package", type=Path,
+                        help="compare assets, obligations, and trust identity with a prior package snapshot or report")
     parser.add_argument("--pin-extracted", action="store_true", help="derive the compact expanded-file pin from the verified official archive")
     args = parser.parse_args()
     pin = json.loads(PIN_PATH.read_text())
@@ -272,8 +315,32 @@ def main() -> int:
         "driver_sha256": digest(Path(__file__).read_bytes()),
         "pin_sha256": digest(PIN_PATH.read_bytes()),
         "toolchain": identity,
+        "tool_identity_sha256": digest(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()),
+        "mutation_controls": [],
         "checks": [],
     }
+    template = (PACKAGE / "expected.rs.in").read_text(encoding="utf-8")
+    obligations = ["resource-ledger:ledger_map_accounting"]
+    obligations.extend(f"resource-ledger:{name}" for name in
+                       re.findall(r"pub fn expected_(\w+)", template))
+    package = package_snapshot(
+        identity={"id": PACKAGE_ID, "version": VERSION, "contract": CONTRACT, "profile": PROFILE},
+        assets={path.name: digest(path.read_bytes()) for path in
+                (SOURCE, PACKAGE / "expected.rs.in", PIN_PATH)},
+        obligations=obligations,
+        trust_identity={"pin_sha256": report["pin_sha256"],
+                        "tool_identity_sha256": report["tool_identity_sha256"]},
+    )
+    report["package_identity"] = package
+    report["package_identity_sha256"] = digest(
+        json.dumps(package, sort_keys=True, separators=(",", ":")).encode())
+    if args.compare_package is not None:
+        try:
+            baseline_document = json.loads(args.compare_package.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"could not read package snapshot {args.compare_package}: {exc}") from exc
+        baseline = normalize_package_snapshot(baseline_document)
+        report["package_change_review"] = compare_package_snapshots(baseline, package)
     for name, command in {
         "verus_version": [str(exe), "--version"],
         "solver_version": [str(exe.parent / ("z3.exe" if os.name == "nt" else "z3")), "--version"],
@@ -299,14 +366,30 @@ def main() -> int:
             check = run([str(exe), str(mutated), "--no-cheating", "--no-external-by-default", "--num-threads", "2"],
                         out / f"{name}.log", out)
             log = (out / f"{name}.log").read_text(encoding="utf-8", errors="replace")
-            rejected = check["returncode"] not in {None, 0} and (
-                "assume/admit not allowed with --no-cheating" in log if name == "assumed_proof"
-                else bool(re.search(r"verification results:: \d+ verified, [1-9]\d* errors", log))
+            diagnostic = ("trust_escape_rejection" if name == "assumed_proof" and
+                          "assume/admit not allowed with --no-cheating" in log else
+                          "proof_rejection" if re.search(
+                              r"verification results:: \d+ verified, [1-9]\d* errors", log) else
+                          "verified" if check["returncode"] == 0 and re.search(
+                              r"verification results:: [1-9]\d* verified, 0 errors", log) else None)
+            control = mutation_control(
+                name=name, mutation_sha256=digest(mutated.read_bytes()),
+                package_identity_sha256=report["package_identity_sha256"],
+                tool_identity_sha256=report["tool_identity_sha256"],
+                returncode=check["returncode"], timed_out=check["returncode"] is None and
+                "error" not in check, diagnostic=diagnostic, evidence_present=bool(log.strip()),
+                infrastructure_error="error" in check,
             )
-            report["checks"].append({"name": name, "rejected": rejected,
-                                     "source_sha256": digest(mutated.read_bytes()), **check})
+            report["mutation_controls"].append(control)
+            rejected = control["status"] == "detected_rejection"
+            report["checks"].append({"name": name,
+                                     "sensitivity_detected": rejected,
+                                     "source_sha256": digest(mutated.read_bytes()),
+                                     "qualification": control, **check})
             success = success and rejected
-        report["binding_passed"] = check_binding(exe, captured, out, report)
+        report["binding_passed"] = check_binding(
+            exe, captured, out, report, report["package_identity_sha256"],
+            report["tool_identity_sha256"])
         success = success and report["binding_passed"]
         compiled = run([str(exe), str(smoke), "--no-cheating", "--num-threads", "2",
                         "--compile", "-o", str(binary)], out / "compile.log", out)
@@ -316,10 +399,15 @@ def main() -> int:
             executed = run([str(binary)], out / "execution.log", out)
             report["checks"].append({"name": "compiled_execution", **executed})
             success = success and executed["returncode"] == 0 and (out / "execution.log").read_text().strip() == "VKIT_LEDGER_SMOKE_OK"
-    report["comparison_passed"] = success
+    report["mutation_controls_passed"] = bool(report["mutation_controls"]) and all(
+        control["status"] == "detected_rejection" for control in report["mutation_controls"])
+    report["comparison_passed"] = success and report["mutation_controls_passed"]
     (out / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"comparison_passed": success, "checks": report["checks"]}, indent=2))
-    return 0 if success else 1
+    print(json.dumps({"comparison_passed": report["comparison_passed"],
+                      "mutation_controls_passed": report["mutation_controls_passed"],
+                      "mutation_controls": report["mutation_controls"],
+                      "checks": report["checks"]}, indent=2))
+    return 0 if report["comparison_passed"] else 1
 
 
 if __name__ == "__main__":

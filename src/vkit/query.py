@@ -123,14 +123,16 @@ def _run_log(ctx: Context, run_id: str, log: str, offset: int, limit: int) -> di
             "text": window.decode("utf-8", "replace")}
 
 
-def _obligation_counts(record: dict[str, Any]) -> dict[str, int]:
+def _obligation_counts(record: dict[str, Any]) -> dict[str, int | None]:
     obligations = record.get("obligations")
+    outcome = record.get("outcome") or {}
+    complete = outcome.get("result") == "PASS"
     if isinstance(obligations, dict):
         satisfied = obligations.get("satisfied") or []
         failed = obligations.get("counterexamples") or []
-        total = len(satisfied) + len(failed)
-        return {"total": total, "satisfied": len(satisfied), "failed": len(failed), "unknown": 0}
-    outcome = record.get("outcome") or {}
+        total = len(satisfied) + len(failed) if complete else None
+        return {"total": total, "satisfied": len(satisfied), "failed": len(failed),
+                "unknown": 0 if complete else None}
     scenarios = outcome.get("scenarios", [])
     if isinstance(obligations, list):
         observed = {item.get("id"): item.get("result") for item in scenarios
@@ -141,7 +143,8 @@ def _obligation_counts(record: dict[str, Any]) -> dict[str, int]:
                 "unknown": len(obligations) - satisfied - failed}
     satisfied = sum(item.get("result") == "PASS" for item in scenarios)
     failed = sum(item.get("result") == "FAIL" for item in scenarios)
-    return {"total": len(scenarios), "satisfied": satisfied, "failed": failed, "unknown": 0}
+    return {"total": len(scenarios) if complete else None, "satisfied": satisfied, "failed": failed,
+            "unknown": 0 if complete else None}
 
 
 def run_summary(record: dict[str, Any]) -> dict[str, Any]:

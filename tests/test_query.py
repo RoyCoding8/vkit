@@ -156,6 +156,21 @@ def test_run_summary_keeps_unobserved_known_obligations_unknown(tmp_path, state,
     assert summary["counts"]["obligations"] == expected
 
 
+def test_partial_tlc_result_does_not_claim_all_obligations_were_observed(tmp_path):
+    store = Store(tmp_path / "state")
+    store.save({"run_id": "tlc-failure", "state": "done", "outcome": {"result": "FAIL"},
+                "obligations": {"satisfied": [], "counterexamples": [
+                    {"obligation": {"obligation": "NoFalsePass"}, "trace": "bad identity"}]}})
+    context = Context(Project(tmp_path, tmp_path / ".git"), store, None, None)
+
+    summary = run_view(context, "tlc-failure")["summary"]
+
+    assert summary["counts"]["obligations"] == {
+        "total": None, "satisfied": 0, "failed": 1, "unknown": None,
+    }
+    assert summary["failure_ids"] == ["NoFalsePass"]
+
+
 def test_run_view_reports_concrete_failed_formal_phase_without_inventing_obligations(tmp_path):
     store = Store(tmp_path / "state")
     store.save({"run_id": "formal-run", "state": "done",

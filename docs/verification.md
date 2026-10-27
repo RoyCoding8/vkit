@@ -102,6 +102,8 @@ The [lifecycle model](../verification/lifecycle/Attempts.tla) checks a finite ab
 
 CLI and MCP run responses default to a summary with identities, status, obligation counts and the next action. CLI `--section` flags and MCP `sections` select `diagnostics`, `obligations`, `provenance`, `artifacts` or `log`. Request one, several, or `all`. Selection reads retained results without changing verification scope or starting another run. Logs and artifact lists are bounded and support paging.
 
+Counts distinguish observed results from unobserved obligations. If a partial result lacks the required denominator, `total` and `unknown` are `null`.
+
 ```sh
 vkit run show <run-id> --section diagnostics --section provenance --json
 ```

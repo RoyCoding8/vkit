@@ -38,7 +38,7 @@ concurrency:
 jobs:
   verus-comparison:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Require the Docker runtime
@@ -48,7 +48,7 @@ jobs:
             exit 1
           fi
       - name: Build the qualification image before sealed execution
-        timeout-minutes: 5
+        timeout-minutes: 10
         env:
           IMAGE_TAG: vkit-ledger-qualification-${{ github.run_id }}-${{ github.run_attempt }}
         run: docker build --build-arg UBUNTU_ARCHIVE=azure.archive.ubuntu.com --file examples/verus-qualification/container/Dockerfile --tag "$IMAGE_TAG" examples/verus-qualification/container

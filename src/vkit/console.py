@@ -149,8 +149,8 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                 elif url.path == "/api/runs":
                     self._json(query.runs(query.open_context(project.root), int(params.get("limit", 30))))
                 elif url.path == "/api/run":
-                    view = query.run_view(query.open_context(project.root), params.get("id", ""),
-                                          log=params.get("log", "stdout"), offset=int(params.get("offset", 0)))
+                    view = query.run_view_full(query.open_context(project.root), params.get("id", ""),
+                                               log=params.get("log", "stdout"), offset=int(params.get("offset", 0)))
                     self._json(view if view is not None else {"error": "no such run"},
                                HTTPStatus.OK if view is not None else HTTPStatus.NOT_FOUND)
                 elif url.path == "/api/config":

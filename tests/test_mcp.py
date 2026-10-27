@@ -6,7 +6,7 @@ PASSES = DRIVER + 'report([("ok", True, "printed ok")])\n'
 
 
 def test_an_agent_runs_waits_reads_and_exports_durable_check_evidence(make_project, tmp_path):
-    project = make_project({"ok.py": PASSES, "README.md": "hi"},
+    project = make_project({"ok.py": PASSES + '\nprint("run log marker")\n', "README.md": "hi"},
                            [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
     client = McpClient(project)
     try:
@@ -21,8 +21,8 @@ def test_an_agent_runs_waits_reads_and_exports_durable_check_evidence(make_proje
         run_id = body["runs"][0]["run_id"]
 
         body, error = client.call("run_wait", run_id=run_id, wait_seconds=0)
-        assert not error and (body["state"], body["outcome"]["result"]) == ("done", "PASS")
-        assert body["log"]["stream"] == "stdout"
+        assert not error and (body["summary"]["state"], body["summary"]["outcome"]["result"]) == ("done", "PASS")
+        assert "log" not in body
 
         bundle = tmp_path / "evidence-bundle"
         body, error = client.call("evidence_export", run_id=run_id, output=str(bundle))
@@ -39,7 +39,17 @@ def test_an_agent_runs_waits_reads_and_exports_durable_check_evidence(make_proje
         assert ([c["state"] for c in body["checks"]], body["unmapped_paths"]) == (["stale"], ["README.md"])
 
         body, _ = client.call("run_get", run_id=run_id)
-        assert (body["state"], body["outcome"]["scenarios"][0]["observation"]) == ("done", "printed ok")
+        assert body["summary"]["run_id"] == run_id and "log" not in body
+        details, error = client.call("run_get", run_id=run_id, sections=["obligations", "log"])
+        assert not error and details["obligations"]["satisfied"][0]["obligation"]["obligation"] == "ok"
+        assert details["log"]["text"]
+        all_details, error = client.call("run_get", run_id=run_id, sections=["all"])
+        assert not error and all_details["sections"] == ["summary", "diagnostics", "obligations",
+                                                          "provenance", "artifacts", "log"]
+        _, error = client.call("run_get", run_id=run_id, sections=["all", "log"])
+        assert error
+        _, error = client.call("run_get", run_id=run_id, sections=["not-a-section"])
+        assert error
     finally:
         client.close()
 

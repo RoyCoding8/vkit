@@ -11,7 +11,7 @@ import pytest
 
 from helpers import DRIVER, McpClient, git, scenario_check, vkit
 from vkit.paths import Project
-from vkit.query import Context, doctor, open_context, run_view, status
+from vkit.query import Context, doctor, open_context, run_view, run_view_full, status
 from vkit.store import Store, write_json
 from vkit.formal.policy import VerificationRequest, WorkingTree
 from vkit.inputs import canonical_digest
@@ -79,7 +79,7 @@ def test_run_log_reads_only_the_requested_window(tmp_path, monkeypatch, offset, 
 
     monkeypatch.setattr(Path, "open", open_log)
 
-    assert run_view(context, "example-run", offset=offset, limit=limit)["log"] == expected
+    assert run_view_full(context, "example-run", offset=offset, limit=limit)["log"] == expected
 
 
 def test_run_without_a_log_has_an_empty_window(tmp_path):
@@ -87,7 +87,7 @@ def test_run_without_a_log_has_an_empty_window(tmp_path):
     store.save({"run_id": "example-run", "state": "done"})
     context = Context(Project(tmp_path, tmp_path / ".git"), store, None, None)
 
-    assert run_view(context, "example-run")["log"] == {
+    assert run_view_full(context, "example-run")["log"] == {
         "stream": "stdout", "offset": 0, "size": 0, "text": "",
     }
 
@@ -112,9 +112,81 @@ def test_run_view_does_not_open_a_non_regular_log(tmp_path, monkeypatch, kind):
     monkeypatch.setattr(Path, "open", open_regular)
     context = Context(Project(tmp_path, tmp_path / ".git"), store, None, None)
 
-    assert run_view(context, "example-run")["log"] == {
+    assert run_view_full(context, "example-run")["log"] == {
         "stream": "stdout", "offset": 0, "size": 0, "text": "",
     }
+
+
+def test_run_view_defaults_to_a_compact_summary_and_selects_details(tmp_path):
+    store = Store(tmp_path / "state")
+    store.save({"run_id": "example-run", "job_id": "job", "state": "done",
+                "outcome": {"result": "FAIL", "scenarios": [{"id": "ledger.reserve", "result": "FAIL"}]},
+                "obligations": ["ledger.reserve"], "scope": "required_api", "assurance": "trusted_engine"})
+    (store.run_dir("example-run") / "stdout.log").write_text("large log", encoding="utf-8")
+    context = Context(Project(tmp_path, tmp_path / ".git"), store, None, None)
+
+    default = run_view(context, "example-run")
+    assert default == {"sections": ["summary"], "summary": {
+        "job_id": "job", "run_id": "example-run", "subject": None, "check_id": None, "state": "done",
+        "outcome": {"result": "FAIL"},
+        "method": None, "category": None, "scope": "required_api", "assurance": "trusted_engine",
+        "claim_outcome": None, "receipt": None,
+        "counts": {"obligations": {"total": 1, "satisfied": 0, "failed": 1, "unknown": 0}},
+        "failure_ids": ["ledger.reserve"], "next_action": "inspect_obligations",
+    }}
+    detail = run_view(context, "example-run", sections=["obligations", "log"], limit=4)
+    assert detail["sections"] == ["obligations", "log"]
+    assert detail["obligations"] == ["ledger.reserve"]
+    assert detail["log"]["text"] == "larg"
+    assert "source" not in detail
+
+
+@pytest.mark.parametrize(("state", "outcome", "expected"), [
+    ("queued", None, {"total": 2, "satisfied": 0, "failed": 0, "unknown": 2}),
+    ("done", {"result": "BLOCKED", "scenarios": [{"id": "ledger.new", "result": "PASS"}]},
+     {"total": 2, "satisfied": 1, "failed": 0, "unknown": 1}),
+])
+def test_run_summary_keeps_unobserved_known_obligations_unknown(tmp_path, state, outcome, expected):
+    store = Store(tmp_path / "state")
+    store.save({"run_id": "formal-run", "state": state, "outcome": outcome,
+                "obligations": ["ledger.new", "ledger.reserve"]})
+    context = Context(Project(tmp_path, tmp_path / ".git"), store, None, None)
+
+    summary = run_view(context, "formal-run")["summary"]
+    assert summary["counts"]["obligations"] == expected
+
+
+def test_run_view_reports_concrete_failed_formal_phase_without_inventing_obligations(tmp_path):
+    store = Store(tmp_path / "state")
+    store.save({"run_id": "formal-run", "state": "done",
+                "outcome": {"result": "BLOCKED", "reason": "formal_obligation", "detail": "formal obligation failed"},
+                "obligations": ["new", "reserve"]})
+    run_dir = store.run_dir("formal-run")
+    (run_dir / "container.stderr").write_text("formal_obligation:verified_candidate\n", encoding="utf-8")
+    phase = run_dir / "formal-output" / "verified_candidate.log"
+    phase.parent.mkdir()
+    phase.write_text("error: postcondition not satisfied\n", encoding="utf-8")
+    context = Context(Project(tmp_path, tmp_path / ".git"), store, None, None)
+
+    view = run_view(context, "formal-run", sections=["diagnostics"])
+    assert view["diagnostics"]["diagnostics"] == [{
+        "kind": "formal_obligation", "summary": "formal obligation failed",
+    }, {
+        "phase": "verified_candidate", "summary": "error: postcondition not satisfied",
+        "artifact": "formal-output/verified_candidate.log", "container_log": "container.stderr",
+        "size": len("error: postcondition not satisfied\r\n"),
+    }]
+    assert "obligation_id" not in view["diagnostics"]["diagnostics"][1]
+
+
+@pytest.mark.parametrize("sections", [[], ["unknown"], ["all", "log"]])
+def test_run_view_rejects_invalid_section_selectors(tmp_path, sections):
+    store = Store(tmp_path / "state")
+    store.save({"run_id": "example-run", "state": "done"})
+    context = Context(Project(tmp_path, tmp_path / ".git"), store, None, None)
+
+    with pytest.raises(ValueError, match="sections"):
+        run_view(context, "example-run", sections=sections)
 
 def _install_formal_component(project, *, required=True, reserve="api::reserve"):
     path = project / "verification" / "manifest.json"

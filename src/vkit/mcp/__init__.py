@@ -191,12 +191,6 @@ def _help(server: Server, args: dict[str, Any]) -> Any:
         "total": len(matches), "next_offset": offset + limit if offset + limit < len(matches) else None}
 
 
-def _summary_record(record: dict[str, Any]) -> dict[str, Any]:
-    return {key: record.get(key) for key in ("job_id", "run_id", "subject", "check_id", "state", "outcome",
-                                            "method", "category", "scope",
-                                            "assurance", "claim_outcome", "receipt")}
-
-
 def _check_run(server: Server, args: dict[str, Any]) -> Any:
     ctx = server.context()
     manifest = ctx.require_manifest()
@@ -220,7 +214,7 @@ def _check_run(server: Server, args: dict[str, Any]) -> Any:
     records = []
     for run_id in run_ids:
         records.append(jobs.wait(ctx.store, run_id, max(0, deadline - time.monotonic())))
-    summaries = [_summary_record(record) for record in records]
+    summaries = [query.run_summary(record) for record in records]
     return {"runs": summaries,
             "note": "poll run_get for runs still queued or running" if any(
                 record["state"] in ("queued", "running") for record in records) else ""}
@@ -229,8 +223,12 @@ def _check_run(server: Server, args: dict[str, Any]) -> Any:
 def _run_get(server: Server, args: dict[str, Any]) -> Any:
     if "run_id" not in args:
         raise Refusal("run_id is required")
-    view = query.run_view(server.context(), args["run_id"], log=args.get("log", "stdout"),
-                          offset=args.get("log_offset", 0), limit=min(args.get("log_limit", 16_000), 64_000))
+    query.normalize_run_sections(args.get("sections"))
+    view = query.run_view(server.context(), args["run_id"], sections=args.get("sections"),
+                          log=args.get("log", "stdout"), offset=args.get("log_offset", 0),
+                          limit=min(args.get("log_limit", 16_000), 64_000),
+                          artifact_offset=args.get("artifact_offset", 0),
+                          artifact_limit=args.get("artifact_limit", query.MAX_ARTIFACTS))
     if view is None:
         raise Refusal(f"no run {args['run_id']!r}")
     return view
@@ -239,14 +237,20 @@ def _run_get(server: Server, args: dict[str, Any]) -> Any:
 def _verify(server: Server, args: dict[str, Any]) -> Any:
     from ..formal.service import verify
 
-    return verify(server.context(), args)
+    ctx = server.context()
+    query.normalize_run_sections(args.get("sections"))
+    record = verify(ctx, {key: value for key, value in args.items() if key != "sections"})
+    return query.run_view(ctx, record["run_id"], sections=args.get("sections"))
 
 
 def _run_wait(server: Server, args: dict[str, Any]) -> Any:
     ctx = server.context()
+    query.normalize_run_sections(args.get("sections"))
     timeout = min(args.get("wait_seconds", 20), MAX_WAIT_SECONDS)
     jobs.wait(ctx.store, args["run_id"], timeout)
-    view = query.run_view(ctx, args["run_id"])
+    view = query.run_view(ctx, args["run_id"], sections=args.get("sections"),
+                          log=args.get("log", "stdout"), offset=args.get("log_offset", 0),
+                          limit=min(args.get("log_limit", 16_000), 64_000))
     if view is None:
         raise Refusal(f"no run {args['run_id']!r}")
     return view
@@ -262,7 +266,7 @@ def _evidence_replay(server: Server, args: dict[str, Any]) -> Any:
     record = jobs.replay(ctx.project, ctx.require_manifest(), Path(args["bundle"]), store=ctx.store)
     if "wait_seconds" in args:
         record = jobs.wait(ctx.store, record["run_id"], min(args["wait_seconds"], MAX_WAIT_SECONDS))
-    return _summary_record(record)
+    return query.run_summary(record)
 
 
 def _propose(server: Server, args: dict[str, Any]) -> Any:
@@ -291,6 +295,7 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
 
 
 _STR = {"type": "string"}
+_RUN_SECTIONS = {"type": "array", "items": {"type": "string", "enum": [*query.RUN_SECTIONS, "all"]}}
 _PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
 _BASE_TOOLS = (
     Tool("help", "Discover enabled repository tools. Use query for summaries, all=true for the paged list, "
@@ -312,18 +317,26 @@ _BASE_TOOLS = (
          _check_run, read_only=False, category="repository"),
     Tool("verify", "Verify one accepted component against VKit's owned mathematical contract. Captures the "
          "whole source tree and submits a durable job. The Verus source result covers the six required API "
-         "bindings under the recorded trusted engine; working-tree results are provisional.",
-         schema(VERIFICATION_REQUEST)["properties"], _verify, read_only=False,
+         "bindings under the recorded trusted engine; working-tree results are provisional. Returns a compact "
+         "summary by default; select sections for details.",
+         {**schema(VERIFICATION_REQUEST)["properties"], "sections": _RUN_SECTIONS}, _verify, read_only=False,
          required=tuple(schema(VERIFICATION_REQUEST)["required"]), category="repository"),
-    Tool("run_get", "One run: state, outcome, obligations, inputs, and a window of its stdout or stderr.",
-         {"run_id": _STR, "log": {"type": "string", "enum": ["stdout", "stderr"]},
-          "log_offset": {"type": "integer", "description": "negative counts from the end"}, "log_limit": {"type": "integer"}}, _run_get, category="repository"),
+    Tool("run_get", "A compact run summary by default. Select summary, diagnostics, obligations, provenance, artifacts, or log for detail.",
+         {"run_id": _STR, "sections": _RUN_SECTIONS,
+          "log": {"type": "string", "enum": ["stdout", "stderr"]},
+          "log_offset": {"type": "integer", "description": "negative counts from the end"},
+          "log_limit": {"type": "integer", "minimum": 0, "maximum": 64_000},
+          "artifact_offset": {"type": "integer", "minimum": 0},
+          "artifact_limit": {"type": "integer", "minimum": 0, "maximum": query.MAX_ARTIFACTS}}, _run_get, category="repository"),
     Tool("run_cancel", "Stop a running check and everything it started.", {"run_id": _STR}, _run_cancel,
          read_only=False, category="repository"),
-    Tool("run_wait", "Wait up to wait_seconds (max 60) for a durable job to finish, then return its run record "
-         "and stdout window. This reports the checker result and its stated assurance; it does not independently "
+    Tool("run_wait", "Wait up to wait_seconds (max 60) for a durable job, then return a compact summary. Select "
+         "sections for detail. This reports the checker result and its stated assurance; it does not independently "
          "upgrade that claim.", {"run_id": _STR, "wait_seconds": {"type": "integer", "minimum": 0,
-          "maximum": MAX_WAIT_SECONDS}}, _run_wait, required=("run_id",), category="repository"),
+          "maximum": MAX_WAIT_SECONDS}, "sections": _RUN_SECTIONS,
+          "log": {"type": "string", "enum": ["stdout", "stderr"]},
+          "log_offset": {"type": "integer"}, "log_limit": {"type": "integer", "minimum": 0,
+          "maximum": 64_000}}, _run_wait, required=("run_id",), category="repository"),
     Tool("evidence_export", "Export an intact completed run as an evidence bundle. Replay requires matching current "
          "inputs and accepted tool identity. The receipt binds the "
          "recorded inputs, checker identity, outcome, assurance, and artifact digests.",

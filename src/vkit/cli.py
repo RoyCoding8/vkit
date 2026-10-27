@@ -136,6 +136,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     from .formal.verus import ExecutionSetupError
 
     ctx = _context(args)
+    query.normalize_run_sections(args.section)
     candidate = ({"kind": "working_tree"} if args.working_tree else
                  {"kind": "git_commit", "oid": resolve_commit(ctx.project, args.candidate)})
     try:
@@ -143,18 +144,23 @@ def cmd_verify(args: argparse.Namespace) -> int:
                               "candidate": candidate, "wait_seconds": args.wait})
     except ExecutionSetupError as exc:
         raise Refused(str(exc), EXIT_BLOCKED) from exc
-    _emit(record, args.json, _outcome_line(record))
-    return _RESULT_EXIT.get((record.get("outcome") or {}).get("result"), EXIT_OK)
+    view = query.run_view(ctx, record["run_id"], sections=args.section)
+    _emit(view, args.json, _run_view_line(view))
+    return _RESULT_EXIT.get((view["summary"].get("outcome") or {}).get("result"), EXIT_OK)
 
 
 def cmd_run_show(args: argparse.Namespace) -> int:
-    view = query.run_view(_context(args), args.run, log=args.log, offset=args.offset, limit=args.limit)
+    query.normalize_run_sections(args.section)
+    view = query.run_view(_context(args), args.run, sections=args.section,
+                          log=args.log, offset=args.offset, limit=args.limit,
+                          artifact_offset=args.artifact_offset, artifact_limit=args.artifact_limit)
     if view is None:
         raise Refused(f"no run {args.run!r}", EXIT_INVALID)
-    _emit(view, args.json, _outcome_line(view) + "\n\n" + view["log"]["text"])
-    if view["state"] == "done":
-        return _RESULT_EXIT[view["outcome"]["result"]]
-    return EXIT_BLOCKED if view["state"] == "interrupted" else EXIT_OK
+    summary = view["summary"]
+    _emit(view, args.json, _run_view_line(view))
+    if summary["state"] == "done":
+        return _RESULT_EXIT[(summary.get("outcome") or {}).get("result", "BLOCKED")]
+    return EXIT_BLOCKED if summary["state"] == "interrupted" else EXIT_OK
 
 
 def cmd_run_cancel(args: argparse.Namespace) -> int:
@@ -174,9 +180,23 @@ def cmd_run_cancel(args: argparse.Namespace) -> int:
 def cmd_run_wait(args: argparse.Namespace) -> int:
     from .jobs import wait
 
-    record = wait(_context(args).store, args.run, args.timeout)
-    _emit(record, args.json, _outcome_line(record))
-    return _RESULT_EXIT.get((record.get("outcome") or {}).get("result"), EXIT_BLOCKED)
+    ctx = _context(args)
+    query.normalize_run_sections(args.section)
+    record = wait(ctx.store, args.run, args.timeout)
+    view = query.run_view(ctx, record["run_id"], sections=args.section)
+    _emit(view, args.json, _run_view_line(view))
+    return _RESULT_EXIT.get((view["summary"].get("outcome") or {}).get("result"), EXIT_BLOCKED)
+
+
+def _run_view_line(view: dict[str, Any]) -> str:
+    summary = view["summary"]
+    lines = [_outcome_line(summary)]
+    for section in ("diagnostics", "obligations", "provenance", "artifacts"):
+        if section in view:
+            lines.append(f"{section}: {json.dumps(view[section], ensure_ascii=False)}")
+    if "log" in view:
+        lines.append(view["log"]["text"])
+    return "\n\n".join(line for line in lines if line)
 
 
 def cmd_run_retry(args: argparse.Namespace) -> int:
@@ -488,6 +508,8 @@ def build_parser() -> argparse.ArgumentParser:
     candidate.add_argument("--working-tree", action="store_true", help="capture current files provisionally")
     candidate.add_argument("--candidate", help="capture a Git revision as raw immutable objects")
     verify.add_argument("--wait", type=int, default=0, help="wait up to 60 seconds; zero returns the durable job")
+    verify.add_argument("--section", choices=[*query.RUN_SECTIONS, "all"], action="append",
+                        help="include selected result detail; repeat to select several sections")
 
     run = sub.add_parser("run", help="read or stop a run").add_subparsers(dest="run_command", required=True)
     show = command(run, "show", "show a run, its outcome and a window of its log")
@@ -495,11 +517,17 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--log", choices=("stdout", "stderr"), default="stdout")
     show.add_argument("--offset", type=int, default=0)
     show.add_argument("--limit", type=int, default=query.DEFAULT_LOG_LIMIT)
+    show.add_argument("--section", choices=[*query.RUN_SECTIONS, "all"], action="append",
+                      help="include selected result detail; repeat to select several sections")
+    show.add_argument("--artifact-offset", type=int, default=0)
+    show.add_argument("--artifact-limit", type=int, default=query.MAX_ARTIFACTS)
     cancel = command(run, "cancel", "stop a running check and everything it started")
     cancel.add_argument("--run", required=True)
     waiting = command(run, "wait", "wait for a submitted attempt")
     waiting.add_argument("--run", required=True)
     waiting.add_argument("--timeout", type=float, help="maximum wait in seconds; leaves the job running")
+    waiting.add_argument("--section", choices=[*query.RUN_SECTIONS, "all"], action="append",
+                         help="include selected result detail; repeat to select several sections")
     retry = command(run, "retry", "retry the same captured job as a new execution attempt")
     retry.add_argument("--run", required=True)
     retry.add_argument("--detach", action="store_true")

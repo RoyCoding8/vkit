@@ -180,7 +180,7 @@ def test_run_view_reports_concrete_failed_formal_phase_without_inventing_obligat
     (run_dir / "container.stderr").write_text("formal_obligation:verified_candidate\n", encoding="utf-8")
     phase = run_dir / "formal-output" / "verified_candidate.log"
     phase.parent.mkdir()
-    phase.write_text("error: postcondition not satisfied\n", encoding="utf-8")
+    phase.write_bytes(b"error: postcondition not satisfied\n")
     context = Context(Project(tmp_path, tmp_path / ".git"), store, None, None)
 
     view = run_view(context, "formal-run", sections=["diagnostics"])
@@ -189,7 +189,7 @@ def test_run_view_reports_concrete_failed_formal_phase_without_inventing_obligat
     }, {
         "phase": "verified_candidate", "summary": "error: postcondition not satisfied",
         "artifact": "formal-output/verified_candidate.log", "container_log": "container.stderr",
-        "size": len("error: postcondition not satisfied\r\n"),
+        "size": 35,
     }]
     assert "obligation_id" not in view["diagnostics"]["diagnostics"][1]
 

@@ -85,9 +85,11 @@ def test_detached_attempts_are_immutable_and_retry_keeps_job_identity(make_proje
     assert code == 0 and second["run_id"] != first["run_id"]
     assert second["job_id"] == first["job_id"]
     code, result = vkit(project, "run", "wait", "--run", second["run_id"], "--timeout", "30")
-    assert (code, result["outcome"]["result"]) == (0, "PASS")
+    assert (code, result["summary"]["outcome"]["result"]) == (0, "PASS")
     code, old = vkit(project, "run", "show", "--run", first["run_id"])
-    assert (code, old["outcome"], old["receipt"]) == (0, first["outcome"], first["receipt"])
+    assert (code, old["summary"]["outcome"], old["summary"]["receipt"]) == (
+        0, {"result": "PASS"}, first["receipt"],
+    )
 
 
 def test_an_attempt_cannot_be_executed_twice(make_project):
@@ -122,7 +124,7 @@ def test_duplicate_worker_cannot_overwrite_a_live_attempt(make_project):
     finally:
         store.request_cancel(run_id)
         code, stopped = vkit(project, "run", "wait", "--run", run_id, "--timeout", "30")
-    assert (code, stopped["outcome"]["reason"]) == (3, "cancelled")
+    assert (code, stopped["summary"]["outcome"]["reason"]) == (3, "cancelled")
 
 
 def test_external_jobs_export_and_replay_with_a_fresh_checker_receipt(tmp_path):

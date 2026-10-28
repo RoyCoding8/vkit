@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -19,9 +20,15 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from vkit.evidence import validate_record  # noqa: E402
+from vkit.paths import open_project  # noqa: E402
+from vkit.store import Store  # noqa: E402
+
 FIXTURES = ROOT / "examples" / "formal-ci"
 LEAN_TOOLCHAIN = ROOT / "examples" / "lean-proof" / "lean-toolchain"
-TLC_VERSION = "2.19"
+TLC_VERSION = "2026.10.26.231022"
 RESULT_EXIT = {"PASS": 0, "FAIL": 1, "BLOCKED": 3}
 
 
@@ -182,8 +189,17 @@ def _run_case(
     expected: str,
     env: dict[str, str],
     export_replay: bool = False,
-) -> None:
-    with tempfile.TemporaryDirectory(prefix="vkit-formal-") as temporary:
+    output_dir: Path | None = None,
+) -> dict:
+    if output_dir is None:
+        temporary = tempfile.TemporaryDirectory(prefix="vkit-formal-")
+        context = temporary
+        project_path = None
+    else:
+        output_dir.mkdir(parents=True, exist_ok=False)
+        context = nullcontext(str(output_dir))
+        project_path = str(output_dir.resolve())
+    with context as temporary:
         project = Path(temporary)
         for name_in_project in files:
             source = FIXTURES / name_in_project
@@ -214,6 +230,11 @@ def _run_case(
             raise RuntimeError(
                 f"{check['id']} recorded {observed!r}, expected {expected!r}; run={record!r}"
             )
+        project_store = Store.of(open_project(project))
+        retained_record = project_store.record(record["run_id"])
+        if (retained_record is None
+                or not validate_record(retained_record, project_store.run_dir(record["run_id"]))):
+            raise RuntimeError(f"{check['id']} did not retain source-bound, hash-valid run evidence")
         receipt = record.get("receipt") or {}
         assurance = "kernel_proof" if check["kind"] == "lean" else "finite_model"
         claim_outcome = (
@@ -249,49 +270,92 @@ def _run_case(
                 raise RuntimeError(f"VKit did not replay the Lean proof successfully: {replay_record!r}")
             _wait_for_worker(replay_record)
             print("Lean evidence export and replay: PASS (claim=established, assurance=kernel_proof)")
+        return {
+            "name": name,
+            "check_id": check["id"],
+            "expected": expected,
+            "observed": observed,
+            "claim_outcome": claim_outcome,
+            "assurance": assurance,
+            "run_id": record["run_id"],
+            "project": project_path,
+            "run_directory": f".git/vkit/runs/{record['run_id']}",
+        }
 
 
-def _lean_cases(cli: str, env: dict[str, str]) -> None:
+def _case_output(output: Path | None, name: str) -> Path | None:
+    return output / name if output is not None else None
+
+
+def _lean_cases(cli: str, env: dict[str, str], output: Path | None = None) -> list[dict]:
     version = _lean_version()
     cases = (
         ("lean-proof", "Lean accepted a proved theorem", "Good.lean", "reflexive_nat", "PASS"),
         ("lean-sorry", "Lean refused an unfinished theorem", "Sorry.lean", "unfinished", "BLOCKED"),
         ("lean-axiom", "Lean rejected an injected unapproved axiom", "Injected.lean", "based_on_injected", "FAIL"),
     )
+    results = []
     for check_id, name, source, theorem, expected in cases:
         module = Path(source).stem
         check = _lean_entry(check_id, module, source, theorem, version)
-        _run_case(cli, name, [source], check, expected, env, export_replay=(check_id == "lean-proof"))
+        results.append(_run_case(
+            cli, name, [source], check, expected, env,
+            export_replay=(check_id == "lean-proof"),
+            output_dir=_case_output(output, check_id),
+        ))
+    return results
 
 
-def _tlc_cases(cli: str, env: dict[str, str], jar_sha256: str) -> None:
+def _tlc_cases(cli: str, env: dict[str, str], jar_sha256: str,
+               output: Path | None = None) -> list[dict]:
     model = "FiniteWorkers.tla"
     cases = (
         ("tlc-exhaustive", "TLC exhaustively checked the invariant", "TypeOK.cfg", "TypeOK", "PASS"),
         ("tlc-counterexample", "TLC found the invariant counterexample", "OnlyOne.cfg", "OnlyOne", "FAIL"),
     )
+    results = []
     for check_id, name, config, property_name, expected in cases:
         check = _tlc_entry(check_id, config, property_name, jar_sha256)
-        _run_case(cli, name, [model, config], check, expected, env)
+        results.append(_run_case(
+            cli, name, [model, config], check, expected, env,
+            output_dir=_case_output(output, check_id),
+        ))
+    return results
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("lean", "tlc", "all"), default="all")
+    parser.add_argument("--output", type=Path,
+                        help="retain each generated project and run evidence under a new directory")
     args = parser.parse_args()
 
     try:
+        if args.output is not None:
+            args.output = args.output.resolve()
+            args.output.mkdir(parents=True, exist_ok=False)
         cli = _required_program("vkit")
         env = dict(os.environ)
+        results = []
         if args.backend in ("lean", "all"):
             _required_program("lean")
             _lean_version()
-            _lean_cases(cli, env)
+            results.extend(_lean_cases(cli, env, args.output))
         if args.backend in ("tlc", "all"):
             _required_program("java")
             jar, jar_sha256 = _tlc_jar()
             env["VKIT_TLA2TOOLS_JAR"] = str(jar)
-            _tlc_cases(cli, env, jar_sha256)
+            results.extend(_tlc_cases(cli, env, jar_sha256, args.output))
+        if args.output is not None:
+            summary = {
+                "schema_version": 1,
+                "backend": args.backend,
+                "tlc_version": TLC_VERSION if args.backend in ("tlc", "all") else None,
+                "results": results,
+            }
+            (args.output / "summary.json").write_text(
+                json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+            )
     except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
         print(f"formal CI failed: {exc}", file=sys.stderr)
         return 1

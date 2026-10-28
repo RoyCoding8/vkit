@@ -4,6 +4,99 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "job_id", "subject", "source", "inputs", "assurance", "claim_outcome", "outcome", "obligations", "artifacts"],
+  "$defs": {
+    "logical_trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "engine", "scope", "dependencies", "axioms", "independent_check"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "engine": {
+          "type": "object", "additionalProperties": false,
+          "required": ["name", "version"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "version": {"type": ["string", "null"]}
+          }
+        },
+        "scope": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "items", "assumptions"],
+          "properties": {
+            "kind": {"type": "string", "minLength": 1},
+            "items": {"type": "array"},
+            "assumptions": {"$ref": "#/$defs/report_section"}
+          }
+        },
+        "dependencies": {"$ref": "#/$defs/report_section"},
+        "axioms": {
+          "type": "object", "additionalProperties": false,
+          "required": ["status", "by_obligation"],
+          "properties": {
+            "status": {"enum": ["reported", "not_reported"]},
+            "by_obligation": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["obligation", "status", "items"],
+                "properties": {
+                  "obligation": {"type": "string", "minLength": 1},
+                  "status": {"enum": ["reported", "not_reported"]},
+                  "items": {"type": "array", "items": {"type": "string"}}
+                }
+              }
+            }
+          }
+        },
+        "independent_check": {
+          "type": "object", "additionalProperties": false,
+          "required": ["status", "checker", "certificate"],
+          "properties": {
+            "status": {"enum": ["not_provided", "checked", "rejected"]},
+            "checker": {
+              "oneOf": [
+                {"type": "null"},
+                {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["name", "version", "digest"],
+                  "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "version": {"type": ["string", "null"]},
+                    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                  }
+                }
+              ]
+            },
+            "certificate": {
+              "oneOf": [
+                {"type": "null"},
+                {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["path", "sha256"],
+                  "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                  }
+                }
+              ]
+            }
+          },
+          "allOf": [{
+            "if": {"properties": {"status": {"const": "checked"}}},
+            "then": {"properties": {"checker": {"type": "object"}}}
+          }]
+        }
+      }
+    },
+    "report_section": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "items"],
+      "properties": {
+        "status": {"enum": ["reported", "policy_bound", "not_reported", "unchecked"]},
+        "items": {"type": "array"}
+      }
+    }
+  },
   "properties": {
     "authority": {"$ref":"job.v2.json#/$defs/authority"},
     "schema_version": {"const": 2},
@@ -39,7 +132,14 @@
     "method": {"const": "verus_source"},
     "category": {"const": "source_verification"},
     "scope": {"const": "required_api"},
-    "verification": {"type": "object"}
+    "verification": {
+      "type": "object",
+      "properties": {
+        "logical_trust": {"$ref": "#/$defs/logical_trust"},
+        "source_diagnostics": {"type": "array", "items": {"type": "object"}}
+      },
+      "additionalProperties": true
+    }
   },
   "allOf": [{
     "if": {"properties": {"subject": {"properties": {"kind": {"const": "formal_goal"}}}}},

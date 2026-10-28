@@ -55,6 +55,7 @@ class AdapterResult:
     observations: tuple[tuple[TheoremObligation, tuple[str, ...]], ...]
     counterexamples: tuple[tuple[TheoremObligation, str], ...]
     prose: str = ""
+    logical_trust: dict[str, Any] | None = None
 
     def scenarios(self) -> tuple:
         """The reading as outcome `ScenarioResult`s."""
@@ -97,11 +98,18 @@ def _comparator_result(raw: bytes, variant: LeanCheck) -> AdapterResult | Blocke
         prose = (f"comparator: same statement as the frozen challenge, axioms within "
                  f"{', '.join(variant.permitted_axioms) or 'none'}, kernel accepted; build sandbox: "
                  f"{report.get('sandbox')}")
-        return AdapterResult(tuple((t, ()) for t in variant.theorems), (), prose)
+        return AdapterResult(
+            tuple((t, ()) for t in variant.theorems), (), prose,
+            _comparator_trust(report, variant),
+        )
     if status == "rejected":
         lines = [line for line in str(report.get("output", "")).splitlines() if line.strip()]
         trace = lines[-1] if lines else f"comparator exited {report.get('exit_code')}"
-        return AdapterResult((), tuple((t, trace) for t in variant.theorems))
+        return _refuse(
+            "proof_rejected", BlockedReason.FORMAL_OBLIGATION,
+            f"the comparator did not accept the proof: {trace}. Rejection does not "
+            "provide a counterexample to the theorem.",
+        )
     return _refuse("report_malformed", BlockedReason.ARTIFACT_MALFORMED, f"unknown comparator status {status!r}")
 
 
@@ -109,6 +117,128 @@ def _axiom_prose(axioms: tuple[str, ...]) -> str:
     if not axioms:
         return "the kernel checked it and `#print axioms` reported no axioms"
     return f"the kernel checked it against {', '.join(axioms)}"
+
+
+def _comparator_trust(report: dict[str, Any], variant: LeanCheck) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "engine": {"name": "comparator", "version": report.get("comparator_version")},
+        "scope": {
+            "kind": "lean_theorems",
+            "items": [{
+                "module": variant.challenge.module,
+                "source": variant.challenge.path,
+                "source_sha256": variant.challenge_sha256,
+                "theorems": [item.theorem for item in variant.theorems],
+            }],
+            "assumptions": {
+                "status": "policy_bound",
+                "items": [{"permitted_axioms": sorted(variant.permitted_axioms)}],
+            },
+        },
+        "dependencies": {"status": "not_reported", "items": []},
+        "axioms": {
+            "status": "not_reported",
+            "by_obligation": [
+                {"obligation": f"{item.module}.{item.theorem}", "status": "not_reported", "items": []}
+                for item in variant.theorems
+            ],
+        },
+        "independent_check": {"status": "not_provided", "checker": None, "certificate": None},
+    }
+
+
+def logical_trust_from_report(report: LeanRun, variant: LeanCheck) -> dict[str, Any]:
+    """Normalize only facts present in the engine report and accepted check policy."""
+    audit = _audit_step(report)
+    records = _audit_records(audit, variant.challenge.module) if audit is not None else {}
+    rows = []
+    for item in variant.theorems:
+        axioms = records.get(item.theorem)
+        rows.append({
+            "obligation": f"{item.module}.{item.theorem}",
+            "status": "reported" if axioms is not None else "not_reported",
+            "items": sorted(axioms) if axioms is not None else [],
+        })
+    complete = all(item["status"] == "reported" for item in rows)
+    return {
+        "schema_version": 1,
+        "engine": {"name": "lean", "version": _lean_version(report.tool_version)},
+        "scope": {
+            "kind": "lean_theorems",
+            "items": [{
+                "module": report.module,
+                "source": report.source,
+                "source_sha256": report.challenge_sha256,
+                "theorems": list(report.theorems),
+                "profile": report.profile,
+            }],
+            "assumptions": {
+                "status": "policy_bound",
+                "items": [{"permitted_axioms": sorted(variant.permitted_axioms)}],
+            },
+        },
+        "dependencies": {"status": "not_reported", "items": []},
+        "axioms": {
+            "status": "reported" if complete else "not_reported",
+            "by_obligation": rows,
+        },
+        "independent_check": {"status": "not_provided", "checker": None, "certificate": None},
+    }
+
+
+def reported_logical_trust(raw: bytes, check: LeanCheck) -> dict[str, Any] | None:
+    """Keep valid engine trust facts visible when a later policy gate blocks the proof."""
+    report = _read(raw)
+    if isinstance(report, Blocked):
+        return None
+    variant = getattr(check, "variant", None) or check
+    return logical_trust_from_report(report, variant)
+
+
+def source_diagnostics(
+    raw: bytes, check: LeanCheck, inputs: list[dict[str, Any]], *, limit: int = 100
+) -> list[dict[str, Any]]:
+    """Return Lean source messages only when their location resolves to frozen input bytes."""
+    report = _read(raw)
+    if isinstance(report, Blocked):
+        return []
+    root = Path(check.cwd).resolve()
+    captured = {item.get("path"): item.get("sha256") for item in inputs}
+    diagnostics = []
+    for step in report.steps:
+        for message in step.get("messages", ()):
+            if message.get("severity") not in {"error", "warning"} or not message.get("file"):
+                continue
+            path = Path(message["file"])
+            if not path.is_absolute():
+                path = root / path
+            try:
+                resolved = path.resolve(strict=True)
+                relative = resolved.relative_to(root).as_posix()
+            except (OSError, ValueError):
+                continue
+            expected = captured.get(relative)
+            if not expected or _digest(resolved) != expected:
+                continue
+            line, column = message.get("line", 0), message.get("column", 0)
+            if not isinstance(line, int) or line < 1 or not isinstance(column, int) or column < 1:
+                continue
+            location = {"path": relative, "source_sha256": expected,
+                        "start": {"line": line, "column": column}}
+            end_line, end_column = message.get("end_line", 0), message.get("end_column", 0)
+            if isinstance(end_line, int) and end_line > 0 and isinstance(end_column, int) and end_column > 0:
+                location["end"] = {"line": end_line, "column": end_column}
+            diagnostics.append({
+                "kind": "lean_message",
+                "step": step.get("name"),
+                "severity": message["severity"],
+                "message": str(message.get("data", ""))[:2000],
+                "location": location,
+            })
+            if len(diagnostics) >= limit:
+                return diagnostics
+    return diagnostics
 
 
 def argv_for(check: LeanCheck, run_dir: Path, python: str | None) -> tuple[str, ...]:
@@ -255,7 +385,7 @@ def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
     if errored:
         detail = _first_error(errored)
         return _refuse(
-            "incomplete_proof", BlockedReason.INTERNAL_ERROR,
+            "incomplete_proof", BlockedReason.FORMAL_OBLIGATION,
             f"the module did not elaborate, so nothing was proved: {detail}. A "
             "failed elaboration is a check that could not answer, not a check that "
             "answered no.",
@@ -264,7 +394,7 @@ def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
         sorry = [m for m in step.get("messages", ()) if m.get("kind") in UNSOLVED_KINDS]
         if sorry:
             return _refuse(
-                "incomplete_proof", BlockedReason.INTERNAL_ERROR,
+                "incomplete_proof", BlockedReason.FORMAL_OBLIGATION,
                 f"{len(sorry)} declaration(s) in the module were left unproved and "
                 f"Lean reported {sorry[0]['kind']!r}. A module with an unsolved goal "
                 "elaborates and then says nothing about the statement.",
@@ -301,39 +431,33 @@ def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
 
     records = _audit_records(audit, variant.challenge.module)
     permitted = frozenset(variant.permitted_axioms)
+    logical_trust = logical_trust_from_report(report, variant)
     observations: list[tuple[TheoremObligation, tuple[str, ...]]] = []
-    counterexamples: list[tuple[TheoremObligation, str]] = []
     for obligation in variant.theorems:
         axioms = records.get(obligation.theorem)
         if axioms is None:
-            counterexamples.append((
-                obligation,
-                f"`#print axioms` said nothing about {obligation.theorem!r}, so the "
-                "axioms its proof depends on are unknown",
-            ))
-            continue
+            return _refuse(
+                "axioms_unreported", BlockedReason.FORMAL_OBLIGATION,
+                f"`#print axioms` did not report dependencies for {obligation.module}.{obligation.theorem}; "
+                "the theorem's assumptions are unknown.",
+            )
         if SORRY_AXIOM in axioms:
-            counterexamples.append((
-                obligation,
-                f"{obligation.module}.{obligation.theorem} depends on {SORRY_AXIOM}, "
-                "which is what an unproved goal elaborates to. The declaration "
-                "compiled; nothing was proved.",
-            ))
-            continue
+            return _refuse(
+                "proof_incomplete", BlockedReason.FORMAL_OBLIGATION,
+                f"{obligation.module}.{obligation.theorem} depends on {SORRY_AXIOM}; "
+                "the declaration compiled, but its theorem is not established.",
+            )
         unapproved = sorted(axioms - permitted)
         if unapproved:
-            counterexamples.append((
-                obligation,
-                f"{obligation.module}.{obligation.theorem} depends on "
-                f"{', '.join(unapproved)}, which the approved axiom set "
-                f"({', '.join(sorted(permitted)) or 'empty'}) does not permit. An "
-                "assumption added to make a goal close is not a proof of the "
-                "statement.",
-            ))
-            continue
+            return _refuse(
+                "axioms_unapproved", BlockedReason.FORMAL_OBLIGATION,
+                f"{obligation.module}.{obligation.theorem} depends on unapproved "
+                f"axiom(s) {', '.join(unapproved)}; the proof is outside the "
+                "accepted axiom policy.",
+            )
         observations.append((obligation, tuple(sorted(axioms))))
 
-    return AdapterResult(tuple(observations), tuple(counterexamples))
+    return AdapterResult(tuple(observations), (), logical_trust=logical_trust)
 
 
 def _lean_version(text: str) -> str | None:

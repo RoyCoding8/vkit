@@ -32,7 +32,7 @@ from .paths import Project
 from .store import Store, new_run_id, now, read_json, write_json
 from .verifiers import dispatch, static_adapter
 from .verifiers.dispatch import ScenarioReading
-from .verifiers.spec import CheckSpec
+from .verifiers.spec import CheckSpec, ExternalCheck
 
 _VKIT_SRC = str(Path(__file__).resolve().parents[1])
 
@@ -131,6 +131,97 @@ def _obligations(reading: Any) -> dict[str, Any] | None:
         return None
     satisfied, counterexamples = reading.obligation_results()
     return {"satisfied": list(satisfied), "counterexamples": list(counterexamples)}
+
+
+def _external_logical_trust(
+    check: ExternalCheck, metadata: dict[str, Any], outcome: Outcome
+) -> dict[str, Any]:
+    identity = metadata.get("identity") or {}
+    backend = identity.get("backend") or {}
+    checker = identity.get("checker") or {}
+    checker_executable = checker.get("executable") or {}
+    receipt = metadata.get("checker_receipt") or {}
+    receipt_document = receipt.get("document") or {}
+    if isinstance(outcome, Passed) and receipt_document.get("verdict") == "accepted":
+        independent_status = "checked"
+    elif receipt_document:
+        independent_status = "rejected"
+    else:
+        independent_status = "not_provided"
+    pinned_dependencies = []
+    for role, command in (("producer", backend), ("checker", checker)):
+        if isinstance(command.get("executable"), dict):
+            pinned_dependencies.append({"role": role, **command["executable"]})
+        for dependency in command.get("dependencies", []):
+            pinned_dependencies.append({"role": role, **dependency})
+    pinned_dependencies.extend(identity.get("trusted_tool_dependencies", []))
+    return {
+        "schema_version": 1,
+        "engine": {
+            "name": Path((backend.get("executable") or {}).get("path", "external")).name,
+            "version": None,
+        },
+        "scope": {
+            "kind": "external_specification",
+            "items": [{
+                "model_scope": check.model_scope,
+                "specification": metadata.get("specification"),
+                "obligations": metadata.get("obligations", list(check.obligations)),
+            }],
+            "assumptions": {"status": "policy_bound", "items": list(check.assumptions)},
+        },
+        "dependencies": {
+            "status": "policy_bound" if pinned_dependencies else "not_reported",
+            "items": pinned_dependencies,
+        },
+        "axioms": {
+            "status": "not_reported",
+            "by_obligation": [
+                {"obligation": str(name), "status": "not_reported", "items": []}
+                for name in check.obligations
+            ],
+        },
+        "independent_check": {
+            "status": independent_status,
+            "checker": ({
+                "name": Path(checker_executable.get("path", "checker")).name,
+                "version": None,
+                "digest": checker_executable.get("sha256"),
+            } if receipt_document else None),
+            "certificate": None,
+        },
+    }
+
+
+def _record_logical_trust(
+    check: CheckSpec, reading: Any, metadata: dict[str, Any], outcome: Outcome,
+    run_dir: Path, record: dict[str, Any],
+) -> None:
+    reported = getattr(reading, "logical_trust", None)
+    if isinstance(reported, dict):
+        metadata["logical_trust"] = reported
+    elif isinstance(check, ExternalCheck):
+        metadata["logical_trust"] = _external_logical_trust(check, metadata, outcome)
+    elif check.kind.value == "lean":
+        from .verifiers import lean_adapter
+
+        artifact = run_dir / check.artifact_name
+        if not artifact.is_file() or artifact.is_symlink():
+            return
+        raw = artifact.read_bytes()
+        trust = lean_adapter.reported_logical_trust(raw, check)
+        if trust is not None:
+            metadata["logical_trust"] = trust
+    if check.kind.value == "lean":
+        from .verifiers import lean_adapter
+
+        artifact = run_dir / check.artifact_name
+        if not artifact.is_file() or artifact.is_symlink():
+            return
+        raw = artifact.read_bytes()
+        diagnostics = lean_adapter.source_diagnostics(raw, check, record["inputs"].get("files", []))
+        if diagnostics:
+            metadata["source_diagnostics"] = diagnostics
 
 
 def prepare(
@@ -590,6 +681,7 @@ def _execute(
         outcome, reading = _derive(
             check, exit, run_dir / check.artifact_name, record["baseline"]
         )
+    _record_logical_trust(check, reading, metadata, outcome, run_dir, record)
     after = Snapshot(project).inputs(check.inputs)
     current_source = capture_working_tree(
         project, [item["path"] for item in record["source"]["files"]]

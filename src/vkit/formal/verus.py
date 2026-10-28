@@ -552,6 +552,10 @@ def execute_formal(
                 "container_id": result.container_id,
                 "removed": result.removed,
             },
+            "logical_trust": _logical_trust(
+                component, obligations, source_sha256, expected_sha256,
+                current["semantic"], checker_sha256,
+            ),
         }
         return Passed(
             tuple(ScenarioResult(item, True, "verified") for item in obligations)
@@ -565,3 +569,53 @@ def execute_formal(
         subprocess.SubprocessError,
     ) as exc:
         return Blocked(BlockedReason.ARTIFACT_MALFORMED, str(exc)), {}
+
+
+def _logical_trust(
+    component: FormalComponent,
+    obligations: tuple[str, ...],
+    source_sha256: str,
+    expected_sha256: str,
+    semantic: dict[str, Any],
+    checker_sha256: str,
+) -> dict[str, Any]:
+    verus = semantic["verus"]
+    verus_version = verus["version"]
+    runtime = semantic["runtime_versions"]
+    dependencies = [
+        {"name": "Verus", "version": verus_version.get("version"),
+         "digest": verus.get("archive_sha256")},
+        {"name": "Z3", "version": runtime.get("z3"),
+         "container_image_id": semantic["image_id"]},
+        {"name": "Rust", "version": runtime.get("rustc"),
+         "container_image_id": semantic["image_id"]},
+        {"name": "container image", "digest": semantic["image_id"]},
+    ]
+    return {
+        "schema_version": 1,
+        "engine": {"name": "Verus", "version": verus_version.get("version")},
+        "scope": {
+            "kind": "required_api",
+            "items": [{
+                "component": component.id,
+                "contract": component.contract,
+                "obligations": list(obligations),
+                "source_sha256": source_sha256,
+                "expected_sha256": expected_sha256,
+                "policy_sha256": component.digest,
+                "package_sha256": component.package.sha256,
+                "checker_sha256": checker_sha256,
+                "strict_flags": list(semantic["strict_flags"]),
+            }],
+            "assumptions": {"status": "not_reported", "items": []},
+        },
+        "dependencies": {"status": "unchecked", "items": dependencies},
+        "axioms": {
+            "status": "not_reported",
+            "by_obligation": [
+                {"obligation": item, "status": "not_reported", "items": []}
+                for item in obligations
+            ],
+        },
+        "independent_check": {"status": "not_provided", "checker": None, "certificate": None},
+    }

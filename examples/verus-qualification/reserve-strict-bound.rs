@@ -6,7 +6,7 @@ verus! {
         state: ledger::ledger_api::LedgerView,
         amount: u32,
     ) -> bool {
-        state.used as nat + amount as nat < state.capacity as nat
+        (state.used as nat) + (amount as nat) < (state.capacity as nat)
     }
 
     pub fn exact_capacity_boundary_control() {

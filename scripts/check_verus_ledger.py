@@ -17,12 +17,10 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from vkit.formal.ledger import CONTRACT, PACKAGE_ID, PROFILE, VERSION
 from vkit.formal.qualification import (
-    HISTORICAL_POSITIVE_LIMIT_FIX,
     compare_package_snapshots,
     mutation_control,
     normalize_package_snapshot,
     package_snapshot,
-    semantic_check_record,
 )
 from vkit.nowindow import hidden_window
 
@@ -33,6 +31,13 @@ PIN_PATH = PACKAGE / "upstream.json"
 SOURCE = PACKAGE / "ledger.rs"
 SMOKE = ROOT / "examples/verus-qualification/smoke.rs"
 ADEQUACY_FIXTURES = ROOT / "examples/verus-qualification"
+HISTORICAL_POSITIVE_LIMIT_FIX = {
+    "commit": "48ea7b7260d6ac7fe77474ae2fdac72fb9fb4cc5",
+    "source_path": "formal/packages/resource_ledger/Model.v",
+    "source_sha256": "4ef80555b3834bed3e9a5bbd8b581fdb0d2315233d77d53586523ba2703c5070",
+    "change": "max_records and batch_bound changed from nat to positive",
+    "reconstruction": "Verus shared-vocabulary zero-bound control; not a replay of the Rocq proof",
+}
 MUTATIONS = {
     "lost_accounting": ("next.used = next.used + amount;", "next.used = amount;"),
     "duplicate_id": ("if entry.id == id {", "if false {"),
@@ -351,12 +356,12 @@ def check_specification_adequacy(exe: Path, out: Path, binding_root: Path, repor
         verified = result["returncode"] == 0 and bool(re.search(
             r"verification results:: [1-9]\d* verified, 0 errors", log))
         status = fixture["status"] if verified else "inconclusive"
-        row = semantic_check_record(
-            name=fixture["name"], status=status, predicates=fixture["predicates"],
-            scope=fixture["scope"], proof_source_sha256=source_sha256, **identities,
-            witness=fixture.get("witness") if verified else None,
-            provenance=fixture.get("provenance"),
-        )
+        row = {"name": fixture["name"], "status": status, "predicates": fixture["predicates"],
+               "scope": fixture["scope"], "proof_source_sha256": source_sha256, **identities}
+        if verified and "witness" in fixture:
+            row["witness"] = fixture["witness"]
+        if "provenance" in fixture:
+            row["provenance"] = fixture["provenance"]
         row["verifier_log"] = log_path.name
         row["verifier_log_sha256"] = digest(log_path.read_bytes()) if log_path.is_file() else None
         row["verifier_returncode"] = result["returncode"]
@@ -370,10 +375,10 @@ def check_specification_adequacy(exe: Path, out: Path, binding_root: Path, repor
         all_passed = all_passed and verified
     positive_source = (ADEQUACY_FIXTURES / "reserve-admission.rs").read_text(encoding="utf-8")
     negative_source = root / "false-capacity-equivalence.rs"
-    marker = "<= state.capacity as nat"
+    marker = "<= (state.capacity as nat)"
     if positive_source.count(marker) != 1:
         raise ValueError("capacity-equivalence control no longer matches its checked source")
-    negative_source.write_text(positive_source.replace(marker, "< state.capacity as nat"), encoding="utf-8")
+    negative_source.write_text(positive_source.replace(marker, "< (state.capacity as nat)"), encoding="utf-8")
     negative_log = root / "false-capacity-equivalence.log"
     result = run(
         [str(exe), "--crate-type=lib", str(negative_source),
@@ -442,7 +447,6 @@ def main() -> int:
         "mutation_controls": [],
         "semantic_checks": [],
         "semantic_checks_passed": False,
-        "specification_adequacy_passed": False,
         "checks": [],
     }
     template = (PACKAGE / "expected.rs.in").read_text(encoding="utf-8")
@@ -524,11 +528,7 @@ def main() -> int:
             report["tool_identity_sha256"])
         success = success and report["binding_passed"]
         if report["binding_passed"]:
-            report["specification_adequacy_passed"] = check_specification_adequacy(
-                exe, out, out / "binding", report)
-        else:
-            report["specification_adequacy_passed"] = False
-        success = report["specification_adequacy_passed"] and success
+            success = check_specification_adequacy(exe, out, out / "binding", report) and success
         compiled = run([str(exe), str(smoke), "--no-cheating", "--num-threads", "2",
                         "--compile", "-o", str(binary)], out / "compile.log", out)
         report["checks"].append({"name": "compiled_verified_source", **compiled})

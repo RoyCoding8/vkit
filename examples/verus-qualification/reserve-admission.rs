@@ -6,7 +6,7 @@ verus! {
         state: ledger::ledger_api::LedgerView,
         amount: u32,
     ) -> bool {
-        state.used as nat + amount as nat <= state.capacity as nat
+        (state.used as nat) + (amount as nat) <= (state.capacity as nat)
     }
 
     pub proof fn reserve_capacity_relation<const N: usize>(

@@ -27,6 +27,13 @@ pub enum LedgerError {
     OwnerMismatch,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum TransferResult {
+    Moved { amount: u32 },
+    SourceFailed(LedgerError),
+    DestinationFailed(LedgerError),
+}
+
 #[derive(Copy, Clone)]
 pub struct Ledger<const N: usize> {
     slots: [Option<Entry>; N],
@@ -1030,6 +1037,30 @@ pub open spec fn release_state(state: LedgerView, id: u32) -> LedgerView {
     }
 }
 
+pub open spec fn transfer_model(
+    source: LedgerView,
+    destination: LedgerView,
+    id: u32,
+    owner: u32,
+) -> ((LedgerView, LedgerView), TransferResult) {
+    match release_result_view(source, id, owner) {
+        Err(error) => ((source, destination), TransferResult::SourceFailed(error)),
+        Ok(amount) => {
+            let released = release_state(source, id);
+            match reserve_result_view(destination, id, amount) {
+                Err(error) => (
+                    (source, destination),
+                    TransferResult::DestinationFailed(error),
+                ),
+                Ok(()) => (
+                    (released, reserve_state(destination, Request { id, owner, amount })),
+                    TransferResult::Moved { amount },
+                ),
+            }
+        },
+    }
+}
+
 pub open spec fn batch_model_from(
     original: LedgerView,
     current: LedgerView,
@@ -1569,6 +1600,135 @@ pub fn run_commands<const N: usize, const M: usize>(
     }
     proof { ledger_map_accounting(&current); }
     current
+}
+
+pub fn transfer<const N: usize>(
+    source: Ledger<N>,
+    destination: Ledger<N>,
+    id: u32,
+    owner: u32,
+) -> (out: (Ledger<N>, Ledger<N>, TransferResult))
+    requires N > 0 && source.valid() && destination.valid(),
+    ensures
+        out.0.valid(),
+        out.1.valid(),
+        out.2 == transfer_model(source.view(), destination.view(), id, owner).1,
+        same_view(out.0.view(), transfer_model(source.view(), destination.view(), id, owner).0.0),
+        same_view(out.1.view(), transfer_model(source.view(), destination.view(), id, owner).0.1),
+        match out.2 {
+            TransferResult::Moved { amount: _ } =>
+                out.0.view().used as nat + out.1.view().used as nat
+                    == source.view().used as nat + destination.view().used as nat,
+            TransferResult::SourceFailed(_) | TransferResult::DestinationFailed(_) =>
+                same_view(out.0.view(), source.view())
+                    && same_view(out.1.view(), destination.view()),
+        },
+{
+    proof {
+        reveal(transfer_model);
+        reveal(release_result_for);
+        reveal(release_result_view);
+        reveal(reserve_result);
+        reveal(reserve_result_view);
+        reveal(release_state);
+        reveal(reserve_state);
+    }
+    let (released_source, source_result) = release(source, id, owner);
+    match source_result {
+        Err(error) => (source, destination, TransferResult::SourceFailed(error)),
+        Ok(amount) => {
+            let (reserved_destination, destination_result) = reserve(
+                destination, id, owner, amount,
+            );
+            match destination_result {
+                Err(error) => (
+                    source,
+                    destination,
+                    TransferResult::DestinationFailed(error),
+                ),
+                Ok(()) => (
+                    released_source,
+                    reserved_destination,
+                    TransferResult::Moved { amount },
+                ),
+            }
+        },
+    }
+}
+
+pub struct LedgerInvariant<const N: usize>;
+
+impl<const N: usize> vstd::rwlock::RwLockPredicate<Ledger<N>> for LedgerInvariant<N> {
+    open spec fn inv(self, value: Ledger<N>) -> bool {
+        N > 0 && value.valid()
+    }
+}
+
+pub struct SharedLedger<const N: usize> {
+    lock: vstd::rwlock::RwLock<Ledger<N>, LedgerInvariant<N>>,
+}
+
+impl<const N: usize> SharedLedger<N> {
+    pub fn new(initial: Ledger<N>) -> (out: Self)
+        requires N > 0 && initial.valid(),
+    {
+        SharedLedger {
+            lock: vstd::rwlock::RwLock::new(initial, Ghost(LedgerInvariant {})),
+        }
+    }
+
+    pub fn reserve(
+        &self,
+        id: u32,
+        owner: u32,
+        amount: u32,
+    ) -> (out: (Result<(), LedgerError>, Ghost<(LedgerView, LedgerView)>))
+        requires N > 0,
+        ensures
+            valid_view::<N>(out.1@.0),
+            valid_view::<N>(out.1@.1),
+            out.0 == reserve_result_view(out.1@.0, id, amount),
+            match out.0 {
+                Ok(()) => out.1@.1.slots == slots_after_reserve(
+                    out.1@.0.slots, Entry { id, owner, amount },
+                )
+                    && out.1@.1.used == out.1@.0.used + amount
+                    && out.1@.1.capacity == out.1@.0.capacity,
+                Err(_) => same_view(out.1@.1, out.1@.0),
+            },
+    {
+        let (current, handle) = self.lock.acquire_write();
+        let ghost before = current.view();
+        let (updated, result) = reserve(current, id, owner, amount);
+        let ghost after = updated.view();
+        handle.release_write(updated);
+        (result, Ghost((before, after)))
+    }
+
+    pub fn release(
+        &self,
+        id: u32,
+        owner: u32,
+    ) -> (out: (Result<u32, LedgerError>, Ghost<(LedgerView, LedgerView)>))
+        requires N > 0,
+        ensures
+            valid_view::<N>(out.1@.0),
+            valid_view::<N>(out.1@.1),
+            out.0 == release_result_view(out.1@.0, id, owner),
+            match out.0 {
+                Ok(amount) => out.1@.1.slots == slots_after_release(out.1@.0.slots, id)
+                    && out.1@.1.used == out.1@.0.used - amount
+                    && out.1@.1.capacity == out.1@.0.capacity,
+                Err(_) => same_view(out.1@.1, out.1@.0),
+            },
+    {
+        let (current, handle) = self.lock.acquire_write();
+        let ghost before = current.view();
+        let (updated, result) = release(current, id, owner);
+        let ghost after = updated.view();
+        handle.release_write(updated);
+        (result, Ghost((before, after)))
+    }
 }
 }
 

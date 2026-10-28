@@ -327,8 +327,8 @@
       },
       "toolchain": {
         "tool": "tlc",
-        "version": "2.19",
-        "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+        "version": "2026.10.26.231022",
+        "jar_sha256": "78f7e2c6bf9a8b65eda665a23e94431255587e0b43a834a4e2af1723562d9b4a"
       },
       "prerequisites": [
         {

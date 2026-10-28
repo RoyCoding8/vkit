@@ -69,8 +69,12 @@ jobs:
           import urllib.request
 
           digest = pathlib.Path("examples/formal-ci/tla2tools.sha256").read_text().strip()
-          url = "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar"
-          with urllib.request.urlopen(url, timeout=60) as response:
+          url = "https://api.github.com/repos/tlaplus/tlaplus/releases/assets/679784601"
+          request = urllib.request.Request(url, headers={
+              "Accept": "application/octet-stream", "User-Agent": "vkit-qualification",
+              "X-GitHub-Api-Version": "2022-11-28",
+          })
+          with urllib.request.urlopen(request, timeout=60) as response:
               content = response.read(10_000_001)
           if len(content) > 10_000_000 or hashlib.sha256(content).hexdigest() != digest:
               raise RuntimeError("TLC release digest mismatch")
@@ -79,5 +83,17 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
               output.write(f"VKIT_TLA2TOOLS_JAR={jar}\n")
       - run: uv sync --python 3.11 --extra test
-      - run: uv run python scripts/verify_formal.py --backend all
+      - run: uv run python scripts/verify_formal.py --backend all --output "${{ runner.temp }}/vkit-formal-evidence"
+      - run: uv run pytest tests/test_logical_trust.py tests/test_tlc_evidence.py -q
       - run: uv run python scripts/check_lifecycle.py
+      - name: Retain formal evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: formal-evidence-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/vkit-formal-evidence
+            .audit/lifecycle-model
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

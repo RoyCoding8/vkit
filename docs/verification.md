@@ -94,7 +94,7 @@ Formal attempts run in restricted containers with read-only source/tools, no net
 | Assurance | `empirical`, `finite_model`, `kernel_proof` or `trusted_engine`. |
 | Freshness | Whether retained evidence still matches the intended source, policy and checker. |
 
-A rejected Lean proof leaves its theorem unknown. A TLC counterexample refutes a property in that finite configuration. A failed Verus obligation is `BLOCKED` with an unknown claim; VKit does not present it as a validated source counterexample. Tests retain empirical assurance.
+A rejected Lean proof leaves its theorem unknown. A TLC safety counterexample refutes an invariant only after replay against the frozen model and configuration reproduces both the named violation and the ordered state sequence. Unsupported or unvalidated witnesses leave the claim unknown. A failed Verus obligation is `BLOCKED` with an unknown claim. Tests retain empirical assurance.
 
 Each submission creates a unique run for a content-derived job. Retry creates a new run for the same frozen job. Worker loss is interrupted execution, never a pass. A bounded wait can time out while its worker continues.
 
@@ -104,13 +104,19 @@ CLI and MCP run responses default to a summary with identities, status, obligati
 
 Counts distinguish observed results from unobserved obligations. If a partial result lacks the required denominator, `total` and `unknown` are `null`.
 
+Provenance includes `logical_trust` when available. It distinguishes engine-reported axioms, accepted policy assumptions, unchecked dependencies, and unreported information. Lean reports axioms per theorem; TLC records finite-model scope; Verus records its trusted engine dependencies without claiming a complete axiom audit. An external checker is marked checked only after its bound receipt is accepted. Execution limits and performance budgets remain separate from logical trust.
+
+Diagnostics include supported locations in captured source. Lean columns are normalized to one-based positions. TLC retains native JSON witnesses as artifacts and records replay and bounded minimization results. A shorter candidate is retained only after another successful validation; exhausting a budget does not establish minimality. Native TLC replay uses the exact build and digest pinned by the model configuration and CI download.
+
 ```sh
 vkit run show --run <run-id> --section diagnostics --section provenance --json
 ```
 
 Receipts bind the job, source, outcome, obligations, checker and artifact digests. Export validates the bundle. Replay independently captures the candidate, requires matching accepted identities and runs checking again. Imported success flags cannot satisfy replay. Hashes provide integrity relative to trusted state; they do not authenticate an external writer or prove verifier soundness.
 
-Package qualification classifies deliberate mutations as detected rejections, survivors or inconclusive runs. Package comparisons report changed assets, obligations and trust identities. They leave semantic equivalence unknown. The ledger qualification script accepts `--compare-package` with an earlier report or package snapshot.
+Package qualification classifies deliberate mutations as detected rejections, survivors or inconclusive runs. Package comparisons report changed assets, obligations and trust identities. They leave package-wide semantic equivalence unknown. The ledger qualification script accepts `--compare-package` with an earlier report or package snapshot.
+
+Ledger adequacy qualification separately checks a concrete reserve precondition inhabitant, the equivalence of remaining-capacity and mathematical total-usage admission predicates, and a strict-bound counterexample at exact capacity. A false equivalence must be rejected. A reconstructed zero-bound control records the original Rocq model fix and source digest; it is not a replay of that proof. These checks cover the recorded predicates and witnesses, not specification completeness.
 
 ## Capability feedback
 

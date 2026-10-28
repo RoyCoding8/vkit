@@ -292,7 +292,7 @@ def _lean_cases(cli: str, env: dict[str, str], output: Path | None = None) -> li
     cases = (
         ("lean-proof", "Lean accepted a proved theorem", "Good.lean", "reflexive_nat", "PASS"),
         ("lean-sorry", "Lean refused an unfinished theorem", "Sorry.lean", "unfinished", "BLOCKED"),
-        ("lean-axiom", "Lean rejected an injected unapproved axiom", "Injected.lean", "based_on_injected", "FAIL"),
+        ("lean-axiom", "Lean rejected an injected unapproved axiom", "Injected.lean", "based_on_injected", "BLOCKED"),
     )
     results = []
     for check_id, name, source, theorem, expected in cases:

@@ -50,6 +50,7 @@ def _fixture(tmp_path: Path, monkeypatch):
     for filename, content in {
         "ledger.rs": "pub struct Ledger;\n",
         "expected.rs.in": "{{bindings}}\n",
+        "runtime.rs.in": "fn main() {}\n",
         "upstream.json": "{}\n",
     }.items():
         (package_root / filename).write_text(content, encoding="utf-8")
@@ -149,9 +150,13 @@ def test_executor_runs_all_required_phases_in_one_sealed_container(
             "verified_library": "verification results:: 1 verified, 0 errors\n",
             "verified_candidate": "verification results:: 1 verified, 0 errors\n",
             "verified_expected": "verification results:: 6 verified, 0 errors\n",
+            "candidate_executable": "compiled\n",
+            "candidate_observations": "VKIT_CANDIDATE_RUNTIME_OK\n",
         }
         for name, content in logs.items():
             (output / f"{name}.log").write_text(content, encoding="utf-8")
+        for name in ("libledger.rlib", "libcandidate_api.rlib", "candidate-runtime"):
+            (output / name).write_bytes(b"fixture compiled bytes")
         return verus.container.ContainerRun(Exit(0), "a" * 64, True)
 
     monkeypatch.setattr(verus.container, "run_container", run_container)
@@ -166,6 +171,8 @@ def test_executor_runs_all_required_phases_in_one_sealed_container(
                                        "ledger:release", "ledger:reserve_batch", "ledger:apply_command",
                                        "ledger:run_commands"]
     assert metadata["container"]["removed"] is True
+    assert metadata["compilation"]["translation_validation"] == "not_provided"
+    assert metadata["compilation"]["observations"]["assurance"] == "empirical"
     options = observed["options"]
     assert "--network=none" in options and "--read-only" in options
     assert "--cap-drop=ALL" in options

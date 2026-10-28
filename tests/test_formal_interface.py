@@ -39,7 +39,7 @@ def formal_project(tmp_path, monkeypatch):
             "execution_identity": {"semantic": identity["semantic"], "digest": execution}}
 
     monkeypatch.setattr(verus, "execute_formal", execute)
-    monkeypatch.setattr(jobs, "_launch", lambda project, store, record:
+    monkeypatch.setattr(jobs, "_launch", lambda project, store, record, *, asset_environment=None:
                         runner.execute(project, record["run_id"], store=store))
     return root, identity, calls
 

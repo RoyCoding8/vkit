@@ -52,7 +52,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["status", "checker", "certificate"],
           "properties": {
-            "status": {"enum": ["not_provided", "checked", "rejected"]},
+            "status": {"enum": ["not_provided", "checked", "rejected", "unknown"]},
             "checker": {
               "oneOf": [
                 {"type": "null"},

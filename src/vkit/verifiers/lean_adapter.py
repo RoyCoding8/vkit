@@ -197,13 +197,14 @@ def reported_logical_trust(raw: bytes, check: LeanCheck) -> dict[str, Any] | Non
 
 
 def source_diagnostics(
-    raw: bytes, check: LeanCheck, inputs: list[dict[str, Any]], *, limit: int = 100
+    raw: bytes, check: LeanCheck, inputs: list[dict[str, Any]], *, snapshot_root: Path,
+    limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Return Lean source messages only when their location resolves to frozen input bytes."""
     report = _read(raw)
     if isinstance(report, Blocked):
         return []
-    root = Path(check.cwd).resolve()
+    root = snapshot_root.resolve()
     captured = {item.get("path"): item.get("sha256") for item in inputs}
     diagnostics = []
     for step in report.steps:
@@ -212,7 +213,7 @@ def source_diagnostics(
                 continue
             path = Path(message["file"])
             if not path.is_absolute():
-                path = root / path
+                path = Path(check.cwd) / path
             try:
                 resolved = path.resolve(strict=True)
                 relative = resolved.relative_to(root).as_posix()
@@ -222,13 +223,13 @@ def source_diagnostics(
             if not expected or _digest(resolved) != expected:
                 continue
             line, column = message.get("line", 0), message.get("column", 0)
-            if not isinstance(line, int) or line < 1 or not isinstance(column, int) or column < 1:
+            if not isinstance(line, int) or line < 1 or not isinstance(column, int) or column < 0:
                 continue
             location = {"path": relative, "source_sha256": expected,
-                        "start": {"line": line, "column": column}}
+                        "start": {"line": line, "column": column + 1}}
             end_line, end_column = message.get("end_line", 0), message.get("end_column", 0)
-            if isinstance(end_line, int) and end_line > 0 and isinstance(end_column, int) and end_column > 0:
-                location["end"] = {"line": end_line, "column": end_column}
+            if isinstance(end_line, int) and end_line > 0 and isinstance(end_column, int) and end_column >= 0:
+                location["end"] = {"line": end_line, "column": end_column + 1}
             diagnostics.append({
                 "kind": "lean_message",
                 "step": step.get("name"),

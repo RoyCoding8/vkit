@@ -134,7 +134,7 @@ def _obligations(reading: Any) -> dict[str, Any] | None:
 
 
 def _external_logical_trust(
-    check: ExternalCheck, metadata: dict[str, Any], outcome: Outcome
+    check: ExternalCheck, metadata: dict[str, Any]
 ) -> dict[str, Any]:
     identity = metadata.get("identity") or {}
     backend = identity.get("backend") or {}
@@ -142,12 +142,8 @@ def _external_logical_trust(
     checker_executable = checker.get("executable") or {}
     receipt = metadata.get("checker_receipt") or {}
     receipt_document = receipt.get("document") or {}
-    if isinstance(outcome, Passed) and receipt_document.get("verdict") == "accepted":
-        independent_status = "checked"
-    elif receipt_document:
-        independent_status = "rejected"
-    else:
-        independent_status = "not_provided"
+    independent_status = {"accepted": "checked", "rejected": "rejected", "unknown": "unknown"}.get(
+        receipt_document.get("verdict"), "not_provided")
     pinned_dependencies = []
     for role, command in (("producer", backend), ("checker", checker)):
         if isinstance(command.get("executable"), dict):
@@ -194,24 +190,14 @@ def _external_logical_trust(
 
 
 def _record_logical_trust(
-    check: CheckSpec, reading: Any, metadata: dict[str, Any], outcome: Outcome,
+    check: CheckSpec, reading: Any, metadata: dict[str, Any],
     run_dir: Path, record: dict[str, Any],
 ) -> None:
     reported = getattr(reading, "logical_trust", None)
     if isinstance(reported, dict):
         metadata["logical_trust"] = reported
     elif isinstance(check, ExternalCheck):
-        metadata["logical_trust"] = _external_logical_trust(check, metadata, outcome)
-    elif check.kind.value == "lean":
-        from .verifiers import lean_adapter
-
-        artifact = run_dir / check.artifact_name
-        if not artifact.is_file() or artifact.is_symlink():
-            return
-        raw = artifact.read_bytes()
-        trust = lean_adapter.reported_logical_trust(raw, check)
-        if trust is not None:
-            metadata["logical_trust"] = trust
+        metadata["logical_trust"] = _external_logical_trust(check, metadata)
     if check.kind.value == "lean":
         from .verifiers import lean_adapter
 
@@ -219,7 +205,12 @@ def _record_logical_trust(
         if not artifact.is_file() or artifact.is_symlink():
             return
         raw = artifact.read_bytes()
-        diagnostics = lean_adapter.source_diagnostics(raw, check, record["inputs"].get("files", []))
+        if "logical_trust" not in metadata:
+            trust = lean_adapter.reported_logical_trust(raw, check)
+            if trust is not None:
+                metadata["logical_trust"] = trust
+        diagnostics = lean_adapter.source_diagnostics(
+            raw, check, record["inputs"].get("files", []), snapshot_root=run_dir / "snapshot")
         if diagnostics:
             metadata["source_diagnostics"] = diagnostics
 
@@ -681,7 +672,7 @@ def _execute(
         outcome, reading = _derive(
             check, exit, run_dir / check.artifact_name, record["baseline"]
         )
-    _record_logical_trust(check, reading, metadata, outcome, run_dir, record)
+    _record_logical_trust(check, reading, metadata, run_dir, record)
     after = Snapshot(project).inputs(check.inputs)
     current_source = capture_working_tree(
         project, [item["path"] for item in record["source"]["files"]]

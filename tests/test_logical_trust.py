@@ -6,17 +6,20 @@ import shutil
 import subprocess
 from types import SimpleNamespace
 
-from helpers import McpClient, vkit
+import pytest
+
+from helpers import McpClient, NO_WINDOW, vkit
 from vkit.evidence import validate_record
-from vkit.outcome import Blocked, BlockedReason, Passed
 from vkit.query import open_context
 from vkit.runner import _external_logical_trust
 
 
 def _lean_check():
     lean = shutil.which("lean")
-    assert lean, "the real Lean executable is required for this gate test"
-    version_text = subprocess.run([lean, "--version"], check=True, capture_output=True, text=True).stdout
+    if lean is None:
+        pytest.skip("the real Lean gate runs in formal CI")
+    version_text = subprocess.run(
+        [lean, "--version"], check=True, capture_output=True, text=True, **NO_WINDOW).stdout
     version = re.search(r"\bversion\s+([0-9]+\.[0-9]+\.[0-9]+)\b", version_text)
     assert version, version_text
     return {
@@ -120,6 +123,13 @@ def test_real_lean_source_diagnostic_is_bound_to_captured_input(make_project):
     assert diagnostic["location"]["source_sha256"] == captured["sha256"]
 
 
+def test_real_lean_reports_a_source_error_at_column_zero(make_project):
+    _, _, view = _run_lean(make_project, "definitely_missing\n")
+    rows = view["diagnostics"]["diagnostics"]
+    assert view["summary"]["claim_outcome"] == "unknown"
+    assert any(item.get("location", {}).get("start") == {"line": 1, "column": 1} for item in rows)
+
+
 def test_external_checker_is_reported_as_independent_only_after_acceptance():
     check = SimpleNamespace(
         model_scope="finite state model",
@@ -134,12 +144,15 @@ def test_external_checker_is_reported_as_independent_only_after_acceptance():
         "checker_receipt": {"document": {"verdict": "accepted"}},
     }
 
-    accepted = _external_logical_trust(check, metadata, Passed(()))
+    accepted = _external_logical_trust(check, metadata)
     rejected = _external_logical_trust(
         check, metadata | {"checker_receipt": {"document": {"verdict": "rejected"}}},
-        Blocked(BlockedReason.ARTIFACT_MALFORMED),
     )
 
     assert accepted["independent_check"]["status"] == "checked"
     assert accepted["independent_check"]["checker"]["digest"] == "b" * 64
     assert rejected["independent_check"]["status"] == "rejected"
+
+    unknown = _external_logical_trust(
+        check, metadata | {"checker_receipt": {"document": {"verdict": "unknown"}}})
+    assert unknown["independent_check"]["status"] == "unknown"

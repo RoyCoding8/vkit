@@ -81,6 +81,7 @@ def _tree_archive(source: Path, destination: Path, expected: list[dict[str, Any]
             _safe_link(source, path)
     with tarfile.open(destination, "w", format=tarfile.PAX_FORMAT) as archive:
         for path in sorted(source.rglob("*")):
+            archive.inodes.clear()
             archive.add(path, arcname=path.relative_to(source).as_posix(), recursive=False)
     if destination.stat().st_size > _MAX_ARCHIVE_BYTES:
         raise ValueError("tool asset archive exceeds the portable asset size limit")

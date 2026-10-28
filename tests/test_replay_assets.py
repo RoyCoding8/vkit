@@ -20,6 +20,7 @@ def _tree(path: Path, marker: str) -> list[dict]:
     nested.mkdir()
     (nested / "tool").write_text(marker, encoding="utf-8")
     (nested / "tool").chmod(0o755)
+    (nested / "same-tool").hardlink_to(nested / "tool")
     return _tree_identity(path)
 
 

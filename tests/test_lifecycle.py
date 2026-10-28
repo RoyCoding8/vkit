@@ -9,19 +9,24 @@ spec = importlib.util.spec_from_file_location(
 assert spec and spec.loader
 lifecycle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lifecycle)
-capture_runtime_trace = lifecycle.capture_runtime_trace
+capture_runtime_observations = lifecycle.capture_runtime_observations
 
 
-def test_runtime_trace_uses_cancel_worker_loss_recovery_and_retry(tmp_path):
-    events, identity, attempts = capture_runtime_trace(tmp_path / "runtime")
+def test_runtime_observations_cover_contention_concurrent_attempts_and_recovery(tmp_path):
+    observed = capture_runtime_observations(tmp_path / "runtime")
+    attempts = observed["attempts"]
 
-    assert events == [
-        "submit", "start", "cancel", "complete_blocked", "retry", "start",
-        "worker_lost", "recover", "retry", "start", "complete_pass",
-    ]
-    assert identity[0] == attempts[0]["job_id"]
+    assert observed["concurrent_same_job"]["shared_job_id"] == observed["job_id"]
+    assert len(set(observed["concurrent_same_job"]["run_ids"])) == 2
+    raced = observed["cancel_completion_race"]["outcome"]
+    assert raced["result"] in {"PASS", "BLOCKED"}
+    if raced["result"] == "BLOCKED":
+        assert raced["reason"] == "cancelled"
     assert len({attempt["run_id"] for attempt in attempts}) == 3
     assert [attempt["state"] for attempt in attempts] == ["done", "interrupted", "done"]
-    assert attempts[0]["outcome"]["reason"] == "cancelled"
+    assert attempts[0]["job_id"] == observed["job_id"]
     assert attempts[1].get("outcome") is None
     assert attempts[2]["outcome"]["result"] == "PASS"
+    assert observed["published_before_worker_loss"] == observed["published_after_worker_loss"]
+    assert observed["published_before_worker_loss"]["run_id"] == attempts[0]["run_id"]
+    assert observed["final_published"]["run_id"] == attempts[2]["run_id"]

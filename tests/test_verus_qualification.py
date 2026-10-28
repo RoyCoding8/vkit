@@ -96,12 +96,12 @@ def test_semantic_check_records_bind_exact_scope_predicates_and_identities():
     assert semantic_check_record(
         name="reserve_capacity_equivalence", status="verified_equivalence",
         predicates={"current": "amount <= capacity - used", "rewritten": "used + amount <= capacity"},
-        scope="reserve capacity branch for valid views", evidence_sha256="proof-digest",
+        scope="reserve capacity branch for valid views", proof_source_sha256="proof-digest",
         package_identity_sha256="package-digest", tool_identity_sha256="tool-digest",
     ) == {
         "name": "reserve_capacity_equivalence", "status": "verified_equivalence",
         "predicates": {"current": "amount <= capacity - used", "rewritten": "used + amount <= capacity"},
-        "scope": "reserve capacity branch for valid views", "evidence_sha256": "proof-digest",
+        "scope": "reserve capacity branch for valid views", "proof_source_sha256": "proof-digest",
         "package_identity_sha256": "package-digest", "tool_identity_sha256": "tool-digest",
     }
 
@@ -110,14 +110,14 @@ def test_counterexample_record_requires_a_concrete_witness_and_preserves_provena
     with pytest.raises(ValueError, match="a checked counterexample requires its concrete witness"):
         semantic_check_record(
             name="strict_bound", status="checked_counterexample", predicates={"current": "x <= y"},
-            scope="exact boundary", evidence_sha256="proof", package_identity_sha256="package",
+            scope="exact boundary", proof_source_sha256="proof", package_identity_sha256="package",
             tool_identity_sha256="tool",
         )
 
     record = semantic_check_record(
         name="historical_positive_limit_regression", status="checked_counterexample",
         predicates={"old": "max_records : nat", "fixed": "max_records : positive"},
-        scope="reconstructed zero-bound regression", evidence_sha256="proof",
+        scope="reconstructed zero-bound regression", proof_source_sha256="proof",
         package_identity_sha256="package", tool_identity_sha256="tool",
         witness={"record_limit": 0}, provenance=HISTORICAL_POSITIVE_LIMIT_FIX,
     )

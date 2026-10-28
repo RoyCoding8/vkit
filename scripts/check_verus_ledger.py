@@ -353,11 +353,12 @@ def check_specification_adequacy(exe: Path, out: Path, binding_root: Path, repor
         status = fixture["status"] if verified else "inconclusive"
         row = semantic_check_record(
             name=fixture["name"], status=status, predicates=fixture["predicates"],
-            scope=fixture["scope"], evidence_sha256=source_sha256, **identities,
+            scope=fixture["scope"], proof_source_sha256=source_sha256, **identities,
             witness=fixture.get("witness") if verified else None,
             provenance=fixture.get("provenance"),
         )
         row["verifier_log"] = log_path.name
+        row["verifier_log_sha256"] = digest(log_path.read_bytes()) if log_path.is_file() else None
         row["verifier_returncode"] = result["returncode"]
         if "error" in result:
             row["verifier_error"] = result["error"]
@@ -367,6 +368,33 @@ def check_specification_adequacy(exe: Path, out: Path, binding_root: Path, repor
             "source_sha256": source_sha256, **result,
         })
         all_passed = all_passed and verified
+    positive_source = (ADEQUACY_FIXTURES / "reserve-admission.rs").read_text(encoding="utf-8")
+    negative_source = root / "false-capacity-equivalence.rs"
+    marker = "<= state.capacity as nat"
+    if positive_source.count(marker) != 1:
+        raise ValueError("capacity-equivalence control no longer matches its checked source")
+    negative_source.write_text(positive_source.replace(marker, "< state.capacity as nat"), encoding="utf-8")
+    negative_log = root / "false-capacity-equivalence.log"
+    result = run(
+        [str(exe), "--crate-type=lib", str(negative_source),
+         "--import", f"ledger={binding_root / 'ledger.vir'}",
+         "--extern", f"ledger={binding_root / 'libledger.rlib'}", "-L", str(binding_root), *flags],
+        negative_log, root,
+    )
+    log = negative_log.read_text(encoding="utf-8", errors="replace") if negative_log.is_file() else ""
+    rejected = bool(re.search(r"verification results:: \d+ verified, [1-9]\d* errors", log))
+    control = mutation_control(
+        name="false_capacity_equivalence", mutation_sha256=digest(negative_source.read_bytes()),
+        **identities, returncode=result["returncode"],
+        timed_out=result["returncode"] is None and "error" not in result,
+        infrastructure_error="error" in result,
+        diagnostic="proof_rejection" if rejected else "verified" if result["returncode"] == 0 else None,
+        evidence_present=bool(log.strip()),
+    )
+    control.update(verifier_log=negative_log.name,
+                   verifier_log_sha256=digest(negative_log.read_bytes()) if negative_log.is_file() else None)
+    report["semantic_controls"] = [control]
+    all_passed = all_passed and control["status"] == "detected_rejection"
     report["semantic_checks"] = rows
     report["semantic_checks_passed"] = all_passed
     return all_passed

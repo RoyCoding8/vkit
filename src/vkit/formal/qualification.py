@@ -88,7 +88,7 @@ def compare_package_snapshots(before: dict[str, Any], after: dict[str, Any]) -> 
 
 
 def semantic_check_record(*, name: str, status: str, predicates: dict[str, str], scope: str,
-                          evidence_sha256: str, package_identity_sha256: str,
+                          proof_source_sha256: str, package_identity_sha256: str,
                           tool_identity_sha256: str, witness: dict[str, Any] | None = None,
                           provenance: dict[str, str] | None = None) -> dict[str, Any]:
     if status not in _SEMANTIC_RESULTS:
@@ -103,7 +103,7 @@ def semantic_check_record(*, name: str, status: str, predicates: dict[str, str],
         "status": status,
         "predicates": dict(predicates),
         "scope": scope,
-        "evidence_sha256": evidence_sha256,
+        "proof_source_sha256": proof_source_sha256,
         "package_identity_sha256": package_identity_sha256,
         "tool_identity_sha256": tool_identity_sha256,
     }

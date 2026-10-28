@@ -9,7 +9,6 @@ verus! {
                 used: 0,
                 capacity: 0,
             }),
-            0nat >= 0,
             !(0usize > 0),
     {
     }

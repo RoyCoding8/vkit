@@ -660,6 +660,7 @@ def main() -> int:
         report["driver_scope"] = evidence_report.get("scope")
         report["mutation_controls"] = evidence_report.get("mutation_controls", [])
         report["semantic_checks"] = evidence_report.get("semantic_checks", [])
+        report["semantic_controls"] = evidence_report.get("semantic_controls", [])
         report["package_identity"] = evidence_report.get("package_identity")
         report["package_identity_sha256"] = evidence_report.get("package_identity_sha256")
         report["tool_identity_sha256"] = evidence_report.get("tool_identity_sha256")

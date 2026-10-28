@@ -4,12 +4,12 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ PROPERTIES = [
     "TerminalHasResult",
     "InterruptedHasNoResult",
     "IdentityPinned",
+    "PublishedAttemptComplete",
 ]
 
 
@@ -39,6 +40,11 @@ def _environment() -> dict[str, str]:
     os.environ["PYTHONPATH"] = env["PYTHONPATH"]
     os.environ["PATH"] = env["PATH"]
     sys.path.insert(0, str(ROOT / "src"))
+    # Pytest may have imported an editable install from another checkout before this
+    # driver is loaded. Runtime observations must exercise the source tree under test.
+    for name in tuple(sys.modules):
+        if name == "vkit" or name.startswith("vkit."):
+            del sys.modules[name]
     return env
 
 
@@ -76,39 +82,21 @@ def _cli(project: Path, env: dict[str, str], *args: str,
     )
 
 
-def _manifest(config: str, *, trace: bool = False) -> dict[str, Any]:
+def _manifest(config: str) -> dict[str, Any]:
     raw = json.loads((ROOT / "verification/manifest.json").read_text(encoding="utf-8"))
     check = next(item for item in raw["checks"] if item["id"] == CHECK_ID)
     check["config"] = config
     check["inputs"] = [MODEL_REL.as_posix(), config]
     check["subject"]["paths"] = [MODEL_REL.as_posix(), config]
-    if trace:
-        check["properties"] = [*PROPERTIES, "TraceComplete"]
+    check["properties"] = PROPERTIES
     raw["checks"] = [check]
     return raw
 
 
-def _new_project(directory: Path, env: dict[str, str], *, events: list[str] | None = None,
-                 identity: tuple[str, str] | None = None, wrong_pass: bool = False) -> Path:
+def _new_project(directory: Path, env: dict[str, str], *, wrong_pass: bool = False) -> Path:
     directory.mkdir(parents=True, exist_ok=False)
     model = (ROOT / MODEL_REL).read_text(encoding="utf-8")
     config = (ROOT / CONFIG_REL).read_text(encoding="utf-8")
-    if events is not None:
-        encoded = ", ".join(json.dumps(event) for event in events)
-        model = re.sub(
-            r'ObservedEvents == <<"unused">>',
-            f"ObservedEvents == <<{encoded}>>",
-            model,
-            count=1,
-        )
-        if 'ObservedEvents == <<"unused">>' in model:
-            raise RuntimeError("observed event sequence was not bound into the lifecycle model")
-        config = config.replace("SPECIFICATION Spec", "SPECIFICATION TraceSpec")
-        config += "\nPROPERTY TraceComplete\n"
-    if identity is not None:
-        job, source = identity
-        config = config.replace('ExpectedJob = "job-v1"', f"ExpectedJob = {json.dumps(job)}")
-        config = config.replace('ExpectedSource = "source-v1"', f"ExpectedSource = {json.dumps(source)}")
     if wrong_pass:
         config = config.replace("InjectFalsePass = FALSE", "InjectFalsePass = TRUE")
     model_path = directory / MODEL_REL
@@ -118,7 +106,7 @@ def _new_project(directory: Path, env: dict[str, str], *, events: list[str] | No
     config_path.write_text(config, encoding="utf-8", newline="\n")
     (directory / "verification").mkdir(exist_ok=True)
     (directory / "verification/manifest.json").write_text(
-        json.dumps(_manifest(CONFIG_REL.as_posix(), trace=events is not None), indent=2) + "\n",
+        json.dumps(_manifest(CONFIG_REL.as_posix()), indent=2) + "\n",
         encoding="utf-8",
     )
     _run(["git", "init", "-q"], directory, env)
@@ -176,7 +164,19 @@ def _stop_worker(run_id: str, store: Any, env: dict[str, str]) -> None:
         os.killpg(pid, signal.SIGKILL)
 
 
-def _runtime_trace(directory: Path, env: dict[str, str]) -> tuple[list[str], tuple[str, str], list[dict[str, Any]]]:
+def _wait_started(store: Any, run_id: str, timeout: float = 20) -> None:
+    deadline = time.monotonic() + timeout
+    path = store.run_dir(run_id) / "started"
+    while time.monotonic() < deadline:
+        if path.is_file():
+            return
+        time.sleep(0.02)
+    log = store.run_dir(run_id) / "worker.log"
+    detail = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "no worker log"
+    raise RuntimeError(f"job command did not reach its start barrier: {run_id}: {detail[-2000:]}")
+
+
+def _runtime_observations(directory: Path, env: dict[str, str]) -> dict[str, Any]:
     from vkit.jobs import retry, submit, wait
     from vkit.manifest import parse_manifest
     from vkit.paths import open_project
@@ -186,9 +186,14 @@ def _runtime_trace(directory: Path, env: dict[str, str]) -> tuple[list[str], tup
     (directory / "verification").mkdir()
     (directory / "slow.py").write_text(
         "import json, sys, time\n"
-        "time.sleep(3)\n"
-        "with open(sys.argv[1], 'w', encoding='utf-8') as output:\n"
-        "    json.dump({'schema_version': 1, 'scenarios': [{'id': 'ok', 'result': 'PASS', 'observation': 'ok'}]}, output)\n",
+        "from pathlib import Path\n"
+        "output = Path(sys.argv[1])\n"
+        "root = output.parent\n"
+        "(root / 'started').touch()\n"
+        "while not (root / 'release').exists():\n"
+        "    time.sleep(0.01)\n"
+        "output.write_text(json.dumps({'schema_version': 1, 'scenarios': "
+        "[{'id': 'ok', 'result': 'PASS', 'observation': 'ok'}]}), encoding='utf-8')\n",
         encoding="utf-8",
     )
     check = {
@@ -216,72 +221,102 @@ def _runtime_trace(directory: Path, env: dict[str, str]) -> tuple[list[str], tup
     project = open_project(directory)
     manifest = parse_manifest(project)
     store = Store.of(project)
-    events: list[str] = []
-    records: list[dict[str, Any]] = []
-
     first = submit(project, manifest, "lifecycle-runtime", store=store)
-    events.append("submit")
-    records.append(first)
     _wait_state(store, first["run_id"], "running")
-    events.append("start")
-    store.request_cancel(first["run_id"])
-    events.append("cancel")
-    cancelled = wait(store, first["run_id"], 30)
-    if cancelled["state"] != "done" or cancelled["outcome"].get("reason") != "cancelled":
-        raise RuntimeError(f"the real cancellation path did not publish a cancelled result: {cancelled!r}")
-    events.append("complete_blocked")
-    records.append(cancelled)
+    _wait_started(store, first["run_id"])
 
-    second = retry(project, first["run_id"], store=store)
-    events.append("retry")
-    records.append(second)
+    second = submit(project, manifest, "lifecycle-runtime", store=store)
     _wait_state(store, second["run_id"], "running")
-    events.append("start")
+    _wait_started(store, second["run_id"])
+    if first["job_id"] != second["job_id"] or first["run_id"] == second["run_id"]:
+        raise RuntimeError("concurrent submissions did not create distinct attempts for one job")
+
+    # Let cancellation and command completion contend at the same release barrier.
+    barrier = threading.Barrier(2)
+
+    def cancel_at_release() -> None:
+        barrier.wait()
+        store.request_cancel(first["run_id"])
+
+    cancel_thread = threading.Thread(target=cancel_at_release)
+    cancel_thread.start()
+    barrier.wait()
+    (store.run_dir(first["run_id"]) / "release").touch()
+    cancel_thread.join(timeout=5)
+    if cancel_thread.is_alive():
+        raise RuntimeError("the cancellation race did not finish")
+    if not store.cancel_requested(first["run_id"]):
+        raise RuntimeError("the concurrent cancel request was not recorded")
+    raced = wait(store, first["run_id"], 30)
+    if raced["state"] != "done" or raced["outcome"]["result"] not in {"PASS", "BLOCKED"}:
+        raise RuntimeError(f"cancel/completion contention produced an invalid result: {raced!r}")
+    if raced["outcome"]["result"] == "BLOCKED" and raced["outcome"].get("reason") != "cancelled":
+        raise RuntimeError(f"the blocked cancellation race had an unrelated reason: {raced!r}")
+
+    pointer_before_loss = store.evidence_for("registered_check", "lifecycle-runtime", first["job_id"])
+    if pointer_before_loss is None or pointer_before_loss["run_id"] != raced["run_id"]:
+        raise RuntimeError("completed attempt did not publish an intact evidence pointer")
+
+    # Keep the sibling worker active while recovery observes its death. It must not publish.
     _stop_worker(second["run_id"], store, env)
-    events.append("worker_lost")
     interrupted = _wait_state(store, second["run_id"], "interrupted")
     if interrupted.get("outcome") is not None:
         raise RuntimeError(f"a lost worker exposed a terminal outcome: {interrupted!r}")
-    events.append("recover")
-    records.append(interrupted)
-    published = store.evidence_for("registered_check", "lifecycle-runtime", second["job_id"])
-    if published is None or published["run_id"] != first["run_id"] or published["result"] != "BLOCKED":
-        raise RuntimeError("worker loss replaced the prior cancelled evidence or published new evidence")
+    interrupted_identity = {name: interrupted.get(name) for name in
+                            ("run_id", "job_id", "inputs", "source", "state", "outcome")}
+    pointer_after_loss = store.evidence_for("registered_check", "lifecycle-runtime", second["job_id"])
+    if pointer_after_loss != pointer_before_loss:
+        raise RuntimeError("worker loss replaced previously published evidence")
 
     third = retry(project, second["run_id"], store=store)
-    events.append("retry")
-    records.append(third)
     _wait_state(store, third["run_id"], "running")
-    events.append("start")
+    _wait_started(store, third["run_id"])
+    (store.run_dir(third["run_id"]) / "release").touch()
     passed = wait(store, third["run_id"], 30)
     if passed["state"] != "done" or passed["outcome"]["result"] != "PASS":
         raise RuntimeError(f"the retry did not finish with a recorded pass: {passed!r}")
-    events.append("complete_pass")
-    records.append(passed)
 
-    cancelled_final = store.record(first["run_id"])
+    raced_final = store.record(first["run_id"])
     interrupted_final = store.record(second["run_id"])
     passed_final = store.record(third["run_id"])
-    if (cancelled_final["outcome"].get("reason") != "cancelled"
+    if (raced_final["state"] != raced["state"]
+            or raced_final["outcome"] != raced["outcome"]
+            or any(raced_final.get(name) != raced.get(name)
+                   for name in ("run_id", "job_id", "inputs", "source"))
             or interrupted_final["state"] != "interrupted"
             or interrupted_final.get("outcome") is not None
+            or any(interrupted_final.get(name) != value
+                   for name, value in interrupted_identity.items())
             or passed_final["outcome"].get("result") != "PASS"):
         raise RuntimeError("later retries changed an earlier attempt or exposed a false terminal result")
     published = store.evidence_for("registered_check", "lifecycle-runtime", third["job_id"])
     if published is None or published["run_id"] != third["run_id"] or published["result"] != "PASS":
         raise RuntimeError("the final pass was not bound to the latest completed retry")
 
+    records = [raced_final, interrupted_final, passed_final]
     job_ids = {record["job_id"] for record in records}
     input_digests = {record["inputs"]["digest"] for record in records}
     run_ids = {record["run_id"] for record in records}
     if len(job_ids) != 1 or len(input_digests) != 1 or len(run_ids) != 3:
         raise RuntimeError("retries changed the immutable job/input identity or reused an attempt ID")
-    records = [cancelled_final, interrupted_final, passed_final]
-    return events, (next(iter(job_ids)), next(iter(input_digests))), records
+    return {
+        "job_id": next(iter(job_ids)),
+        "input_digest": next(iter(input_digests)),
+        "attempts": [{"run_id": record["run_id"], "job_id": record["job_id"],
+                      "state": record["state"],
+                      "outcome": record.get("outcome")} for record in records],
+        "concurrent_same_job": {"run_ids": [first["run_id"], second["run_id"]],
+                                "shared_job_id": first["job_id"]},
+        "cancel_completion_race": {"run_id": raced["run_id"],
+                                   "outcome": raced["outcome"]},
+        "published_before_worker_loss": pointer_before_loss,
+        "published_after_worker_loss": pointer_after_loss,
+        "final_published": published,
+    }
 
 
-def capture_runtime_trace(directory: Path) -> tuple[list[str], tuple[str, str], list[dict[str, Any]]]:
-    return _runtime_trace(directory, _environment())
+def capture_runtime_observations(directory: Path) -> dict[str, Any]:
+    return _runtime_observations(directory, _environment())
 
 
 def main() -> int:
@@ -305,13 +340,8 @@ def main() -> int:
     static = _new_project(run_root / "model", env)
     static_record = _run_model_case(static, env, "PASS")
 
-    events, identity, records = _runtime_trace(run_root / "runtime", env)
-    trace_project = _new_project(run_root / "trace", env, events=events, identity=identity)
-    trace_record = _run_model_case(trace_project, env, "PASS")
-
-    bad_events = ["submit", "start", "wrong_identity_pass"]
-    bad_project = _new_project(run_root / "negative", env, events=bad_events,
-                               identity=identity, wrong_pass=True)
+    observations = _runtime_observations(run_root / "runtime", env)
+    bad_project = _new_project(run_root / "negative", env, wrong_pass=True)
     bad_record = _run_model_case(bad_project, env, "FAIL")
     counterexamples = (bad_record.get("obligations") or {}).get("counterexamples", [])
     if not any(item.get("obligation", {}).get("obligation") == "NoFalsePass"
@@ -320,22 +350,24 @@ def main() -> int:
 
     report = {
         "schema_version": 1,
-        "scope": "finite attempt lifecycle model plus captured production job API trace",
+        "scope": "bounded multi-attempt lifecycle model plus observed production job API behavior",
         "model": {"run_id": static_record["run_id"], "result": "PASS",
+                  "attempt_slots": 3, "max_attempt_number": 3,
+                  "publication_model": "The pointer selects any completed attempt for this job, including an older attempt that publishes later; publication is atomic in the model and hash bytes are abstracted.",
                   "obligations": static_record.get("obligations")},
-        "observed_trace": {"events": events, "job_id": identity[0], "input_digest": identity[1],
-                           "attempts": [{"run_id": item["run_id"], "state": item["state"],
-                                         "outcome": item.get("outcome")} for item in records],
-                           "model_run_id": trace_record["run_id"], "result": "PASS"},
-        "negative_control": {"events": bad_events, "result": "FAIL",
+        "observed_execution": observations,
+        "negative_control": {"result": "FAIL",
                              "counterexamples": counterexamples},
-        "limit": "The finite model checks the declared lifecycle abstraction; one observed trace checks only the captured execution, not all scheduler interleavings.",
+        "limit": "TLC checks three indexed attempts with finite state domains. No parameterized induction or implementation-refinement proof is claimed. The production observations cover these OS/process schedules only; hash bytes and crashes during pointer publication are abstracted.",
     }
     (run_root / "lifecycle-report.json").write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
     print(json.dumps({"result": "PASS", "report": str(run_root / "lifecycle-report.json"),
-                      "events": events, "negative_control": "NoFalsePass rejected"}, indent=2))
+                      "attempts": len(observations["attempts"]),
+                      "concurrent_same_job": True,
+                      "cancel_completion_race": observations["cancel_completion_race"]["outcome"]["result"],
+                      "negative_control": "NoFalsePass rejected"}, indent=2))
     return 0
 
 

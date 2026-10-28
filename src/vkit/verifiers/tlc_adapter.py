@@ -16,7 +16,7 @@ from ..outcome import Blocked, BlockedReason, ScenarioResult
 from .obligation import PropertyObligation, obligation_to_json
 from .spec import TlcCheck
 
-REPORT_VERSION = 2
+REPORT_VERSION = 3
 
 # The only fingerprint settings the runner supports.
 SUPPORTED_FINGERPRINT = (True, False, 1)
@@ -80,6 +80,10 @@ class TlcRun:
     exit_code: int
     stdout: str
     stderr: str
+    trace_json_supported: bool
+    witness_validation: dict[str, Any] | None
+    trace_artifact: str | None
+    validation_artifact: str | None
 
 
 @dataclass(frozen=True)
@@ -115,10 +119,11 @@ class AdapterResult:
     """
 
     observations: tuple[PropertyObligation, ...]
-    counterexamples: tuple[tuple[PropertyObligation, str], ...]
+    counterexamples: tuple[tuple[PropertyObligation, str, dict[str, Any]], ...]
     model: str
     tool_version: str
     exploration: Exploration
+    logical_trust: dict[str, Any] | None = None
 
     def scenarios(self) -> tuple:
         """The reading as outcome `ScenarioResult`s."""
@@ -131,8 +136,8 @@ class AdapterResult:
             ScenarioResult(o.property_name, True, observation)
             for o in self.observations
         ) + tuple(
-            ScenarioResult(o.property_name, False, trace)
-            for o, trace in self.counterexamples
+            ScenarioResult(obligation.property_name, False, trace)
+            for obligation, trace, _witness in self.counterexamples
         )
 
     def obligation_results(self) -> tuple[list[dict], list[dict]]:
@@ -150,8 +155,8 @@ class AdapterResult:
             for obligation in self.observations
         ]
         counterexamples = [
-            {"obligation": obligation_to_json(obligation), "trace": trace}
-            for obligation, trace in self.counterexamples
+            {"obligation": obligation_to_json(obligation), "trace": trace, "witness": witness}
+            for obligation, trace, witness in self.counterexamples
         ]
         return satisfied, counterexamples
 
@@ -343,18 +348,19 @@ def interpret(raw: bytes, check: TlcCheck) -> AdapterResult | Blocked:
         return bounds
 
     if violated:
-        return _failed_property(variant, _violation_trace(report.stdout), report, exploration)
+        return _failed_property(variant, _violation_trace(report.stdout), report, exploration, text)
 
     return AdapterResult(
         tuple(variant.properties), (), variant.model.module, report.tool_version, exploration,
+        _logical_trust(variant, report, text),
     )
 
 
 def _failed_property(variant: TlcCheck, trace: str, report: TlcRun,
-                     exploration: Exploration) -> AdapterResult | Blocked:
-    """Attribute a violation to the one required property TLC named, or refuse."""
+                     exploration: Exploration, config_text: str) -> AdapterResult | Blocked:
+    """Attribute and validate one finite safety witness, or refuse to call it a refutation."""
     match = re.search(
-        r"Error: (?:Invariant|Temporal property|Action property) "
+        r"Error: (?P<kind>Invariant|Temporal property|Action property) "
         r"([A-Za-z_][A-Za-z0-9_]*) is violated\.", report.stdout,
     )
     if not match:
@@ -363,19 +369,85 @@ def _failed_property(variant: TlcCheck, trace: str, report: TlcRun,
             "TLC reported a violation but did not name the failed property, so the "
             "trace cannot be assigned to a required obligation",
         )
+    if match.group("kind") != "Invariant":
+        return _refuse(
+            "witness_validation_unsupported", BlockedReason.SCENARIO_UNKNOWN,
+            f"TLC reported a {match.group('kind').lower()} violation, but only finite safety invariant "
+            "traces are validated by this adapter; the raw checker output remains available",
+        )
     failures = [
         obligation for obligation in variant.properties
-        if obligation.property_name == match.group(1)
+        if obligation.property_name == match.group(2)
     ]
     if len(failures) != 1:
         return _refuse(
             "counterexample_unattributed", BlockedReason.SCENARIO_UNKNOWN,
-            f"TLC named violated property {match.group(1)!r}, which does not map to "
+            f"TLC named violated property {match.group(2)!r}, which does not map to "
             "exactly one required obligation",
         )
+    validation = report.witness_validation
+    if (not isinstance(validation, dict) or validation.get("status") != "validated"
+            or validation.get("property") != match.group(2)
+            or not report.trace_artifact or not report.validation_artifact):
+        reason = (
+            str(validation.get("reason", "TLC could not validate the witness"))
+            if isinstance(validation, dict) else
+            "the pinned TLC run did not produce a validated witness"
+        )
+        return _refuse(
+            "witness_validation_failed", BlockedReason.SCENARIO_UNKNOWN,
+            f"TLC reported invariant {match.group(2)!r}, but its JSON trace was not "
+            f"replayed as the same state sequence against the frozen model and config: {reason}; "
+            "the raw checker output remains available",
+        )
+    witness = {
+        "artifact": report.trace_artifact,
+        "validation_artifact": report.validation_artifact,
+        "validation": {
+            "status": "validated",
+            "method": validation["method"],
+            "property": validation["property"],
+            "state_sequence_sha256": validation["state_sequence_sha256"],
+        },
+        "minimization": validation["minimization"],
+        "source_locations": validation.get("source_locations", []),
+        "source_locations_truncated": validation.get("source_locations_truncated", False),
+    }
     return AdapterResult(
-        (), ((failures[0], trace),), variant.model.module, report.tool_version, exploration,
+        (), ((failures[0], trace, witness),), variant.model.module, report.tool_version, exploration,
+        _logical_trust(variant, report, config_text),
     )
+
+
+def _logical_trust(variant: TlcCheck, report: TlcRun, config_text: str) -> dict[str, Any]:
+    """Facts about this bounded TLC run; unreported trust facts stay explicitly unknown."""
+    items = [
+        {"kind": "model", "module": variant.model.module, "path": variant.model.path},
+        {"kind": "config", "path": variant.config},
+        {"kind": "properties", "names": list(_checked_properties(config_text))},
+        {"kind": "bounds", "values": dict(variant.bounds.as_pairs)},
+        {"kind": "fingerprint", "constants_from_config": report.fingerprint[0],
+         "checksum_states": report.fingerprint[1], "workers": report.fingerprint[2]},
+    ]
+    properties = [p.property_name for p in variant.properties]
+    return {
+        "schema_version": 1,
+        "engine": {"name": "TLC", "version": report.tool_version},
+        "scope": {
+            "kind": "finite_model",
+            "items": items,
+            "assumptions": {"status": "not_reported", "items": []},
+        },
+        "dependencies": {"status": "not_reported", "items": []},
+        "axioms": {
+            "status": "not_reported",
+            "by_obligation": [
+                {"obligation": name, "status": "not_reported", "items": []}
+                for name in properties
+            ],
+        },
+        "independent_check": {"status": "not_provided", "checker": None, "certificate": None},
+    }
 
 
 def _exploration(report: TlcRun) -> Exploration | None:
@@ -592,6 +664,20 @@ def _read(raw: bytes) -> TlcRun | Blocked:
             "report_malformed", BlockedReason.ARTIFACT_MALFORMED,
             "the report does not record valid fingerprint settings",
         )
+    trace_json_supported = document.get("trace_json_supported")
+    witness_validation = document.get("witness_validation")
+    trace_artifact = document.get("trace_artifact")
+    validation_artifact = document.get("validation_artifact")
+    if type(trace_json_supported) is not bool:
+        return _refuse("report_malformed", BlockedReason.ARTIFACT_MALFORMED,
+                       "the report does not record TLC JSON trace capability")
+    if witness_validation is not None and not isinstance(witness_validation, dict):
+        return _refuse("report_malformed", BlockedReason.ARTIFACT_MALFORMED,
+                       "the witness validation record is not an object")
+    for name, value in (("trace_artifact", trace_artifact), ("validation_artifact", validation_artifact)):
+        if value is not None and (not isinstance(value, str) or Path(value).name != value):
+            return _refuse("report_malformed", BlockedReason.ARTIFACT_MALFORMED,
+                           f"{name} is not a safe artifact name")
     return TlcRun(
         str(document.get("model", "")),
         str(document.get("model_path", "")),
@@ -603,14 +689,18 @@ def _read(raw: bytes) -> TlcRun | Blocked:
         exit_code,
         str(document.get("stdout", "")),
         str(document.get("stderr", "")),
+        trace_json_supported,
+        witness_validation,
+        trace_artifact,
+        validation_artifact,
     )
 
 
 def _tlc_version(text: str) -> str | None:
     """TLC's checker version, not the release tag used to download its jar."""
-    match = re.search(r"\bVersion\s+([0-9]+\.[0-9]+)\b", text, re.IGNORECASE)
+    match = re.search(r"\bVersion\s+([0-9]+(?:\.[0-9]+)+)\b", text, re.IGNORECASE)
     if not match:
-        match = re.search(r"\bTLC\s+([0-9]+\.[0-9]+)\b", text, re.IGNORECASE)
+        match = re.search(r"\bTLC\s+([0-9]+(?:\.[0-9]+)+)\b", text, re.IGNORECASE)
     return match.group(1) if match else None
 
 

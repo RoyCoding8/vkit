@@ -208,3 +208,28 @@ def test_formal_job_executes_from_captured_commit_without_opening_checkout(tmp_p
     assert result["outcome"]["result"] == "PASS"
     assert result["subject"] == {"kind": "formal_goal", "id": "ledger"}
     assert (store.root / "evidence" / "formal_goal" / "ledger" / f"{job['job_id']}.json").is_file()
+    from dataclasses import replace
+
+    project = open_project(moved)
+    reusable = replace(request, reuse=True)
+    reused = prepare_formal(project, reusable, component, checker, store=store)
+    assert reused["run_id"] == record["run_id"]
+    accepted = store.approved()[component.digest]
+    for field in ("policy_sha256", "package_sha256", "checker_sha256"):
+        store.approve({component.digest: {**accepted, field: "e" * 64}})
+        rejected_reuse = prepare_formal(project, reusable, component, checker, store=store)
+        assert rejected_reuse["run_id"] != record["run_id"] and rejected_reuse["state"] == "queued"
+    store.approve({component.digest: accepted})
+    for changed_component, changed_checker in ((replace(component, max_records=5), checker),
+                                                (component, "d" * 64)):
+        fresh = prepare_formal(project, reusable, changed_component, changed_checker, store=store)
+        assert fresh["run_id"] != record["run_id"] and fresh["state"] == "queued"
+    (moved / "dependency.rs").write_text("pub const LIMIT: u32 = 9;\n", encoding="utf-8")
+    git(moved, "add", "dependency.rs")
+    git(moved, "commit", "-qm", "change captured dependency")
+    from vkit.formal.service import resolve_commit
+
+    changed = replace(reusable, candidate=GitCommit(resolve_commit(project, "HEAD")))
+    assert prepare_formal(project, changed, component, checker, store=store)["run_id"] != record["run_id"]
+    (store.run_dir(record["run_id"]) / "receipt.json").write_text("{}", encoding="utf-8")
+    assert prepare_formal(project, reusable, component, checker, store=store)["run_id"] != record["run_id"]

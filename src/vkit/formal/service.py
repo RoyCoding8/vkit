@@ -29,6 +29,13 @@ def verify(ctx: Context, raw: Any) -> dict[str, Any]:
     approval = ctx.store.approved().get(component.digest, {})
     if approval.get("kind") != "formal_policy":
         raise ValueError("formal policy is not accepted; run `vkit accept --component " + component.id + "`")
+    if request.reuse:
+        from ..inputs import canonical_digest
+        from .verus import resolve_execution
+
+        current = resolve_execution(component)
+        if not component.is_accepted(approval, canonical_digest(current["semantic"])):
+            raise ValueError("formal policy, package or checker changed; accept them before reuse")
     record = jobs.submit_formal(ctx.project, request, component, approval["checker_sha256"], store=ctx.store)
     if request.wait_seconds:
         record = jobs.wait(ctx.store, record["run_id"], request.wait_seconds)

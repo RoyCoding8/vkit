@@ -18,7 +18,7 @@ from .nowindow import hidden_window
 from .outcome import Blocked, BlockedReason
 from .paths import Project, open_project
 from .runner import _child_env, execute, prepare, prepare_formal, prepare_retry
-from .store import Store, now, read_json, write_json
+from .store import Store, new_run_id, now, read_json, write_json
 
 
 def _failed_submission(store: Store, run_id: str, outcome: Blocked) -> None:
@@ -34,8 +34,11 @@ def _failed_submission(store: Store, run_id: str, outcome: Blocked) -> None:
 
 
 def _launch(
-    project: Project | None, store: Store, record: dict[str, Any]
+    project: Project | None, store: Store, record: dict[str, Any],
+    *, asset_environment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    if record["state"] != "queued":
+        return record
     run_id = record["run_id"]
     if record.get("subject", {}).get("kind") == "formal_goal" and "authority" not in record:
         project = None
@@ -62,14 +65,16 @@ def _launch(
             worker = subprocess.Popen(
                 command,
                 cwd=project.root if project else store.root,
-                env=_child_env(),
+                env={**_child_env(), **(asset_environment or {})},
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=log,
                 close_fds=True,
                 **options,
             )
-            write_json(store.run_dir(run_id) / "worker.json", {"pid": worker.pid})
+            write_json(store.run_dir(run_id) / "worker.json", {
+                "pid": worker.pid, **({"assets": asset_environment} if asset_environment else {}),
+            })
     except OSError as exc:
         # Submission failure is durable and visible; it never publishes passing evidence.
         _failed_submission(
@@ -106,7 +111,9 @@ def retry(project: Project | None, run_id: str, *, store: Store) -> dict[str, An
     previous = store.record(run_id)
     if previous is None or previous["state"] in ("queued", "running"):
         raise ValueError("retry requires a finished or interrupted attempt")
-    return _launch(project, store, prepare_retry(run_id, store=store))
+    worker = read_json(store.run_dir(run_id) / "worker.json") or {}
+    return _launch(project, store, prepare_retry(run_id, store=store),
+                   asset_environment=worker.get("assets"))
 
 
 def wait(
@@ -128,7 +135,8 @@ def wait(
 
 
 def replay(
-    project: Project, manifest: Manifest, bundle: Path, *, store: Store | None = None
+    project: Project, manifest: Manifest, bundle: Path, *, store: Store | None = None,
+    restore_assets: bool = False,
 ) -> dict[str, Any]:
     """Recheck evidence with the current accepted checker, never commands from a bundle."""
     store = store or Store.of(project)
@@ -155,13 +163,24 @@ def replay(
         if component.to_json() != job["component"]:
             raise ValueError("bundle formal policy differs from the current component")
         request = VerificationRequest.from_json(job["request"])
-        identity = resolve_execution(component)
-        if canonical_digest(identity["semantic"]) != job["checker_sha256"]:
-            raise ValueError("bundle checker differs from the current verifier")
         captured = (capture_git_commit(project, request.candidate.oid)
                     if isinstance(request.candidate, GitCommit) else capture_working_tree(project))
         if captured.digest != job["source"]["digest"]:
             raise ValueError("bundle source differs from independently captured candidate files")
+        asset_environment = None
+        if restore_assets:
+            from .replay_assets import restore
+
+            approval = store.approved().get(component.digest, {})
+            if not component.is_accepted(approval, job["checker_sha256"]):
+                raise ValueError("portable replay requires the currently accepted formal checker")
+            asset_environment = restore(
+                bundle, store.root / "replay-assets" / new_run_id(), record=source,
+                accepted_checker_sha256=approval["checker_sha256"],
+            )
+        identity = resolve_execution(component, {**os.environ, **asset_environment}) if asset_environment else resolve_execution(component)
+        if canonical_digest(identity["semantic"]) != job["checker_sha256"]:
+            raise ValueError("bundle checker differs from the current verifier")
         record = prepare_formal(project, request, component, job["checker_sha256"], store=store)
         if record["job_id"] != job["job_id"]:
             _failed_submission(store, record["run_id"], Blocked(
@@ -169,7 +188,9 @@ def replay(
             raise ValueError("candidate changed while preparing formal evidence replay")
         record["replayed_from"] = {"run_id": source["run_id"], "receipt": source["receipt"]["sha256"]}
         store.save(record)
-        return _launch(project, store, record)
+        return _launch(project, store, record, asset_environment=asset_environment)
+    if restore_assets:
+        raise ValueError("portable replay assets are supported only for formal component jobs")
     check = manifest.require(source["check_id"])
     if (
         manifest.digest(check.id) != source["check_digest"]

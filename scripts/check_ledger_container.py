@@ -23,6 +23,7 @@ FORMAL_LABEL = "vkit.formal.run_id"
 SOURCE_REL = Path("src/vkit/formal/packages/resource_ledger/ledger.rs")
 TRUSTED_FILES = (
     Path("scripts/check_verus_ledger.py"),
+    Path("scripts/check_p2_contracts.py"),
     Path("src/vkit/__init__.py"),
     Path("src/vkit/nowindow.py"),
     Path("src/vkit/formal/__init__.py"),
@@ -34,7 +35,10 @@ TRUSTED_FILES = (
     Path("examples/verus-qualification/reserve-admission.rs"),
     Path("examples/verus-qualification/reserve-strict-bound.rs"),
     Path("examples/verus-qualification/historical-positive-limit.rs"),
+    Path("examples/verus-qualification/p2-transfer.rs"),
+    Path("examples/verus-qualification/p2-concurrent.rs"),
     Path("src/vkit/formal/packages/resource_ledger/expected.rs.in"),
+    Path("src/vkit/formal/packages/resource_ledger/runtime.rs.in"),
 )
 
 
@@ -392,6 +396,7 @@ def run_durable_probe(directory: Path, source: str, identity: dict) -> dict:
     from vkit.inputs import canonical_digest
     from vkit.manifest import parse_manifest
     from vkit.paths import open_project
+    from vkit.query import open_context
     from vkit.store import Store, now
 
     root = directory / "project"
@@ -412,8 +417,23 @@ def run_durable_probe(directory: Path, source: str, identity: dict) -> dict:
     request = VerificationRequest(component.id, GitCommit(oid))
     submitted = jobs.submit_formal(project, request, component, canonical_digest(identity["semantic"]), store=store)
     first = jobs.wait(store, submitted["run_id"], 900)
+    from vkit.formal.service import verify
+
+    reused = verify(open_context(root), {**request.semantic_json(), "reuse": True})
+    if reused["run_id"] != first["run_id"]:
+        raise RuntimeError("identical accepted formal evidence was not reused")
+    compilation = first["verification"]["compilation"]
+    coverage = first["verification"]["coverage"]
+    if (compilation["status"] != "trusted_compilation"
+            or compilation["translation_validation"] != "not_provided"
+            or compilation["observations"]["assurance"] != "empirical"
+            or len(coverage["claims"]) != 6):
+        raise RuntimeError("compiled correspondence or claim coverage was misclassified")
     bundle = directory / "bundle"
     evidence.export(store, first["run_id"], bundle)
+    portable = directory / "portable-bundle"
+    run([sys.executable, "-m", "vkit.cli", "evidence", "export", "--project", str(root),
+         "--run", first["run_id"], "--output", str(portable), "--include-assets", "--json"], timeout=900)
     (root / "candidate_api.rs").write_text("deliberately broken live checkout", encoding="utf-8")
     retried = jobs.wait(store, jobs.retry(project, first["run_id"], store=store)["run_id"], 900)
     replayed = jobs.wait(store, jobs.replay(project, manifest, bundle, store=store)["run_id"], 900)
@@ -425,7 +445,47 @@ def run_durable_probe(directory: Path, source: str, identity: dict) -> dict:
             raise RuntimeError(f"durable product verification failed: {record}")
     if len({record["run_id"] for record in (first, retried, replayed)}) != 3:
         raise RuntimeError("retry and replay did not create distinct attempts")
-    vir = bundle / "formal-output/candidate_api.vir"
+    unavailable = []
+    try:
+        for original in (Path(value) for value in identity["paths"].values()):
+            backup = original.with_name(original.name + ".capsule-unavailable")
+            if backup.exists():
+                raise RuntimeError(f"portable replay backup already exists: {backup}")
+            original.rename(backup)
+            unavailable.append((original, backup))
+        run(["docker", "image", "rm", identity["semantic"]["image_id"]])
+        if run(["docker", "image", "inspect", identity["semantic"]["image_id"]], check=False).returncode == 0:
+            raise RuntimeError("portable replay control did not remove its exact image")
+        from vkit.mcp import Server
+
+        restored_summary, error = Server(root).call("evidence_replay", {
+            "bundle": str(portable), "restore_assets": True, "wait_seconds": 0,
+        })
+        if error:
+            raise RuntimeError(f"MCP portable replay failed: {restored_summary}")
+        restored = jobs.wait(store, restored_summary["run_id"], 900)
+        restored_retry = jobs.wait(store, jobs.retry(project, restored["run_id"], store=store)["run_id"], 900)
+        for record in (restored, restored_retry):
+            if (record["outcome"]["result"] != "PASS" or record["job_id"] != first["job_id"]
+                    or not evidence.validate_record(record, store.run_dir(record["run_id"]))):
+                raise RuntimeError("portable replay or its retry did not establish fresh intact evidence")
+    finally:
+        for original, backup in reversed(unavailable):
+            backup.rename(original)
+    image_archive = portable / "replay/assets/image.tar"
+    size = image_archive.stat().st_size
+    with image_archive.open("ab") as stream:
+        stream.write(b"tampered")
+    try:
+        jobs.replay(project, manifest, portable, store=store, restore_assets=True)
+    except ValueError:
+        asset_tamper_rejected = True
+    else:
+        raise RuntimeError("portable replay accepted altered image bytes")
+    finally:
+        with image_archive.open("r+b") as stream:
+            stream.truncate(size)
+    vir = bundle / "formal-output/libcandidate_api.rlib"
     vir.write_bytes(vir.read_bytes() + b"tampered")
     try:
         jobs.replay(project, manifest, bundle, store=store)
@@ -434,8 +494,10 @@ def run_durable_probe(directory: Path, source: str, identity: dict) -> dict:
     else:
         raise RuntimeError("replay accepted changed verifier artifacts")
     return {"job_id": first["job_id"], "candidate": oid, "tamper_rejected": tamper_rejected,
+            "same_job_reused": True, "portable_replay": True, "portable_retry": True,
+            "asset_tamper_rejected": asset_tamper_rejected,
             "attempts": [{"run_id": record["run_id"], "receipt": record["receipt"]}
-                         for record in (first, retried, replayed)]}
+                         for record in (first, retried, replayed, restored, restored_retry)]}
 
 
 def container_command(image_id: str, base: list[str], trusted: Path, source: Path, archive: Path,
@@ -661,6 +723,9 @@ def main() -> int:
         report["mutation_controls"] = evidence_report.get("mutation_controls", [])
         report["semantic_checks"] = evidence_report.get("semantic_checks", [])
         report["semantic_controls"] = evidence_report.get("semantic_controls", [])
+        report["package_contracts"] = evidence_report.get("package_contracts")
+        report["checks"]["package_contracts_passed"] = (
+            evidence_report.get("package_contracts", {}).get("passed") is True)
         report["package_identity"] = evidence_report.get("package_identity")
         report["package_identity_sha256"] = evidence_report.get("package_identity_sha256")
         report["tool_identity_sha256"] = evidence_report.get("tool_identity_sha256")
@@ -684,7 +749,7 @@ def main() -> int:
         report["qualification_passed"] = all(report["checks"][name] for name in
                                               ("comparison_passed", "mutation_controls_passed",
                                                "semantic_checks_passed",
-                                               "rust_1_99_1", "z3_4_16_0", "product_passed"))
+                                               "rust_1_99_1", "z3_4_16_0", "product_passed", "package_contracts_passed"))
     except (OSError, RuntimeError, ValueError, KeyError, StopIteration,
             subprocess.SubprocessError, KeyboardInterrupt) as error:
         report["error"] = str(error)

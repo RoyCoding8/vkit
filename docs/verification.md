@@ -30,6 +30,10 @@ CLI and MCP share the same job service, store and worker lifecycle. Formal reque
 
 The verifier freshly checks and exports the owned library, then the candidate, then an unchanged expected client that imports both. The client calls all six bound symbols under the accepted preconditions and requires the owned postconditions. Stronger candidate preconditions or weaker postconditions do not discharge that check. Fixed strict arguments reject unchecked bodies and partial verification.
 
+The package also checks `transfer` against an atomic two-ledger model: success conserves combined usage; either failure preserves both ledgers and identifies the failing operation. `SharedLedger` uses the pinned vstd write lock to preserve valid state and establish each completed reserve/release transition. These are package contracts, separate from candidate API coverage. They do not establish global history linearizability, lock liveness or abort recovery.
+
+The same procedure compiles the checked candidate and library into a retained executable and runs fixed observations through the bound APIs. The `compilation` query section records source, driver and artifact hashes, compiler arguments and empirical results. Compilation trusts Verus erasure, Rust and the linker; it supplies no independent translation-validation theorem.
+
 The result is `ledger.source.v1`, method `verus_source`, assurance `trusted_engine`, coverage `required_api`. Extra exports and surrounding application code are unclaimed. The trust boundary includes Verus, Rust, vstd and SMT solving. This is source verification, not independently checked kernel-certificate evidence or a source-to-binary theorem. Resource aborts remain possible; source loop measures do not establish an operational step bound.
 
 ## Component configuration
@@ -82,7 +86,7 @@ The initial profile requires Linux x86_64 and Docker. Host configuration supplie
 
 Formal capture rejects secret-looking paths, links, submodules and unsupported files. Registered local selectors exclude secret-looking paths. Neither policy detects secret content. Declare source, specification, configuration and trusted dependencies; VKit cannot infer arbitrary dependency closures.
 
-Formal attempts run in restricted containers with read-only source/tools, no network, non-root execution and private output. Cancellation and recovery address only the attempt's owned container. Retained evidence rejects links, special files and unlisted artifacts, and has a post-execution limit of 10,000 files and 512 MiB. This is not an aggregate execution-time disk quota. Local registered adapters retain service-user filesystem permissions.
+Formal attempts run in restricted containers with read-only source/tools, no network, non-root execution and private output. Cancellation and recovery address only the attempt's owned container. Retained evidence rejects links, special files and unlisted artifacts, and has a post-execution limit of 10,000 entries and 512 MiB. This is not an aggregate execution-time disk quota. Local registered adapters retain service-user filesystem permissions.
 
 ## Results and evidence
 
@@ -96,11 +100,11 @@ Formal attempts run in restricted containers with read-only source/tools, no net
 
 A rejected Lean proof leaves its theorem unknown. A TLC safety counterexample refutes an invariant only after replay against the frozen model and configuration reproduces both the named violation and the ordered state sequence. Unsupported or unvalidated witnesses leave the claim unknown. A failed Verus obligation is `BLOCKED` with an unknown claim. Tests retain empirical assurance.
 
-Each submission creates a unique run for a content-derived job. Retry creates a new run for the same frozen job. Worker loss is interrupted execution, never a pass. A bounded wait can time out while its worker continues.
+Each submission creates a unique run for a content-derived job by default. Opt-in `verify --reuse` (MCP `reuse: true`) requires intact passing local evidence with identical full captured source, accepted policy, package, checker and target authority. It rechecks current tool identity and preserves the original receipt; it does not infer a smaller dependency closure. Retry creates a new run for the same frozen job. Worker loss is interrupted execution, never a pass. A bounded wait can time out while its worker continues.
 
-The [lifecycle model](../verification/lifecycle/Attempts.tla) checks a finite abstraction with at most three attempts. Its [conformance check](../scripts/check_lifecycle.py) captures cancellation, worker loss, recovery and retries through the production job API, then checks that event sequence with TLC. This covers the declared model and observed trace, not every runtime interleaving.
+The [lifecycle model](../verification/lifecycle/Attempts.tla) checks a finite abstraction with at most three attempts, shared job identity and a publication pointer. Its [conformance check](../scripts/check_lifecycle.py) captures concurrent attempts, cancellation/completion contention, worker loss, recovery and retry through the production job API, then checks that event sequence with TLC. This covers the declared model and observed trace, not every runtime interleaving or a refinement proof of the implementation.
 
-CLI and MCP run responses default to a summary with identities, status, obligation counts and the next action. CLI `--section` flags and MCP `sections` select `diagnostics`, `obligations`, `provenance`, `artifacts` or `log`. Request one, several, or `all`. Selection reads retained results without changing verification scope or starting another run. Logs and artifact lists are bounded and support paging.
+CLI and MCP run responses default to a summary with identities, status, obligation counts and the next action. CLI `--section` flags and MCP `sections` select `diagnostics`, `obligations`, `provenance`, `coverage`, `compilation`, `artifacts` or `log`. Coverage maps claims to bindings and behaviors, lists separate package claims, and identifies unclaimed application code. Request one, several, or `all`. Selection reads retained results without changing verification scope or starting another run. Logs and artifact lists are bounded and support paging.
 
 Counts distinguish observed results from unobserved obligations. If a partial result lacks the required denominator, `total` and `unknown` are `null`.
 
@@ -113,6 +117,8 @@ vkit run show --run <run-id> --section diagnostics --section provenance --json
 ```
 
 Receipts bind the job, source, outcome, obligations, checker and artifact digests. Export validates the bundle. Replay independently captures the candidate, requires matching accepted identities and runs checking again. Imported success flags cannot satisfy replay. Hashes provide integrity relative to trusted state; they do not authenticate an external writer or prove verifier soundness.
+
+Formal `evidence export --include-assets` preserves the exact Docker image, official Verus archive and expanded tool trees in a digest-bound capsule. `evidence replay --restore-assets` restores those assets on Linux x86-64 before a fresh check under the currently accepted policy. MCP exposes the corresponding `include_assets` and `restore_assets` booleans. Capsules have separate 16 GiB archive and total limits and a 100,000-entry limit per tool tree; they require the installed VKit runtime and the independently available candidate source. A matching image tag is insufficient.
 
 Package qualification classifies deliberate mutations as detected rejections, survivors or inconclusive runs. Package comparisons report changed assets, obligations and trust identities. They leave package-wide semantic equivalence unknown. The ledger qualification script accepts `--compare-package` with an earlier report or package snapshot.
 

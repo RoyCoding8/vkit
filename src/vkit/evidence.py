@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import stat
 import sys
@@ -56,18 +57,24 @@ def retained_files(root: Path, *, exclude_replay_assets: bool = False):
         raise ValueError("portable replay asset directory is a filesystem link")
     if exclude_replay_assets and replay_assets.exists() and not replay_assets.is_dir():
         raise ValueError("portable replay assets are not a directory")
-    for path in sorted(root.rglob("*")):
-        if exclude_replay_assets and path.is_relative_to(replay_assets):
-            continue
-        info = path.lstat()
-        if is_link(path) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
-            raise ValueError("evidence contains a link or special file")
-        if stat.S_ISREG(info.st_mode):
-            count += 1
-            total += info.st_size
-            if count > 10000 or total > 512 * 1024 * 1024:
-                raise ValueError("retained evidence exceeds 10000 files or 512 MiB")
-            yield path
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                if exclude_replay_assets and path == replay_assets:
+                    continue
+                count += 1
+                info = path.lstat()
+                if is_link(path) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                    raise ValueError("evidence contains a link or special file")
+                total += info.st_size if stat.S_ISREG(info.st_mode) else 0
+                if count > 10000 or total > 512 * 1024 * 1024:
+                    raise ValueError("retained evidence exceeds 10000 entries or 512 MiB")
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(path)
+                else:
+                    yield path
 
 
 def _artifact_names(directory: Path) -> set[str]:

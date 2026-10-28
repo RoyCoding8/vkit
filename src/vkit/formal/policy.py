@@ -80,6 +80,12 @@ class FormalComponent:
     def digest(self) -> str:
         return canonical_digest(self.to_json())
 
+    def is_accepted(self, approval: dict[str, Any], checker_sha256: str) -> bool:
+        return (approval.get("kind") == "formal_policy"
+                and approval.get("policy_sha256") == self.digest
+                and approval.get("package_sha256") == self.package.sha256
+                and approval.get("checker_sha256") == checker_sha256)
+
 
 @dataclass(frozen=True)
 class WorkingTree:
@@ -104,6 +110,7 @@ class VerificationRequest:
     component: str
     candidate: WorkingTree | GitCommit
     wait_seconds: int = 0
+    reuse: bool = False
 
     @classmethod
     def from_json(cls, raw: Any) -> VerificationRequest:
@@ -111,7 +118,7 @@ class VerificationRequest:
         source = raw["candidate"]
         candidate = (WorkingTree() if source["kind"] == "working_tree"
                      else GitCommit(source["oid"], source.get("target_commit")))
-        return cls(raw["component"], candidate, raw.get("wait_seconds", 0))
+        return cls(raw["component"], candidate, raw.get("wait_seconds", 0), raw.get("reuse", False))
 
     def semantic_json(self) -> dict[str, Any]:
         return {"component": self.component, "goal": {"kind": "implements"},

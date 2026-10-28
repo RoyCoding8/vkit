@@ -19,7 +19,7 @@ from .store import Store
 
 DEFAULT_LOG_LIMIT = 16_000
 MAX_ARTIFACTS = 100
-RUN_SECTIONS = ("summary", "diagnostics", "obligations", "provenance", "artifacts", "log")
+RUN_SECTIONS = ("summary", "diagnostics", "obligations", "provenance", "coverage", "compilation", "artifacts", "log")
 
 
 @dataclass(frozen=True)
@@ -267,6 +267,9 @@ def run_view(ctx: Context, run_id: str, *, sections: Iterable[str] | None = None
         view["obligations"] = record.get("obligations")
     if "provenance" in selected:
         view["provenance"] = _provenance(record)
+    for section in ("coverage", "compilation"):
+        if section in selected:
+            view[section] = (record.get("verification") or {}).get(section)
     if "artifacts" in selected:
         view["artifacts"] = _artifacts(ctx, run_id, record, artifact_offset, artifact_limit)
     if "log" in selected:

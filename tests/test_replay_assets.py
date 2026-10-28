@@ -142,12 +142,19 @@ def test_restore_rejects_docker_image_id_mismatch_after_load(
 
 
 def test_receipt_walk_prunes_only_capsule_and_rejects_linked_capsule_root(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run = tmp_path / "run"
     (run / "replay/assets").mkdir(parents=True)
     (run / "replay/assets/large.tar").write_bytes(b"portable payload")
     (run / "replay/other.txt").write_text("ordinary replay artifact", encoding="utf-8")
+    original_scandir = os.scandir
+
+    def bounded_walk(path):
+        assert Path(path) != run / "replay/assets", "receipt validation must not enter the capsule"
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", bounded_walk)
 
     retained = {path.relative_to(run).as_posix()
                 for path in evidence.retained_files(run, exclude_replay_assets=True)}
@@ -164,6 +171,18 @@ def test_receipt_walk_prunes_only_capsule_and_rejects_linked_capsule_root(
         pytest.skip(f"directory symlinks are unavailable: {exc}")
     with pytest.raises(ValueError, match="filesystem link"):
         list(evidence.retained_files(linked_run, exclude_replay_assets=True))
+
+
+def test_tree_archive_entry_limit_applies_during_reading(tmp_path, monkeypatch):
+    archive_path = tmp_path / "many.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        for name in ("one", "two", "three"):
+            archive.addfile(tarfile.TarInfo(name), io.BytesIO(b""))
+    monkeypatch.setattr(replay_assets, "_MAX_TREE_ENTRIES", 2)
+
+    with pytest.raises(ValueError, match="portable asset limits"):
+        replay_assets._extract_tree(archive_path, tmp_path / "restored", [],
+                                   hashlib.sha256(archive_path.read_bytes()).hexdigest())
 
 
 def test_evidence_export_calls_optional_asset_capture(

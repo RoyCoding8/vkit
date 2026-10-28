@@ -308,6 +308,10 @@ def prepare_formal(
     else:
         raise ValueError("unsupported formal candidate source")
     job = seal_job(FormalGoal(request, component, checker_sha256, source, authority).payload())
+    if request.reuse and component.is_accepted(store.approved().get(component.digest, {}), checker_sha256):
+        pointer = store.evidence_for("formal_goal", component.id, job["job_id"])
+        if pointer is not None and pointer["result"] == "PASS":
+            return store.record(pointer["run_id"])
     record = _record_for_job(job, run_id or new_run_id())
     record.update(category="source_verification", description=component.contract, claim_id=component.id)
     run_dir = store.run_dir(record["run_id"])
@@ -530,12 +534,7 @@ def _execute_formal(
             f"formal entry file is missing: {component.entry}",
         ), {}
     approval = store.approved().get(component.digest, {})
-    if "authority" not in job and (
-        approval.get("kind") != "formal_policy"
-        or approval.get("policy_sha256") != component.digest
-        or approval.get("package_sha256") != component.package.sha256
-        or approval.get("checker_sha256") != job["checker_sha256"]
-    ):
+    if "authority" not in job and not component.is_accepted(approval, job["checker_sha256"]):
         return Blocked(
             BlockedReason.NOT_APPROVED,
             "formal policy, package, and checker are not accepted",

@@ -60,6 +60,7 @@
         }
       ]
     },
+    "reuse": {"type": "boolean"},
     "wait_seconds": {
       "type": "integer",
       "minimum": 0,

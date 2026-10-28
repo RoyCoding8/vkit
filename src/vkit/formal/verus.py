@@ -116,10 +116,11 @@ def _archive_identity(
 
 
 def _package_identity(package: Any) -> dict[str, Any]:
+    from .ledger import ASSETS
+
     root = Path(package.root).resolve(strict=True)
-    names = ("ledger.rs", "expected.rs.in", "upstream.json")
     files = {}
-    for name in names:
+    for name in ASSETS:
         path = root / name
         files[name] = _file_identity(path)
     return {
@@ -130,7 +131,7 @@ def _package_identity(package: Any) -> dict[str, Any]:
     }
 
 
-def resolve_execution(component: FormalComponent) -> dict[str, Any]:
+def resolve_execution(component: FormalComponent, environment: dict[str, str] | None = None) -> dict[str, Any]:
     """Resolve pinned host assets; only semantic bytes enter the checker identity."""
     if platform.system() != "Linux" or platform.machine().lower() not in {
         "x86_64",
@@ -145,7 +146,8 @@ def resolve_execution(component: FormalComponent) -> dict[str, Any]:
             BlockedReason.ARTIFACT_MALFORMED,
             f"unsupported formal profile: {component.profile}",
         )
-    image = os.environ.get("VKIT_VERUS_IMAGE", "")
+    environment = os.environ if environment is None else environment
+    image = environment.get("VKIT_VERUS_IMAGE", "")
     if _SHA256.fullmatch(image) is None or container.image_id(image) is None:
         raise ExecutionSetupError(
             BlockedReason.TOOL_MISSING,
@@ -158,10 +160,10 @@ def resolve_execution(component: FormalComponent) -> dict[str, Any]:
         "cargo_home": "VKIT_CARGO_HOME",
     }
     paths = {
-        key: Path(os.environ.get(name, "")).expanduser().resolve()
+        key: Path(environment.get(name, "")).expanduser().resolve()
         for key, name in names.items()
     }
-    if any(not os.environ.get(name) for name in names.values()):
+    if any(not environment.get(name) for name in names.values()):
         raise ExecutionSetupError(
             BlockedReason.TOOL_MISSING,
             "Verus archive, tools, Rustup home, and Cargo home must be configured",
@@ -347,6 +349,16 @@ def _verus_phases(
             phase("verified_library", library, verified=True),
             phase("verified_candidate", candidate, verified=True),
             phase("verified_expected", expected_claim, verified=True),
+            phase("candidate_executable", [
+                verifier, "/trusted/rendered/runtime.rs", "--no-cheating", "--compile",
+                "--import", f"ledger={output}/ledger.vir",
+                "--extern", f"ledger={output}/libledger.rlib",
+                "--import", f"candidate_api={output}/candidate_api.vir",
+                "--extern", f"candidate_api={output}/libcandidate_api.rlib",
+                "-L", output, "-o", f"{output}/candidate-runtime",
+            ]),
+            phase("candidate_observations", [f"{output}/candidate-runtime"],
+                  marker="VKIT_CANDIDATE_RUNTIME_OK"),
         )
     )
     return phases
@@ -416,6 +428,9 @@ def execute_formal(
         expected_path.write_text(expected_text, encoding="utf-8", newline="\n")
         expected_path.chmod(0o444)
         expected_sha256 = _sha256(expected_path)
+        runtime_path = trusted / "runtime.rs"
+        runtime_path.write_text(ledger.render_runtime(component), encoding="utf-8", newline="\n")
+        runtime_path.chmod(0o444)
         package_root = Path(package.root).resolve(strict=True)
         toolchain = str(current["semantic"]["verus"]["version"]["toolchain"]).split()[0]
         phases = _verus_phases(
@@ -556,6 +571,24 @@ def execute_formal(
                 component, obligations, source_sha256, expected_sha256,
                 current["semantic"], checker_sha256,
             ),
+            "coverage": ledger.claim_coverage(component),
+            "compilation": {
+                "status": "trusted_compilation",
+                "source": {"path": component.entry, "sha256": source_sha256},
+                "checker_sha256": checker_sha256,
+                "artifacts": [
+                    {"path": f"formal-output/{name}", "sha256": _sha256(output / name)}
+                    for name in ("libledger.rlib", "libcandidate_api.rlib", "candidate-runtime")
+                ],
+                "driver": {"path": "formal-trusted/runtime.rs", "sha256": _sha256(runtime_path)},
+                "phases": [{"id": phase["id"], "argv": phase["argv"]} for phase in phases
+                           if phase["id"] in {"verified_library", "verified_candidate", "candidate_executable"}],
+                "observations": {"assurance": "empirical", "passed": True,
+                                 "cases": ["exact_capacity", "owner_rejection", "release",
+                                           "batch_rollback", "tagged_reserve", "command_trace", "missing_release"]},
+                "translation_validation": "not_provided",
+                "assumptions": ["Verus ghost erasure", "Rust compiler and linker correctness", "target runtime"],
+            },
         }
         return Passed(
             tuple(ScenarioResult(item, True, "verified") for item in obligations)

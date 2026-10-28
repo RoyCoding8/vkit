@@ -22,6 +22,8 @@ ASSET_REL = Path("replay/assets")
 _MANIFEST = "manifest.json"
 _MAX_ARCHIVE_BYTES = 16 * 1024**3
 _MAX_CAPSULE_BYTES = 16 * 1024**3
+_MAX_TREE_ENTRIES = 100000
+_MAX_MANIFEST_BYTES = 16 * 1024**2
 _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TREE_ENV = {
     "verus_root": "VKIT_VERUS_ROOT",
@@ -117,9 +119,12 @@ def _extract_tree(archive_path: Path, destination: Path,
     destination.mkdir(parents=True, exist_ok=False)
     root = destination.resolve(strict=True)
     with tarfile.open(archive_path, "r") as archive:
-        members = archive.getmembers()
-        if sum(member.size for member in members) > _MAX_ARCHIVE_BYTES:
-            raise ValueError("expanded tool asset tree exceeds the portable asset size limit")
+        members, size = [], 0
+        for member in archive:
+            size += member.size
+            if len(members) >= _MAX_TREE_ENTRIES or size > _MAX_ARCHIVE_BYTES:
+                raise ValueError("expanded tool asset tree exceeds the portable asset limits")
+            members.append(member)
         names: set[str] = set()
         links = []
         files = []
@@ -162,6 +167,8 @@ def _extract_tree(archive_path: Path, destination: Path,
         for member, target in links:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.symlink_to(member.linkname)
+        for member, target in sorted(directories, key=lambda row: len(row[0].name), reverse=True):
+            target.chmod(member.mode & 0o777)
     if _tree_identity(root) != expected:
         raise ValueError("restored tool tree differs from its recorded identity")
     return root
@@ -249,7 +256,8 @@ def restore(
     if base.is_symlink() or not base.is_dir():
         raise ValueError("portable asset directory is missing or linked")
     manifest_path = base / _MANIFEST
-    if manifest_path.is_symlink() or not manifest_path.is_file():
+    if (manifest_path.is_symlink() or not manifest_path.is_file()
+            or manifest_path.stat().st_size > _MAX_MANIFEST_BYTES):
         raise ValueError("portable asset manifest is missing or linked")
     manifest = read_json(manifest_path)
     if (not isinstance(manifest, dict) or set(manifest) != {
@@ -301,10 +309,16 @@ def restore(
         expected_names.add(path.name)
         if _hash(asset_path) != item.get("sha256"):
             raise ValueError("portable asset byte digest does not match")
-    if {path.name for path in base.iterdir()} != expected_names:
-        raise ValueError("portable asset capsule has missing or unexpected files")
-    if sum(path.stat().st_size for path in base.iterdir()) > _MAX_CAPSULE_BYTES:
-        raise ValueError("portable asset capsule exceeds the size limit")
+    seen, size = set(), 0
+    for path in base.iterdir():
+        if path.name not in expected_names:
+            raise ValueError("portable asset capsule has unexpected files")
+        seen.add(path.name)
+        size += path.stat().st_size
+        if size > _MAX_CAPSULE_BYTES:
+            raise ValueError("portable asset capsule exceeds the size limit")
+    if seen != expected_names:
+        raise ValueError("portable asset capsule has missing files")
     image = assets["image"]
     if image.get("image_id") != semantic.get("image_id"):
         raise ValueError("portable image identity differs from the accepted checker")

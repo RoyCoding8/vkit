@@ -83,13 +83,14 @@ def test_duplicate_components_and_unknown_obligations_are_rejected(tmp_path):
         parse(tmp_path, entry)
 
 
-def test_wait_is_excluded_from_verification_request_semantics():
+def test_wait_and_reuse_are_excluded_from_verification_request_semantics():
     raw = {"component": "allocation", "goal": {"kind": "implements"},
            "candidate": {"kind": "git_commit", "oid": "a" * 40, "target_commit": "b" * 40}}
     first = VerificationRequest.from_json(raw)
-    second = VerificationRequest.from_json({**raw, "wait_seconds": 60})
+    second = VerificationRequest.from_json({**raw, "wait_seconds": 60, "reuse": True})
     assert first.semantic_json() == second.semantic_json() == raw
     assert (first.wait_seconds, second.wait_seconds) == (0, 60)
+    assert (first.reuse, second.reuse) == (False, True)
 
 
 @pytest.mark.parametrize("change", [

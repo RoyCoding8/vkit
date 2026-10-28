@@ -53,6 +53,7 @@ def direct(component, snapshot, identity, directory):
     output.mkdir()
     output.chmod(0o777)
     (trusted / "expected.rs").write_text(ledger.render_expected(component), encoding="utf-8")
+    (trusted / "runtime.rs").write_text(ledger.render_runtime(component), encoding="utf-8")
     toolchain = identity["semantic"]["verus"]["version"]["toolchain"].split()[0]
     phases = verus._verus_phases("/trusted/package", "/output/candidate_api.rs", "/trusted/rendered/expected.rs", toolchain)
     phases[0]["marker"] = identity["semantic"]["verus"]["version"]["version"]
@@ -194,6 +195,22 @@ def qualify(directory, source, identity):
         raise RuntimeError("installed CLI and MCP did not establish the same job in distinct attempts")
     report["surfaces"] = {"job_id": cli["summary"]["job_id"], "attempts": [r["run_id"] for r in surface_records],
                           "cli_and_mcp_passed": True}
+    cli_reused = json.loads(run([sys.executable, "-m", "vkit.cli", "verify", component.id,
+        "--candidate", oid, "--reuse", "--project", str(project.root), "--json"], timeout=120).stdout)
+    server = Server(project.root)
+    mcp_reused, error = server.call("verify", {"component": component.id,
+        "goal": {"kind": "implements"}, "candidate": {"kind": "git_commit", "oid": oid}, "reuse": True})
+    latest = surface_records[-1]["run_id"]
+    if error or cli_reused["summary"]["run_id"] != latest or mcp_reused["summary"]["run_id"] != latest:
+        raise RuntimeError("CLI/MCP reuse did not return the latest intact matching proof")
+    details, error = server.call("run_get", {"run_id": latest, "sections": ["coverage", "compilation"]})
+    cli_details = json.loads(run([sys.executable, "-m", "vkit.cli", "run", "show", "--run", latest,
+        "--section", "coverage", "--section", "compilation", "--project", str(project.root), "--json"]).stdout)
+    if (error or details != cli_details or len(details["coverage"]["claims"]) != 6
+            or details["compilation"]["observations"]["passed"] is not True
+            or "log" in details):
+        raise RuntimeError("CLI/MCP selective coverage and compilation views did not match")
+    report["surfaces"].update(exact_proof_reused=True, selective_coverage_compilation=True)
     (directory / "reuse-qualification.json").write_text(json.dumps(report, indent=2) + "\n")
     if median > 2.0:
         raise RuntimeError(f"median VKit orchestration overhead exceeded two seconds: {median:.3f}")

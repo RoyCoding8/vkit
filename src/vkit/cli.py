@@ -161,7 +161,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
                  {"kind": "git_commit", "oid": resolve_commit(ctx.project, args.candidate)})
     try:
         record = verify(ctx, {"component": args.component, "goal": {"kind": "implements"},
-                              "candidate": candidate, "wait_seconds": args.wait})
+                              "candidate": candidate, "wait_seconds": args.wait, "reuse": args.reuse})
     except ExecutionSetupError as exc:
         raise Refused(str(exc), EXIT_BLOCKED) from exc
     view = query.run_view(ctx, record["run_id"], sections=args.section)
@@ -236,7 +236,7 @@ def cmd_run_retry(args: argparse.Namespace) -> int:
 def cmd_evidence_export(args: argparse.Namespace) -> int:
     from .evidence import export
 
-    result = export(_context(args).store, args.run, Path(args.output))
+    result = export(_context(args).store, args.run, Path(args.output), include_assets=args.include_assets)
     _emit(result, args.json, f"exported evidence to {result['bundle']}")
     return EXIT_OK
 
@@ -245,7 +245,8 @@ def cmd_evidence_replay(args: argparse.Namespace) -> int:
     from . import jobs
 
     ctx = _context(args)
-    record = jobs.replay(ctx.project, ctx.require_manifest(), Path(args.bundle), store=ctx.store)
+    record = jobs.replay(ctx.project, ctx.require_manifest(), Path(args.bundle), store=ctx.store,
+                         restore_assets=args.restore_assets)
     if not args.detach:
         record = jobs.wait(ctx.store, record["run_id"])
     _emit(record, args.json, _outcome_line(record))
@@ -540,6 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
     candidate.add_argument("--working-tree", action="store_true", help="capture current files provisionally")
     candidate.add_argument("--candidate", help="capture a Git revision as raw immutable objects")
     verify.add_argument("--wait", type=int, default=0, help="wait up to 60 seconds; zero returns the durable job")
+    verify.add_argument("--reuse", action="store_true", help="reuse intact local proof evidence only for identical source, policy and checker")
     verify.add_argument("--section", choices=[*query.RUN_SECTIONS, "all"], action="append",
                         help="include selected result detail; repeat to select several sections")
 
@@ -569,9 +571,11 @@ def build_parser() -> argparse.ArgumentParser:
     export = command(evidence, "export", "export a complete evidence bundle")
     export.add_argument("--run", required=True)
     export.add_argument("--output", required=True)
+    export.add_argument("--include-assets", action="store_true", help="preserve exact formal tool and container bytes")
     replay = command(evidence, "replay", "check a bundle with the current accepted verifier")
     replay.add_argument("--bundle", required=True)
     replay.add_argument("--detach", action="store_true")
+    replay.add_argument("--restore-assets", action="store_true", help="restore digest-bound tools and image before a fresh formal replay")
 
     project = sub.add_parser("project", help="onboard a repository").add_subparsers(
         dest="project_command", required=True)

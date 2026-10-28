@@ -16,7 +16,7 @@ flowchart LR
 
 | Method | What it establishes |
 | --- | --- |
-| Owned resource-ledger package | Verus source proofs for accounting, capacity, ownership checks, atomic batches and command traces across six declared API bindings. |
+| Owned resource-ledger package | Verus source proofs across six declared API bindings; reusable atomic transfer and lock-protected operation contracts. |
 | Lean | Kernel-checked theorems, with statement binding and an axiom audit according to the selected profile. |
 | TLA+ and TLC | Exhaustive checking of a finite model at its declared configuration. |
 | External verifier protocol | Evidence checked by a separately pinned checker under its declared assurance contract. |
@@ -47,7 +47,7 @@ uv run vkit verify allocation --project /path/to/repository --candidate HEAD --w
 uv run vkit run wait --project /path/to/repository --run RUN_ID --json
 ```
 
-Use `--working-tree` instead of `--candidate REF` for provisional source. Each submission creates an attempt; identical source and policy retain the same job identity. Workers survive client exit. Retry preserves the frozen job; replay checks evidence and runs verification again.
+Use `--working-tree` instead of `--candidate REF` for provisional source. Submissions create fresh attempts by default; `--reuse` returns intact passing evidence only when the complete captured source, policy and checker match. Workers survive client exit. Retry preserves the frozen job; replay checks evidence and runs verification again.
 
 Registered checks use `vkit check run --check CHECK_ID`. `vkit status` reports freshness and missing evidence. `vkit gate` requires current passing evidence for registered checks and required formal components.
 

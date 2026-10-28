@@ -15,7 +15,6 @@ def qualify(
     tool_identity: dict,
 ) -> dict:
     from check_verus_ledger import PACKAGE, ROOT, digest, run
-    from vkit.formal import ledger
 
     version = tool_identity["version"]
     platform = version["platform"]
@@ -83,7 +82,6 @@ def qualify(
             "log_sha256": digest(log_path.read_bytes()) if log_path.exists() else None,
         })
 
-    package = ledger.load_package()
     report = {
         "passed": all(case["matched"] for case in cases),
         "method": "pinned_verus_same_crate_package_proof",
@@ -96,7 +94,6 @@ def qualify(
             "separate from six candidate API bindings and their receipts",
         ],
         "package": {
-            "identity": vars(package.identity),
             "ledger_rs_sha256": digest((PACKAGE / "ledger.rs").read_bytes()),
             "transfer_fixture_sha256": digest((fixtures / "p2-transfer.rs").read_bytes()),
             "concurrent_fixture_sha256": digest((fixtures / "p2-concurrent.rs").read_bytes()),

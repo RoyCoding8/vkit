@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from vkit.formal.ledger import CONTRACT, PACKAGE_ID, PROFILE, VERSION
+from vkit.formal.ledger import ASSETS, CONTRACT, PACKAGE_ID, PROFILE, VERSION
 from vkit.formal.qualification import (
     compare_package_snapshots,
     mutation_control,
@@ -453,8 +453,7 @@ def main() -> int:
     obligations = ["resource-ledger:ledger_map_accounting"]
     obligations.extend(f"resource-ledger:{name}" for name in
                        re.findall(r"pub fn expected_(\w+)", template))
-    assets = {path.name: digest(path.read_bytes()) for path in
-              (SOURCE, PACKAGE / "expected.rs.in", PIN_PATH)}
+    assets = {name: digest((PACKAGE / name).read_bytes()) for name in ASSETS}
     assets.update({f"qualification/{path.name}": digest(path.read_bytes()) for path in (
         ADEQUACY_FIXTURES / "reserve-admission.rs",
         ADEQUACY_FIXTURES / "reserve-strict-bound.rs",
@@ -539,8 +538,12 @@ def main() -> int:
             success = success and executed["returncode"] == 0 and (out / "execution.log").read_text().strip() == "VKIT_LEDGER_SMOKE_OK"
     report["mutation_controls_passed"] = bool(report["mutation_controls"]) and all(
         control["status"] == "detected_rejection" for control in report["mutation_controls"])
+    from check_p2_contracts import qualify
+
+    report["package_contracts"] = qualify(exe, args.archive.resolve(), args.verus_root.resolve(),
+                                         out / "package-contracts", tool_identity=identity)
     report["comparison_passed"] = (success and report["mutation_controls_passed"]
-                                    and report["semantic_checks_passed"])
+                                    and report["semantic_checks_passed"] and report["package_contracts"]["passed"])
     (out / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"comparison_passed": report["comparison_passed"],
                       "mutation_controls_passed": report["mutation_controls_passed"],

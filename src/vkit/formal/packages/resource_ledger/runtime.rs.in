@@ -1,0 +1,29 @@
+extern crate candidate_api;
+extern crate ledger;
+use ledger::ledger_api::{BatchResponse, Command, LedgerError, Request, Response};
+
+fn main() {
+    let state = candidate_api::__VKIT_BIND_NEW__([None; __VKIT_RECORDS__], 10);
+    let (state, result) = candidate_api::__VKIT_BIND_RESERVE__(state, 1, 9, 10);
+    assert!(matches!(result, Ok(())));
+    let (state, result) = candidate_api::__VKIT_BIND_RELEASE__(state, 1, 8);
+    assert!(matches!(result, Err(LedgerError::OwnerMismatch)));
+    let (state, result) = candidate_api::__VKIT_BIND_RELEASE__(state, 1, 9);
+    assert!(matches!(result, Ok(10)));
+    let requests = [Request { id: 2, owner: 9, amount: 0 }; 3];
+    let (state, result) = candidate_api::__VKIT_BIND_RESERVE_BATCH__(state, requests, 1);
+    assert!(matches!(result, BatchResponse::RequestFailed {
+        index: 0, error: LedgerError::ZeroAmount,
+    }));
+    let (state, result) = candidate_api::__VKIT_BIND_APPLY_COMMAND__(
+        state, Command::Reserve { id: 3, owner: 9, amount: 10 },
+    );
+    assert!(matches!(result, Response::Reserved(Ok(()))));
+    let commands = [Command::Release { id: 3, owner: 9 }];
+    let mut responses = [Response::Reserved(Ok(()))];
+    let state = candidate_api::__VKIT_BIND_RUN_COMMANDS__(state, commands, &mut responses);
+    assert!(matches!(responses[0], Response::Released(Ok(10))));
+    let (_, result) = candidate_api::__VKIT_BIND_RELEASE__(state, 3, 9);
+    assert!(matches!(result, Err(LedgerError::Missing)));
+    println!("VKIT_CANDIDATE_RUNTIME_OK");
+}

@@ -273,12 +273,14 @@ def _run_wait(server: Server, args: dict[str, Any]) -> Any:
 
 def _evidence_export(server: Server, args: dict[str, Any]) -> Any:
     ctx = server.context()
-    return evidence.export(ctx.store, args["run_id"], Path(args["output"]))
+    return evidence.export(ctx.store, args["run_id"], Path(args["output"]),
+                           include_assets=args.get("include_assets", False))
 
 
 def _evidence_replay(server: Server, args: dict[str, Any]) -> Any:
     ctx = server.context()
-    record = jobs.replay(ctx.project, ctx.require_manifest(), Path(args["bundle"]), store=ctx.store)
+    record = jobs.replay(ctx.project, ctx.require_manifest(), Path(args["bundle"]), store=ctx.store,
+                         restore_assets=args.get("restore_assets", False))
     if "wait_seconds" in args:
         record = jobs.wait(ctx.store, record["run_id"], min(args["wait_seconds"], MAX_WAIT_SECONDS))
     return query.run_summary(record)
@@ -349,10 +351,11 @@ _BASE_TOOLS = (
     Tool("verify", "Verify one accepted component against VKit's owned mathematical contract. Captures the "
          "whole source tree and submits a durable job. The Verus source result covers the six required API "
          "bindings under the recorded trusted engine; working-tree results are provisional. Returns a compact "
-         "summary by default; select sections for details.",
+         "summary by default; select sections for details. Set reuse to skip execution only for intact local "
+         "passing evidence with identical complete source, policy, checker, and target identity.",
          {**schema(VERIFICATION_REQUEST)["properties"], "sections": _RUN_SECTIONS}, _verify, read_only=False,
          required=tuple(schema(VERIFICATION_REQUEST)["required"]), category="repository"),
-    Tool("run_get", "A compact run summary by default. Select summary, diagnostics, obligations, provenance, artifacts, or log for detail.",
+    Tool("run_get", "A compact run summary by default. Select summary, diagnostics, obligations, provenance, coverage, compilation, artifacts, or log for detail.",
          {"run_id": _STR, "sections": _RUN_SECTIONS,
           "log": {"type": "string", "enum": ["stdout", "stderr"]},
           "log_offset": {"type": "integer", "description": "negative counts from the end"},
@@ -371,11 +374,13 @@ _BASE_TOOLS = (
     Tool("evidence_export", "Export an intact completed run as an evidence bundle. Replay requires matching current "
          "inputs and accepted tool identity. The receipt binds the "
          "recorded inputs, checker identity, outcome, assurance, and artifact digests.",
-         {"run_id": _STR, "output": {"type": "string", "description": "destination bundle directory"}},
+         {"run_id": _STR, "output": {"type": "string", "description": "destination bundle directory"},
+          "include_assets": {"type": "boolean", "description": "retain exact formal tools and Docker image"}},
          _evidence_export, read_only=False, required=("run_id", "output"), category="repository"),
     Tool("evidence_replay", "Submit a durable replay job for a bundle using the currently accepted checker. "
          "Imported PASS flags are not trusted; the checker runs again. Optionally wait for its result.",
          {"bundle": {"type": "string", "description": "source bundle directory"},
+          "restore_assets": {"type": "boolean", "description": "restore capsule assets before fresh formal checking"},
           "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECONDS}},
          _evidence_replay, read_only=False, required=("bundle",), category="repository"),
     Tool("propose", "Suggest new or changed checks (manifest v3 entries), feature map entries, and new files they "

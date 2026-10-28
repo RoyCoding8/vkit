@@ -105,12 +105,18 @@ CLI and MCP run responses default to a summary with identities, status, obligati
 Counts distinguish observed results from unobserved obligations. If a partial result lacks the required denominator, `total` and `unknown` are `null`.
 
 ```sh
-vkit run show <run-id> --section diagnostics --section provenance --json
+vkit run show --run <run-id> --section diagnostics --section provenance --json
 ```
 
 Receipts bind the job, source, outcome, obligations, checker and artifact digests. Export validates the bundle. Replay independently captures the candidate, requires matching accepted identities and runs checking again. Imported success flags cannot satisfy replay. Hashes provide integrity relative to trusted state; they do not authenticate an external writer or prove verifier soundness.
 
 Package qualification classifies deliberate mutations as detected rejections, survivors or inconclusive runs. Package comparisons report changed assets, obligations and trust identities. They leave semantic equivalence unknown. The ledger qualification script accepts `--compare-package` with an earlier report or package snapshot.
+
+## Capability feedback
+
+CLI `feedback add` and MCP `feedback_add` record a task, a missing capability, and its expected verification benefit. `kind` defaults to `formal`; `reliable` covers other rigorous checks. An optional run ID links the request to retained evidence.
+
+Each submission creates a Markdown file under the repository's shared Git directory at `vkit/feedback/`. Duplicate submissions preserve the existing file. The tools cannot edit, delete, or consolidate feedback; maintainers do that manually. CLI `feedback list` and MCP `feedback_list` provide bounded previews, with formal verification requests first. Feedback never changes verification results or gates.
 
 ## Gates and CI
 

@@ -67,6 +67,26 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return EXIT_OK if report["ok"] else EXIT_BLOCKED
 
 
+def cmd_feedback_add(args: argparse.Namespace) -> int:
+    from .feedback import submit
+
+    request = {"task": args.task, "missing_capability": args.missing_capability,
+               "benefit": args.benefit, "kind": args.kind, "run_id": args.run}
+    entry = submit(_context(args).store, request)
+    _emit(entry, args.json, f"Recorded {entry['kind']} verification feedback {entry['id']}")
+    return EXIT_OK
+
+
+def cmd_feedback_list(args: argparse.Namespace) -> int:
+    from .feedback import collect
+
+    report = collect(_context(args).store, kind=args.kind, offset=args.offset, limit=args.limit)
+    _emit(report, args.json, "\n".join(
+        f"[{entry['kind']}] {entry['path']}" for entry in report["items"]
+    ) or "No verification feedback recorded")
+    return EXIT_OK
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     report = query.status(_context(args), args.path or ())
     lines = [f"gate: {report['gate']['verdict']} - {report['gate']['reason']}"]
@@ -471,6 +491,18 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--target", help="exact full protected target commit supplied by the trusted host")
     gate.add_argument("--output", help="new private evidence directory outside the candidate repository")
     command(sub, "features", "show the feature map and which features are verified now")
+    feedback = sub.add_parser("feedback", help="append Markdown requests for missing verification capabilities").add_subparsers(
+        dest="feedback_command", required=True)
+    add_feedback = command(feedback, "add", "record a task-specific missing verification capability")
+    add_feedback.add_argument("--task", required=True, help="task that needed the capability")
+    add_feedback.add_argument("--missing-capability", required=True, help="what VKit could not verify")
+    add_feedback.add_argument("--benefit", required=True, help="how it would materially improve verification")
+    add_feedback.add_argument("--kind", choices=("formal", "reliable"), default="formal")
+    add_feedback.add_argument("--run", help="related retained run id")
+    list_feedback = command(feedback, "list", "read local feedback, formal verification requests first")
+    list_feedback.add_argument("--kind", choices=("formal", "reliable"))
+    list_feedback.add_argument("--offset", type=int, default=0)
+    list_feedback.add_argument("--limit", type=int, default=20)
     tools = command(sub, "tools", "discover enabled tools or change their saved availability")
     tools.add_argument("--query", default="", help="filter enabled tools by words")
     from .categories import CATEGORIES
@@ -563,6 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 _DISPATCH = {
+    ("feedback", "add"): cmd_feedback_add, ("feedback", "list"): cmd_feedback_list,
     ("doctor", None): cmd_doctor, ("status", None): cmd_status, ("gate", None): cmd_gate,
     ("features", None): cmd_features, ("accept", None): cmd_accept, ("baseline", None): cmd_baseline, ("check", "run"): cmd_check_run,
     ("run", "show"): cmd_run_show, ("run", "cancel"): cmd_run_cancel,

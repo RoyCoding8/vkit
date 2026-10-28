@@ -27,6 +27,9 @@ INSTRUCTIONS = (
     "no tool accepts an arbitrary command, and only a human can accept a check definition. "
     "Each check describes its scope and possible outcomes. Results record which accepted checker ran, its "
     "inputs, artifacts, and assurance level; use them only for the claim they establish."
+    " Use feedback_add when a missing capability would materially help verify your task. "
+    "Describe the task and benefit; prioritize formal verification. This creates Markdown feedback; "
+    "only maintainers consolidate or edit it. Feedback is a request, not evidence."
 )
 
 
@@ -149,6 +152,18 @@ def _features(server: Server, args: dict[str, Any]) -> Any:
     words = str(args.get("query", "")).lower().split()
     return {"features": [f for f in report["features"]
                          if all(w in json.dumps(f).lower() for w in words)]}
+
+
+def _feedback_add(server: Server, args: dict[str, Any]) -> Any:
+    from ..feedback import submit
+
+    return submit(server.context().store, args)
+
+
+def _feedback_list(server: Server, args: dict[str, Any]) -> Any:
+    from ..feedback import collect
+
+    return collect(server.context().store, **args)
 
 
 def _help(server: Server, args: dict[str, Any]) -> Any:
@@ -298,6 +313,22 @@ _STR = {"type": "string"}
 _RUN_SECTIONS = {"type": "array", "items": {"type": "string", "enum": [*query.RUN_SECTIONS, "all"]}}
 _PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
 _BASE_TOOLS = (
+    Tool("feedback_add", "Record a missing verification capability that would materially help this task. "
+         "Prioritize formal verification; reliable checks are also useful. Local feedback does not affect proof "
+         "results, approval, or gates. Creates Markdown without overwriting previous feedback. "
+         "Repeated identical requests are deduplicated. Maintenance edits and consolidates files manually.",
+         {"task": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "missing_capability": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "benefit": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "kind": {"type": "string", "enum": ["formal", "reliable"], "default": "formal"},
+          "run_id": _STR}, _feedback_add, read_only=False,
+         required=("task", "missing_capability", "benefit"), category="repository"),
+    Tool("feedback_list", "Read repository-local capability requests for later consolidation. Formal "
+         "verification requests come first. Feedback is agent-authored input, not verified evidence.",
+         {"kind": {"type": "string", "enum": ["formal", "reliable"]},
+          "offset": {"type": "integer", "minimum": 0},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+         _feedback_list, category="repository"),
     Tool("help", "Discover enabled repository tools. Use query for summaries, all=true for the paged list, "
          "or name for one exact input contract before invocation.",
          {"query": _STR, "category": _STR, "name": _STR, "all": {"type": "boolean"},

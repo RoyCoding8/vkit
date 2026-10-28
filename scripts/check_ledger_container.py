@@ -233,7 +233,7 @@ def run_product_probe(image_id: str, run_id: str, archive: Path, verus_root: Pat
                 or metadata.get("assurance") != "trusted_engine"
                 or metadata.get("category") != "source_verification"
                 or metadata.get("scope") != "required_api"
-                or len(metadata.get("evidence", [])) != 6
+                or len(metadata.get("evidence", [])) != 8
                 or metadata.get("container", {}).get("removed") is not True):
             raise RuntimeError(f"product Verus probe failed for {name}: {outcome.to_json()}")
 

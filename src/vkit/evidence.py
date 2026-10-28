@@ -177,6 +177,7 @@ def seal(record: dict[str, Any], directory: Path, check=None) -> None:
         "outcome": record["outcome"],
         "obligations": record["obligations"],
         "artifacts": artifacts,
+        "verification": record.get("verification", {}),
     }
     if check is None:
         receipt.update(method="verus_source", category="source_verification", scope="required_api",

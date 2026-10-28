@@ -197,6 +197,19 @@ def _diagnostics(ctx: Context, run_id: str, record: dict[str, Any]) -> dict[str,
         if log_path.is_file():
             item["size"] = log_path.stat().st_size
         diagnostics.append(item)
+    verification = record.get("verification") or {}
+    for item in verification.get("source_diagnostics", []):
+        if not isinstance(item, dict) or not isinstance(item.get("location"), dict):
+            continue
+        location = item["location"]
+        if not isinstance(location.get("path"), str) or not isinstance(location.get("source_sha256"), str):
+            continue
+        diagnostics.append({
+            "kind": item.get("kind", "source_diagnostic"),
+            "summary": item.get("message", ""),
+            "severity": item.get("severity"),
+            "location": location,
+        })
     return {"diagnostics": diagnostics, "container_log": "container.stderr" if detail else None}
 
 
@@ -213,6 +226,7 @@ def _provenance(record: dict[str, Any]) -> dict[str, Any]:
         "policy_sha256": record.get("policy_sha256"), "package_sha256": record.get("package_sha256"),
         "checker_sha256": record.get("checker_sha256"),
         "execution_identity": (verification.get("execution_identity") or {}).get("digest"),
+        "logical_trust": verification.get("logical_trust"),
         "receipt": record.get("receipt"),
     }
 

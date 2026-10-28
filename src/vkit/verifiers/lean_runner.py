@@ -56,6 +56,7 @@ def _lean_messages(stream: str) -> list[dict]:
         if not isinstance(document, dict):
             continue
         pos = document.get("pos") or {}
+        end_pos = document.get("endPos") or {}
         out.append({
             "severity": str(document.get("severity", "")),
             "data": str(document.get("data", "")),
@@ -63,6 +64,8 @@ def _lean_messages(stream: str) -> list[dict]:
             "file": str(document.get("fileName", "")),
             "line": int(pos.get("line", 0) or 0),
             "column": int(pos.get("column", 0) or 0),
+            "end_line": int(end_pos.get("line", 0) or 0),
+            "end_column": int(end_pos.get("column", 0) or 0),
         })
     return out
 

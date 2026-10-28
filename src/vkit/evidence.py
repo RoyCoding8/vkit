@@ -47,11 +47,18 @@ def _retained_path(root: Path, relative: str) -> Path:
     return current
 
 
-def retained_files(root: Path):
+def retained_files(root: Path, *, exclude_replay_assets: bool = False):
     count, total = 0, 0
     if is_link(root):
         raise ValueError("evidence root is a filesystem link")
+    replay_assets = root / "replay" / "assets"
+    if exclude_replay_assets and is_link(replay_assets):
+        raise ValueError("portable replay asset directory is a filesystem link")
+    if exclude_replay_assets and replay_assets.exists() and not replay_assets.is_dir():
+        raise ValueError("portable replay assets are not a directory")
     for path in sorted(root.rglob("*")):
+        if exclude_replay_assets and path.is_relative_to(replay_assets):
+            continue
         info = path.lstat()
         if is_link(path) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
             raise ValueError("evidence contains a link or special file")
@@ -64,7 +71,8 @@ def retained_files(root: Path):
 
 
 def _artifact_names(directory: Path) -> set[str]:
-    names = (p.relative_to(directory).as_posix() for p in retained_files(directory))
+    names = (p.relative_to(directory).as_posix()
+             for p in retained_files(directory, exclude_replay_assets=True))
     return {name for name in names if name not in _UNSEALED and not name.startswith(("snapshot/", "replay/"))}
 
 
@@ -76,6 +84,7 @@ def policy_identity() -> dict[str, str]:
             "runner.py",
             "jobs.py",
             "evidence.py",
+            "replay_assets.py",
             "inputs.py",
             "manifest.py",
             "outcome.py",
@@ -327,7 +336,9 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
         return False
 
 
-def export(store, run_id: str, destination: Path) -> dict[str, Any]:
+def export(
+    store, run_id: str, destination: Path, *, include_assets: bool = False
+) -> dict[str, Any]:
     record = store.record(run_id)
     if (
         record is None
@@ -341,9 +352,19 @@ def export(store, run_id: str, destination: Path) -> dict[str, Any]:
         symlinks=True,
         ignore=shutil.ignore_patterns("lock", "cancel", "worker.log", "worker.json"),
     )
+    portable_assets = None
+    if include_assets:
+        from .replay_assets import capture
+
+        try:
+            portable_assets = capture(record, store.run_dir(run_id), destination)
+        except BaseException:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
     return {
         "run_id": run_id,
         "job_id": record["job_id"],
         "bundle": str(destination.resolve()),
         "receipt_sha256": record["receipt"]["sha256"],
+        **({"portable_assets": portable_assets} if portable_assets is not None else {}),
     }

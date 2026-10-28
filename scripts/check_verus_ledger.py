@@ -17,10 +17,12 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from vkit.formal.ledger import CONTRACT, PACKAGE_ID, PROFILE, VERSION
 from vkit.formal.qualification import (
+    HISTORICAL_POSITIVE_LIMIT_FIX,
     compare_package_snapshots,
     mutation_control,
     normalize_package_snapshot,
     package_snapshot,
+    semantic_check_record,
 )
 from vkit.nowindow import hidden_window
 
@@ -30,6 +32,7 @@ PACKAGE = ROOT / "src/vkit/formal/packages/resource_ledger"
 PIN_PATH = PACKAGE / "upstream.json"
 SOURCE = PACKAGE / "ledger.rs"
 SMOKE = ROOT / "examples/verus-qualification/smoke.rs"
+ADEQUACY_FIXTURES = ROOT / "examples/verus-qualification"
 MUTATIONS = {
     "lost_accounting": ("next.used = next.used + amount;", "next.used = amount;"),
     "duplicate_id": ("if entry.id == id {", "if false {"),
@@ -278,6 +281,97 @@ def check_binding(exe: Path, captured: Path, out: Path, report: dict,
     return success
 
 
+def check_specification_adequacy(exe: Path, out: Path, binding_root: Path, report: dict) -> bool:
+    root = out / "specification-adequacy"
+    root.mkdir()
+    identities = {
+        "package_identity_sha256": report["package_identity_sha256"],
+        "tool_identity_sha256": report["tool_identity_sha256"],
+    }
+    flags = ["--no-cheating", "--no-external-by-default", "--num-threads", "2"]
+    fixtures = (
+        {
+            "name": "reserve_capacity_equivalence",
+            "file": "reserve-admission.rs",
+            "status": "verified_equivalence",
+            "predicates": {
+                "current": "amount <= state.capacity - state.used",
+                "rewritten": "state.used as nat + amount as nat <= state.capacity as nat",
+                "reserve_result_view": "Ok iff amount > 0, id absent, slots not full, and rewritten capacity predicate",
+            },
+            "scope": "reserve_result_view capacity admission and Ok branch for every valid LedgerView<N>",
+        },
+        {
+            "name": "reserve_strict_bound_control",
+            "file": "reserve-strict-bound.rs",
+            "status": "checked_counterexample",
+            "predicates": {
+                "current": "amount <= state.capacity - state.used",
+                "mutated": "state.used as nat + amount as nat < state.capacity as nat",
+            },
+            "scope": "exact-capacity reserve request in the shared ledger_api model",
+            "witness": {
+                "records": 2,
+                "reserve_precondition": "N > 0 && valid_view(input.view())",
+                "precondition_inhabited": True,
+                "existing_entry": {"id": 1, "owner": 9, "amount": 7},
+                "request": {"id": 2, "owner": 11, "amount": 3},
+                "capacity": 10,
+                "current_result": "Ok",
+                "mutated_result": "rejected by strict bound",
+            },
+        },
+        {
+            "name": "historical_positive_limit_regression",
+            "file": "historical-positive-limit.rs",
+            "status": "checked_counterexample",
+            "predicates": {
+                "historical": "max_records : nat (zero admitted)",
+                "fixed": "max_records : positive (zero excluded)",
+                "shared_vocabulary_witness": "valid_view::<0>(LedgerView { slots: [], used: 0, capacity: 0 })",
+            },
+            "scope": "reconstructed zero-bound regression mapped to the current ledger slot bound",
+            "witness": {"record_limit": 0, "valid_view": True, "historical_admits": True, "fixed_rejects": True},
+            "provenance": HISTORICAL_POSITIVE_LIMIT_FIX,
+        },
+    )
+    rows = []
+    all_passed = True
+    for fixture in fixtures:
+        source = ADEQUACY_FIXTURES / fixture["file"]
+        source_sha256 = digest(source.read_bytes())
+        log_path = root / f"{fixture['name']}.log"
+        result = run(
+            [str(exe), "--crate-type=lib", str(source),
+             "--import", f"ledger={binding_root / 'ledger.vir'}",
+             "--extern", f"ledger={binding_root / 'libledger.rlib'}", "-L", str(binding_root), *flags],
+            log_path, root,
+        )
+        log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+        verified = result["returncode"] == 0 and bool(re.search(
+            r"verification results:: [1-9]\d* verified, 0 errors", log))
+        status = fixture["status"] if verified else "inconclusive"
+        row = semantic_check_record(
+            name=fixture["name"], status=status, predicates=fixture["predicates"],
+            scope=fixture["scope"], evidence_sha256=source_sha256, **identities,
+            witness=fixture.get("witness") if verified else None,
+            provenance=fixture.get("provenance"),
+        )
+        row["verifier_log"] = log_path.name
+        row["verifier_returncode"] = result["returncode"]
+        if "error" in result:
+            row["verifier_error"] = result["error"]
+        rows.append(row)
+        report["checks"].append({
+            "name": fixture["name"], "verified": verified,
+            "source_sha256": source_sha256, **result,
+        })
+        all_passed = all_passed and verified
+    report["semantic_checks"] = rows
+    report["semantic_checks_passed"] = all_passed
+    return all_passed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verus-root", type=Path)
@@ -318,16 +412,25 @@ def main() -> int:
         "toolchain": identity,
         "tool_identity_sha256": digest(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()),
         "mutation_controls": [],
+        "semantic_checks": [],
+        "semantic_checks_passed": False,
+        "specification_adequacy_passed": False,
         "checks": [],
     }
     template = (PACKAGE / "expected.rs.in").read_text(encoding="utf-8")
     obligations = ["resource-ledger:ledger_map_accounting"]
     obligations.extend(f"resource-ledger:{name}" for name in
                        re.findall(r"pub fn expected_(\w+)", template))
+    assets = {path.name: digest(path.read_bytes()) for path in
+              (SOURCE, PACKAGE / "expected.rs.in", PIN_PATH)}
+    assets.update({f"qualification/{path.name}": digest(path.read_bytes()) for path in (
+        ADEQUACY_FIXTURES / "reserve-admission.rs",
+        ADEQUACY_FIXTURES / "reserve-strict-bound.rs",
+        ADEQUACY_FIXTURES / "historical-positive-limit.rs",
+    )})
     package = package_snapshot(
         identity={"id": PACKAGE_ID, "version": VERSION, "contract": CONTRACT, "profile": PROFILE},
-        assets={path.name: digest(path.read_bytes()) for path in
-                (SOURCE, PACKAGE / "expected.rs.in", PIN_PATH)},
+        assets=assets,
         obligations=obligations,
         trust_identity={"pin_sha256": report["pin_sha256"],
                         "tool_identity_sha256": report["tool_identity_sha256"]},
@@ -392,6 +495,12 @@ def main() -> int:
             exe, captured, out, report, report["package_identity_sha256"],
             report["tool_identity_sha256"])
         success = success and report["binding_passed"]
+        if report["binding_passed"]:
+            report["specification_adequacy_passed"] = check_specification_adequacy(
+                exe, out, out / "binding", report)
+        else:
+            report["specification_adequacy_passed"] = False
+        success = report["specification_adequacy_passed"] and success
         compiled = run([str(exe), str(smoke), "--no-cheating", "--num-threads", "2",
                         "--compile", "-o", str(binary)], out / "compile.log", out)
         report["checks"].append({"name": "compiled_verified_source", **compiled})
@@ -402,10 +511,13 @@ def main() -> int:
             success = success and executed["returncode"] == 0 and (out / "execution.log").read_text().strip() == "VKIT_LEDGER_SMOKE_OK"
     report["mutation_controls_passed"] = bool(report["mutation_controls"]) and all(
         control["status"] == "detected_rejection" for control in report["mutation_controls"])
-    report["comparison_passed"] = success and report["mutation_controls_passed"]
+    report["comparison_passed"] = (success and report["mutation_controls_passed"]
+                                    and report["semantic_checks_passed"])
     (out / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"comparison_passed": report["comparison_passed"],
                       "mutation_controls_passed": report["mutation_controls_passed"],
+                      "semantic_checks_passed": report["semantic_checks_passed"],
+                      "semantic_checks": report["semantic_checks"],
                       "mutation_controls": report["mutation_controls"],
                       "checks": report["checks"]}, indent=2))
     return 0 if report["comparison_passed"] else 1

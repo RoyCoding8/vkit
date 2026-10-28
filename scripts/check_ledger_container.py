@@ -31,6 +31,9 @@ TRUSTED_FILES = (
     Path("src/vkit/formal/packages/resource_ledger/upstream.json"),
     Path("examples/verus-qualification/smoke.rs"),
     Path("examples/verus-qualification/candidate_api.rs"),
+    Path("examples/verus-qualification/reserve-admission.rs"),
+    Path("examples/verus-qualification/reserve-strict-bound.rs"),
+    Path("examples/verus-qualification/historical-positive-limit.rs"),
     Path("src/vkit/formal/packages/resource_ledger/expected.rs.in"),
 )
 
@@ -656,11 +659,14 @@ def main() -> int:
         report["checks"]["comparison_passed"] = evidence_report.get("comparison_passed") is True
         report["driver_scope"] = evidence_report.get("scope")
         report["mutation_controls"] = evidence_report.get("mutation_controls", [])
+        report["semantic_checks"] = evidence_report.get("semantic_checks", [])
         report["package_identity"] = evidence_report.get("package_identity")
         report["package_identity_sha256"] = evidence_report.get("package_identity_sha256")
         report["tool_identity_sha256"] = evidence_report.get("tool_identity_sha256")
         report["checks"]["mutation_controls_passed"] = (
             evidence_report.get("mutation_controls_passed") is True)
+        report["checks"]["semantic_checks_passed"] = (
+            evidence_report.get("semantic_checks_passed") is True)
         if (execution["returncode"] != 0 or execution["timed_out"]
                 or not execution["output_retained"] or not evidence.is_file()):
             raise RuntimeError("sealed Verus qualification failed")
@@ -676,6 +682,7 @@ def main() -> int:
         report["checks"]["product_passed"] = report["product"]["passed"]
         report["qualification_passed"] = all(report["checks"][name] for name in
                                               ("comparison_passed", "mutation_controls_passed",
+                                               "semantic_checks_passed",
                                                "rust_1_99_1", "z3_4_16_0", "product_passed"))
     except (OSError, RuntimeError, ValueError, KeyError, StopIteration,
             subprocess.SubprocessError, KeyboardInterrupt) as error:

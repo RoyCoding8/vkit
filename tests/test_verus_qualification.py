@@ -3,11 +3,13 @@ from __future__ import annotations
 import pytest
 
 from vkit.formal.qualification import (
+    HISTORICAL_POSITIVE_LIMIT_FIX,
     classify_mutation,
     compare_package_snapshots,
     mutation_control,
     normalize_package_snapshot,
     package_snapshot,
+    semantic_check_record,
 )
 
 
@@ -88,3 +90,39 @@ def test_package_snapshot_input_accepts_prior_report_and_rejects_incomplete_shap
     assert normalize_package_snapshot({"package_identity": snapshot}) == snapshot
     with pytest.raises(ValueError, match="package snapshot requires identity, assets, obligations, and trust_identity"):
         normalize_package_snapshot({"assets": {}})
+
+
+def test_semantic_check_records_bind_exact_scope_predicates_and_identities():
+    assert semantic_check_record(
+        name="reserve_capacity_equivalence", status="verified_equivalence",
+        predicates={"current": "amount <= capacity - used", "rewritten": "used + amount <= capacity"},
+        scope="reserve capacity branch for valid views", evidence_sha256="proof-digest",
+        package_identity_sha256="package-digest", tool_identity_sha256="tool-digest",
+    ) == {
+        "name": "reserve_capacity_equivalence", "status": "verified_equivalence",
+        "predicates": {"current": "amount <= capacity - used", "rewritten": "used + amount <= capacity"},
+        "scope": "reserve capacity branch for valid views", "evidence_sha256": "proof-digest",
+        "package_identity_sha256": "package-digest", "tool_identity_sha256": "tool-digest",
+    }
+
+
+def test_counterexample_record_requires_a_concrete_witness_and_preserves_provenance():
+    with pytest.raises(ValueError, match="a checked counterexample requires its concrete witness"):
+        semantic_check_record(
+            name="strict_bound", status="checked_counterexample", predicates={"current": "x <= y"},
+            scope="exact boundary", evidence_sha256="proof", package_identity_sha256="package",
+            tool_identity_sha256="tool",
+        )
+
+    record = semantic_check_record(
+        name="historical_positive_limit_regression", status="checked_counterexample",
+        predicates={"old": "max_records : nat", "fixed": "max_records : positive"},
+        scope="reconstructed zero-bound regression", evidence_sha256="proof",
+        package_identity_sha256="package", tool_identity_sha256="tool",
+        witness={"record_limit": 0}, provenance=HISTORICAL_POSITIVE_LIMIT_FIX,
+    )
+    assert record["witness"] == {"record_limit": 0}
+    assert record["provenance"]["commit"] == "48ea7b7260d6ac7fe77474ae2fdac72fb9fb4cc5"
+    assert record["provenance"]["source_sha256"] == (
+        "4ef80555b3834bed3e9a5bbd8b581fdb0d2315233d77d53586523ba2703c5070"
+    )

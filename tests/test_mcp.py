@@ -45,7 +45,8 @@ def test_an_agent_runs_waits_reads_and_exports_durable_check_evidence(make_proje
         assert details["log"]["text"]
         all_details, error = client.call("run_get", run_id=run_id, sections=["all"])
         assert not error and all_details["sections"] == ["summary", "diagnostics", "obligations",
-                                                          "provenance", "artifacts", "log"]
+                                                          "provenance", "coverage", "compilation", "artifacts", "log"]
+        assert all_details["coverage"] is None and all_details["compilation"] is None
         _, error = client.call("run_get", run_id=run_id, sections=["all", "log"])
         assert error
         _, error = client.call("run_get", run_id=run_id, sections=["not-a-section"])

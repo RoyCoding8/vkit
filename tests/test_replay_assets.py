@@ -14,6 +14,48 @@ from vkit.formal.verus import _tree_identity
 from vkit.inputs import canonical_digest
 
 
+_IMAGE_CONFIG = b'{"architecture":"amd64","os":"linux"}'
+_IMAGE_ID = "sha256:" + hashlib.sha256(_IMAGE_CONFIG).hexdigest()
+
+
+def _image_archive() -> bytes:
+    config_path = f"blobs/sha256/{_IMAGE_ID[7:]}"
+    oci_manifest = json.dumps({
+        "schemaVersion": 2,
+        "config": {"digest": _IMAGE_ID, "size": len(_IMAGE_CONFIG)},
+        "layers": [],
+    }, separators=(",", ":")).encode()
+    manifest_digest = "sha256:" + hashlib.sha256(oci_manifest).hexdigest()
+    files = {
+        "manifest.json": json.dumps([{
+            "Config": config_path, "RepoTags": None, "Layers": [],
+        }]).encode(),
+        config_path: _IMAGE_CONFIG,
+        "index.json": json.dumps({"schemaVersion": 2, "manifests": [{
+            "digest": manifest_digest, "size": len(oci_manifest),
+        }]}).encode(),
+        f"blobs/sha256/{manifest_digest[7:]}": oci_manifest,
+        "oci-layout": b'{"imageLayoutVersion":"1.0.0"}',
+    }
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w") as archive:
+        for name, data in files.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    return output.getvalue()
+
+
+def _refresh_image_digest(bundle: Path) -> None:
+    capsule = bundle / replay_assets.ASSET_REL
+    manifest_path = capsule / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["assets"]["image"]["sha256"] = hashlib.sha256(
+        (capsule / "image.tar").read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def _tree(path: Path, marker: str) -> list[dict]:
     path.mkdir()
     nested = path / "nested"
@@ -35,7 +77,7 @@ def _record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, dict
     monkeypatch.setenv("VKIT_CARGO_HOME", str(roots["cargo_home"]))
     semantic = {
         "target": "x86_64-unknown-linux-gnu",
-        "image_id": "sha256:" + "a" * 64,
+        "image_id": _IMAGE_ID,
         "verus": {"archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
                   "files": trees["verus_root"]},
         "rustup_home": trees["rustup_home"],
@@ -65,7 +107,7 @@ def _export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict
 
     def fake_run(argv: list[str], **_kwargs):
         if argv[1:3] == ["save", "--output"]:
-            Path(argv[3]).write_bytes(b"docker image archive")
+            Path(argv[3]).write_bytes(_image_archive())
 
     monkeypatch.setattr(replay_assets, "_run", fake_run)
     monkeypatch.setattr(container, "image_id", lambda image: image)
@@ -99,6 +141,56 @@ def test_restore_rejects_tampered_asset_bytes_before_loading_image(
     monkeypatch.setattr(replay_assets, "_run", lambda argv, **_kwargs: loaded.append(argv))
 
     with pytest.raises(ValueError, match="byte digest"):
+        replay_assets.restore(bundle, tmp_path / "restored")
+    assert loaded == []
+
+
+@pytest.mark.parametrize("mutation, message", [
+    ("extra-image", "exactly one image"),
+    ("repo-tags", "tags"),
+    ("repositories", "repository tag mappings"),
+    ("oci-ref", "tag or ref annotations"),
+    ("oci-extra-image", "one OCI image manifest"),
+    ("config-mismatch", "config does not match"),
+])
+def test_restore_rejects_image_imports_outside_accepted_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str, message: str,
+) -> None:
+    bundle, _, _ = _export(tmp_path, monkeypatch)
+    archive_path = bundle / replay_assets.ASSET_REL / "image.tar"
+    with tarfile.open(archive_path, "r") as archive:
+        files = {
+            member.name: archive.extractfile(member).read()
+            for member in archive if member.isfile()
+        }
+    docker_manifest = json.loads(files["manifest.json"])
+    if mutation == "extra-image":
+        docker_manifest.append(dict(docker_manifest[0]))
+        files["manifest.json"] = json.dumps(docker_manifest).encode()
+    elif mutation == "repo-tags":
+        docker_manifest[0]["RepoTags"] = ["unrelated:latest"]
+        files["manifest.json"] = json.dumps(docker_manifest).encode()
+    elif mutation == "repositories":
+        files["repositories"] = b'{"unrelated":{"latest":"layer"}}'
+    elif mutation == "config-mismatch":
+        files[docker_manifest[0]["Config"]] = b'{}'
+    else:
+        index = json.loads(files["index.json"])
+        if mutation == "oci-extra-image":
+            index["manifests"].append(dict(index["manifests"][0]))
+        else:
+            index["manifests"][0]["annotations"] = {"org.opencontainers.image.ref.name": "unrelated"}
+        files["index.json"] = json.dumps(index).encode()
+    with tarfile.open(archive_path, "w") as archive:
+        for name, data in files.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    _refresh_image_digest(bundle)
+    loaded = []
+    monkeypatch.setattr(replay_assets, "_run", lambda argv, **_kwargs: loaded.append(argv))
+
+    with pytest.raises(ValueError, match=message):
         replay_assets.restore(bundle, tmp_path / "restored")
     assert loaded == []
 

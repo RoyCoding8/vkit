@@ -200,7 +200,10 @@ def qualify(directory, source, identity):
     server = Server(project.root)
     mcp_reused, error = server.call("verify", {"component": component.id,
         "goal": {"kind": "implements"}, "candidate": {"kind": "git_commit", "oid": oid}, "reuse": True})
-    latest = surface_records[-1]["run_id"]
+    pointer = store.evidence_for("formal_goal", component.id, surface_records[0]["job_id"])
+    if pointer is None:
+        raise RuntimeError("completed CLI/MCP proofs have no intact published evidence")
+    latest = pointer["run_id"]
     if error or cli_reused["summary"]["run_id"] != latest or mcp_reused["summary"]["run_id"] != latest:
         raise RuntimeError("CLI/MCP reuse did not return the latest intact matching proof")
     details, error = server.call("run_get", {"run_id": latest, "sections": ["coverage", "compilation"]})

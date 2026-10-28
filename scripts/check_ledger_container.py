@@ -601,6 +601,8 @@ def run_controls(image_id: str, run_id: str, cid_dir: Path, trusted: Path, sourc
                                     and "network_denied:ENETUNREACH" in net_result.stdout
                                     and network_mode == "none"
                                     and inspect_label(network_cid) == f"{run_id}-network")
+    controls["source_probe_removed"] = bool(remove_owned(f"{run_id}-probe"))
+    controls["network_probe_removed"] = network_cid in remove_owned(f"{run_id}-network")
 
     timeout_id = f"{run_id}-timeout"
     timeout_cidfile = cid_dir / "timeout.cid"

@@ -215,7 +215,7 @@
         "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[True-True-True]",
         "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[False-True-False]",
         "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[True-False-False]",
-        "tests/test_lifecycle.py::test_runtime_trace_uses_cancel_worker_loss_recovery_and_retry"
+        "tests/test_lifecycle.py::test_runtime_observations_cover_contention_concurrent_attempts_and_recovery"
       ],
       "runner": {
         "executable": "{{python}}",
@@ -311,7 +311,8 @@
         "NoFalsePass",
         "TerminalHasResult",
         "InterruptedHasNoResult",
-        "IdentityPinned"
+        "IdentityPinned",
+        "PublishedAttemptComplete"
       ],
       "bounds": {
         "ExpectedJob": 1,
@@ -327,8 +328,8 @@
       },
       "toolchain": {
         "tool": "tlc",
-        "version": "2026.10.26.231022",
-        "jar_sha256": "78f7e2c6bf9a8b65eda665a23e94431255587e0b43a834a4e2af1723562d9b4a"
+        "version": "2026.10.28.014557",
+        "jar_sha256": "fc6878c603f0fdc18b9fe3e5bf51860cb90ab5b1154e3c371660c036d6bdd63e"
       },
       "prerequisites": [
         {

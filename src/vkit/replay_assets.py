@@ -80,7 +80,9 @@ def _tree_archive(source: Path, destination: Path, expected: list[dict[str, Any]
         if path.is_symlink():
             _safe_link(source, path)
     with tarfile.open(destination, "w", format=tarfile.PAX_FORMAT) as archive:
-        for path in sorted(source.rglob("*")):
+        for index, path in enumerate(sorted(source.rglob("*"))):
+            if index >= _MAX_TREE_ENTRIES:
+                raise ValueError("tool asset tree exceeds the portable asset entry limit")
             archive.inodes.clear()
             archive.add(path, arcname=path.relative_to(source).as_posix(), recursive=False)
     if destination.stat().st_size > _MAX_ARCHIVE_BYTES:
@@ -95,6 +97,108 @@ def _safe_member(name: str) -> PurePosixPath:
             or path.as_posix() != name or ":" in name):
         raise ValueError("asset archive contains an unsafe path")
     return path
+
+
+def _image_metadata(archive: tarfile.TarFile, members: dict[str, tarfile.TarInfo],
+                    name: str) -> Any:
+    member = members.get(name)
+    if member is None or not member.isfile() or member.size > _MAX_MANIFEST_BYTES:
+        raise ValueError("portable image archive metadata is missing or too large")
+    source = archive.extractfile(member)
+    if source is None:
+        raise ValueError("portable image archive metadata has no content")
+    with source:
+        data = source.read(_MAX_MANIFEST_BYTES + 1)
+    if len(data) != member.size or len(data) > _MAX_MANIFEST_BYTES:
+        raise ValueError("portable image archive metadata exceeds the size limit")
+    try:
+        return json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("portable image archive metadata is invalid") from exc
+
+
+def _image_preflight(path: Path, expected_image_id: str) -> None:
+    """Reject image archives that can import names or images beyond the accepted ID."""
+    if not isinstance(expected_image_id, str) or _IMAGE_ID.fullmatch(expected_image_id) is None:
+        raise ValueError("portable image ID is malformed")
+    if path.stat().st_size > _MAX_ARCHIVE_BYTES:
+        raise ValueError("container image archive exceeds the portable asset size limit")
+    try:
+        archive = tarfile.open(path, "r:*")
+    except tarfile.TarError as exc:
+        raise ValueError("portable image archive is invalid") from exc
+    with archive:
+        members: dict[str, tarfile.TarInfo] = {}
+        size = 0
+        for member in archive:
+            _safe_member(member.name)
+            size += member.size
+            if (len(members) >= _MAX_TREE_ENTRIES or size > _MAX_ARCHIVE_BYTES
+                    or member.name in members):
+                raise ValueError("portable image archive exceeds limits or has duplicate paths")
+            if not (member.isfile() or member.isdir()):
+                raise ValueError("portable image archive contains a link or special file")
+            members[member.name] = member
+        if "repositories" in members:
+            raise ValueError("portable image archive contains repository tag mappings")
+
+        docker_manifest = _image_metadata(archive, members, "manifest.json")
+        if not isinstance(docker_manifest, list) or len(docker_manifest) != 1:
+            raise ValueError("portable image archive must contain exactly one image")
+        image = docker_manifest[0]
+        if (not isinstance(image, dict) or image.get("RepoTags") not in (None, [])
+                or not isinstance(image.get("Config"), str)):
+            raise ValueError("portable image archive contains tags or malformed image metadata")
+        config_path = _safe_member(image["Config"]).as_posix()
+        config_member = members.get(config_path)
+        if (config_member is None or not config_member.isfile()
+                or _hash_member(archive, config_member) != expected_image_id[7:]):
+            raise ValueError("portable image config does not match the accepted image ID")
+
+        if "index.json" in members:
+            index = _image_metadata(archive, members, "index.json")
+            descriptors = index.get("manifests") if isinstance(index, dict) else None
+            if not isinstance(descriptors, list) or len(descriptors) != 1:
+                raise ValueError("portable image archive must contain one OCI image manifest")
+            if _has_tag_ref_annotations(index):
+                raise ValueError("portable image archive contains tag or ref annotations")
+            descriptor = descriptors[0]
+            if not isinstance(descriptor, dict) or _has_tag_ref_annotations(descriptor):
+                raise ValueError("portable image archive contains tag or ref annotations")
+            digest = descriptor.get("digest")
+            if not isinstance(digest, str) or _IMAGE_ID.fullmatch(digest) is None:
+                raise ValueError("portable OCI image descriptor is malformed")
+            manifest_path = f"blobs/sha256/{digest[7:]}"
+            manifest_member = members.get(manifest_path)
+            if (manifest_member is None or not manifest_member.isfile()
+                    or _hash_member(archive, manifest_member) != digest[7:]):
+                raise ValueError("portable OCI image manifest digest does not match")
+            oci_manifest = _image_metadata(archive, members, manifest_path)
+            config = oci_manifest.get("config") if isinstance(oci_manifest, dict) else None
+            if (not isinstance(config, dict) or _has_tag_ref_annotations(oci_manifest)
+                    or _has_tag_ref_annotations(config)
+                    or config.get("digest") != expected_image_id
+                    or config.get("size") != config_member.size):
+                raise ValueError("portable OCI config does not match the accepted image ID")
+
+
+def _has_tag_ref_annotations(value: dict[str, Any]) -> bool:
+    annotations = value.get("annotations", {})
+    return (not isinstance(annotations, dict)
+            or any("tag" in key.lower() or "ref" in key.lower() for key in annotations))
+
+
+def _hash_member(archive: tarfile.TarFile, member: tarfile.TarInfo) -> str:
+    if member.size > _MAX_MANIFEST_BYTES:
+        raise ValueError("portable image archive metadata exceeds the size limit")
+    source = archive.extractfile(member)
+    if source is None:
+        return ""
+    digest = hashlib.sha256()
+    with source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _safe_link_target(path: PurePosixPath, target: str) -> None:
@@ -150,10 +254,11 @@ def _extract_tree(archive_path: Path, destination: Path,
         directory_names = {PurePosixPath(member.name) for member, _ in directories}
         file_names = {PurePosixPath(member.name) for member, _ in files}
         link_names = {PurePosixPath(member.name) for member, _ in links}
-        all_names = directory_names | file_names | link_names
+        nondirectories = file_names | link_names
+        all_names = directory_names | nondirectories
         for name in all_names:
             for parent in name.parents:
-                if parent != PurePosixPath(".") and parent in (file_names | link_names):
+                if parent != PurePosixPath(".") and parent in nondirectories:
                     raise ValueError("asset archive has a non-directory parent")
         for _, target in sorted(directories, key=lambda row: len(row[0].name)):
             target.mkdir(parents=True, exist_ok=True)
@@ -199,6 +304,7 @@ def capture(record: dict[str, Any], directory: Path, destination: Path) -> dict[
             raise ValueError("container image archive exceeds the portable asset size limit")
         if container.image_id(image_id) != image_id:
             raise ValueError("Docker image ID changed while exporting portable assets")
+        _image_preflight(image_archive, image_id)
         assets: dict[str, Any] = {"image": {"path": "image.tar", "sha256": _hash(image_archive),
                                              "image_id": image_id}}
         archive_path = Path(os.environ.get("VKIT_VERUS_ARCHIVE", "")).resolve(strict=True)
@@ -226,6 +332,8 @@ def capture(record: dict[str, Any], directory: Path, destination: Path) -> dict[
         }
         (base / _MANIFEST).write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n",
                                       encoding="utf-8", newline="\n")
+        if (base / _MANIFEST).stat().st_size > _MAX_MANIFEST_BYTES:
+            raise ValueError("portable asset manifest exceeds the size limit")
         if sum(path.stat().st_size for path in base.iterdir()) > _MAX_CAPSULE_BYTES:
             raise ValueError("portable asset capsule exceeds the size limit")
         return {"path": ASSET_REL.as_posix(), "manifest_sha256": _hash(base / _MANIFEST),
@@ -331,6 +439,7 @@ def restore(
         if (assets[name].get("tree") != expected
                 or assets[name].get("tree_digest") != canonical_digest(expected)):
             raise ValueError(f"portable {name} tree differs from the accepted checker")
+    _image_preflight(base / image["path"], image["image_id"])
     destination = destination.resolve()
     if destination.exists():
         raise ValueError("portable asset destination already exists")

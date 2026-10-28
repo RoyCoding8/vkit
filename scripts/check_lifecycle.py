@@ -40,11 +40,10 @@ def _environment() -> dict[str, str]:
     os.environ["PYTHONPATH"] = env["PYTHONPATH"]
     os.environ["PATH"] = env["PATH"]
     sys.path.insert(0, str(ROOT / "src"))
-    # Pytest may have imported an editable install from another checkout before this
-    # driver is loaded. Runtime observations must exercise the source tree under test.
-    for name in tuple(sys.modules):
-        if name == "vkit" or name.startswith("vkit."):
-            del sys.modules[name]
+    import vkit
+
+    if Path(vkit.__file__).resolve().parent != ROOT / "src/vkit":
+        raise RuntimeError("lifecycle qualification requires VKit from this checkout; restart with its src on PYTHONPATH")
     return env
 
 

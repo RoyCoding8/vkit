@@ -29,7 +29,20 @@
         </a>
         <div class="workspace">
           <span class="eyebrow">WORKSPACE</span
-          ><strong id="workspace-name">Loading project</strong>
+          ><label class="sr-only" for="workspace-select">Select workspace</label>
+          <select id="workspace-select" disabled aria-describedby="workspace-help">
+            <option>Loading workspaces…</option>
+          </select>
+          <p class="workspace-help" id="workspace-help">Choose a workspace to inspect its checks and evidence.</p>
+          <details class="workspace-add">
+            <summary>Add workspace</summary>
+            <form id="workspace-add-form">
+              <label for="workspace-path">Repository path</label>
+              <input id="workspace-path" name="path" type="text" required autocomplete="off" />
+              <button type="submit">Remember workspace</button>
+              <p id="workspace-add-status" role="status" aria-live="polite"></p>
+            </form>
+          </details>
         </div>
         <nav id="navigation" aria-label="Main"></nav>
         <div class="sidebar-bottom">

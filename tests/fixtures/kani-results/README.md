@@ -1,10 +1,5 @@
-These seven JSON files are sanitized copies of retained Kani 0.68.0 exports from
-`rust-relational-qualification`. The corresponding harness bytes are retained
-alongside each export. Only temporary output paths were replaced. The fixtures
-are transcript samples, not a new Kani run, and they do not assert capture
-hashes or authenticate source-check completeness.
+# Kani export fixtures
 
-`preservation`, `guarded`, `repair`, and `regression` come from `run-002`.
-`outside-model` and `overflow` come from `run-003`.
-`identity` comes from `run-004`; its candidate source has no overflow check,
-while the base source has one.
+Retained Kani 0.68.0 exports and their corresponding harnesses for testing result decoding. Temporary output paths have been sanitized.
+
+These files are recorded solver output. Decoder tests use them to check result handling; a successful decode does not authenticate source-check completeness or constitute a new solver run.

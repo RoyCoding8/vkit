@@ -31,7 +31,7 @@ description: Make a change in a repository vkit verifies and prove it with recor
 2. If the report is vague, use `features` with a query to find the behavior and how a user reaches it.
 3. Make the change.
 4. Call `check_run` with `needed: true` to run the needed checks.
-   For required components listed in `formal_needs_run`, call `verify` with the component, the `implements` goal and the intended source selector. Read its exact schema first.
+   For required components listed in `formal_needs_run`, read `help(name="verify")` and submit a package claim with the accepted component-policy and package digests and the intended source selector. The CLI shorthand `vkit verify COMPONENT --working-tree` or `--candidate REVISION` resolves those digests from the manifest.
 5. Read each attempt with `run_get`. A FAIL reports the failed scenarios or tests and their observations.
 6. Fix failures and repeat until `gate` returns READY.
 

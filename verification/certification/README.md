@@ -1,52 +1,41 @@
-# Bounded authority model
+# Verification models
 
-`Authority.tla` checks the package-verification decision boundary: a formal request binds a component claim, policy/package identities, checker, and candidate capture; protected CI binds the component and target from host-selected target policy; a receipt matches the sealed job; and preflight cannot become a source-proof result.
+TLA+ models and qualification scripts for VKit's verification authority and finite change assessment. These are developer checks of bounded decision models.
 
-The internal submission record includes `host_target` to model authority injected by the CI host. It is not a field in the public package request schema. Local verification binds the current local component at submission. CI verification binds the required component in the captured protected target. Candidate policy is modeled separately and cannot choose CI authority.
+## Authority
 
-Policy, checker, and source can drift after submission. The job and receipt keep the submitted snapshot. The historical receipt remains valid against that snapshot. A reuse attempt compares current policy, checker, source, and claim with the retained job; `reuse_checked` is only the returned state of this one request, not a cache for later requests. A receipt PASS means that attempt passed; it does not assert that the current checkout is presently gate-ready.
+`Authority.tla` models submission, receipt validation, and evidence reuse. A request binds its component claim, policy, package, checker, and captured source. Protected CI derives its component and target from host-selected policy; candidate policy cannot select that authority.
 
-The good config checks ten named invariants, and the qualification requires all ten in the satisfied set. Seven separate mutant configs inject a mismatched claim, candidate-selected target, wrong source capture, swapped receipt claim, stale reuse after pin drift, valid reuse incorrectly rejected, or preflight promoted to PASS. These are constructed controls, not reports of production bugs. The model has one job, one component, two policy/package/checker/source revisions, one trusted target, and one candidate target. Existing source API tests cover these guards: `tests/test_formal_interface.py::test_public_verification_rejects_legacy_finite_and_mismatched_claims_before_submission` checks public claim rejection; `tests/test_ci_gate.py::test_gate_pins_formal_request_to_target_policy_with_mocked_engine_when_candidate_deletes_it` checks protected target policy and claim binding; `tests/test_jobs.py::test_formal_job_executes_from_captured_commit_without_opening_checkout` checks captured source, receipt validation, and reuse after policy, package, or checker drift; and `tests/test_intent_revision.py::test_preflight_binds_real_git_revisions_without_claiming_source_behavior` checks preflight scope. The CI case uses a mocked formal engine and proves only request and receipt dataflow. Hashes and Git internals are opaque identity atoms. It does not model authorization of the trusted host, human acceptance, scheduler concurrency, actual verifier correctness, or cryptographic collision resistance.
+Jobs and receipts retain the submitted snapshot when policy, tools, or source change. Reuse checks the current identities against that snapshot. A historical passing receipt therefore does not establish that the current checkout is ready to pass the gate.
 
-Run with the repository-pinned TLC jar and the current worktree's Python import path:
+The configuration contains one job, one component, two policy/package/checker/source revisions, one trusted target, and one candidate target. Qualification checks the invariants and requires constructed faulty variants to produce counterexamples. Runtime tests separately exercise claim rejection, protected target selection, source capture, receipt validation, and reuse after drift.
 
-```powershell
-$env:VKIT_TLA2TOOLS_JAR = 'PATH_TO_JAR_MATCHING_REPOSITORY_PIN'
-$env:PYTHONPATH = (Resolve-Path '.\src').Path
-.\.venv\Scripts\python.exe scripts\check_authority.py
-```
+## Finite difference assessment
 
-The script makes disposable VKit projects and runs the existing `check run` TLC path. It keeps its report and per-case project evidence under `tmp\authority-model` by default.
+`Differences.tla` models the collection and assessment of paired observations. Its bounded configuration explores ordered sequences of zero, one, or two records from a finite pool over two inputs. Additional configurations cover overlapping guards, duplicate observations, and an empty admissible domain.
 
-## Finite difference assessment model
+The model checks that selected inputs have evidence, overlapping guards intersect, and violations remain visible when other evidence is missing or unknown. It also checks repairs that satisfy standing intent. An empty admissible domain remains unknown. Reachability controls establish that completion and conformance are reachable; constructed faulty variants must produce counterexamples.
 
-`Differences.tla` models raw paired observations through collection, per-input assessment, and final status. The `bounded` configuration nondeterministically chooses and orders zero, one, or two records, allowing repeated identical records, from a 13-record pool over two inputs. Records include selected and shrink cases, stable differences and repairs, failures, partial or unstable repeats, and outputs outside the observation model. Separate configurations cover guard intersections, duplicate identical selected observations, and the empty admissible domain.
+`tests/test_difference_model_bridge.py` exercises the public parsers and Python assessor with concrete observations, including duplicate records, intersecting guards, repairs, and incomplete evidence.
 
-Seven clean configurations check the full invariant set. Two additional reachability configurations require a counterexample to the deliberately false NoCompletedState or NoConformance property, demonstrating that empty collection reaches assessment completion and complete evidence reaches conformance. These are positive reachability witnesses, not product defects. Eight mutant configurations each require a named counterexample: shrink evidence filling selected coverage, ignoring invalid shrink evidence, hiding a stable violation behind missing or unknown evidence, using the union of overlapping guards, skipping standing intent, permitting unguarded changes, rejecting a valid standing repair, and treating an empty domain as conformance. These are constructed model controls. The bounded model explores every ordered evidence sequence, with multiplicity, of length zero through two from its 13-record pool (183 sequences); it does not explore arbitrary output strings or longer runs.
+## TLC and Python decision comparison
 
-The model keeps raw records separate from the derived coverage and finding sequences, and selected-record counts preserve identical duplicates. Its invariants inspect raw observations and policy relations, and require violations to remain visible even when coverage is incomplete. Valid base outputs outside standing intent may be repaired by an allowed candidate output; a candidate outside standing intent remains a violation. Empty admissible input stays unknown. Source proof and approval authority are fixed false.
+`DifferenceDecisionBridge.tla` records terminal decisions from the clean finite configurations without changing their transition relation. `scripts/check_difference_decisions.py` runs TLC and compares every emitted decision with the public Python assessor. Record order and multiplicity are preserved. Negative controls alter a modeled violation or terminal status to check that disagreement is detected.
 
-The runtime bridge in `tests/test_difference_model_bridge.py` calls the public intent and difference-policy parsers and the finite assessor with literal observations. It checks exact statuses, coverage, finding kinds, missing inputs, duplicate identical selected rows, intersected guard IDs, repair behavior, parser rejection of conflicting overlap, and the serialized no-authority fields. The status names bridge to the public evaluator (`observed_conformance`, `observed_violation`, `unknown`); they do not claim a source proof or implementation refinement.
+## Run qualification
 
-Run either suite through the shared qualification runner:
+Requires Java, the repository's Python test environment, and the repository-pinned TLC jar. From the repository root in PowerShell:
 
 ```powershell
 $env:VKIT_TLA2TOOLS_JAR = 'PATH_TO_JAR_MATCHING_REPOSITORY_PIN'
 $env:PYTHONPATH = (Resolve-Path '.\src').Path
 .\.venv\Scripts\python.exe scripts\check_authority.py --suite authority
 .\.venv\Scripts\python.exe scripts\check_authority.py --suite differences
-```
-
-Both suites retain isolated VKit project, checker, and TLC evidence below `tmp\authority-model` or `tmp\difference-model` by default. The finite suite checks a small abstraction plus selected runtime bridge cases. It does not establish implementation refinement, that the accepted finite inputs cover arbitrary program inputs, or approval authority.
-
-## Compare actual TLC decisions with Python
-
-`DifferenceDecisionBridge.tla` instruments the seven clean finite configurations without changing their transition relation. `scripts/check_difference_decisions.py` runs TLC, parses its terminal decisions, and compares every emitted row with the public Python assessor. Distinct raw sequences are counted separately for coverage, preserving record order and multiplicity. The declared pools contain 211 distinct sequences across the seven configurations. Negative controls remove a modeled violation and change a terminal status while retaining the same raw sequence.
-
-```powershell
-$env:VKIT_TLA2TOOLS_JAR = 'PATH_TO_JAR_MATCHING_REPOSITORY_PIN'
-$env:PYTHONPATH = (Resolve-Path '.\src').Path
 .\.venv\Scripts\python.exe scripts\check_difference_decisions.py --output tmp\difference-decisions
 ```
 
-Java is resolved from `JAVA_HOME` or `PATH`. The script requires the repository-pinned TLC jar, imports this checkout's evaluator, and retains the copied model, instrumented configurations, bounded logs, hashes, comparisons, and negative controls. CI runs this comparison and uploads its evidence. Agreement covers these finite record pools and the compared decision fields. It does not prove general implementation refinement, source behavior, or approval authority.
+Java is resolved from `JAVA_HOME` or `PATH`. The authority and difference suites create isolated VKit projects and run TLC through VKit's registered-check interface. Reports, model copies, checker output, and comparison evidence are retained under `tmp/`. CI also runs the decision comparison and uploads its evidence.
+
+## Scope
+
+Results cover the configured finite models and the runtime cases compared with them. Hashes and Git identities are opaque atoms. The authority model does not model host authorization, human acceptance, scheduler concurrency, verifier correctness, or cryptographic collision resistance. The difference models do not cover arbitrary program inputs or longer observation sequences. Agreement with the Python assessor is bounded evidence, not a general proof that the implementation refines the model. Constructed faulty variants are qualification controls, not reports of production defects.

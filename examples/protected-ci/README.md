@@ -8,7 +8,7 @@ The [workflow example](github-actions.yml.example) runs fresh verification under
   --output /private/new-evidence-directory --json
 ```
 
-The command exits successfully only when every target check and required formal component has a valid passing receipt for that exact candidate. It creates a private Store and uses the existing job, worker, container and receipt implementation. It imports no branch receipts or local approvals.
+The command exits successfully only when every target check and required formal component has a valid passing receipt for that exact candidate. It uses a separate evidence store and imports no branch receipts or local approvals.
 
 | Host prerequisite | Required configuration |
 | --- | --- |
@@ -20,4 +20,4 @@ The command exits successfully only when every target check and required formal 
 
 GitHub's [`pull_request` event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request) identifies the PR merge candidate. [`merge_group`](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group) triggers checking of the queue's combined candidate. The example takes candidate and target IDs from these host events, fetches their history, and never executes a setup script from the candidate checkout.
 
-A green standalone run establishes the recorded candidate checks. It becomes an enforced merge requirement only after the host controls above are configured. This temporary repository does not configure organization rulesets. Empirical results remain empirical; the formal receipt covers the declared API under the Verus trust boundary.
+A passing run establishes the recorded candidate checks. Merge enforcement requires a host-configured required check or required workflow. Test results cover their recorded observations; formal receipts cover the declared APIs under the Verus trust boundary.

@@ -6,10 +6,11 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
-from helpers import DRIVER, NO_WINDOW, scenario_check, vkit
+from helpers import DRIVER, NO_WINDOW, git, scenario_check, vkit
 from vkit.console import bind
 from vkit.paths import open_project
 from vkit.settings import launcher_settings_path
@@ -419,3 +420,158 @@ def test_console_job_outlives_server_restart(make_project):
                 break
             time.sleep(0.05)
         assert (view["state"], view["outcome"]["result"]) == ("done", "PASS")
+
+
+def test_workspace_picker_registers_only_named_repositories_and_preserves_context(make_project, tmp_path):
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    second = tmp_path / "second"
+    second.mkdir()
+    git(second, "init", "-q")
+    private = tmp_path / "unregistered"
+    private.mkdir()
+    git(private, "init", "-q")
+    with _serve(project) as port:
+        status, raw = _get(port, "/api/workspaces")
+        catalog = json.loads(raw)
+        token = catalog["csrf_token"]
+        assert status == 200
+        assert [item["path"] for item in catalog["workspaces"]] == [str(project)]
+        original = catalog["default_workspace"]
+        assert _post(port, "/api/workspaces", {"path": str(second)}, None)[0] == 403
+        status, raw, _ = _post(port, "/api/workspaces", {"path": str(second)}, token)
+        added = json.loads(raw)
+        assert status == 200 and added["path"] == str(second)
+        target = added["id"]
+        assert target != original
+        status, raw = _get(port, f"/api/config?workspace={target}")
+        config = json.loads(raw)
+        assert status == 200 and config["doctor"]["project"] == str(second)
+        assert config["mcp_config"]["mcpServers"]["vkit"]["args"][5] == str(second)
+        settings = {**config["settings"], "theme": "dark"}
+        assert _post(port, f"/api/settings?workspace={target}", settings, token)[0] == 200
+        assert _config(port)["settings"]["theme"] == "system"
+        assert json.loads(_get(port, f"/api/config?workspace={target}")[1])["settings"]["theme"] == "dark"
+        proposal = {"name": "propose", "arguments": {
+            "rationale": "Cover the second repository", "files": {"check.py": "print('check')\n"}}}
+        status, raw, _ = _post(port, f"/api/call?workspace={target}", proposal, token)
+        assert status == 200 and json.loads(raw)["is_error"] is False
+        status, raw = _get(port, "/api/workspaces/summary")
+        rows = {row["path"]: row for row in json.loads(raw)["workspaces"]}
+        assert status == 200 and set(rows) == {str(project), str(second)}
+        assert rows[str(second)]["available"] is True
+        assert rows[str(second)]["manifest_error"] == f"no manifest at {second / 'verification' / 'manifest.json'}"
+        assert [item["rationale"] for item in rows[str(second)]["pending_proposals"]] == ["Cover the second repository"]
+        assert rows[str(project)]["pending_proposals"] == []
+        assert json.loads(_get(port, "/api/status")[1])["project"] == str(project)
+
+
+def test_all_or_unknown_workspace_cannot_dispatch_project_actions(make_project):
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    with _serve(project) as port:
+        token = _config(port)["csrf_token"]
+        for scope in ("all", "unknown", "", "all&workspace=unknown"):
+            suffix = f"?workspace={scope}"
+            for endpoint in ("/api/config", "/api/status", "/api/runs", "/api/run?id=missing&"):
+                url = endpoint + suffix if "?" not in endpoint else endpoint + suffix[1:]
+                assert _get(port, url)[0] == 400
+            for name, arguments in (("check_run", {"check_ids": ["ok"]}),
+                                    ("propose", {"rationale": "Wrong context", "files": {"new.py": ""}})):
+                assert _post(port, "/api/call" + suffix, {"name": name, "arguments": arguments}, token)[0] == 400
+        assert json.loads(_get(port, "/api/runs")[1]) == []
+        assert json.loads(_get(port, "/api/status")[1])["proposals"] == []
+        status, raw, _ = _post(port, "/api/call", {
+            "name": "check_run", "arguments": {"check_ids": ["ok"], "wait_seconds": 10}}, token)
+        assert status == 200 and json.loads(raw)["result"]["runs"][0]["outcome"]["result"] == "PASS"
+
+
+def test_workspace_summary_keeps_unavailable_entries_without_breaking_other_projects(make_project, tmp_path):
+    from vkit.workspaces import remember
+
+    project = make_project({"README.md": "working\n"}, [], accept=False)
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    git(missing, "init", "-q")
+    workspace = remember(open_project(missing), "cli")
+    moved = tmp_path / "moved"
+    missing.rename(moved)
+    with _serve(project) as port:
+        status, raw = _get(port, "/api/workspaces/summary")
+        rows = {row["id"]: row for row in json.loads(raw)["workspaces"]}
+        assert status == 200 and rows[workspace.id]["available"] is False
+        assert "does not exist" in rows[workspace.id]["error"]
+        assert any(row["available"] and row["path"] == str(project) for row in rows.values())
+        assert _get(port, f"/api/status?workspace={workspace.id}")[0] == 400
+
+
+def test_workspace_visit_updates_last_use_and_requires_the_registered_identity(make_project):
+    from vkit.workspaces import known_workspaces, remember
+
+    project = make_project({"README.md": "visit\n"}, [], accept=False)
+    with _serve(project) as port:
+        workspace = remember(open_project(project), "mcp")
+        token = _config(port)["csrf_token"]
+        assert _post(port, "/api/workspaces/visit", {"id": workspace.id}, None)[0] == 403
+        status, raw, _ = _post(port, "/api/workspaces/visit", {"id": workspace.id}, token)
+        assert status == 200 and json.loads(raw)["source"] == "console"
+        assert known_workspaces()[0].last_seen >= workspace.last_seen
+        assert _post(port, "/api/workspaces/visit", {"id": "all"}, token)[0] == 400
+        (project / ".git").rename(project / "old-git")
+        git(project, "init", "-q")
+        assert _post(port, "/api/workspaces/visit", {"id": workspace.id}, token)[0] == 400
+        assert _get(port, "/api/status")[0] == 400
+
+
+def test_damaged_project_metadata_does_not_hide_the_all_workspaces_view(make_project, tmp_path):
+    from vkit.workspaces import remember
+
+    project = make_project({"README.md": "working\n"}, [], accept=False)
+    damaged = tmp_path / "damaged"
+    damaged.mkdir()
+    git(damaged, "init", "-q")
+    workspace = remember(open_project(damaged), "cli")
+    proposals = damaged / ".git" / "vkit" / "proposals"
+    proposals.mkdir()
+    (proposals / "broken.json").write_text('{"state":"pending"}', encoding="utf-8")
+    with _serve(project) as port:
+        status, raw = _get(port, "/api/workspaces/summary")
+        rows = {row["id"]: row for row in json.loads(raw)["workspaces"]}
+        assert status == 200 and rows[workspace.id]["available"] is False
+        assert "Cannot read workspace metadata" in rows[workspace.id]["error"]
+        assert any(row["available"] and row["path"] == str(project) for row in rows.values())
+
+
+def test_concurrent_workspace_runs_keep_their_own_results(make_project, tmp_path):
+    from vkit.workspaces import remember
+
+    check = scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])
+    project = make_project({"ok.py": PASSES}, [check])
+    second = tmp_path / "fails"
+    (second / "verification").mkdir(parents=True)
+    (second / "ok.py").write_text(DRIVER + 'report([("ok", False, "second project fails")])\n', encoding="utf-8")
+    (second / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "checks": [check]}), encoding="utf-8")
+    git(second, "init", "-q")
+    assert vkit(second, "accept", "--yes")[0] == 0
+    first_id = remember(open_project(project), "console").id
+    second_id = remember(open_project(second), "console").id
+    with _serve(project) as port:
+        token = _config(port)["csrf_token"]
+
+        def run(workspace):
+            status, raw, _ = _post(port, f"/api/call?workspace={workspace}", {
+                "name": "check_run", "arguments": {"check_ids": ["ok"], "wait_seconds": 10}}, token)
+            assert status == 200
+            response = json.loads(raw)
+            assert response["is_error"] is False
+            return response["result"]["runs"][0]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            passed, failed = list(pool.map(run, (first_id, second_id)))
+        assert passed["outcome"]["result"] == "PASS"
+        assert failed["outcome"]["result"] == "FAIL"
+        assert _get(port, f"/api/run?workspace={first_id}&id={failed['run_id']}")[0] == 404
+        assert _get(port, f"/api/run?workspace={second_id}&id={passed['run_id']}")[0] == 404
+        assert json.loads(_get(port, f"/api/status?workspace={first_id}")[1])["gate"]["verdict"] == "READY"
+        assert json.loads(_get(port, f"/api/status?workspace={second_id}")[1])["gate"]["verdict"] == "REJECTED"

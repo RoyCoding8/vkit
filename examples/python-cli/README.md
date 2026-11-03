@@ -14,7 +14,7 @@ The CLI reads integer amounts and prints their sum. The check driver launches th
 
 1. Install VKit and Python.
 2. Copy this directory to a separate location.
-3. Initialize and commit a Git repository there.
+3. Initialize a Git repository there with `git init`.
 4. Run these commands from that directory:
 
 ```powershell

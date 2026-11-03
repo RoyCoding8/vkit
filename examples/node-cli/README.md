@@ -23,7 +23,7 @@ node src/split-bill.js split 1000 ann=1 bob=1 --tip 333
 
 1. Install VKit and Node.
 2. Copy this directory to a separate location.
-3. Initialize and commit a Git repository there.
+3. Initialize a Git repository there with `git init`.
 4. Run these commands from that directory:
 
 ```powershell

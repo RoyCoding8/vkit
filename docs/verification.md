@@ -2,6 +2,8 @@
 
 VKit separates accepted requirements, candidate source, verification execution and retained evidence. A passing result establishes only the property and scope recorded by its method.
 
+This reference covers formal components, change certification, model comparison, and gates. For a first registered check, start with [Getting started](getting-started.md). Python APIs and execution profiles for change certification are covered in the [change-analysis integration reference](change-analysis.md).
+
 ## Components
 
 | Component | Responsibility |
@@ -122,7 +124,7 @@ Formal `evidence export --include-assets` preserves the exact Docker image, offi
 
 Package qualification classifies deliberate mutations as detected rejections, survivors or inconclusive runs. Package comparisons report changed assets, obligations and trust identities. They leave package-wide semantic equivalence unknown. The ledger qualification script accepts `--compare-package` with an earlier report or package snapshot.
 
-Ledger adequacy qualification separately checks a concrete reserve precondition inhabitant, the equivalence of remaining-capacity and mathematical total-usage admission predicates, and a strict-bound counterexample at exact capacity. A false equivalence must be rejected. A reconstructed zero-bound control records the original Rocq model fix and source digest; it is not a replay of that proof. These checks cover the recorded predicates and witnesses, not specification completeness.
+Ledger adequacy qualification checks that the reserve precondition is satisfiable and that remaining-capacity and total-usage admission predicates agree. A strict-bound control checks admission at exact capacity, and a false equivalence must be rejected. These checks cover the recorded predicates and witnesses; they do not establish specification completeness. See [Contributing](../CONTRIBUTING.md#verification-models-and-test-data) for qualification models and test data.
 
 ## Delegated claim acceptance
 
@@ -150,7 +152,7 @@ This read-only operation compares caller-provided models. It does not establish 
 
 CLI `feedback add` and MCP `feedback_add` record a task, a missing capability, and its expected verification benefit. `kind` defaults to `formal`; `reliable` covers other rigorous checks. An optional run ID links the request to retained evidence.
 
-Each submission creates a Markdown file under the repository's shared Git directory at `vkit/feedback/`. Duplicate submissions preserve the existing file. The tools cannot edit, delete, or consolidate feedback; maintainers do that manually. CLI `feedback list` and MCP `feedback_list` provide bounded previews, with formal verification requests first. Feedback never changes verification results or gates.
+Each submission creates a Markdown file under the repository's shared Git directory at `vkit/feedback/`. Duplicate submissions preserve the existing file. CLI `feedback list` and MCP `feedback_list` provide bounded previews, with formal verification requests first. Feedback does not affect verification results or gates.
 
 ## Gates and CI
 

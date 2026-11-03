@@ -1,3 +1,3 @@
-# Reserved held-out location
+# Evaluation scope
 
-This directory is reserved for a separately maintained held-out corpus. It is empty of fixtures and evaluation results. The development cases in `../manifest.json` do not count as held-out data, and no unseen evaluation has been run.
+The [development corpus](../manifest.json) contains no held-out cases or evaluation results. Its results cover the listed development fixtures and do not measure performance on unseen cases.

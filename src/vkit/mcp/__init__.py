@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import time
 from collections import Counter
@@ -12,12 +13,13 @@ from typing import Any, Callable
 
 from jsonschema import ValidationError, validate
 
-from ..categories import CATEGORIES, INFRASTRUCTURE_TOOLS
 from .. import __version__, evidence, jobs, query
+from ..categories import CATEGORIES, INFRASTRUCTURE_TOOLS
 from ..manifest import ManifestError
 from ..paths import Project, open_project
+from ..schemas import VERIFICATION_REQUEST, SchemaValidationError, schema
 from ..settings import load_settings
-from ..schemas import SchemaValidationError, VERIFICATION_REQUEST, schema
+from ..workspaces import remember
 
 MAX_WAIT_SECONDS = query.MAX_WAIT_SECONDS
 INSTRUCTIONS = (
@@ -491,6 +493,10 @@ def serve_stdio(root: str | Path, *, exposure: str | None = None,
     except ImportError as exc:
         raise MCPUnavailable(f"the MCP SDK is not installed ({exc}); install vkit[mcp]") from exc
     server = Server.for_mcp(Path(root), exposure, categories)
+    try:
+        remember(server.project, "mcp")
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        print(f"warning: could not remember VKit workspace: {exc}", file=sys.stderr, flush=True)
 
     async def list_tools(_ctx: Any, _params: Any) -> Any:
         return types.ListToolsResult(tools=[

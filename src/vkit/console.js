@@ -124,6 +124,13 @@ const labels = {
 let report,
   runs = [],
   configuration,
+  workspaceRegistry,
+  workspaceSummary = [],
+  workspaceSummaryReady = false,
+  activeWorkspace = "",
+  workspaceVisited = false,
+  csrfToken = "",
+  workspaceSaving = false,
   signature = "",
   refreshing,
   selectedRun = null,
@@ -166,6 +173,12 @@ function link(text, action) {
   button.type = "button";
   button.onclick = action;
   return button;
+}
+function workspaceUrl(url, workspace = activeWorkspace) {
+  const target = new URL(url, window.location.origin);
+  if (workspace) target.searchParams.set("workspace", workspace);
+  else target.searchParams.delete("workspace");
+  return `${target.pathname}${target.search}${target.hash}`;
 }
 function action(text, page, type = "md-text-button") {
   const button = el(type, text);
@@ -317,6 +330,9 @@ function checkRow(check) {
   box.append(symbol, copy, badge(checkState(check)));
   return box;
 }
+function isManifestMissing(error) {
+  return typeof error === "string" && error.startsWith("no manifest at ");
+}
 function activityRow(run) {
   const box = el("div", null, "activity-row"),
     copy = el("div", null, "row-copy");
@@ -342,7 +358,7 @@ function formalPanel() {
     }),
   );
 }
-function overview() {
+function projectOverview() {
   const fragment = document.createDocumentFragment(),
     banner = el("section", null, "verdict-banner");
   banner.dataset.verdict = report.gate.verdict;
@@ -360,7 +376,7 @@ function overview() {
   const titles = {
     READY: "Current evidence is ready",
     REJECTED: "A current check failed",
-    BLOCKED: "Evidence is incomplete",
+    BLOCKED: isManifestMissing(report.manifest_error) ? "Not set up" : "Evidence is incomplete",
   };
   copy.append(
     el("h2", titles[report.gate.verdict]),
@@ -369,7 +385,9 @@ function overview() {
   banner.append(
     symbol,
     copy,
-    action("Inspect checks", "checks", "md-filled-tonal-button"),
+    isManifestMissing(report.manifest_error)
+      ? action("Set up workspace", "setup", "md-filled-tonal-button")
+      : action("Inspect checks", "checks", "md-filled-tonal-button"),
   );
   fragment.append(banner);
   const metrics = el("div", null, "metrics");
@@ -483,6 +501,120 @@ function overview() {
   grid.append(left, right);
   fragment.append(grid);
   return fragment;
+}
+function workspaceHref(id, page) {
+  const target = new URL(window.location.href);
+  target.searchParams.set("workspace", id);
+  target.hash = page;
+  return `${target.pathname}${target.search}${target.hash}`;
+}
+function workspaceAnchor(text, id, page, cls = "") {
+  const anchor = el("a", text, cls);
+  anchor.href = workspaceHref(id, page);
+  return anchor;
+}
+function workspaceLabel(workspace) {
+  return workspace?.name || workspace?.path || "Unknown workspace";
+}
+function proposalCard(proposal, workspace) {
+  const entry = el("article", null, "proposal"),
+    changes = el("div", null, "check-chips"),
+    targets = workspace.workspaces || [workspace],
+    primary = targets[0];
+  entry.append(
+    el("code", (proposal.digest || "").slice(0, 12), "quiet"),
+    el("h3", proposal.rationale || "Suggested project changes"),
+    el("p", targets.length > 1
+      ? `Pending in ${targets.length} worktrees for this repository. Choose where to review it.`
+      : `${workspaceLabel(primary)} · ${primary?.path || ""}`, "small quiet"),
+  );
+  for (const [label, values] of [
+    ["Checks", proposal.checks || []],
+    ["Features", proposal.features || []],
+    ["New files", proposal.files || []],
+  ])
+    if (values.length)
+      changes.append(el("span", `${label}: ${values.join(", ")}`, "small quiet"));
+  entry.append(changes);
+  const links = el("div", null, "workspace-proposal-links");
+  for (const target of targets)
+    links.append(workspaceAnchor(`Open in ${workspaceLabel(target)}`, target.id, "proposals", "workspace-open-link"));
+  entry.append(links);
+  return entry;
+}
+function allProposalItems() {
+  const items = new Map();
+  for (const workspace of workspaceSummary) {
+    for (const proposal of workspace.pending_proposals || []) {
+      const key = `${workspace.repository_id || workspace.id}:${proposal.digest}`;
+      const item = items.get(key) || { proposal, workspace, workspaces: [] };
+      item.workspaces.push(workspace);
+      items.set(key, item);
+    }
+  }
+  return [...items.values()];
+}
+function allProposalList(items = allProposalItems(), className = "panel") {
+  const list = el("section", null, className);
+  if (!items.length) {
+    list.append(empty(
+      "No pending proposals",
+      "Proposals appear here after an agent submits changes for a remembered workspace.",
+      "proposals",
+    ));
+    return list;
+  }
+  for (const item of items)
+    list.append(proposalCard(item.proposal, item));
+  return list;
+}
+function allOverview() {
+  const fragment = document.createDocumentFragment(),
+    total = workspaceSummary.length,
+    available = workspaceSummary.filter((workspace) => workspace.available),
+    ready = available.filter((workspace) => workspace.gate?.verdict === "READY").length,
+    pending = allProposalItems(),
+    checks = workspaceSummary.reduce((count, workspace) => count + (workspace.checks?.length || 0), 0),
+    metrics = el("div", null, "metrics");
+  for (const [value, label, description] of [
+    [total, "Remembered workspaces", `${available.length} available`],
+    [ready, "Ready workspaces", "Current required evidence passes"],
+    [checks, "Registered checks", "Across remembered workspaces"],
+    [pending.length, "Pending proposals", "Waiting for project review"],
+  ]) {
+    const metric = el("div", null, "metric");
+    metric.append(el("span", value, "metric-value"), el("span", label, "metric-label"), el("span", description, "metric-note"));
+    metrics.append(metric);
+  }
+  fragment.append(metrics);
+  const workspaceList = el("div", null, "workspace-list");
+  for (const workspace of workspaceSummary) {
+    const row = el("article", null, "workspace-summary-row"),
+      copy = el("div", null, "row-copy"),
+      gate = workspace.available ? workspace.gate?.verdict || "BLOCKED" : "UNAVAILABLE",
+      seen = workspace.last_seen
+        ? ` · Last seen ${date(workspace.last_seen)} via ${workspace.source || "VKit"}`
+        : "";
+    copy.append(el("h3", workspaceLabel(workspace)), el("p", `${workspace.path || ""}${seen}`, "small quiet"));
+    if (!workspace.available)
+      copy.append(el("p", workspace.error || "This path is unavailable. Add the workspace again after moving it.", "small quiet"));
+    else if (isManifestMissing(workspace.manifest_error))
+      copy.append(el("p", "Not set up. Add verification/manifest.json to register checks.", "small quiet"));
+    else if (workspace.manifest_error)
+      copy.append(el("p", `Manifest needs attention: ${workspace.manifest_error}`, "small quiet"));
+    else
+      copy.append(el("p", `${workspace.checks?.filter((check) => check.state === "fresh_pass").length || 0} of ${workspace.checks?.length || 0} checks have current passing evidence.`, "small quiet"));
+    row.append(copy, badge(gate), workspaceAnchor("Open", workspace.id, "overview", "workspace-open-link"));
+    workspaceList.append(row);
+  }
+  if (!total)
+    workspaceList.append(empty("No workspaces remembered", "Add a repository path in the left panel. VKit remembers only paths you open or add; it does not scan folders.", "folder"));
+  fragment.append(panel("Workspaces", "Each workspace keeps its own checks, evidence, settings, and proposals.", [workspaceList]));
+  fragment.append(panel("Pending proposal inbox", "Review each proposal in the workspace that owns it.", [allProposalList(pending.slice(0, 5), "proposal-list"), ...(pending.length > 5 ? [workspaceAnchor("View all proposals", "all", "proposals", "workspace-open-link")] : [])]));
+  return fragment;
+}
+function overview() {
+  return activeWorkspace === "all" ? allOverview() : projectOverview();
 }
 function checkRunMessage(response) {
   if (response.is_error)
@@ -697,13 +829,19 @@ function capabilities() {
       copy = el("div");
     visual.append(icon(symbol));
     copy.append(el("h3", title), el("p", text), el("p", limit, "limit"));
-    const count = report.checks.filter((c) => c.kind === key).length;
+    const count = activeWorkspace === "all"
+      ? workspaceSummary.filter((workspace) => (workspace.checks || []).some((check) => check.kind === key)).length
+      : report.checks.filter((c) => c.kind === key).length;
     entry.append(
       visual,
       copy,
       el(
         "span",
-        count ? `${count} configured` : "Not configured",
+        count
+          ? activeWorkspace === "all"
+            ? `${count} workspace${count === 1 ? "" : "s"}`
+            : `${count} check${count === 1 ? "" : "s"} registered`
+          : "No checks registered",
         "capability-count",
       ),
     );
@@ -713,30 +851,23 @@ function capabilities() {
     list,
     el("h2", "Functions available to agents", "section-label"),
   );
-  const tools = el("div", null, "tool-grid");
-  for (const [name, description] of [
-    ["status", "Read current evidence and identify stale or missing checks."],
-    [
-      "check_run",
-      "Execute registered checks; vkit owns the internal procedure.",
-    ],
-    ["run_get", "Inspect one execution, its outcome, and its logs."],
-    ["run_cancel", "Stop an execution and its child processes."],
-    ["features", "Find application behavior, reach steps, and coverage gaps."],
-    ["gate", "Read the combined verdict for the registered checks."],
-    [
-      "propose",
-      "Submit suggested checks, feature entries, and new files for review.",
-    ],
-  ]) {
+  const tools = el("div", null, "tool-grid"),
+    managedTools = activeWorkspace === "all"
+      ? workspaceRegistry?.managed_tools || []
+      : configuration?.managed_tools || [];
+  for (const { name, description, category } of managedTools) {
     const item = el("div", null, "tool-item");
-    item.append(el("code", name), el("p", description));
+    item.append(el("code", name), el("p", description), el("p", category || "", "small quiet"));
     tools.append(item);
   }
+  if (!managedTools.length)
+    tools.append(el("p", "The workspace registry has no function catalog yet.", "small quiet"));
   fragment.append(
     panel(
-      "A callable verification tool",
-      "Agents choose when to call these functions. Each function returns a scoped result.",
+      `${managedTools.length} functions in this installation`,
+      activeWorkspace === "all"
+        ? "Functions come from this VKit installation. Project settings and agent exposure can change which ones are available in a workspace."
+        : "These functions come from this console's VKit installation. Workspace settings can limit which functions agents can use.",
       [tools],
     ),
   );
@@ -810,7 +941,7 @@ function featureMap() {
           report.feature_error ||
             (report.features.length
               ? "Try another search."
-              : "Describe application behavior and covering checks in verification/features.json."),
+              : "The feature map is authored in verification/features.json. Add user-visible behavior, how to reach it, entry points, and the checks that cover it."),
           "features",
         ),
       );
@@ -841,7 +972,7 @@ function command(text, label = "command") {
   box.append(el("code", text), button);
   return box;
 }
-function proposals() {
+function projectProposals() {
   const list = el("section", null, "panel");
   for (const p of report.proposals) {
     const entry = el("article", null, "proposal");
@@ -871,6 +1002,9 @@ function proposals() {
       ),
     );
   return list;
+}
+function proposals() {
+  return activeWorkspace === "all" ? allProposalList() : projectProposals();
 }
 function mergeSettingsDraft(draft, next, previous) {
   return Object.fromEntries(Object.keys(next).map((key) => [key,
@@ -1283,6 +1417,10 @@ function launcherSettingsForm() {
 }
 
 function setup() {
+  if (activeWorkspace === "all")
+    return workspaceRequired("Project setup and tool settings");
+  const isSetup = isManifestMissing(report.manifest_error),
+    hasManifestError = Boolean(report.manifest_error);
   const fragment = document.createDocumentFragment(),
     grid = el("div", null, "overview-grid"),
     project = el("div", null, "panel-body"),
@@ -1337,7 +1475,15 @@ function setup() {
       ),
     );
   grid.append(
-    panel("Project", configuration.description, [project]),
+    panel(
+      isSetup ? "Not set up" : "Project",
+      isSetup
+        ? "Ask your agent to define checks in verification/manifest.json and map application behavior in verification/features.json. Review the definitions with vkit accept --project <repository>, then open Checks to run them and Runs to inspect results."
+        : hasManifestError
+          ? `VKit could not load verification/manifest.json: ${report.manifest_error}`
+          : configuration.description,
+      [project],
+    ),
     panel(
       "Required tools",
       "Availability in the console server’s environment",
@@ -1372,6 +1518,11 @@ function setup() {
     ),
   );
   return fragment;
+}
+function workspaceRequired(title) {
+  return panel(title, "Select a workspace from the left panel to view its project-specific data and actions.", [
+    el("p", "VKit keeps evidence, runs, feature coverage, and settings bound to one selected worktree.", "small quiet"),
+  ]);
 }
 function showCheck(id) {
   const check = report.checks.find((c) => c.id === id);
@@ -1544,34 +1695,55 @@ function render() {
   const openedFeatures = [...$("view").querySelectorAll("details[open]")].map(
     (d) => d.dataset.feature,
   );
-  const [, , eyebrow, title, description] = pages[activePage];
+  let [, , eyebrow, title, description] = pages[activePage];
+  if (activeWorkspace === "all" && activePage === "overview") {
+    eyebrow = "ALL WORKSPACES";
+    title = "Workspace overview";
+  } else if (activeWorkspace === "all" && activePage === "proposals") {
+    eyebrow = "ALL WORKSPACES";
+    title = "Pending proposal inbox";
+    description = "Review suggestions across remembered workspaces, then open each one in its owning project.";
+  }
   $("breadcrumb").textContent = pages[activePage][0];
   $("page-eyebrow").textContent = eyebrow;
   $("page-title").textContent = title;
-  $("page-description").textContent = description;
+  $("page-description").textContent = activeWorkspace === "all" && activePage === "overview"
+    ? "Review remembered workspaces and pending proposals, then open a workspace for its evidence and actions."
+    : description;
   for (const nav of $("navigation").querySelectorAll("a")) {
     if (nav.dataset.page === activePage)
       nav.setAttribute("aria-current", "page");
     else nav.removeAttribute("aria-current");
   }
-  const counts = {
-    checks: report.checks.length,
-    runs: runs.length,
-    features: report.features.length,
-    proposals: report.proposals.length,
-  };
+  const counts = activeWorkspace === "all"
+    ? {
+        checks: workspaceSummary.reduce((n, workspace) => n + (workspace.checks?.length || 0), 0),
+        proposals: allProposalItems().length,
+      }
+    : {
+        checks: report?.checks.length || 0,
+        runs: runs.length,
+        features: report?.features.length || 0,
+        proposals: report?.proposals.length || 0,
+      };
   for (const node of $("navigation").querySelectorAll(".nav-count"))
     node.textContent = counts[node.dataset.page] || "";
+  const projectPages = new Set(["checks", "runs", "features", "setup"]);
+  for (const nav of $("navigation").querySelectorAll("a[data-page]"))
+    nav.hidden = activeWorkspace === "all" && projectPages.has(nav.dataset.page);
+  const pageViews = {
+    overview,
+    checks,
+    runs: runHistory,
+    capabilities,
+    features: featureMap,
+    proposals,
+    setup,
+  };
   $("view").replaceChildren(
-    {
-      overview,
-      checks,
-      runs: runHistory,
-      capabilities,
-      features: featureMap,
-      proposals,
-      setup,
-    }[activePage](),
+    activeWorkspace === "all" && projectPages.has(activePage)
+      ? workspaceRequired(pages[activePage][0])
+      : pageViews[activePage](),
   );
   for (const details of $("view").querySelectorAll("details")) {
     if (details.dataset.feature)
@@ -1600,28 +1772,32 @@ function route() {
     kind = "";
   }
   activePage = next;
-  selectedRun = next === "runs" && runId ? decodeURIComponent(runId) : null;
+  selectedRun = activeWorkspace !== "all" && next === "runs" && runId
+    ? decodeURIComponent(runId)
+    : null;
   $("detail-dialog").close();
   $("tools-dialog").close();
   closeNavigation();
-  if (report) {
+  if (report || (activeWorkspace === "all" && workspaceSummaryReady)) {
     render();
-    refreshRun().catch(showError);
+    if (activeWorkspace !== "all") refreshRun().catch(showError);
   }
 }
-async function get(url) {
-  const response = await fetch(url);
+async function get(url, workspace = activeWorkspace) {
+  const response = await fetch(workspaceUrl(url, workspace));
   const body = await response.json();
   if (!response.ok)
     throw new Error(body.error || `Request failed (${response.status})`);
   return body;
 }
-async function post(url, value) {
-  const response = await fetch(url, {
+async function post(url, value, workspace = activeWorkspace) {
+  if (workspace === "all" && url !== "/api/workspaces")
+    throw new Error("Select one workspace before changing project settings or running a tool.");
+  const response = await fetch(workspaceUrl(url, workspace), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Vkit-Token": configuration.csrf_token,
+      "X-Vkit-Token": csrfToken,
     },
     body: JSON.stringify(value),
   });
@@ -1633,22 +1809,145 @@ async function post(url, value) {
 function callTool(name, arguments_) {
   return post("/api/call", { name, arguments: arguments_ });
 }
+function syncWorkspacePicker() {
+  if (!workspaceRegistry) return;
+  const select = $("workspace-select"),
+    selected = activeWorkspace,
+    rows = workspaceRegistry.workspaces || [];
+  select.replaceChildren(new Option("All workspaces", "all"));
+  for (const workspace of rows) {
+    const summary = workspaceSummary.find((item) => item.id === workspace.id),
+      location = workspace.path ? ` · ${workspace.path}` : "",
+      label = `${workspace.name || workspace.path}${location}${summary?.available === false ? " · unavailable" : ""}`,
+      option = new Option(label, workspace.id);
+    option.title = workspace.path || workspace.name || "";
+    select.append(option);
+  }
+  if (selected && selected !== "all" && !rows.some((workspace) => workspace.id === selected))
+    select.append(new Option("Unknown workspace", selected));
+  select.value = selected || "all";
+  select.disabled = false;
+  $("workspace-help").textContent = selected === "all"
+    ? "Combined overview and proposal inbox. Select a workspace for project actions."
+    : rows.find((workspace) => workspace.id === selected)?.path || "This workspace is no longer in the registry.";
+  $("project-path").textContent = selected === "all"
+    ? `${rows.length} remembered workspace${rows.length === 1 ? "" : "s"}`
+    : rows.find((workspace) => workspace.id === selected)?.path || "Workspace unavailable";
+  $("version").textContent = `v${workspaceRegistry.version || ""}`;
+}
+function setInitialWorkspace(registry) {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("workspace")) {
+    const first = registry.default_workspace || registry.workspaces?.[0]?.id || "all";
+    url.searchParams.set("workspace", first);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+  activeWorkspace = new URL(window.location.href).searchParams.get("workspace") || "all";
+}
+function workspacePickerChanged(event) {
+  const next = event.target.value,
+    projectSettingsChanged = configuration && settingsDraft
+      && JSON.stringify(settingsDraft) !== JSON.stringify(configuration.settings),
+    launcherSettingsChanged = configuration && launcherDraft
+      && JSON.stringify(launcherDraft) !== JSON.stringify(configuration.launcher_settings);
+  if ((projectSettingsChanged || launcherSettingsChanged)
+    && !window.confirm("Discard unsaved settings and switch workspaces?")) {
+    event.target.value = activeWorkspace;
+    return;
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set("workspace", next);
+  window.location.assign(`${url.pathname}${url.search}${url.hash}`);
+}
+function addWorkspace(event) {
+  event.preventDefault();
+  if (workspaceSaving) return;
+  const input = $("workspace-path"),
+    status = $("workspace-add-status"),
+    submit = event.currentTarget.querySelector("button");
+  const path = input.value.trim();
+  if (!path) {
+    status.textContent = "Enter a repository path.";
+    return;
+  }
+  workspaceSaving = true;
+  submit.disabled = true;
+  status.dataset.state = "";
+  status.textContent = "Remembering workspace…";
+  post("/api/workspaces", { path }, null)
+    .then((response) => {
+      const workspace = response.workspace || response;
+      if (!workspace.id) throw new Error("The server did not return a workspace ID.");
+      const url = new URL(window.location.href);
+      url.searchParams.set("workspace", workspace.id);
+      window.location.assign(`${url.pathname}${url.search}${url.hash}`);
+    })
+    .catch((error) => {
+      status.dataset.state = "error";
+      status.textContent = `Could not add workspace: ${error.message}`;
+      workspaceSaving = false;
+      submit.disabled = false;
+    });
+}
 function showError(error) {
   $("connection-error").hidden = false;
   $("connection-error").textContent =
     `Unable to refresh: ${error.message}. Showing the last received evidence.`;
   document.body.classList.add("disconnected");
 }
+function showWorkspaceUnavailable(message) {
+  $("page-eyebrow").textContent = "WORKSPACE";
+  $("page-title").textContent = "Workspace unavailable";
+  $("page-description").textContent = "Choose a remembered workspace or add its current repository path in the left panel.";
+  $("view").replaceChildren(empty("Select another workspace", message));
+}
 function refresh() {
   if (refreshing) return refreshing;
   refreshing = (async () => {
     const requestedSettingsVersion = settingsVersion;
     try {
-      const nextConfig = await get("/api/config");
-      const [nextReport, nextRuns] = await Promise.all([
-        get("/api/status"),
-        get(`/api/runs?limit=${nextConfig.settings.history_limit}`),
-      ]);
+      const nextRegistry = await get("/api/workspaces", null);
+      csrfToken = nextRegistry.csrf_token || "";
+      workspaceRegistry = nextRegistry;
+      setInitialWorkspace(nextRegistry);
+      syncWorkspacePicker();
+      if (activeWorkspace === "all") {
+        const summary = await get("/api/workspaces/summary", null);
+        workspaceSummary = summary.workspaces || [];
+        workspaceSummaryReady = true;
+        syncWorkspacePicker();
+        report = null;
+        runs = [];
+        configuration = null;
+        settingsDraft = null;
+        launcherDraft = null;
+        const nextSignature = JSON.stringify([workspaceRegistry, workspaceSummary]);
+        if (signature !== nextSignature) {
+          signature = nextSignature;
+          render();
+        }
+        $("updated").textContent = `Updated ${new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+        $("connection-error").hidden = true;
+        document.body.classList.remove("disconnected");
+        return;
+      }
+      if (!(nextRegistry.workspaces || []).some((workspace) => workspace.id === activeWorkspace)) {
+        workspaceSummary = [];
+        report = null;
+        runs = [];
+        configuration = null;
+        showWorkspaceUnavailable("This workspace ID is not in the registry. Choose another workspace or add its current path.");
+        return;
+      }
+      if (!workspaceVisited) {
+        await post("/api/workspaces/visit", { id: activeWorkspace }, null);
+        workspaceVisited = true;
+      }
+      const nextConfig = await get("/api/config"),
+        [nextReport, nextRuns] = await Promise.all([
+          get("/api/status"),
+          get(`/api/runs?limit=${nextConfig.settings.history_limit}`),
+        ]);
       if (requestedSettingsVersion !== settingsVersion && configuration) {
         nextConfig.settings = configuration.settings;
         nextConfig.settings_path = configuration.settings_path;
@@ -1663,12 +1962,7 @@ function refresh() {
       applySettings(settingsDraft);
       syncSettingsForm();
       const nextSignature = JSON.stringify([report, runs, configuration]);
-      $("workspace-name").textContent = report.project
-        .replaceAll("\\", "/")
-        .split("/")
-        .pop();
-      $("workspace-name").title = report.project;
-      $("project-path").textContent = report.project;
+      syncWorkspacePicker();
       $("version").textContent = `v${configuration.version}`;
       $("updated").textContent =
         `Updated ${new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
@@ -1682,9 +1976,7 @@ function refresh() {
     } catch (error) {
       showError(error);
       if (!report)
-        $("view").replaceChildren(
-          empty("Workspace unavailable", error.message),
-        );
+        showWorkspaceUnavailable(error.message);
     } finally {
       $("content").setAttribute("aria-busy", "false");
       refreshing = null;
@@ -1752,6 +2044,8 @@ $("close-detail").onclick = () => $("detail-dialog").close();
 $("close-tools").onclick = () => $("tools-dialog").close();
 $("save-tools-settings").onclick = saveSettingsDraft;
 $("refresh").onclick = () => refresh();
+$("workspace-select").addEventListener("change", workspacePickerChanged);
+$("workspace-add-form").addEventListener("submit", addWorkspace);
 for (const [id, [name, symbol]] of Object.entries(pages)) {
   if (id === "capabilities" || id === "setup")
     $("navigation").append(el("div", null, "nav-divider"));
@@ -1770,6 +2064,6 @@ window.addEventListener("hashchange", route);
 route();
 async function poll() {
   await refresh();
-  setTimeout(poll, (configuration?.settings.refresh_seconds || 2) * 1000);
+  setTimeout(poll, (configuration?.settings.refresh_seconds || workspaceRegistry?.settings_defaults?.refresh_seconds || 5) * 1000);
 }
 poll();

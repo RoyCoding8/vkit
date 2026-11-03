@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -13,10 +14,11 @@ from typing import Any, Sequence
 
 from . import query
 from .manifest import ManifestError
-from .paths import ProjectError
+from .paths import Project, ProjectError
 from .schemas import SchemaValidationError
 from .settings import load_launcher_settings, load_settings, save_settings
 from .store import now
+from .workspaces import remember
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -65,9 +67,18 @@ def _read_json_file(path: str, label: str) -> Any:
 
 def _context(args: argparse.Namespace) -> query.Context:
     try:
-        return query.open_context(args.project)
+        context = query.open_context(args.project)
     except ProjectError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
+    _remember_workspace(context.project, "cli")
+    return context
+
+
+def _remember_workspace(project: Project, source: str) -> None:
+    try:
+        remember(project, source)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        print(f"warning: could not remember VKit workspace: {exc}", file=sys.stderr, flush=True)
 
 
 def _outcome_line(record: dict[str, Any]) -> str:
@@ -135,7 +146,9 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
         if not all((args.candidate, args.target, args.output)):
             raise Refused("the committed gate requires --candidate, --target and --output", EXIT_INVALID)
-        report = run_gate(open_project(args.project), args.candidate, args.target, Path(args.output))
+        project = open_project(args.project)
+        _remember_workspace(project, "cli")
+        report = run_gate(project, args.candidate, args.target, Path(args.output))
         _emit(report, args.json, f"{report['verdict']}: {report['reason']}")
         return EXIT_OK if report["verdict"] == "READY" else EXIT_FAILED if report["verdict"] == "FAILED" else EXIT_BLOCKED
     report = query.status(_context(args))["gate"]

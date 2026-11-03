@@ -1,8 +1,9 @@
-"""The local web console for one repository."""
+"""The local web console for remembered repository workspaces."""
 from __future__ import annotations
 
 import json
 import secrets
+import sqlite3
 import sys
 import threading
 import webbrowser
@@ -19,7 +20,8 @@ from .settings import (DEFAULT_SETTINGS, SETTINGS_SCHEMA, SettingsFileError, loa
                        load_launcher_settings, parse_launcher_settings, save_launcher_settings)
 from .mcp import BY_NAME, Server
 from .categories import CATEGORIES
-from .paths import Project
+from .paths import Project, ProjectError, open_project
+from .workspaces import known_workspaces, remember, registry_path, resolve_workspace
 
 _MAX_BODY_BYTES = 1_048_576
 _INVALID_BODY = object()
@@ -37,10 +39,32 @@ _ASSETS = {
 }
 
 
-def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestHandler]:
+def _catalog() -> dict[str, Any]:
+    return {"version": __version__, "settings_defaults": DEFAULT_SETTINGS.as_json(),
+            "categories": [{"id": key, "label": label} for key, label in CATEGORIES.items()],
+            "managed_tools": [{"name": tool.name, "description": tool.description,
+                               "category": tool.category}
+                              for tool in BY_NAME.values() if tool.name != "help"]}
+
+
+def _workspace_summary() -> dict[str, Any]:
+    rows = []
+    for workspace in known_workspaces():
+        row = {**workspace.as_json(), "available": False, "pending_proposals": []}
+        try:
+            target = resolve_workspace(workspace.id)
+            report = query.status(query.open_context(target.root))
+            row.update(available=True, gate=report["gate"], checks=report["checks"],
+                       manifest_error=report["manifest_error"], pending_proposals=report["proposals"])
+        except (OSError, ValueError, ProjectError, KeyError, TypeError) as exc:
+            row["error"] = f"Cannot read workspace metadata: {exc}"
+        rows.append(row)
+    return {"workspaces": rows, "registry_path": str(registry_path())}
+
+
+def _handler(default_workspace: str, allowed_hosts: set[str]) -> type[BaseHTTPRequestHandler]:
     allowed_hosts = frozenset(allowed_hosts)
     csrf_token = secrets.token_urlsafe(32)
-    dispatcher = Server(project.root)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -60,6 +84,14 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
 
         def _json(self, value: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
             self._send(status, json.dumps(value).encode("utf-8"), "application/json")
+
+        def _project(self, params: dict[str, list[str]]) -> Project:
+            selection = params.get("workspace")
+            if selection is not None:
+                if len(selection) != 1 or not selection[0] or selection[0] == "all":
+                    raise ValueError("select one workspace for this action")
+                return resolve_workspace(selection[0])
+            return resolve_workspace(default_workspace)
 
         def _host_allowed(self) -> bool:
             return self.headers.get("Host", "") in allowed_hosts
@@ -139,47 +171,53 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                 self._json({"error": "unexpected Host header"}, HTTPStatus.FORBIDDEN)
                 return
             url = urlparse(self.path)
-            params = {k: v[0] for k, v in parse_qs(url.query).items()}
+            selections = parse_qs(url.query, keep_blank_values=True)
+            params = {k: v[0] for k, v in selections.items()}
             try:
                 if url.path in _ASSETS:
                     name, content_type = _ASSETS[url.path]
                     self._send(HTTPStatus.OK, resources.files("vkit").joinpath(name).read_bytes(), content_type)
+                elif url.path == "/api/workspaces":
+                    workspaces = known_workspaces()
+                    self._json({**_catalog(), "workspaces": [item.as_json() for item in workspaces],
+                                "default_workspace": default_workspace,
+                                "registry_path": str(registry_path()), "csrf_token": csrf_token})
+                elif url.path == "/api/workspaces/summary":
+                    self._json(_workspace_summary())
                 elif url.path == "/api/status":
-                    self._json(query.status(query.open_context(project.root)))
+                    self._json(query.status(query.open_context(self._project(selections).root)))
                 elif url.path == "/api/runs":
-                    self._json(query.runs(query.open_context(project.root), int(params.get("limit", 30))))
+                    self._json(query.runs(query.open_context(self._project(selections).root), int(params.get("limit", 30))))
                 elif url.path == "/api/run":
-                    view = query.run_view_full(query.open_context(project.root), params.get("id", ""),
+                    view = query.run_view_full(query.open_context(self._project(selections).root), params.get("id", ""),
                                                log=params.get("log", "stdout"), offset=int(params.get("offset", 0)))
                     self._json(view if view is not None else {"error": "no such run"},
                                HTTPStatus.OK if view is not None else HTTPStatus.NOT_FOUND)
                 elif url.path == "/api/config":
-                    ctx = query.open_context(project.root)
-                    settings = load_settings(project)
-                    self._json({"version": __version__, "doctor": query.doctor(ctx),
+                    target = self._project(selections)
+                    ctx = query.open_context(target.root)
+                    settings = load_settings(target)
+                    self._json({**_catalog(), "doctor": query.doctor(ctx),
                                 "description": ctx.manifest.description if ctx.manifest else "",
                                 "definitions": ctx.manifest.entries if ctx.manifest else {},
-                                "settings": settings.as_json(), "settings_path": str(settings_path(project)),
-                                "settings_defaults": DEFAULT_SETTINGS.as_json(),
+                                "settings": settings.as_json(), "settings_path": str(settings_path(target)),
                                 "settings_schema": SETTINGS_SCHEMA, "csrf_token": csrf_token,
-                                "categories": [{"id": key, "label": label} for key, label in CATEGORIES.items()],
                                 "launcher_settings": load_launcher_settings().as_json(),
                                 "launcher_settings_path": str(launcher_settings_path()),
                                 "mcp_config": {"mcpServers": {"vkit": {
                                     "command": sys.executable,
-                                    "args": ["-m", "vkit.cli", "mcp", "serve", "--project", str(project.root),
+                                    "args": ["-m", "vkit.cli", "mcp", "serve", "--project", str(target.root),
                                              "--exposure", settings.mcp_exposure, "--categories",
                                              *(["all"] if settings.mcp_categories is None else settings.mcp_categories)],
-                                }}},
-                                "managed_tools": [{"name": tool.name, "description": tool.description,
-                                                   "category": tool.category}
-                                                  for tool in BY_NAME.values() if tool.name != "help"]})
+                                }}}})
                 else:
                     self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             except SettingsFileError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            except ValueError as exc:
+            except (ValueError, ProjectError) as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except (OSError, sqlite3.Error) as exc:
+                self._json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
         def do_POST(self) -> None:
             if not self._host_allowed():
@@ -189,12 +227,35 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                 self._reject_post("same-origin request with a valid console token required",
                                   HTTPStatus.FORBIDDEN)
                 return
-            path = urlparse(self.path).path
-            if path not in ("/api/settings", "/api/launcher-settings", "/api/call"):
+            url = urlparse(self.path)
+            path = url.path
+            if path not in ("/api/settings", "/api/launcher-settings", "/api/call",
+                            "/api/workspaces", "/api/workspaces/visit"):
                 self._reject_post("not found", HTTPStatus.NOT_FOUND)
                 return
             payload = self._post_json()
             if payload is _INVALID_BODY:
+                return
+            try:
+                if path == "/api/workspaces/visit":
+                    if not isinstance(payload, dict) or set(payload) != {"id"} or not isinstance(payload["id"], str):
+                        raise ValueError("request must contain a workspace id")
+                    workspace = remember(resolve_workspace(payload["id"]), "console")
+                    self._json(workspace.as_json())
+                    return
+                if path == "/api/workspaces":
+                    if (not isinstance(payload, dict) or set(payload) != {"path"}
+                            or not isinstance(payload["path"], str) or not payload["path"].strip()):
+                        raise ValueError("request must contain a repository path")
+                    workspace = remember(open_project(payload["path"]), "console")
+                    self._json(workspace.as_json())
+                    return
+                target = self._project(parse_qs(url.query, keep_blank_values=True))
+            except (ValueError, ProjectError) as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            except (OSError, sqlite3.Error) as exc:
+                self._json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
             if path in ("/api/settings", "/api/launcher-settings"):
                 launcher = path == "/api/launcher-settings"
@@ -204,7 +265,7 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                         save_launcher_settings(settings)
                     else:
                         settings = parse_settings(payload)
-                        save_settings(project, settings)
+                        save_settings(target, settings)
                 except ValueError as exc:
                     self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                     return
@@ -213,7 +274,7 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
                                HTTPStatus.INTERNAL_SERVER_ERROR)
                     return
                 self._json({"settings": settings.as_json(),
-                            "settings_path": str(launcher_settings_path() if launcher else settings_path(project))})
+                            "settings_path": str(launcher_settings_path() if launcher else settings_path(target))})
                 return
 
             if not isinstance(payload, dict) or set(payload) != {"name", "arguments"}:
@@ -226,7 +287,7 @@ def _handler(project: Project, allowed_hosts: set[str]) -> type[BaseHTTPRequestH
             if not isinstance(arguments, dict):
                 self._json({"error": "arguments must be an object"}, HTTPStatus.BAD_REQUEST)
                 return
-            result, is_error = dispatcher.call(name, arguments)
+            result, is_error = Server(target.root).call(name, arguments)
             self._json({"result": result, "is_error": is_error})
 
     return Handler
@@ -239,9 +300,10 @@ class _LoopbackServer(ThreadingHTTPServer):
 
 
 def bind(project: Project, port: int) -> ThreadingHTTPServer:
-    server = _LoopbackServer(("127.0.0.1", port), _handler(project, set()))
+    workspace = remember(project, "console")
+    server = _LoopbackServer(("127.0.0.1", port), _handler(workspace.id, set()))
     bound = server.server_address[1]
-    server.RequestHandlerClass = _handler(project, {f"127.0.0.1:{bound}", f"localhost:{bound}"})
+    server.RequestHandlerClass = _handler(workspace.id, {f"127.0.0.1:{bound}", f"localhost:{bound}"})
     return server
 
 

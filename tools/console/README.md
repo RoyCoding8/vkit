@@ -1,24 +1,8 @@
 # Console assets
 
-## Runtime behavior
+This directory contains the frontend build sources. For running checks and managing workspaces, see the [console guide](../../docs/console.md).
 
-| Area | Behavior |
-| --- | --- |
-| Interface | Official Material Web components, Material 3 color roles generated from VKit's blue, and self-hosted Roboto. |
-| Jobs | Run registered checks, show durable runs and logs, and cancel active runs. |
-| Gate evidence | Updates only when the accepted checker's recorded inputs and outcome match. |
-| Packaged assets | Checked into `src/vkit/console-assets` and included in the Python package. |
-| Runtime requirements | No Node or internet connection needed to run the console. |
-
-## Settings locations
-
-| Settings | Location |
-| --- | --- |
-| Repository preferences | `<git common directory>/vkit/config.json`, usually `.git/vkit/config.json`. |
-| Launch defaults | User config directory's `vkit/config.json`, or the file selected by `VKIT_CONFIG`. |
-| File controls | **Setup & tools** shows and edits the two files separately. |
-| Tool controls | **Project settings > Show tools** provides category switches, individual controls, and agent category scope. |
-| MCP exposure | Compact or Named. |
+The interface uses Material Web components, Material 3 color roles, and self-hosted Roboto fonts. Generated assets live in `src/vkit/console-assets` and ship in the Python package. Running the console needs neither Node nor an internet connection.
 
 ## Rebuild the assets
 

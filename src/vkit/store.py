@@ -43,7 +43,7 @@ def _subject_dir(subject: dict[str, Any]) -> Path:
     if (
         not isinstance(subject, dict)
         or set(subject) != {"kind", "id"}
-        or subject["kind"] not in {"registered_check", "formal_goal"}
+        or subject["kind"] not in {"registered_check", "formal_goal", "change_certification"}
         or not isinstance(subject["id"], str)
         or not _SUBJECT_ID.fullmatch(subject["id"])
     ):

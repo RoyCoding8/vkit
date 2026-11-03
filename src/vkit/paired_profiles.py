@@ -27,6 +27,7 @@ _ENVIRONMENT_NAMES = {
     "path": "PATH",
     "systemroot": "SystemRoot",
     "windir": "WINDIR",
+    "systemdrive": "SystemDrive",
     "temp": "TEMP",
     "tmp": "TMP",
     "tmpdir": "TMPDIR",

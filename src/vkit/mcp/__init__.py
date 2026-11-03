@@ -19,7 +19,7 @@ from ..paths import Project, open_project
 from ..settings import load_settings
 from ..schemas import SchemaValidationError, VERIFICATION_REQUEST, schema
 
-MAX_WAIT_SECONDS = 60
+MAX_WAIT_SECONDS = query.MAX_WAIT_SECONDS
 INSTRUCTIONS = (
     "Call help for enabled categories, help with category or query for tool summaries, "
     "and help with name for one exact input contract. In compact mode, use invoke with that name and arguments. "
@@ -258,6 +258,25 @@ def _verify(server: Server, args: dict[str, Any]) -> Any:
     return query.run_view(ctx, record["run_id"], sections=args.get("sections"))
 
 
+def _change_certify(server: Server, args: dict[str, Any]) -> Any:
+    from ..change_methods import parse_kani_toolchain
+
+    ctx = server.context()
+    toolchain = (parse_kani_toolchain(args["kani_toolchain"])
+                 if "kani_toolchain" in args else None)
+    wait_seconds = query.validate_wait_seconds(args.get("wait_seconds", 0))
+    record = jobs.submit_change(
+        ctx.project, args["request"],
+        trusted_target_oid=args["trusted_target_oid"],
+        requested_method=args.get("method", "auto"),
+        kani_toolchain=toolchain, store=ctx.store)
+    record = jobs.wait(ctx.store, record["run_id"], wait_seconds)
+    view = query.run_view(ctx, record["run_id"])
+    if view is None:
+        raise Refusal(f"no run {record['run_id']!r}")
+    return view
+
+
 def _run_wait(server: Server, args: dict[str, Any]) -> Any:
     ctx = server.context()
     query.normalize_run_sections(args.get("sections"))
@@ -314,6 +333,33 @@ def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
 _STR = {"type": "string"}
 _RUN_SECTIONS = {"type": "array", "items": {"type": "string", "enum": [*query.RUN_SECTIONS, "all"]}}
 _PATHS = {"type": "array", "items": _STR, "description": "repository-relative paths"}
+_KANI_TOOLCHAIN_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["kind", "profile", "target", "kani_root", "rustup_home", "cargo_home",
+                 "rust_root", "driver", "kani_manifest_sha256", "rust_manifest_sha256",
+                 "rustup_sha256", "environment", "host_libraries", "host_closure_complete"],
+    "properties": {
+        "kind": {"const": "kani_toolchain"},
+        "profile": {"const": "kani-0.68.0-x86_64-unknown-linux-gnu-v1"},
+        "target": {"const": "x86_64-unknown-linux-gnu"},
+        "kani_root": _STR, "rustup_home": _STR, "cargo_home": _STR,
+        "rust_root": _STR, "driver": _STR,
+        "kani_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rust_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "rustup_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "environment": {"type": "object", "additionalProperties": False,
+                        "required": ["CARGO_HOME", "LANG", "LD_LIBRARY_PATH", "PATH", "RUSTUP_HOME",
+                                     "RUSTUP_TOOLCHAIN", "TZ"],
+                        "properties": {key: _STR for key in (
+                            "CARGO_HOME", "LANG", "LD_LIBRARY_PATH", "PATH", "RUSTUP_HOME",
+                            "RUSTUP_TOOLCHAIN", "TZ")}},
+        "host_libraries": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["path", "sha256"],
+            "properties": {"path": _STR, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+        }},
+        "host_closure_complete": {"const": False},
+    },
+}
 _BASE_TOOLS = (
     Tool("feedback_add", "Record a missing verification capability that would materially help this task. "
          "Prioritize formal verification; reliable checks are also useful. Local feedback does not affect proof "
@@ -357,6 +403,14 @@ _BASE_TOOLS = (
          "passing evidence with identical complete source, policy, checker, and target identity.",
          {**schema(VERIFICATION_REQUEST)["properties"], "sections": _RUN_SECTIONS}, _verify, read_only=False,
          required=tuple(schema(VERIFICATION_REQUEST)["required"]), category="repository"),
+    Tool("change_certify", "Submit a candidate for shadow change analysis against a separately selected target. "
+         "Uses the durable job lifecycle. Results are sampled or model-scoped and never grant approval.",
+         {"request": schema("change-certification.v1.json"),
+          "trusted_target_oid": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+          "method": {"type": "string", "enum": ["auto", "finite_paired", "rust_kani"], "default": "auto"},
+          "kani_toolchain": _KANI_TOOLCHAIN_SCHEMA,
+          "wait_seconds": {"type": "number", "minimum": 0, "maximum": MAX_WAIT_SECONDS, "default": 0}},
+         _change_certify, read_only=False, required=("request", "trusted_target_oid"), category="repository"),
     Tool("run_get", "A compact run summary by default. Select summary, diagnostics, obligations, provenance, coverage, compilation, artifacts, or log for detail.",
          {"run_id": _STR, "sections": _RUN_SECTIONS,
           "log": {"type": "string", "enum": ["stdout", "stderr"]},

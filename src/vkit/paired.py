@@ -372,6 +372,7 @@ def _save_report(
     *,
     started: float,
     deadline: float,
+    live_binding: WitnessBinding | None,
 ) -> PairedExecution:
     mismatches = _artifact_mismatches(output_dir, report)
     if mismatches:
@@ -392,9 +393,9 @@ def _save_report(
         )
     report["status"] = _final_status(report)
     validate("paired execution report", "paired-execution-report.v1.json", report)
-    (output_dir / "paired-report.json").write_bytes(_json_bytes(report))
-    binding = None if report["binding"] is None else WitnessBinding.from_json(report["binding"])
-    return PairedExecution(report["status"], binding, report)
+    with (output_dir / "paired-report.json").open("xb") as stream:
+        stream.write(_json_bytes(report))
+    return PairedExecution(report["status"], live_binding, report)
 
 
 def _store_failure(
@@ -445,14 +446,44 @@ def run_paired_execution(
     bound, base_capture, candidate_capture = _prepare_change_request(
         project, raw_request, trusted_target_oid=trusted_target_oid
     )
+    return _run_prepared_paired_execution(
+        bound,
+        base_capture,
+        candidate_capture,
+        output_dir=output_dir,
+        input_tokens=input_tokens,
+        repetitions=repetitions,
+        timeout_seconds=timeout_seconds,
+        max_shrink_trials=max_shrink_trials,
+        should_cancel=should_cancel,
+    )
+
+
+def _run_prepared_paired_execution(
+    bound: BoundChangeRequest,
+    base_capture: CapturedSource,
+    candidate_capture: CapturedSource,
+    *,
+    output_dir: Path,
+    input_tokens: tuple[str, ...] | None = None,
+    repetitions: int = 3,
+    timeout_seconds: float = 10,
+    max_shrink_trials: int = 20,
+    should_cancel: Callable[[], bool] = lambda: False,
+) -> PairedExecution:
+    _validate_limits(repetitions, timeout_seconds, max_shrink_trials)
     started = time.monotonic()
     deadline = started + _MAX_RUN_SECONDS
     selected = _select_inputs(bound, input_tokens)
     output_root = _fresh_directory(Path(output_dir))
     report = _report_base(bound, selected, repetitions, max_shrink_trials)
+    live_binding: WitnessBinding | None = None
 
     def save_report() -> PairedExecution:
-        return _save_report(output_root, report, started=started, deadline=deadline)
+        return _save_report(
+            output_root, report, started=started, deadline=deadline,
+            live_binding=live_binding,
+        )
 
     try:
         semantic = _semantic_files(bound, base_capture, candidate_capture)
@@ -540,6 +571,7 @@ def run_paired_execution(
             runner_identity_sha256=runner_ref.sha256,
             runtime_identity_sha256=runtime_ref.sha256,
         )
+        live_binding = binding
         report["binding"] = binding.to_json()
         validate_environment(environment)
     except (OSError, ValueError, SchemaValidationError, KeyError, TypeError) as exc:
@@ -647,7 +679,8 @@ def run_paired_execution(
                     stdout_path, stderr_path, timeout_seconds, should_cancel, input_ref,
                     report=report, deadline=deadline,
                 )
-                output = {"value": None, "stdout": stdout_ref.to_json() if stdout_ref else None,
+                output = {"outcome": "incomplete", "value": None,
+                          "stdout": stdout_ref.to_json() if stdout_ref else None,
                           "stderr": stderr_ref.to_json() if stderr_ref else None}
                 row[side] = output
                 if stdout_ref:
@@ -680,6 +713,7 @@ def run_paired_execution(
                     )
                     return sample
                 output["value"] = output_value
+                output["outcome"] = "validated_output"
                 if side == "base":
                     base_values.append(output_value)
                 else:

@@ -162,3 +162,46 @@ def test_change_request_json_projection_preserves_semantic_request():
     request = ChangeCertificationRequest.from_json(raw)
 
     assert request.to_json() == raw
+
+
+@pytest.mark.parametrize("record", ["accepted-list", "current-revision"])
+@pytest.mark.parametrize("operation", ["edit", "delete"])
+def test_preflight_rejects_candidate_intent_authority_drift(tmp_path, record, operation):
+    root, target_oid, _, intent, _, request = _repository(tmp_path)
+    directory = root / "verification/change-intents"
+    path = directory / (
+        "accepted.v1.json" if record == "accepted-list" else f"{intent.digest}.v1.json"
+    )
+    if operation == "delete":
+        path.unlink()
+    else:
+        modified = json.loads(path.read_bytes())
+        if record == "accepted-list":
+            modified["accepted"].append("0" * 64)
+        else:
+            modified["requirement"]["statement"] = "Candidate changed the accepted requirement."
+        path.write_text(json.dumps(modified), encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "change candidate intent authority")
+    request["candidate_oid"] = git_output(root, "rev-parse", "HEAD")
+
+    with pytest.raises(ValueError, match="candidate .* differs from trusted target"):
+        preflight_change_request(open_project(root), request, trusted_target_oid=target_oid)
+
+
+def test_preflight_allows_unaccepted_intent_proposal_without_granting_authority(tmp_path):
+    root, target_oid, _, intent, raw, request = _repository(tmp_path)
+    proposal_raw = json.loads(json.dumps(raw))
+    proposal_raw["requirement"]["statement"] = "Proposed replacement requirement."
+    proposal = IntentRevision.from_json(proposal_raw)
+    proposal_path = root / f"verification/change-intents/{proposal.digest}.v1.json"
+    proposal_path.write_text(json.dumps(proposal.to_json()), encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "propose an unaccepted intent")
+    request["candidate_oid"] = git_output(root, "rev-parse", "HEAD")
+
+    bound = preflight_change_request(open_project(root), request, trusted_target_oid=target_oid)
+
+    assert bound.intent.digest == intent.digest
+    assert bound.intent.digest != proposal.digest
+    assert bound.to_json()["candidate_behavior_checked"] is False

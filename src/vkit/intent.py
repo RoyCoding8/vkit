@@ -10,7 +10,14 @@ from .certification import (
     IntentRevision,
     intent_entails_claim,
 )
-from .inputs import CapturedFile, CapturedSource, canonical_digest, capture_git_commit, git_ancestor
+from .inputs import (
+    CapturedFile,
+    CapturedSource,
+    _commit_metadata,
+    canonical_digest,
+    capture_git_commit,
+    git_ancestor,
+)
 from .paths import Project
 from .schemas import validate
 
@@ -81,7 +88,44 @@ def _prepare_change_request(
 
     base = capture_git_commit(project, trusted_target_oid)
     candidate = capture_git_commit(project, request.candidate_oid)
-    if not git_ancestor(project, base.commit, candidate):
+    bound = _bind_captured_change_request(
+        project, request, base, candidate, trusted_target_oid=trusted_target_oid
+    )
+    return bound, base, candidate
+
+
+def _bind_captured_change_request(
+    project: Project,
+    raw_request: Any,
+    base: CapturedSource,
+    candidate: CapturedSource,
+    *,
+    trusted_target_oid: str,
+) -> BoundChangeRequest:
+    request = (
+        raw_request
+        if isinstance(raw_request, ChangeCertificationRequest)
+        else ChangeCertificationRequest.from_json(raw_request)
+    )
+    if request.base_oid != trusted_target_oid:
+        raise ValueError("request base must equal the trusted target commit")
+    if (
+        base.kind != "git_commit"
+        or candidate.kind != "git_commit"
+        or base.commit != trusted_target_oid
+        or candidate.commit != request.candidate_oid
+        or not base.tree
+        or not candidate.tree
+        or base.object_format != candidate.object_format
+    ):
+        raise ValueError("captured source identities do not match the change request")
+    for source in (base, candidate):
+        commit, tree, parents = _commit_metadata(
+            project.root, source.commit, source.object_format
+        )
+        if (commit, tree, parents) != (source.commit, source.tree, source.parents):
+            raise ValueError("captured commit metadata differs from its Git object")
+    if not git_ancestor(project, trusted_target_oid, candidate):
         raise ValueError("candidate must descend from the trusted target commit")
 
     target_files = {file.path: file for file in base.files}
@@ -97,6 +141,13 @@ def _prepare_change_request(
         f"{_INTENT_DIRECTORY}/{request.declared_intent_sha256}.v1.json",
         "intent revision",
     )
+    for label, target_file in (
+        ("accepted-intents document", accepted_file),
+        ("intent revision", revision_file),
+    ):
+        candidate_file = candidate_files.get(target_file.path)
+        if candidate_file is None or candidate_file.content != target_file.content:
+            raise ValueError(f"candidate {label} differs from trusted target")
     revision_raw = _strict_json(revision_file, "intent revision")
     revision = IntentRevision.from_json(revision_raw)
     if revision.digest != request.declared_intent_sha256:
@@ -135,7 +186,7 @@ def _prepare_change_request(
         detail = f": {'; '.join(details)}" if details else ""
         raise ValueError(f"request claim is not entailed by accepted intent ({entailment.kind.value}){detail}")
 
-    bound = BoundChangeRequest(
+    return BoundChangeRequest(
         request=request,
         intent=revision,
         target_tree_oid=base.tree,
@@ -145,7 +196,6 @@ def _prepare_change_request(
         base_capture_sha256=base.digest,
         candidate_capture_sha256=candidate.digest,
     )
-    return bound, base, candidate
 
 
 def preflight_change_request(

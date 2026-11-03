@@ -17,10 +17,11 @@ RUNNER = ROOT / "scripts/check_change_corpus.py"
 
 
 def run_corpus(output_dir: Path, manifest: Path | None = None, env: dict[str, str] | None = None):
-    command = [sys.executable, str(RUNNER), "--output-dir", str(output_dir)]
+    command = [sys.executable, str(RUNNER), "--output-dir", str(output_dir),
+               "--timeout-seconds", "90"]
     if manifest is not None:
         command += ["--manifest", str(manifest)]
-    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=120,
+    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=300,
                           env=env, **NO_WINDOW)
 
 

@@ -17,3 +17,36 @@ $env:PYTHONPATH = (Resolve-Path '.\src').Path
 ```
 
 The script makes disposable VKit projects and runs the existing `check run` TLC path. It keeps its report and per-case project evidence under `tmp\authority-model` by default.
+
+## Finite difference assessment model
+
+`Differences.tla` models raw paired observations through collection, per-input assessment, and final status. The `bounded` configuration nondeterministically chooses and orders zero, one, or two records, allowing repeated identical records, from a 13-record pool over two inputs. Records include selected and shrink cases, stable differences and repairs, failures, partial or unstable repeats, and outputs outside the observation model. Separate configurations cover guard intersections, duplicate identical selected observations, and the empty admissible domain.
+
+Seven clean configurations check the full invariant set. Two additional reachability configurations require a counterexample to the deliberately false NoCompletedState or NoConformance property, demonstrating that empty collection reaches assessment completion and complete evidence reaches conformance. These are positive reachability witnesses, not product defects. Eight mutant configurations each require a named counterexample: shrink evidence filling selected coverage, ignoring invalid shrink evidence, hiding a stable violation behind missing or unknown evidence, using the union of overlapping guards, skipping standing intent, permitting unguarded changes, rejecting a valid standing repair, and treating an empty domain as conformance. These are constructed model controls. The bounded model explores every ordered evidence sequence, with multiplicity, of length zero through two from its 13-record pool (183 sequences); it does not explore arbitrary output strings or longer runs.
+
+The model keeps raw records separate from the derived coverage and finding sequences, and selected-record counts preserve identical duplicates. Its invariants inspect raw observations and policy relations, and require violations to remain visible even when coverage is incomplete. Valid base outputs outside standing intent may be repaired by an allowed candidate output; a candidate outside standing intent remains a violation. Empty admissible input stays unknown. Source proof and approval authority are fixed false.
+
+The runtime bridge in `tests/test_difference_model_bridge.py` calls the public intent and difference-policy parsers and the finite assessor with literal observations. It checks exact statuses, coverage, finding kinds, missing inputs, duplicate identical selected rows, intersected guard IDs, repair behavior, parser rejection of conflicting overlap, and the serialized no-authority fields. The status names bridge to the public evaluator (`observed_conformance`, `observed_violation`, `unknown`); they do not claim a source proof or implementation refinement.
+
+Run either suite through the shared qualification runner:
+
+```powershell
+$env:VKIT_TLA2TOOLS_JAR = 'PATH_TO_JAR_MATCHING_REPOSITORY_PIN'
+$env:PYTHONPATH = (Resolve-Path '.\src').Path
+.\.venv\Scripts\python.exe scripts\check_authority.py --suite authority
+.\.venv\Scripts\python.exe scripts\check_authority.py --suite differences
+```
+
+Both suites retain isolated VKit project, checker, and TLC evidence below `tmp\authority-model` or `tmp\difference-model` by default. The finite suite checks a small abstraction plus selected runtime bridge cases. It does not establish implementation refinement, that the accepted finite inputs cover arbitrary program inputs, or approval authority.
+
+## Compare actual TLC decisions with Python
+
+`DifferenceDecisionBridge.tla` instruments the seven clean finite configurations without changing their transition relation. `scripts/check_difference_decisions.py` runs TLC, parses its terminal decisions, and compares every emitted row with the public Python assessor. Distinct raw sequences are counted separately for coverage, preserving record order and multiplicity. The declared pools contain 211 distinct sequences across the seven configurations. Negative controls remove a modeled violation and change a terminal status while retaining the same raw sequence.
+
+```powershell
+$env:VKIT_TLA2TOOLS_JAR = 'PATH_TO_JAR_MATCHING_REPOSITORY_PIN'
+$env:PYTHONPATH = (Resolve-Path '.\src').Path
+.\.venv\Scripts\python.exe scripts\check_difference_decisions.py --output tmp\difference-decisions
+```
+
+Java is resolved from `JAVA_HOME` or `PATH`. The script requires the repository-pinned TLC jar, imports this checkout's evaluator, and retains the copied model, instrumented configurations, bounded logs, hashes, comparisons, and negative controls. CI runs this comparison and uploads its evidence. Agreement covers these finite record pools and the compared decision fields. It does not prove general implementation refinement, source behavior, or approval authority.

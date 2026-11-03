@@ -1,12 +1,15 @@
-"""Closed semantic payloads for the shared registered-check and formal job lifecycle."""
+"""Closed semantic payloads for the shared job lifecycle."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
+from .certification import ChangeCertificationRequest
+from .change_methods import ChangeMethodPlan
 from .formal.policy import FormalComponent
 from .inputs import CapturedSource, canonical_digest
+from .intent import BoundChangeRequest
 from .manifest import Manifest
 from .requests import GitCommit, PackageVerificationRequest
 from .schemas import JOB, validate
@@ -86,7 +89,29 @@ class FormalGoal:
         }
 
 
-ResolvedJob: TypeAlias = RegisteredCheck | FormalGoal
+@dataclass(frozen=True)
+class ChangeCertification:
+    bound: BoundChangeRequest
+    base: CapturedSource
+    candidate: CapturedSource
+    methods: ChangeMethodPlan
+    implementation: dict[str, str]
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": 2,
+            "subject": {"kind": "change_certification", "id": self.bound.intent.digest},
+            "source": _source_json(self.candidate),
+            "target_source": _source_json(self.base),
+            "trusted_target_oid": self.base.commit,
+            "change_request": self.bound.request.to_json(),
+            "bound_request_sha256": self.bound.digest,
+            "method_plan": self.methods.to_json(),
+            "implementation": self.implementation,
+        }
+
+
+ResolvedJob: TypeAlias = RegisteredCheck | FormalGoal | ChangeCertification
 
 
 def job_id(payload: dict[str, Any]) -> str:
@@ -103,6 +128,19 @@ def validate_job(payload: Any) -> dict[str, Any]:
     validate("resolved job", JOB, payload)
     if payload["job_id"] != job_id(payload):
         raise ValueError("resolved job semantic identity does not match its job ID")
+    if payload["subject"]["kind"] == "change_certification":
+        request = ChangeCertificationRequest.from_json(payload["change_request"])
+        methods = ChangeMethodPlan.from_json(payload["method_plan"])
+        if (request.to_json() != payload["change_request"]
+                or methods.to_json() != payload["method_plan"]
+                or payload["subject"]["id"] != request.declared_intent_sha256
+                or payload["trusted_target_oid"] != request.base_oid
+                or payload["source"]["kind"] != "git_commit"
+                or payload["source"]["commit"] != request.candidate_oid
+                or payload["target_source"]["kind"] != "git_commit"
+                or payload["target_source"]["commit"] != request.base_oid
+                or payload["source"]["object_format"] != payload["target_source"]["object_format"]):
+            raise ValueError("change job request, target, sources and method plan differ")
     if payload["subject"]["kind"] == "formal_goal":
         request = PackageVerificationRequest.from_json(payload["request"])
         try:

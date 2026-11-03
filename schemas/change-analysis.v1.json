@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.dev/schemas/change-analysis.v1.json",
+  "title": "Sampled change analysis report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "scope",
+    "status",
+    "source_proof",
+    "approval_authority",
+    "request_sha256",
+    "source",
+    "policy",
+    "paired_report",
+    "assessment"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "change_analysis" },
+    "scope": { "const": "sampled_change_analysis" },
+    "status": { "enum": ["observed_conformance", "observed_violation", "unknown"] },
+    "source_proof": { "const": false },
+    "approval_authority": { "const": false },
+    "request_sha256": { "$ref": "#/$defs/sha256" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_oid",
+        "candidate_oid",
+        "target_tree_oid",
+        "base_capture_sha256",
+        "candidate_capture_sha256"
+      ],
+      "properties": {
+        "base_oid": { "type": "string", "minLength": 40, "maxLength": 64, "pattern": "^[0-9a-f]+$" },
+        "candidate_oid": { "type": "string", "minLength": 40, "maxLength": 64, "pattern": "^[0-9a-f]+$" },
+        "target_tree_oid": { "type": "string", "minLength": 40, "maxLength": 64, "pattern": "^[0-9a-f]+$" },
+        "base_capture_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_capture_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "target_tree_oid", "blob_oid", "raw_sha256", "policy_sha256", "default", "artifact"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^verification/change-intents/differences/[0-9a-f]{64}\\.v1\\.json$"
+        },
+        "target_tree_oid": { "type": "string", "minLength": 40, "maxLength": 64, "pattern": "^[0-9a-f]+$" },
+        "blob_oid": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 40, "maxLength": 64, "pattern": "^[0-9a-f]+$" }
+          ]
+        },
+        "raw_sha256": { "$ref": "#/$defs/sha256" },
+        "policy_sha256": { "$ref": "#/$defs/sha256" },
+        "default": { "type": "boolean" },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256", "media_type"],
+          "properties": {
+            "path": { "const": "policy/difference-policy.json" },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "media_type": { "const": "application/json" }
+          }
+        }
+      }
+    },
+    "paired_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "const": "paired-report.json" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "source_proof", "approval_authority", "status", "coverage_complete", "findings", "missing_inputs"],
+      "properties": {
+        "scope": { "const": "finite_paired_observations" },
+        "source_proof": { "const": false },
+        "approval_authority": { "const": false },
+        "status": { "enum": ["observed_conformance", "observed_violation", "unknown"] },
+        "coverage_complete": { "type": "boolean" },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["input", "kind", "guard_ids", "base_output", "candidate_output", "reason"],
+            "properties": {
+              "input": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+              "kind": { "enum": ["preserved", "guarded_requirement_met", "standing_intent_repair", "violation", "unknown"] },
+              "guard_ids": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+              "base_output": { "type": ["string", "null"] },
+              "candidate_output": { "type": ["string", "null"] },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "missing_inputs": { "type": "array", "items": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" }, "uniqueItems": true }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "status": { "const": "observed_conformance" },
+        "assessment": { "properties": { "status": { "const": "observed_conformance" } } }
+      }
+    },
+    {
+      "properties": {
+        "status": { "const": "observed_violation" },
+        "assessment": { "properties": { "status": { "const": "observed_violation" } } }
+      }
+    },
+    {
+      "properties": {
+        "status": { "const": "unknown" },
+        "assessment": { "properties": { "status": { "const": "unknown" } } }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$" }
+  }
+}

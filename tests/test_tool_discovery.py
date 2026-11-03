@@ -91,7 +91,7 @@ def test_startup_scope_cannot_be_widened_by_discovery_or_known_names(make_projec
             assert {tool["name"] for tool in listed} <= {
                 "help", "status", "features", "check_run", "run_get", "run_cancel", "run_wait",
                 "evidence_export", "evidence_replay", "propose", "gate", "verify",
-                "feedback_add", "feedback_list"}
+                "feedback_add", "feedback_list", "change_certify"}
             if not scope:
                 assert [tool["name"] for tool in listed] == ["help"]
         result, error = client.call("help", all=True, limit=25)
@@ -109,6 +109,7 @@ def test_startup_scope_cannot_be_widened_by_discovery_or_known_names(make_projec
     try:
         result, error = fresh.call("help")
         assert not error and result["categories"] == []
+        assert fresh.call("change_certify") == ({"error": "unknown or unavailable tool"}, True)
     finally:
         fresh.close()
     code, body = vkit(project, "mcp", "serve", "--exposure", "named", "--categories", "all")

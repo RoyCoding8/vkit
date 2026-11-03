@@ -119,17 +119,15 @@ def test_candidate_and_local_approval_cannot_accept_a_new_intent(intent_reposito
         _bind(root, target, request)
 
 
-def test_candidate_policy_replacement_retains_target_intent(intent_repository):
+def test_candidate_policy_replacement_is_rejected(intent_repository):
     root, target, request, raw, revision_path = intent_repository()
     raw["requirement"]["statement"] = "Unreviewed replacement."
     write_json(root / revision_path, raw)
     (root / POLICY).unlink()
     request["candidate_oid"] = _commit(root, "replace revision and delete acceptance")
 
-    bound = _bind(root, target, request)
-
-    assert bound.intent.requirement_statement == "Either allow or deny is legal."
-    assert bound.request.candidate_oid == request["candidate_oid"]
+    with pytest.raises(ValueError, match="candidate accepted-intents document differs from trusted target"):
+        _bind(root, target, request)
 
 
 def test_an_unchanged_candidate_can_bind_without_granting_a_pass(intent_repository):

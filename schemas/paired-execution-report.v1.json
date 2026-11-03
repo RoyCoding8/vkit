@@ -150,12 +150,28 @@
     "run_output": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["value", "stdout", "stderr"],
+      "required": ["outcome", "value", "stdout", "stderr"],
       "properties": {
+        "outcome": {"enum": ["validated_output", "incomplete"]},
         "value": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 4294967295}, {"type": "null"}]},
         "stdout": {"oneOf": [{"$ref": "#/$defs/artifact"}, {"type": "null"}]},
         "stderr": {"oneOf": [{"$ref": "#/$defs/artifact"}, {"type": "null"}]}
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": {"const": "validated_output"},
+            "value": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+            "stdout": {"$ref": "#/$defs/artifact"}
+          }
+        },
+        {
+          "properties": {
+            "outcome": {"const": "incomplete"},
+            "value": {"type": "null"}
+          }
+        }
+      ]
     },
     "sample_run": {
       "type": "object",

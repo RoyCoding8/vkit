@@ -1,0 +1,184 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "timestamp": "2026-11-02T12:08:18.375549756Z",
+    "kani_version": "0.68.0",
+    "target": "x86_64-unknown-linux-gnu",
+    "build_mode": "release"
+  },
+  "project": {
+    "crate_name": [
+      "harness"
+    ],
+    "workspace_root": null,
+    "output_dir": "retained-output"
+  },
+  "tools": {
+    "kani": "0.68.0",
+    "rustc": "rustc 1.100.0-nightly (8925ea358 2026-08-20)",
+    "cbmc": "6.11.0 (cbmc-6.11.0)",
+    "goto_cc": "gcc (goto-cc 6.11.0 (cbmc-6.11.0)) 15.2.0",
+    "goto_instrument": "6.11.0 (cbmc-6.11.0)",
+    "solvers": [
+      {
+        "name": "cadical",
+        "version": null
+      }
+    ]
+  },
+  "harness_metadata": [
+    {
+      "pretty_name": "vkit_relational",
+      "mangled_name": "_RNvCs52ogOK2TPOL_7harness15vkit_relational",
+      "crate_name": "harness",
+      "source": {
+        "file": "harness.rs",
+        "start_line": 9,
+        "end_line": 21
+      },
+      "goto_file": "retained-output/harness.symtab.out",
+      "attributes": {
+        "kind": "Proof",
+        "should_panic": false
+      },
+      "contract": {
+        "contracted_function_name": null,
+        "recursion_tracker": null
+      },
+      "has_loop_contracts": false,
+      "is_automatically_generated": false,
+      "is_bounded": false,
+      "is_ctor_based": false
+    }
+  ],
+  "error_details": [
+    {
+      "harness_id": "vkit_relational",
+      "has_errors": false
+    }
+  ],
+  "property_details": [
+    {
+      "harness_id": "vkit_relational",
+      "property_details": {
+        "total_properties": 5,
+        "passed": 5,
+        "failed": 0,
+        "unreachable": 0,
+        "undetermined": 0,
+        "solver_error": 0,
+        "satisfied": 0,
+        "unsatisfiable": 0,
+        "covered": 0,
+        "uncovered": 0
+      }
+    }
+  ],
+  "cbmc": [
+    {
+      "harness_id": "vkit_relational",
+      "cbmc_metadata": {
+        "version": "6.11.0",
+        "os_info": "x86_64 linux unix"
+      },
+      "configuration": {
+        "object_bits": 16,
+        "solver": "cadical"
+      },
+      "cbmc_stats": {
+        "runtime_symex_s": 0.0962687,
+        "size_program_expression": 548,
+        "slicing_removed_assignments": 208,
+        "vccs_generated": 10,
+        "vccs_remaining": 9,
+        "runtime_postprocess_equation_s": 0.000412924,
+        "runtime_convert_ssa_s": 0.0183533,
+        "runtime_post_process_s": 3.7783e-05,
+        "runtime_solver_s": 0.0112878,
+        "runtime_decision_procedure_s": 0.0131375
+      }
+    }
+  ],
+  "verification_results": {
+    "summary": {
+      "total_harnesses": 1,
+      "executed": 1,
+      "status": "completed",
+      "successful": 1,
+      "failed": 0,
+      "duration_ms": 1327
+    },
+    "results": [
+      {
+        "harness_id": "vkit_relational",
+        "status": "Success",
+        "duration_ms": 1327,
+        "checks": [
+          {
+            "id": 1,
+            "function": "vkit_relational",
+            "status": "Success",
+            "description": "\"base_observation_model\"",
+            "location": {
+              "file": "harness.rs",
+              "line": "14",
+              "column": "1"
+            },
+            "category": "assertion"
+          },
+          {
+            "id": 2,
+            "function": "vkit_relational",
+            "status": "Success",
+            "description": "\"candidate_observation_model\"",
+            "location": {
+              "file": "harness.rs",
+              "line": "15",
+              "column": "1"
+            },
+            "category": "assertion"
+          },
+          {
+            "id": 3,
+            "function": "vkit_relational",
+            "status": "Success",
+            "description": "\"candidate_standing_intent\"",
+            "location": {
+              "file": "harness.rs",
+              "line": "16",
+              "column": "1"
+            },
+            "category": "assertion"
+          },
+          {
+            "id": 4,
+            "function": "vkit_relational",
+            "status": "Success",
+            "description": "\"relational_policy\"",
+            "location": {
+              "file": "harness.rs",
+              "line": "20",
+              "column": "1"
+            },
+            "category": "assertion"
+          },
+          {
+            "id": 5,
+            "function": "vkit_base::convert",
+            "status": "Success",
+            "description": "attempt to add with overflow",
+            "location": {
+              "file": "base/candidate.rs",
+              "line": "1",
+              "column": "37"
+            },
+            "category": "assertion"
+          }
+        ]
+      }
+    ]
+  },
+  "coverage": {
+    "enabled": false
+  }
+}

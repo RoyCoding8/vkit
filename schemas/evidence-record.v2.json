@@ -106,11 +106,19 @@
       "additionalProperties": false,
       "required": ["kind", "id"],
       "properties": {
-        "kind": {"enum": ["registered_check", "formal_goal"]},
+        "kind": {"enum": ["registered_check", "formal_goal", "change_certification"]},
         "id": {"type": "string", "minLength": 1}
       }
     },
     "source": {"$ref": "job.v2.json#/$defs/source"},
+    "target_source": {"$ref": "job.v2.json#/$defs/source"},
+    "trusted_target_oid": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+    "change_request": {"$ref": "change-certification.v1.json"},
+    "bound_request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "method_plan": {"type": "object"},
+    "implementation": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "source_proof": {"const": false},
+    "approval_authority": {"const": false},
     "inputs": {"type": "object"},
     "assurance": {"type": "string", "minLength": 1},
     "claim_outcome": {"enum": ["established", "refuted", "unknown"]},
@@ -129,9 +137,9 @@
     "policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "checker_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "method": {"const": "verus_source"},
-    "category": {"const": "source_verification"},
-    "scope": {"const": "required_api"},
+    "method": {"enum": ["verus_source", "change_methods"]},
+    "category": {"enum": ["source_verification", "change_certification"]},
+    "scope": {"enum": ["required_api", "shadow"]},
     "verification": {
       "type": "object",
       "properties": {
@@ -145,8 +153,21 @@
     "if": {"properties": {"subject": {"properties": {"kind": {"const": "formal_goal"}}}}},
     "then": {
       "required": ["policy_sha256", "package_sha256", "checker_sha256", "method", "category", "scope", "verification"],
-      "properties": {"assurance": {"const": "trusted_engine"}}
+      "properties": {"assurance": {"const": "trusted_engine"}, "method": {"const": "verus_source"}, "category": {"const": "source_verification"}, "scope": {"const": "required_api"}},
+      "not": {"anyOf": [{"required": ["target_source"]}, {"required": ["trusted_target_oid"]}, {"required": ["change_request"]}, {"required": ["bound_request_sha256"]}, {"required": ["method_plan"]}, {"required": ["implementation"]}, {"required": ["source_proof"]}, {"required": ["approval_authority"]}]}
     },
-    "else": {"required": ["check_digest", "backend"]}
+    "else": {
+      "if": {"properties": {"subject": {"properties": {"kind": {"const": "change_certification"}}}}},
+      "then": {
+        "required": ["target_source", "trusted_target_oid", "change_request", "bound_request_sha256", "method_plan", "implementation", "method", "category", "scope", "verification", "source_proof", "approval_authority"],
+        "properties": {"assurance": {"const": "empirical"}, "claim_outcome": {"const": "unknown"}, "method": {"const": "change_methods"}, "category": {"const": "change_certification"}, "scope": {"const": "shadow"}},
+        "not": {"anyOf": [{"required": ["authority"]}, {"required": ["check_digest"]}, {"required": ["backend"]}, {"required": ["policy_sha256"]}, {"required": ["package_sha256"]}, {"required": ["checker_sha256"]}]}
+      },
+      "else": {
+        "required": ["check_digest", "backend"],
+        "properties": {"method": {"const": "verus_source"}, "category": {"const": "source_verification"}, "scope": {"const": "required_api"}},
+        "not": {"anyOf": [{"required": ["target_source"]}, {"required": ["trusted_target_oid"]}, {"required": ["change_request"]}, {"required": ["bound_request_sha256"]}, {"required": ["method_plan"]}, {"required": ["implementation"]}, {"required": ["source_proof"]}, {"required": ["approval_authority"]}]}
+      }
+    }
   }]
 }

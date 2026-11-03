@@ -13,12 +13,13 @@ from typing import Any
 from .evidence import backend_identity, validate_record
 from .formal.policy import FormalComponent
 from .inputs import Snapshot, canonical_digest
+from .kani_toolchain import KaniToolchain
 from .manifest import Manifest
 from .nowindow import hidden_window
 from .outcome import Blocked, BlockedReason
 from .paths import Project, open_project
 from .requests import GitCommit, PackageVerificationRequest
-from .runner import _child_env, execute, prepare, prepare_formal, prepare_retry
+from .runner import _child_env, execute, prepare, prepare_change, prepare_formal, prepare_retry
 from .store import Store, new_run_id, now, read_json, write_json
 
 
@@ -117,6 +118,19 @@ def retry(project: Project | None, run_id: str, *, store: Store) -> dict[str, An
                    asset_environment=worker.get("assets"))
 
 
+def submit_change(
+    project: Project, raw_request: object, *, trusted_target_oid: str,
+    requested_method: str = "auto", kani_toolchain: KaniToolchain | None = None,
+    store: Store | None = None,
+) -> dict[str, Any]:
+    store = store or Store.of(project)
+    record = prepare_change(
+        project, raw_request, trusted_target_oid=trusted_target_oid,
+        requested_method=requested_method, kani_toolchain=kani_toolchain, store=store,
+    )
+    return _launch(project, store, record)
+
+
 def wait(
     store: Store, run_id: str, timeout_seconds: float | None = None
 ) -> dict[str, Any]:
@@ -153,6 +167,8 @@ def replay(
         raise ValueError("historical evidence is available for inspection, not replay")
     if source.get("authority") is not None:
         raise ValueError("target-policy evidence requires a fresh trusted-host gate; it cannot grant local authority")
+    if source["subject"]["kind"] == "change_certification":
+        raise ValueError("shadow change evidence requires a fresh request with a host-selected target; local attempts can be retried")
     if source["subject"]["kind"] == "formal_goal":
         from .formal.verus import resolve_execution
         from .inputs import capture_git_commit, capture_working_tree
@@ -230,7 +246,7 @@ def main() -> int:
         job = read_json(store.run_dir(args.run) / "job.json")
         project = (
             open_project(args.project)
-            if args.project and (job["subject"]["kind"] == "registered_check" or "authority" in job)
+            if args.project and (job["subject"]["kind"] != "formal_goal" or "authority" in job)
             else None
         )
         execute(project, args.run, store=store)

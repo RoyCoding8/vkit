@@ -80,7 +80,7 @@ def retained_files(root: Path, *, exclude_replay_assets: bool = False):
 def _artifact_names(directory: Path) -> set[str]:
     names = (p.relative_to(directory).as_posix()
              for p in retained_files(directory, exclude_replay_assets=True))
-    return {name for name in names if name not in _UNSEALED and not name.startswith(("snapshot/", "replay/"))}
+    return {name for name in names if name not in _UNSEALED and not name.startswith(("snapshot/", "target-snapshot/", "replay/"))}
 
 
 def policy_identity() -> dict[str, str]:
@@ -110,7 +110,15 @@ def policy_identity() -> dict[str, str]:
             "certification.py",
             "intent.py",
             "paired.py",
+            "change_analysis.py",
             "paired_profiles.py",
+            "rust_source.py",
+            "rust_relational.py",
+            "kani_result.py",
+            "kani_toolchain.py",
+            "kani_execution.py",
+            "change_methods.py",
+            "change_service.py",
             "witness.py",
             "nowindow.py",
         )
@@ -189,20 +197,26 @@ def seal(record: dict[str, Any], directory: Path, check=None) -> None:
     ]
     if check is not None and check.kind.value == "lean" and result == "FAIL":
         claim_outcome = "unknown"
+    shadow = record["subject"]["kind"] == "change_certification"
+    if shadow:
+        claim_outcome = "unknown"
     receipt = {
         "schema_version": 2,
         "job_id": record["job_id"],
         "subject": record["subject"],
         "source": record["source"],
         "inputs": record["inputs"],
-        "assurance": assurance(check) if check else "trusted_engine",
+        "assurance": "empirical" if shadow else assurance(check) if check else "trusted_engine",
         "claim_outcome": claim_outcome,
         "outcome": record["outcome"],
         "obligations": record["obligations"],
         "artifacts": artifacts,
         "verification": record.get("verification", {}),
     }
-    if check is None:
+    if shadow:
+        receipt.update(method="change_methods", category="change_certification", scope="shadow",
+                       source_proof=False, approval_authority=False)
+    elif check is None:
         receipt.update(method="verus_source", category="source_verification", scope="required_api",
                        verification=record.get("verification", {}))
     for field in (
@@ -212,6 +226,8 @@ def seal(record: dict[str, Any], directory: Path, check=None) -> None:
         "package_sha256",
         "checker_sha256",
         "authority",
+        "target_source", "trusted_target_oid", "change_request", "bound_request_sha256",
+        "method_plan", "implementation",
     ):
         if field in record:
             receipt[field] = record[field]
@@ -265,6 +281,13 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
 
             job = validate_job(read_json(_retained_path(directory, "job.json")))
             source = load_capture(job["source"], directory / "snapshot")
+            if record["subject"]["kind"] == "change_certification":
+                target = load_capture(job["target_source"], directory / "target-snapshot")
+                if (target.digest != record["target_source"]["digest"]
+                        or any(job[name] != record.get(name) for name in (
+                            "target_source", "trusted_target_oid", "change_request",
+                            "bound_request_sha256", "method_plan", "implementation"))):
+                    return False
             if (
                 job["job_id"] != record["job_id"]
                 or job["subject"] != record["subject"]
@@ -296,6 +319,9 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
                 "category",
                 "scope",
                 "verification",
+                "target_source", "trusted_target_oid", "change_request", "bound_request_sha256",
+                "method_plan", "implementation",
+                "source_proof", "approval_authority",
             )
             if any(
                 name in receipt and receipt[name] != record.get(name) for name in fields
@@ -347,7 +373,7 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
                 return False
         for item in record["inputs"]["files"]:
             path = _retained_path(directory, "snapshot/" + item["path"])
-            digest = sha256(path) if record.get("subject", {}).get("kind") == "formal_goal" else file_digest(path)
+            digest = file_digest(path) if record.get("subject", {}).get("kind") == "registered_check" else sha256(path)
             if digest != item["sha256"]:
                 return False
         return True

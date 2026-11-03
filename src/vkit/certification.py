@@ -9,6 +9,7 @@ from .schemas import validate
 
 _SCHEMA = "change-certification.v1.json"
 _INTENT_REVISION_SCHEMA = "intent-revision.v1.json"
+_DIFFERENCE_POLICY_SCHEMA = "finite-differences.v1.json"
 
 
 class ComparisonKind(StrEnum):
@@ -121,6 +122,143 @@ class IntentRevision:
     @property
     def digest(self) -> str:
         return canonical_digest(self.to_json())
+
+
+@dataclass(frozen=True)
+class DifferenceGuard:
+    id: str
+    requirements: tuple[OutputRow, ...]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "requirements": [
+                {"input": row.input, "outputs": sorted(row.outputs)}
+                for row in sorted(self.requirements, key=lambda item: item.input)
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class DifferencePolicy:
+    intent_sha256: str
+    guards: tuple[DifferenceGuard, ...]
+
+    @classmethod
+    def from_json(cls, raw: Any, *, intent: IntentRevision) -> DifferencePolicy:
+        validate("finite difference policy", _DIFFERENCE_POLICY_SCHEMA, raw)
+        if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+            raise ValueError("finite difference policy schema_version must be integer 1")
+        if raw["intent_sha256"] != intent.digest:
+            raise ValueError("finite difference policy names a different intent revision")
+
+        contract = intent.contract
+        admissible = set(contract.admissible_inputs)
+        guards = []
+        guard_ids = set()
+        intersections: dict[str, set[str]] = {}
+        for raw_guard in raw["guards"]:
+            guard_id = raw_guard["id"]
+            if guard_id in guard_ids:
+                raise ValueError(f"duplicate difference guard id: {guard_id}")
+            guard_ids.add(guard_id)
+            rows = tuple(
+                OutputRow(item["input"], tuple(item["outputs"]))
+                for item in raw_guard["requirements"]
+            )
+            row_inputs = [row.input for row in rows]
+            if len(set(row_inputs)) != len(row_inputs):
+                raise ValueError(f"difference guard {guard_id!r} contains duplicate input rows")
+            for row in rows:
+                if row.input not in admissible:
+                    raise ValueError(
+                        f"difference guard {guard_id!r} expands the accepted input domain"
+                    )
+                standing_outputs = contract.outputs_for(row.input)
+                if not set(row.outputs) <= standing_outputs:
+                    raise ValueError(
+                        f"difference guard {guard_id!r} weakens standing target intent for {row.input!r}"
+                    )
+                guard_outputs = set(row.outputs)
+                previous = intersections.get(row.input)
+                intersection = guard_outputs if previous is None else previous & guard_outputs
+                if not intersection:
+                    raise ValueError(
+                        f"overlapping difference guards conflict for {row.input!r}"
+                    )
+                intersections[row.input] = intersection
+            guards.append(DifferenceGuard(guard_id, rows))
+        return cls(raw["intent_sha256"], tuple(sorted(guards, key=lambda guard: guard.id)))
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "kind": "finite_differences",
+            "intent_sha256": self.intent_sha256,
+            "guards": [guard.to_json() for guard in sorted(self.guards, key=lambda item: item.id)],
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.to_json())
+
+
+@dataclass(frozen=True)
+class PairedObservation:
+    input: str
+    base_values: tuple[str, ...]
+    candidate_values: tuple[str, ...]
+    failure: str | None = None
+    selected: bool = True
+
+
+DifferenceKind = Literal[
+    "preserved",
+    "guarded_requirement_met",
+    "standing_intent_repair",
+    "violation",
+    "unknown",
+]
+DifferenceStatus = Literal["observed_conformance", "observed_violation", "unknown"]
+
+
+@dataclass(frozen=True)
+class InputDifference:
+    input: str
+    kind: DifferenceKind
+    guard_ids: tuple[str, ...]
+    base_output: str | None
+    candidate_output: str | None
+    reason: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "input": self.input,
+            "kind": self.kind,
+            "guard_ids": list(self.guard_ids),
+            "base_output": self.base_output,
+            "candidate_output": self.candidate_output,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class DifferenceAssessment:
+    status: DifferenceStatus
+    coverage_complete: bool
+    findings: tuple[InputDifference, ...]
+    missing_inputs: tuple[str, ...]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "scope": "finite_paired_observations",
+            "source_proof": False,
+            "approval_authority": False,
+            "status": self.status,
+            "coverage_complete": self.coverage_complete,
+            "findings": [finding.to_json() for finding in self.findings],
+            "missing_inputs": list(self.missing_inputs),
+        }
 
 
 @dataclass(frozen=True)
@@ -269,3 +407,147 @@ def intent_entails_claim(intent: FiniteContract, claim: FiniteContract) -> Inten
         kind = EntailmentKind.NOT_ENTAILED
     return IntentEntailment(kind, inputs_included, outputs_included,
                             input_witness, output_witness)
+
+
+def assess_differences(
+    intent: IntentRevision,
+    policy: DifferencePolicy,
+    observations: tuple[PairedObservation, ...],
+    *,
+    repetitions: int,
+) -> DifferenceAssessment:
+    """Check finite paired observations against target requirements and guards."""
+    if policy.intent_sha256 != intent.digest:
+        raise ValueError("difference policy does not match the target intent revision")
+    if type(repetitions) is not int or repetitions < 1:
+        raise ValueError("repetitions must be a positive integer")
+
+    contract = intent.contract
+    admissible = tuple(sorted(contract.admissible_inputs))
+    admitted = set(admissible)
+    by_input: dict[str, list[PairedObservation]] = {}
+    for observation in observations:
+        if observation.input in admitted:
+            by_input.setdefault(observation.input, []).append(observation)
+
+    guards_by_input: dict[str, list[tuple[str, frozenset[str]]]] = {}
+    for guard in policy.guards:
+        for row in guard.requirements:
+            guards_by_input.setdefault(row.input, []).append(
+                (guard.id, frozenset(row.outputs))
+            )
+
+    findings = []
+    missing = []
+    observation_model = set(contract.domain.observations)
+    for token in admissible:
+        guard_requirements = guards_by_input.get(token, [])
+        guard_ids = tuple(sorted(guard_id for guard_id, _ in guard_requirements))
+        standing_outputs = contract.outputs_for(token)
+        rows = by_input.get(token, [])
+        selected_rows = [row for row in rows if row.selected]
+        nonselected_rows = [row for row in rows if not row.selected]
+
+        if len(selected_rows) != 1:
+            reason = "missing_observation" if not selected_rows else "duplicate_observations"
+            missing.append(token)
+            findings.append(InputDifference(token, "unknown", guard_ids, None, None, reason))
+
+        observations_to_check = [*selected_rows, *nonselected_rows]
+        for observation in observations_to_check:
+            base_output = None
+            candidate_output = None
+            reason = None
+            if observation.failure is not None:
+                reason = observation.failure or "paired_execution_failed"
+            elif (len(observation.base_values) != repetitions
+                  or len(observation.candidate_values) != repetitions):
+                reason = "wrong_repetition_count"
+            elif len(set(observation.base_values)) != 1:
+                reason = "unstable_base_observations"
+            elif len(set(observation.candidate_values)) != 1:
+                reason = "unstable_candidate_observations"
+            else:
+                base_output = observation.base_values[0]
+                candidate_output = observation.candidate_values[0]
+                if (base_output not in observation_model
+                        or candidate_output not in observation_model):
+                    reason = "out_of_model_observation"
+
+            if reason is not None:
+                if observation.selected and len(selected_rows) == 1:
+                    missing.append(token)
+                    findings.append(InputDifference(
+                        token, "unknown", guard_ids, base_output, candidate_output, reason
+                    ))
+                elif not observation.selected:
+                    findings.append(InputDifference(
+                        token, "unknown", guard_ids, base_output, candidate_output, reason
+                    ))
+                continue
+
+            finding = _classify_difference(
+                token,
+                base_output,
+                candidate_output,
+                standing_outputs,
+                guard_requirements,
+                guard_ids,
+            )
+            if observation.selected and len(selected_rows) == 1:
+                findings.append(finding)
+            elif finding.kind == "violation":
+                findings.append(finding)
+
+    coverage_complete = bool(admissible) and not missing
+    if any(finding.kind == "violation" for finding in findings):
+        status: DifferenceStatus = "observed_violation"
+    elif coverage_complete and not any(finding.kind == "unknown" for finding in findings):
+        status = "observed_conformance"
+    else:
+        status = "unknown"
+    return DifferenceAssessment(status, coverage_complete, tuple(findings), tuple(missing))
+
+
+def _classify_difference(
+    token: str,
+    base_output: str,
+    candidate_output: str,
+    standing_outputs: frozenset[str],
+    guard_requirements: list[tuple[str, frozenset[str]]],
+    guard_ids: tuple[str, ...],
+) -> InputDifference:
+    if candidate_output not in standing_outputs:
+        return InputDifference(
+            token, "violation", guard_ids, base_output, candidate_output,
+            "candidate violates standing target intent",
+        )
+
+    if guard_requirements:
+        permitted = set(guard_requirements[0][1])
+        for _, outputs in guard_requirements[1:]:
+            permitted.intersection_update(outputs)
+        if candidate_output not in permitted:
+            return InputDifference(
+                token, "violation", guard_ids, base_output, candidate_output,
+                "candidate violates an overlapping guard requirement",
+            )
+        return InputDifference(
+            token, "guarded_requirement_met", guard_ids, base_output, candidate_output,
+            "candidate meets the intersected guard requirements",
+        )
+
+    if base_output == candidate_output:
+        return InputDifference(
+            token, "preserved", (), base_output, candidate_output,
+            "base and candidate observations are equal",
+        )
+    if base_output not in standing_outputs:
+        return InputDifference(
+            token, "standing_intent_repair", (), base_output, candidate_output,
+            "candidate repairs a base result that violates standing target intent",
+        )
+    return InputDifference(
+        token, "violation", (), base_output, candidate_output,
+        "unguarded difference is not a standing-intent repair",
+    )

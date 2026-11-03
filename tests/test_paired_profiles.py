@@ -126,7 +126,7 @@ def test_typescript_environment_pins_adjacent_libs_and_explicit_dependencies(tmp
     }
     assert set(dict(environment.variables)) <= {
         "PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG",
-        "LC_ALL", "TZ", "PYTHONHASHSEED",
+        "LC_ALL", "TZ", "PYTHONHASHSEED", "SystemDrive",
     }
     validate_environment(environment)
 
@@ -158,14 +158,19 @@ def test_environment_rejects_wrong_roles_unpinned_variables_and_extra_fields(
 
 
 def test_environment_canonicalizes_windows_variable_names_and_rejects_alias_duplicates(
-    tmp_path,
+    tmp_path, monkeypatch,
 ):
     runtime = _write_file(tmp_path / "python.exe")
+    monkeypatch.setenv("SystemDrive", "C:")
     raw = identify_environment("python", runtime=runtime)
-    raw["variables"] = {"path": "C:/tools", "systemroot": "C:/Windows"}
+    assert raw["variables"]["SystemDrive"] == "C:"
+    raw["variables"] = {"path": "C:/tools", "systemroot": "C:/Windows",
+                        "SYSTEMDRIVE": "C:"}
 
     parsed = parse_environment(raw, "python")
-    assert parsed.variables == (("PATH", "C:/tools"), ("SystemRoot", "C:/Windows"))
+    assert parsed.variables == (("PATH", "C:/tools"),
+                                ("SystemDrive", "C:"),
+                                ("SystemRoot", "C:/Windows"))
 
     raw["variables"] = {"PATH": "C:/a", "path": "C:/b"}
     with pytest.raises(ValueError, match="duplicate environment variable"):

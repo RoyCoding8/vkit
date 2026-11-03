@@ -1,23 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import sys
 
 from helpers import NO_WINDOW, ROOT
-from scripts.check_change_engines import (
-    classify_kani,
-    classify_playback,
-    classify_verus,
-    make_playback_wrapper,
-    regression_playback,
-    run_command,
-)
-
-
 SCRIPT = ROOT / "scripts/check_change_engines.py"
+spec = importlib.util.spec_from_file_location("check_change_engines", SCRIPT)
+assert spec and spec.loader
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+classify_kani = probe.classify_kani
+classify_playback = probe.classify_playback
+classify_verus = probe.classify_verus
+make_playback_wrapper = probe.make_playback_wrapper
+regression_playback = probe.regression_playback
+run_command = probe.run_command
 
 KANI_LOG_EXCERPTS = {
     "refactor": (0, "VERIFICATION:- SUCCESSFUL\nComplete - 1 successfully verified harnesses, 0 failures, 1 total."),

@@ -87,6 +87,9 @@ jobs:
       - run: uv run pytest tests/test_logical_trust.py tests/test_tlc_evidence.py -q
       - run: uv run python scripts/check_lifecycle.py
       - run: uv run python scripts/check_authority.py --output "${{ runner.temp }}/vkit-authority-evidence"
+      - run: uv run python scripts/check_authority.py --suite differences --output "${{ runner.temp }}/vkit-difference-evidence"
+      - run: uv run python scripts/check_authority.py --suite shadow --output "${{ runner.temp }}/vkit-shadow-authority-evidence"
+      - run: uv run python scripts/check_difference_decisions.py --output "${{ runner.temp }}/vkit-difference-decisions"
       - name: Retain formal evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -96,6 +99,9 @@ jobs:
             ${{ runner.temp }}/vkit-formal-evidence
             .audit/lifecycle-model
             ${{ runner.temp }}/vkit-authority-evidence
+            ${{ runner.temp }}/vkit-difference-evidence
+            ${{ runner.temp }}/vkit-shadow-authority-evidence
+            ${{ runner.temp }}/vkit-difference-decisions
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import re
 import shutil
 from dataclasses import dataclass
@@ -19,7 +20,16 @@ from .store import Store
 
 DEFAULT_LOG_LIMIT = 16_000
 MAX_ARTIFACTS = 100
+MAX_WAIT_SECONDS = 60
 RUN_SECTIONS = ("summary", "diagnostics", "obligations", "provenance", "coverage", "compilation", "artifacts", "log")
+
+
+def validate_wait_seconds(value: object) -> float:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or value < 0 or value > MAX_WAIT_SECONDS
+            or (isinstance(value, float) and not math.isfinite(value))):
+        raise ValueError(f"wait_seconds must be finite and between 0 and {MAX_WAIT_SECONDS}")
+    return float(value)
 
 
 @dataclass(frozen=True)
@@ -165,6 +175,29 @@ def run_summary(record: dict[str, Any]) -> dict[str, Any]:
         "poll" if record.get("state") in ("queued", "running") else
         "inspect_diagnostics" if outcome.get("result") == "BLOCKED" else
         "inspect_obligations" if outcome.get("result") == "FAIL" else "none")
+    if record.get("category") == "change_certification":
+        report = (record.get("verification") or {}).get("change_certification")
+        methods = report.get("methods", []) if isinstance(report, dict) else []
+        shown_methods = []
+        for item in methods:
+            if not isinstance(item, dict):
+                continue
+            shown = {key: item[key] for key in (
+                "method", "status", "reason", "scope", "coverage_complete"
+            ) if key in item}
+            if "report" in item:
+                shown["report"] = {**item["report"], "path": "change-output/" + item["report"]["path"]}
+            shown_methods.append(shown)
+        result["change_certification"] = {
+            "status": report.get("status") if isinstance(report, dict) else outcome.get("result", record.get("state")),
+            "requirement": report.get("requirement") if isinstance(report, dict) else None,
+            "intent_sha256": report.get("intent_sha256") if isinstance(report, dict) else record.get("claim_id"),
+            "methods": shown_methods,
+            "source_proof": False,
+            "approval_authority": False,
+        }
+        if isinstance(report, dict) and outcome.get("result") in {"FAIL", "BLOCKED"}:
+            result["next_action"] = "inspect_artifacts"
     return result
 
 

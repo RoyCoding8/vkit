@@ -48,13 +48,19 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def _read_verification_request(path: str) -> Any:
+def _reject_json_constant(value: str) -> Any:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _read_json_file(path: str, label: str) -> Any:
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
+        return json.loads(Path(path).read_text(encoding="utf-8"),
+                          object_pairs_hook=_unique_json_object,
+                          parse_constant=_reject_json_constant)
     except OSError as exc:
-        raise ValueError(f"cannot read verification request {path!r}: {exc}") from exc
+        raise ValueError(f"cannot read {label} {path!r}: {exc}") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"verification request is not valid UTF-8 JSON: {exc}") from exc
+        raise ValueError(f"{label} is not valid UTF-8 JSON: {exc}") from exc
 
 
 def _context(args: argparse.Namespace) -> query.Context:
@@ -180,7 +186,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             raise Refused("--request cannot be combined with a component or candidate option", EXIT_INVALID)
         if args.wait is not None or args.reuse:
             raise Refused("--request cannot be combined with --wait or --reuse", EXIT_INVALID)
-        request = _read_verification_request(args.request)
+        request = _read_json_file(args.request, "verification request")
     else:
         if args.component is None or (not args.working_tree and args.candidate is None):
             raise Refused("verify requires COMPONENT and either --working-tree or --candidate, or --request FILE", EXIT_INVALID)
@@ -196,6 +202,30 @@ def cmd_verify(args: argparse.Namespace) -> int:
     view = query.run_view(ctx, record["run_id"], sections=args.section)
     _emit(view, args.json, _run_view_line(view))
     return _RESULT_EXIT.get((view["summary"].get("outcome") or {}).get("result"), EXIT_OK)
+
+
+def cmd_change_certify(args: argparse.Namespace) -> int:
+    from . import jobs
+    from .change_methods import parse_kani_toolchain
+
+    ctx = _context(args)
+    wait_seconds = query.validate_wait_seconds(args.wait)
+    request = _read_json_file(args.request, "change certification request")
+    toolchain = (parse_kani_toolchain(_read_json_file(args.kani_toolchain, "Kani toolchain pin"))
+                 if args.kani_toolchain else None)
+    record = jobs.submit_change(ctx.project, request,
+                                trusted_target_oid=args.trusted_target,
+                                requested_method=args.method,
+                                kani_toolchain=toolchain, store=ctx.store)
+    record = jobs.wait(ctx.store, record["run_id"], wait_seconds)
+    view = query.run_view(ctx, record["run_id"])
+    if view is None:
+        raise Refused(f"no run {record['run_id']!r}", EXIT_INVALID)
+    _emit(view, args.json, _run_view_line(view))
+    result = (view["summary"].get("outcome") or {}).get("result")
+    if result is not None:
+        return _RESULT_EXIT.get(result, EXIT_BLOCKED)
+    return EXIT_BLOCKED if view["summary"]["state"] == "interrupted" else EXIT_OK
 
 
 def cmd_run_show(args: argparse.Namespace) -> int:
@@ -240,6 +270,11 @@ def cmd_run_wait(args: argparse.Namespace) -> int:
 def _run_view_line(view: dict[str, Any]) -> str:
     summary = view["summary"]
     lines = [_outcome_line(summary)]
+    if "change_certification" in summary:
+        shadow = summary["change_certification"]
+        lines.append(f"shadow analysis: {shadow['status']} ({summary.get('assurance') or 'empirical'}, no approval authority)")
+        if shadow["requirement"] is not None:
+            lines.append(f"requirement: {shadow['requirement']['source']}")
     for section in ("diagnostics", "obligations", "provenance", "artifacts"):
         if section in view:
             lines.append(f"{section}: {json.dumps(view[section], ensure_ascii=False)}")
@@ -575,6 +610,15 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--section", choices=[*query.RUN_SECTIONS, "all"], action="append",
                         help="include selected result detail; repeat to select several sections")
 
+    change = sub.add_parser("change", help="submit shadow change analysis")
+    change_commands = change.add_subparsers(dest="change_command", required=True)
+    certify = command(change_commands, "certify", "analyze a candidate against its trusted target and accepted intent")
+    certify.add_argument("--request", required=True, help="strict change certification request JSON file")
+    certify.add_argument("--trusted-target", required=True, help="exact target commit selected by the host")
+    certify.add_argument("--method", choices=("auto", "finite_paired", "rust_kani"), default="auto")
+    certify.add_argument("--kani-toolchain", help="host-selected closed Kani toolchain pin JSON file")
+    certify.add_argument("--wait", type=float, default=0, help="wait from 0 to 60 seconds; default returns the durable job")
+
     run = sub.add_parser("run", help="read or stop a run").add_subparsers(dest="run_command", required=True)
     show = command(run, "show", "show a run, its outcome and a window of its log")
     show.add_argument("--run", required=True)
@@ -637,6 +681,7 @@ _DISPATCH = {
     ("evidence", "export"): cmd_evidence_export, ("evidence", "replay"): cmd_evidence_replay,
     ("project", "inspect"): cmd_project_inspect,
     ("verify", None): cmd_verify,
+    ("change", "certify"): cmd_change_certify,
     ("proposals", None): cmd_proposals, ("reject", None): cmd_reject,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
     ("tools", None): cmd_tools,

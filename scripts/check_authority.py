@@ -12,8 +12,7 @@ import tempfile
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL = Path("verification/certification/Authority.tla")
-CONFIGS = {
+AUTHORITY_CONFIGS = {
     "good": ("Authority.cfg", None),
     "bad_claim": ("Authority.bad-claim.cfg", "ClaimPinned"),
     "candidate_target": ("Authority.candidate-target.cfg", "TargetAuthorityPinned"),
@@ -23,7 +22,7 @@ CONFIGS = {
     "false_reject": ("Authority.false-reject.cfg", "ReuseRejectedBound"),
     "preflight_pass": ("Authority.preflight-pass.cfg", "PreflightNotProof"),
 }
-PROPERTIES = [
+AUTHORITY_PROPERTIES = [
     "TypeOK",
     "ClaimPinned",
     "TargetAuthorityPinned",
@@ -35,7 +34,123 @@ PROPERTIES = [
     "ReuseDecisionBound",
     "ReuseRejectedBound",
 ]
-CHECK_ID = "authority-model"
+DIFFERENCE_CONFIGS = {
+    "bounded": ("Differences.cfg", None),
+    "invalid_shrink": ("Differences.invalid-shrink.cfg", None),
+    "violation_missing": ("Differences.violation-missing.cfg", None),
+    "guard_overlap": ("Differences.guard-overlap.cfg", None),
+    "guard_duplicate": ("Differences.guard-duplicate.cfg", None),
+    "reach_empty_done": ("Differences.reach-empty-done.cfg", "NoCompletedState"),
+    "reach_conformance": ("Differences.reach-conformance.cfg", "NoConformance"),
+    "repair": ("Differences.repair.cfg", None),
+    "empty": ("Differences.empty.cfg", None),
+    "mutant_shrink_coverage": ("Differences.mutant-shrink-coverage.cfg", "SelectedCoverage"),
+    "mutant_ignore_shrink": ("Differences.mutant-ignore-shrink.cfg", "UnknownBlocksConformance"),
+    "mutant_hide_violation": ("Differences.mutant-hide-violation.cfg", "ViolationVisibility"),
+    "mutant_union_guards": ("Differences.mutant-union-guards.cfg", "GuardIntersection"),
+    "mutant_skip_standing": ("Differences.mutant-skip-standing.cfg", "StandingIntent"),
+    "mutant_unguarded_change": ("Differences.mutant-unguarded-change.cfg", "UnguardedRelation"),
+    "mutant_reject_repair": ("Differences.mutant-reject-repair.cfg", "RepairAccepted"),
+    "mutant_empty": ("Differences.mutant-empty.cfg", "EmptyDomainUnknown"),
+}
+DIFFERENCE_PROPERTIES = [
+    "TypeOK",
+    "SelectedCoverage",
+    "UnknownBlocksConformance",
+    "StandingIntent",
+    "GuardIntersection",
+    "UnguardedRelation",
+    "ViolationVisibility",
+    "ConformanceSoundness",
+    "DuplicateSelectedUnknown",
+    "RepairAccepted",
+    "RepairClassification",
+    "EmptyDomainUnknown",
+    "NoCompletedState",
+    "NoConformance",
+    "AuthorityBoundary",
+]
+SHADOW_AUTHORITY_CONFIGS = {
+    "shadow": ("ShadowAuthority.cfg", None),
+    "mutant_verus_check_none": ("ShadowAuthority.verus.cfg", "ShadowReceiptPolicy"),
+    "mutant_shadow_claim_established": ("ShadowAuthority.established.cfg", "ShadowReceiptPolicy"),
+    "mutant_gate_requires_shadow": ("ShadowAuthority.gate-requires-shadow.cfg", "GateMatchesRequiredSubjects"),
+    "mutant_gate_accepts_shadow": ("ShadowAuthority.gate-accepts-shadow.cfg", "GateMatchesRequiredSubjects"),
+}
+SHADOW_AUTHORITY_PROPERTIES = [
+    "TypeOK",
+    "ShadowReceiptPolicy",
+    "ReceiptNamespaceSeparated",
+    "GateMatchesRequiredSubjects",
+]
+SUITES = {
+    "authority": {
+        "model": Path("verification/certification/Authority.tla"),
+        "module": "Authority",
+        "configs": AUTHORITY_CONFIGS,
+        "properties": AUTHORITY_PROPERTIES,
+        "check_id": "authority-model",
+        "description": "Exhaustively checks policy, source, target, reuse, and receipt bindings.",
+        "scope": "bounded package authority, source capture, receipt, reuse, and preflight policy model",
+        "attempts": "one package request/job; no scheduler or retry state",
+        "bounds": "one component, two policy/package/checker/source revisions, one protected and one candidate target",
+        "assumptions": [
+            "digest atoms are collision-free labels; Git objects and hash algorithms are abstracted",
+            "the host selects protected target authority; the package request has no target field",
+            "a valid receipt remains historically valid after current policy drift, while a reuse attempt checks current policy, checker, source, and claim pins",
+            "finite request preflight returns without job, receipt, PASS, or READY",
+        ],
+        "limit": "Published PASS records are historical outcomes, not a statement about current gate readiness. TLC checks only this finite abstraction; it is not source proof or an implementation-refinement proof.",
+        "report": "authority-report.json",
+        "default_output": "authority-model",
+    },
+    "differences": {
+        "model": Path("verification/certification/Differences.tla"),
+        "module": "Differences",
+        "configs": DIFFERENCE_CONFIGS,
+        "properties": DIFFERENCE_PROPERTIES,
+        "check_id": "difference-model",
+        "description": "Checks finite paired-observation coverage, policy relations, and authority limits.",
+        "scope": "bounded finite difference assessment over selected and shrink observations",
+        "attempts": "one bounded evidence collection and one assessment; no source-proof or approval state",
+        "bounds": "two input atoms, 13 representative records, at most two raw records with multiplicity, four modeled outputs plus one out-of-model probe, two repeats per side",
+        "model_bounds": {
+            "Scenario": 1,
+            "Mutant": 1,
+            "SourceProof": 1,
+            "ApprovalAuthority": 1,
+        },
+        "assumptions": [
+            "output and input atoms are finite labels; no interpreter or implementation state is modeled",
+            "the model explores every subset and ordering up to two raw records from its compact representative pool",
+            "the guard overlap configuration has a nonempty intersection; parser rejection is covered by the runtime bridge",
+        ],
+        "limit": "TLC checks only this finite abstraction. Runtime bridge cases exercise selected evaluator behaviors but do not prove implementation refinement, domain exhaustiveness, source purity, or approval authority.",
+        "report": "difference-report.json",
+        "default_output": "difference-model",
+    },
+    "shadow": {
+        "model": Path("verification/certification/ShadowAuthority.tla"),
+        "module": "ShadowAuthority",
+        "configs": SHADOW_AUTHORITY_CONFIGS,
+        "properties": SHADOW_AUTHORITY_PROPERTIES,
+        "check_id": "shadow-authority-model",
+        "description": "Checks typed shadow receipt authority and separation from required gate subjects.",
+        "scope": "bounded receipt namespace and required-subject gate projection for shadow certification",
+        "attempts": "one receipt slot per typed subject; no scheduler, retries, source semantics, or implementation state",
+        "bounds": "three subject kinds, one identical textual id per kind, two required slots, one shadow slot, three terminal outcomes, four fault mutations",
+        "model_bounds": {"Fault": 1},
+        "assumptions": [
+            "subject identity is the pair (kind, id); the same text id under different kinds denotes distinct slots",
+            "registered-check is an empirical bounded scenario receipt and formal-goal is a trusted-engine Verus receipt, abstracted to typed identity, PASS outcome, assurance, and established claim",
+            "the gate consumes only the required registered-check and formal-goal slots; shadow outcomes are observations and are not requirements",
+            "source bytes, Git objects, scheduler behavior, serialization, and the Python implementation are not modeled",
+        ],
+        "limit": "TLC checks only this finite projection and fault mutations. It does not prove Python refinement, source correctness, arbitrary change behavior, or the complete gate implementation.",
+        "report": "shadow-authority-report.json",
+        "default_output": "shadow-authority-model",
+    },
+}
 
 
 def _environment(output: Path) -> dict[str, str]:
@@ -78,54 +193,57 @@ def _run(argv: list[str], cwd: Path, env: dict[str, str], allowed: set[int]) -> 
             "stderr": done.stderr, "body": body}
 
 
-def _project(case_dir: Path, config_name: str, env: dict[str, str]) -> Path:
+def _project(case_dir: Path, config_name: str, env: dict[str, str],
+             suite: dict[str, Any]) -> Path:
     project = case_dir / "project"
     cert_dir = project / "verification" / "certification"
     cert_dir.mkdir(parents=True)
-    shutil.copyfile(ROOT / MODEL, project / MODEL)
+    model = suite["model"]
+    shutil.copyfile(ROOT / model, project / model)
     shutil.copyfile(ROOT / "verification/certification" / config_name,
                     cert_dir / config_name)
     raw = json.loads((ROOT / "verification/manifest.json").read_text(encoding="utf-8"))
     check = next(item for item in raw["checks"] if item["id"] == "lifecycle-model")
-    model_path = MODEL.as_posix()
-    config_path = (MODEL.parent / config_name).as_posix()
+    model_path = model.as_posix()
+    config_path = (model.parent / config_name).as_posix()
     check.update(
-        id=CHECK_ID,
-        description="Exhaustively checks policy, source, target, reuse, and receipt bindings.",
+        id=suite["check_id"],
+        description=suite["description"],
         inputs=[model_path, config_path],
         subject={"paths": [model_path, config_path], "digest": None},
-        claim_id=CHECK_ID,
-        model={"module": "Authority", "path": model_path},
+        claim_id=suite["check_id"],
+        model={"module": suite["module"], "path": model_path},
         config=config_path,
-        properties=PROPERTIES,
-        bounds={
+        properties=suite["properties"],
+        bounds=suite.get("model_bounds", {
             "Fault": 1, "ComponentId": 1, "TargetPolicy": 1,
             "CandidatePolicy": 1, "TargetPackage": 1, "CandidatePackage": 1,
             "CheckerA": 1, "CheckerB": 1, "SourceA": 1, "SourceB": 1,
             "ProtectedTarget": 1, "CandidateTarget": 1,
-        },
+        }),
     )
     raw["checks"] = [check]
     (project / "verification" / "manifest.json").write_text(
         json.dumps(raw, indent=2) + "\n", encoding="utf-8"
     )
-    git = ["git", "-c", "user.name=VKit Authority Model",
-           "-c", "user.email=authority-model@vkit.invalid"]
+    git = ["git", "-c", f"user.name=VKit {suite['module']} Model",
+           "-c", f"user.email={suite['check_id']}@vkit.invalid"]
     subprocess.run(["git", "init", "-q"], cwd=project, env=env, check=True)
     subprocess.run(git + ["add", "."], cwd=project, env=env, check=True)
-    subprocess.run(git + ["commit", "-qm", "authority model fixture"],
+    subprocess.run(git + ["commit", "-qm", "bounded model fixture"],
                    cwd=project, env=env, check=True)
     return project
 
 
 def _run_case(output: Path, name: str, config_name: str,
-              expected_invariant: str | None, env: dict[str, str]) -> dict[str, Any]:
+              expected_invariant: str | None, env: dict[str, str],
+              suite: dict[str, Any]) -> dict[str, Any]:
     case_dir = Path(tempfile.mkdtemp(prefix=f"{name}-", dir=output))
-    project = _project(case_dir, config_name, env)
+    project = _project(case_dir, config_name, env, suite)
     cli = [sys.executable, "-m", "vkit.cli"]
     _run(cli + ["accept", "--yes", "--project", str(project), "--json"],
          project, env, {0})
-    result = _run(cli + ["check", "run", "--check", CHECK_ID,
+    result = _run(cli + ["check", "run", "--check", suite["check_id"],
                          "--project", str(project), "--json"],
                   project, env, {0} if expected_invariant is None else {1})
     records = result["body"].get("runs") or []
@@ -140,9 +258,10 @@ def _run_case(output: Path, name: str, config_name: str,
         item.get("obligation", {}).get("obligation") for item in satisfied
     ]
     counterexamples = obligations.get("counterexamples", [])
-    if expected_invariant is None and set(satisfied_names) != set(PROPERTIES):
-        missing = sorted(set(PROPERTIES) - set(satisfied_names))
-        extra = sorted(set(satisfied_names) - set(PROPERTIES))
+    properties = suite["properties"]
+    if expected_invariant is None and set(satisfied_names) != set(properties):
+        missing = sorted(set(properties) - set(satisfied_names))
+        extra = sorted(set(satisfied_names) - set(properties))
         raise RuntimeError(
             f"{name}: satisfied invariant set differs from configured properties; "
             f"missing={missing}, extra={extra}"
@@ -170,17 +289,19 @@ def _run_case(output: Path, name: str, config_name: str,
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Qualify the bounded authority model through VKit TLC.")
-    parser.add_argument("--output", type=Path, default=ROOT / "tmp" / "authority-model")
+    parser = argparse.ArgumentParser(description="Qualify a bounded VKit model through TLC.")
+    parser.add_argument("--suite", choices=SUITES, default="authority")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    output = args.output.resolve()
+    suite = SUITES[args.suite]
+    output = (args.output or ROOT / "tmp" / suite["default_output"]).resolve()
     output.mkdir(parents=True, exist_ok=True)
     env = _environment(output)
     sys.path.insert(0, str(ROOT / "src"))
     import vkit
 
     if Path(vkit.__file__).resolve().parent != (ROOT / "src/vkit").resolve():
-        raise RuntimeError(f"authority qualification imported the wrong VKit: {vkit.__file__}")
+        raise RuntimeError(f"model qualification imported the wrong VKit: {vkit.__file__}")
     if not env.get("VKIT_TLA2TOOLS_JAR"):
         raise RuntimeError("VKIT_TLA2TOOLS_JAR must name the jar pinned by examples/formal-ci/tla2tools.sha256")
     observed = hashlib.sha256(Path(env["VKIT_TLA2TOOLS_JAR"]).read_bytes()).hexdigest()
@@ -194,28 +315,29 @@ def main() -> int:
         raise RuntimeError(f"TLC jar digest mismatch: expected {expected}, observed {observed}")
 
     results = []
-    for name, (config_name, invariant) in CONFIGS.items():
-        results.append(_run_case(output, name, config_name, invariant, env))
+    for name, (config_name, invariant) in suite["configs"].items():
+        results.append(_run_case(output, name, config_name, invariant, env, suite))
     report = {
         "schema_version": 1,
-        "scope": "bounded package authority, source capture, receipt, reuse, and preflight policy model",
-        "model": str(MODEL),
+        "suite": args.suite,
+        "scope": suite["scope"],
+        "model": str(suite["model"]),
         "toolchain": {"version": toolchain["version"], "jar_sha256": observed},
-        "attempts": "one package request/job; no scheduler or retry state",
-        "bounds": "one component, two policy/package/checker/source revisions, one protected and one candidate target",
-        "assumptions": [
-            "digest atoms are collision-free labels; Git objects and hash algorithms are abstracted",
-            "the host selects protected target authority; the package request has no target field",
-            "a valid receipt remains historically valid after current policy drift, while a reuse attempt checks current policy, checker, source, and claim pins",
-            "finite request preflight returns without job, receipt, PASS, or READY",
-        ],
+        "attempts": suite["attempts"],
+        "bounds": suite["bounds"],
+        "assumptions": suite["assumptions"],
         "results": results,
-        "limit": "Published PASS records are historical outcomes, not a statement about current gate readiness. TLC checks only this finite abstraction; it is not source proof or an implementation-refinement proof.",
+        "limit": suite["limit"],
     }
-    report_path = output / "authority-report.json"
+    report_path = output / suite["report"]
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"result": "PASS", "cases": len(results),
-                      "negative_controls": len(results) - 1,
+    negative_controls = sum(
+        expected is not None for _, expected in suite["configs"].values()
+    )
+    print(json.dumps({"suite": args.suite, "result": "PASS", "cases": len(results),
+                      "negative_controls": negative_controls,
+                      "mutants": sum(name.startswith("mutant_") for name in suite["configs"]),
+                      "reachability_witnesses": sum(name.startswith("reach_") for name in suite["configs"]),
                       "report": str(report_path)}, indent=2))
     return 0
 
@@ -224,5 +346,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, KeyError) as exc:
-        print(f"authority qualification failed: {exc}", file=sys.stderr)
+        print(f"model qualification failed: {exc}", file=sys.stderr)
         raise SystemExit(1)

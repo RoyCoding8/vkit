@@ -12,7 +12,7 @@ from typing import Any
 
 from . import proc
 from .budgets import evaluate
-from .evidence import backend_identity, seal
+from .evidence import backend_identity, policy_identity, seal
 from .formal.policy import FormalComponent
 from .inputs import (
     CapturedSource,
@@ -25,7 +25,8 @@ from .inputs import (
     load_capture,
     matches,
 )
-from .job import FormalGoal, RegisteredCheck, seal_job, validate_job
+from .job import ChangeCertification, FormalGoal, RegisteredCheck, seal_job, validate_job
+from .kani_toolchain import KaniToolchain
 from .manifest import Manifest, parse_check_definition
 from .outcome import Blocked, BlockedReason, Failed, Outcome, Passed
 from .paths import Project
@@ -333,6 +334,11 @@ def prepare_retry(
     snapshot = run_dir / "snapshot"
     snapshot.mkdir()
     source.materialize(snapshot)
+    if job["subject"]["kind"] == "change_certification":
+        target = load_capture(job["target_source"], old_dir / "target-snapshot")
+        target_root = run_dir / "target-snapshot"
+        target_root.mkdir()
+        target.materialize(target_root)
     if (old_dir / "replay").is_dir():
         shutil.copytree(old_dir / "replay", run_dir / "replay", symlinks=True)
     record = _record_for_job(job, run_id)
@@ -351,10 +357,10 @@ def prepare_retry(
 def _record_for_job(job: dict[str, Any], run_id: str) -> dict[str, Any]:
     subject = job["subject"]
     source = job["source"]
-    formal = subject["kind"] == "formal_goal"
+    registered = subject["kind"] == "registered_check"
     inputs = (
         job["inputs"]
-        if not formal
+        if registered
         else {
             "digest": source["digest"],
             "scope": f"whole tree ({len(source['files'])} files)",
@@ -390,16 +396,49 @@ def _record_for_job(job: dict[str, Any], run_id: str) -> dict[str, Any]:
     }
     if "authority" in job:
         record["authority"] = job["authority"]
-    if formal:
+    if subject["kind"] == "formal_goal":
         for name in ("policy_sha256", "package_sha256", "checker_sha256"):
             record[name] = job[name]
-    else:
+    elif registered:
         record.update(
             check_id=subject["id"],
             check_digest=job["check_digest"],
             backend=job["backend"],
             baseline=job["baseline"],
         )
+    else:
+        for name in ("target_source", "trusted_target_oid", "change_request",
+                     "bound_request_sha256", "method_plan", "implementation"):
+            record[name] = job[name]
+        record.update(method="change_methods", category="change_certification", scope="shadow",
+                      source_proof=False, approval_authority=False)
+    return record
+
+
+def prepare_change(
+    project: Project, raw_request: object, *, trusted_target_oid: str,
+    requested_method: str = "auto", kani_toolchain: KaniToolchain | None = None, store: Store,
+) -> dict[str, Any]:
+    from .change_methods import select_change_methods
+    from .intent import _prepare_change_request
+
+    bound, base, candidate = _prepare_change_request(
+        project, raw_request, trusted_target_oid=trusted_target_oid,
+    )
+    methods = select_change_methods(
+        bound, base, candidate, requested=requested_method, kani_toolchain=kani_toolchain,
+    )
+    job = seal_job(ChangeCertification(bound, base, candidate, methods, policy_identity()).payload())
+    record = _record_for_job(job, new_run_id())
+    record.update(description=bound.intent.requirement_statement, claim_id=bound.intent.digest)
+    directory = store.run_dir(record["run_id"])
+    directory.mkdir(parents=True, exist_ok=False)
+    for name, source in (("snapshot", candidate), ("target-snapshot", base)):
+        target = directory / name
+        target.mkdir()
+        source.materialize(target)
+    write_json(directory / "job.json", job)
+    store.save(record)
     return record
 
 
@@ -444,17 +483,56 @@ def execute(project: Project | None, run_id: str, *, store: Store) -> dict[str, 
                 raise ValueError(
                     "registered-check definition does not match its persisted identity"
                 )
-        else:
+        elif record["subject"]["kind"] == "formal_goal":
             if any(job[name] != record[name] for name in (
                 "policy_sha256", "package_sha256", "checker_sha256"
             )):
                 raise ValueError("formal record does not match its persisted job")
             check = None
+        else:
+            from .change_methods import ChangeMethodPlan
+            from .intent import _bind_captured_change_request
+
+            if project is None:
+                raise ValueError("change certification requires its trusted host Git repository")
+            for name in ("target_source", "trusted_target_oid", "change_request",
+                         "bound_request_sha256", "method_plan", "implementation"):
+                if job[name] != record.get(name):
+                    raise ValueError("change record does not match its persisted job")
+            if job["implementation"] != policy_identity():
+                raise ValueError("change method implementation differs from its queued identity")
+            base = load_capture(job["target_source"], run_dir / "target-snapshot")
+            candidate = load_capture(job["source"], run_dir / "snapshot")
+            bound = _bind_captured_change_request(
+                project, job["change_request"], base, candidate,
+                trusted_target_oid=job["trusted_target_oid"],
+            )
+            if bound.digest != job["bound_request_sha256"]:
+                raise ValueError("retained change differs from its queued bound request")
+            methods = ChangeMethodPlan.from_json(job["method_plan"])
+            check = None
         record.update(state="running", started_at=now(), worker_pid=os.getpid())
         store.save(record)
         metadata: dict[str, Any] = {}
         try:
-            if check is None:
+            if record["subject"]["kind"] == "change_certification":
+                from .change_service import run_change_methods
+
+                report = run_change_methods(
+                    bound, base, candidate, methods, output_dir=run_dir / "change-output",
+                    should_cancel=lambda: store.cancel_requested(run_id),
+                )
+                if report["status"] in {"observed_violation", "proof_rejected"}:
+                    outcome = Failed(())
+                elif report["status"] in {"observed_conformance", "model_verified"}:
+                    outcome = Passed(())
+                else:
+                    reason = BlockedReason.CANCELLED if report["stopped"] == "cancelled" else BlockedReason.FORMAL_OBLIGATION
+                    outcome = Blocked(reason, f"shadow change result: {report['status']}")
+                metadata = {"change_certification": report, "source_proof": False,
+                            "approval_authority": False}
+                reading, exit, unchecked = None, None, ()
+            elif check is None:
                 outcome, metadata = _execute_formal(job, run_id, run_dir, store)
                 reading, exit, unchecked = None, None, ()
             else:

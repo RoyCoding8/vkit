@@ -17,7 +17,15 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=2.2,<3"]
-test = ["pytest>=8.0", "mcp>=2.2,<3", "anyio>=4.5", "hypothesis>=6.100"]
+test = [
+    "pytest>=8.0",
+    "mcp>=2.2,<3",
+    "anyio>=4.5",
+    "hypothesis>=6.100",
+    "tree-sitter==0.26.0",
+    "tree-sitter-rust==0.24.2",
+]
+rust = ["tree-sitter==0.26.0", "tree-sitter-rust==0.24.2"]
 
 [project.scripts]
 vkit = "vkit.cli:main"

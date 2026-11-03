@@ -180,6 +180,28 @@
       ]
     },
     {
+      "id": "change-certification",
+      "behavior": "Compares exact Git revisions against accepted intent and reports requirement-linked shadow evidence.",
+      "how_to_reach": [
+        "vkit change certify --request <file> --trusted-target <full-oid>",
+        "MCP tool change_certify"
+      ],
+      "entry_points": [
+        "src/vkit/intent.py",
+        "src/vkit/change_methods.py",
+        "src/vkit/change_service.py",
+        "src/vkit/change_analysis.py",
+        "src/vkit/kani_execution.py"
+      ],
+      "covered_by": [
+        "vkit-tests"
+      ],
+      "gaps": [
+        "Finite native observations are sampled. Kani supports a restricted captured Rust profile on Linux x86_64 with explicit toolchain pins.",
+        "Shadow evidence cannot approve changes or satisfy required checks. Native compiler correspondence and general dependency closure are not established."
+      ]
+    },
+    {
       "id": "formal-components",
       "behavior": "Checks six declared resource-ledger APIs against the owned mathematical package and fixed contracts, with frozen source and scoped evidence.",
       "how_to_reach": [

@@ -226,7 +226,7 @@ def test_paired_execution_runs_native_profiles_and_records_samples(
         max_shrink_trials=0,
     )
 
-    assert result.status == expected_status
+    assert result.status == expected_status, result.report["failures"]
     assert result.binding is not None
     sample = result.report["samples"][0]
     assert sample["stable"] is True

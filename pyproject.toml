@@ -38,6 +38,7 @@ packages = ["src/vkit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q -p no:cacheprovider"
 
 [tool.ruff]

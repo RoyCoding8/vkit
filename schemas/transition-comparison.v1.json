@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.invalid/schemas/transition-comparison.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "reference", "candidate"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "reference": {"$ref": "#/$defs/model"},
+    "candidate": {"$ref": "#/$defs/model"},
+    "max_contexts": {"type": "integer", "minimum": 1, "maximum": 32768}
+  },
+  "$defs": {
+    "token": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_.:-]+$"},
+    "tokens": {"type": "array", "items": {"$ref": "#/$defs/token"}, "uniqueItems": true, "maxItems": 64},
+    "alphabet": {"$ref": "#/$defs/tokens", "minItems": 1},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["states", "actions", "inputs", "observations", "initial_states", "assumptions", "rules", "state_observations"],
+      "properties": {
+        "states": {"$ref": "#/$defs/alphabet"},
+        "actions": {"$ref": "#/$defs/alphabet", "maxItems": 16},
+        "inputs": {"$ref": "#/$defs/alphabet", "maxItems": 16},
+        "observations": {"$ref": "#/$defs/alphabet"},
+        "initial_states": {"$ref": "#/$defs/alphabet"},
+        "assumptions": {
+          "type": "array", "uniqueItems": true, "maxItems": 16384,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["state", "action", "input"],
+            "properties": {
+              "state": {"$ref": "#/$defs/token"},
+              "action": {"$ref": "#/$defs/token"},
+              "input": {"$ref": "#/$defs/token"}
+            }
+          }
+        },
+        "rules": {
+          "type": "array", "uniqueItems": true, "maxItems": 1024,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["source", "action", "inputs", "targets"],
+            "properties": {
+              "source": {"$ref": "#/$defs/token"},
+              "action": {"$ref": "#/$defs/token"},
+              "inputs": {"$ref": "#/$defs/tokens"},
+              "targets": {"$ref": "#/$defs/alphabet"}
+            }
+          }
+        },
+        "state_observations": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["state", "value"],
+            "properties": {
+              "state": {"$ref": "#/$defs/token"},
+              "value": {"$ref": "#/$defs/token"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

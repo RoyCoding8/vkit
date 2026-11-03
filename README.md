@@ -19,10 +19,15 @@ flowchart LR
 | Owned resource-ledger package | Verus source proofs across six declared API bindings; reusable atomic transfer and lock-protected operation contracts. |
 | Lean | Kernel-checked theorems, with statement binding and an axiom audit according to the selected profile. |
 | TLA+ and TLC | Exhaustive checking of a finite model at its declared configuration. |
+| Captured Rust change model | Kani checks preservation, guarded requirements and delegated claim satisfaction in the admitted finite model. No native compiler correspondence or code approval. |
+| Paired change observations | Isolated Rust, Python and TypeScript executions compare sampled native behavior against target-owned requirements and guards. Empirical evidence only. |
+| Finite transition comparison | Exact reachable-state, assumption, guard and transition comparison for explicit named-state models, with shortest witnesses. No source-conformance claim. |
 | External verifier protocol | Evidence checked by a separately pinned checker under its declared assurance contract. |
 | Registered tests and analysis | Empirical results from scenario, pytest, property, Node test and SARIF adapters. |
 
 The first owned package uses `ledger.source.v1` with `trusted_engine` assurance. It covers the bound APIs under the Verus/Rust/vstd/SMT trust boundary. It does not establish whole-application correctness, independently checked kernel certificates, compiled-binary correspondence or operational resource bounds.
+
+Change analysis uses `vkit change certify` or MCP `change_certify`. Explicit model comparison uses `vkit model compare` or MCP `model_compare`. Their [verification semantics and limits](docs/verification.md) distinguish sampled observations, model proofs, delegated claim acceptance and code approval.
 
 ## Set up
 

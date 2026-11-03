@@ -17,7 +17,12 @@ from .paired import (
     _artifact, _artifact_mismatches, _fresh_directory, _json_bytes,
     _write_artifact,
 )
-from .rust_relational import RustRelationalProgram
+from .rust_relational import (
+    RustClaimControlProgram,
+    RustClaimProgram,
+    RustClaimProofProgram,
+    RustRelationalProgram,
+)
 from .rust_source import admit_rust_source
 
 KaniExecutionKind = Literal["verified", "proof_rejected", "unknown", "infrastructure_failure"]
@@ -44,12 +49,38 @@ def run_kani_relational(
     program: RustRelationalProgram, *, toolchain: KaniToolchain, output_dir: Path,
     timeout_seconds: float = 90, should_cancel: Callable[[], bool] = lambda: False,
 ) -> KaniExecution:
+    if type(program) is not RustRelationalProgram:
+        raise TypeError("relational Kani execution requires a relational program")
+    return _run_kani_program(
+        program, toolchain=toolchain, output_dir=output_dir,
+        timeout_seconds=timeout_seconds, should_cancel=should_cancel,
+    )
+
+
+def run_kani_claim(
+    program: RustClaimProofProgram, *, toolchain: KaniToolchain, output_dir: Path,
+    timeout_seconds: float = 90, should_cancel: Callable[[], bool] = lambda: False,
+) -> KaniExecution:
+    if type(program) not in {RustClaimProgram, RustClaimControlProgram}:
+        raise TypeError("claim Kani execution requires a purpose-bound claim program")
+    return _run_kani_program(
+        program, toolchain=toolchain, output_dir=output_dir,
+        timeout_seconds=timeout_seconds, should_cancel=should_cancel,
+    )
+
+
+def _run_kani_program(
+    program: RustRelationalProgram, *, toolchain: KaniToolchain, output_dir: Path,
+    timeout_seconds: float, should_cancel: Callable[[], bool],
+) -> KaniExecution:
     if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
             or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300):
         raise ValueError("Kani process timeout must be finite and in (0, 300] seconds")
     root = _fresh_directory(output_dir)
     report = {
         "schema_version": 1, "scope": "captured_rust_kani_execution",
+        "program_scope": program.to_json()["scope"],
+        "program_purpose": getattr(program, "purpose", "relational_change_check"),
         "source_proof": False, "approval_authority": False,
         "native_compiler_correspondence": False, "os_sandbox": False,
         "staged_executable_modes_checked": False,

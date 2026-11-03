@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from test_paired import _repository
 from vkit import change_methods
+from vkit.certification import DelegationBasis, FiniteContract, NearMiss, OutputRow, check_delegation
 from vkit.change_methods import (
     CATALOG_SHA256,
     ChangeMethodPlan,
@@ -43,6 +45,32 @@ def _toolchain(tmp_path: Path) -> KaniToolchain:
         rustup_sha256="c" * 64,
         host_libraries=(FilePin(str(tmp_path / "libc.so"), "d" * 64),),
     )
+
+
+@pytest.mark.parametrize("requested", ["auto", "rust_kani", "finite_paired"])
+def test_delegation_never_selects_native_sampled_execution(tmp_path, monkeypatch, requested):
+    bound, base, candidate = _captured_pair(tmp_path, "rust")
+    contract = bound.intent.contract
+    baseline = FiniteContract(contract.domain, contract.admissible_inputs, tuple(
+        OutputRow(token, contract.domain.observations) for token in contract.admissible_inputs
+    ))
+    basis = DelegationBasis(bound.intent.digest, baseline, baseline)
+    delegated = replace(bound, delegation=check_delegation(
+        bound.intent, basis, contract, NearMiss("0", "2"),
+    ))
+    monkeypatch.setattr(change_methods.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(change_methods.platform, "machine", lambda: "x86_64")
+    pin = _toolchain(tmp_path)
+
+    plan = select_change_methods(delegated, base, candidate, requested=requested, kani_toolchain=pin)
+
+    if requested == "finite_paired":
+        assert plan.steps == ()
+        assert plan.unavailable == ("delegation_requires_rust_kani",)
+    else:
+        assert plan.steps == (KaniMethod(pin),)
+        assert plan.unavailable == ()
+    assert ChangeMethodPlan.from_json(plan.to_json()) == plan
 
 
 def test_auto_selects_finite_for_captured_python_binding(tmp_path: Path) -> None:

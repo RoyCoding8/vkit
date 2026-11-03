@@ -572,6 +572,12 @@ def execute(project: Project | None, run_id: str, *, store: Store) -> dict[str, 
             }
         )
         seal(record, run_dir, check)
+        delegated = metadata.get("change_certification", {}).get("delegated_claim", {})
+        if delegated.get("status") == "accepted":
+            from .evidence import validate_record
+
+            if not validate_record(record, run_dir):
+                raise ValueError("delegated claim acceptance failed final receipt validation")
         store.publish(record)
     return record
 

@@ -89,7 +89,10 @@ jobs:
       - run: uv run python scripts/check_authority.py --output "${{ runner.temp }}/vkit-authority-evidence"
       - run: uv run python scripts/check_authority.py --suite differences --output "${{ runner.temp }}/vkit-difference-evidence"
       - run: uv run python scripts/check_authority.py --suite shadow --output "${{ runner.temp }}/vkit-shadow-authority-evidence"
+      - run: uv run python scripts/check_delegated_claim_authority.py --output "${{ runner.temp }}/vkit-delegated-claim-evidence"
       - run: uv run python scripts/check_difference_decisions.py --output "${{ runner.temp }}/vkit-difference-decisions"
+      - run: uv run python scripts/check_finite_decisions.py --output "${{ runner.temp }}/vkit-finite-decisions/report.json"
+      - run: uv run pytest tests/test_transition_model.py -q --basetemp "${{ runner.temp }}/vkit-transition-evidence"
       - name: Retain formal evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -101,7 +104,10 @@ jobs:
             ${{ runner.temp }}/vkit-authority-evidence
             ${{ runner.temp }}/vkit-difference-evidence
             ${{ runner.temp }}/vkit-shadow-authority-evidence
+            ${{ runner.temp }}/vkit-delegated-claim-evidence
             ${{ runner.temp }}/vkit-difference-decisions
+            ${{ runner.temp }}/vkit-finite-decisions
+            ${{ runner.temp }}/vkit-transition-evidence
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

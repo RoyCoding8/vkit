@@ -204,6 +204,29 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return _RESULT_EXIT.get((view["summary"].get("outcome") or {}).get("result"), EXIT_OK)
 
 
+def cmd_model_compare(args: argparse.Namespace) -> int:
+    from .formal.transitions import compare_transition_request
+
+    report = compare_transition_request(_read_json_file(args.request, "transition comparison request"))
+    lines = [f"model comparison: {report['kind']} ({report['scope']})"]
+    for delta in report["deltas"]:
+        witness = delta["witness"]
+        lines.append(f"  {delta['kind']}: {delta['removed']} removed, {delta['added']} added; "
+                     f"{witness['side']} witness from {witness['initial_state']} "
+                     f"in {len(witness['path'])} steps")
+        for step in witness["path"]:
+            lines.append(f"    {step['source']} --{step['action']}({step['input']})--> {step['target']}")
+        if "probe" in witness:
+            probe = witness["probe"]
+            lines.append(f"    inspect {probe['state']} with {probe['action']}({probe['input']})")
+        lines.append(f"    difference present in {witness['side']}: {', '.join(witness['difference'])}")
+    if "reason" in report:
+        lines.append(report["reason"])
+    lines.append("Explicit finite models only; no source proof or code approval.")
+    _emit(report, args.json, "\n".join(lines))
+    return {"equivalent": EXIT_OK, "different": EXIT_FAILED}.get(report["kind"], EXIT_BLOCKED)
+
+
 def cmd_change_certify(args: argparse.Namespace) -> int:
     from . import jobs
     from .change_methods import parse_kani_toolchain
@@ -275,6 +298,13 @@ def _run_view_line(view: dict[str, Any]) -> str:
         lines.append(f"shadow analysis: {shadow['status']} ({summary.get('assurance') or 'empirical'}, no approval authority)")
         if shadow["requirement"] is not None:
             lines.append(f"requirement: {shadow['requirement']['source']}")
+        if "delegated_claim" in shadow:
+            delegated = shadow["delegated_claim"]
+            lines.append(f"delegated claim: {delegated['status']}")
+            if "acceptance" in delegated:
+                lines.append(f"acceptance evidence: {delegated['acceptance']['path']}")
+            elif "reason" in delegated:
+                lines.append(f"claim reason: {delegated['reason']}")
     for section in ("diagnostics", "obligations", "provenance", "artifacts"):
         if section in view:
             lines.append(f"{section}: {json.dumps(view[section], ensure_ascii=False)}")
@@ -610,6 +640,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--section", choices=[*query.RUN_SECTIONS, "all"], action="append",
                         help="include selected result detail; repeat to select several sections")
 
+    model = sub.add_parser("model", help="compare explicit finite transition models")
+    model_commands = model.add_subparsers(dest="model_command", required=True)
+    compare = command(model_commands, "compare", "compare reachable transitions, guards and assumptions")
+    compare.add_argument("--request", required=True, help="strict finite transition comparison JSON file")
+
     change = sub.add_parser("change", help="submit shadow change analysis")
     change_commands = change.add_subparsers(dest="change_command", required=True)
     certify = command(change_commands, "certify", "analyze a candidate against its trusted target and accepted intent")
@@ -682,6 +717,7 @@ _DISPATCH = {
     ("project", "inspect"): cmd_project_inspect,
     ("verify", None): cmd_verify,
     ("change", "certify"): cmd_change_certify,
+    ("model", "compare"): cmd_model_compare,
     ("proposals", None): cmd_proposals, ("reject", None): cmd_reject,
     ("mcp", "serve"): cmd_mcp_serve, ("console", None): cmd_console,
     ("tools", None): cmd_tools,

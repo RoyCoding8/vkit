@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "states": ["closed", "open"],
+    "actions": ["toggle"],
+    "inputs": ["click"],
+    "observations": ["hidden", "visible"],
+    "initial_states": ["closed"],
+    "assumptions": [
+      {"state": "closed", "action": "toggle", "input": "click"},
+      {"state": "open", "action": "toggle", "input": "click"}
+    ],
+    "rules": [
+      {"source": "closed", "action": "toggle", "inputs": ["click"], "targets": ["open"]},
+      {"source": "open", "action": "toggle", "inputs": ["click"], "targets": ["closed"]}
+    ],
+    "state_observations": [
+      {"state": "closed", "value": "hidden"},
+      {"state": "open", "value": "visible"}
+    ]
+  },
+  "candidate": {
+    "states": ["closed", "open"],
+    "actions": ["toggle"],
+    "inputs": ["click"],
+    "observations": ["hidden", "visible"],
+    "initial_states": ["closed"],
+    "assumptions": [
+      {"state": "closed", "action": "toggle", "input": "click"},
+      {"state": "open", "action": "toggle", "input": "click"}
+    ],
+    "rules": [
+      {"source": "closed", "action": "toggle", "inputs": ["click"], "targets": ["open"]},
+      {"source": "open", "action": "toggle", "inputs": ["click"], "targets": ["open"]}
+    ],
+    "state_observations": [
+      {"state": "closed", "value": "hidden"},
+      {"state": "open", "value": "visible"}
+    ]
+  }
+}

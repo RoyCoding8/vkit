@@ -157,7 +157,7 @@ def _obligation_counts(record: dict[str, Any]) -> dict[str, int | None]:
             "unknown": 0 if complete else None}
 
 
-def run_summary(record: dict[str, Any]) -> dict[str, Any]:
+def run_summary(record: dict[str, Any], *, acceptance_validated: bool = False) -> dict[str, Any]:
     outcome = record.get("outcome") or {}
     scenarios = outcome.get("scenarios", [])
     failed = [item.get("id") for item in scenarios if item.get("result") == "FAIL" and item.get("id")]
@@ -196,9 +196,28 @@ def run_summary(record: dict[str, Any]) -> dict[str, Any]:
             "source_proof": False,
             "approval_authority": False,
         }
+        if isinstance(report, dict) and "delegated_claim" in report:
+            delegated = report["delegated_claim"]
+            shown = dict(delegated)
+            if shown.get("status") == "accepted":
+                if acceptance_validated:
+                    shown["acceptance"] = {**shown["acceptance"],
+                                           "path": "change-output/" + shown["acceptance"]["path"]}
+                else:
+                    shown = {"status": "unknown", "reason": "acceptance_evidence_not_validated"}
+            result["change_certification"]["delegated_claim"] = shown
         if isinstance(report, dict) and outcome.get("result") in {"FAIL", "BLOCKED"}:
             result["next_action"] = "inspect_artifacts"
     return result
+
+
+def _acceptance_validated(record: dict[str, Any], directory: Path) -> bool:
+    delegated = (record.get("verification") or {}).get("change_certification", {}).get("delegated_claim")
+    if isinstance(delegated, dict) and delegated.get("status") == "accepted":
+        from .evidence import validate_record
+
+        return validate_record(record, directory)
+    return False
 
 
 def _diagnostics(ctx: Context, run_id: str, record: dict[str, Any]) -> dict[str, Any]:
@@ -293,7 +312,7 @@ def run_view(ctx: Context, run_id: str, *, sections: Iterable[str] | None = None
         return None
     selected = set(normalize_run_sections(sections))
     view = {"sections": [section for section in RUN_SECTIONS if section in selected],
-            "summary": run_summary(record)}
+            "summary": run_summary(record, acceptance_validated=_acceptance_validated(record, ctx.store.run_dir(run_id)))}
     if "diagnostics" in selected:
         view["diagnostics"] = _diagnostics(ctx, run_id, record)
     if "obligations" in selected:
@@ -325,6 +344,15 @@ def run_view_full(ctx: Context, run_id: str, *, log: str = "stdout", offset: int
     record = ctx.store.record(run_id)
     if record is None:
         return None
+    delegated = (record.get("verification") or {}).get("change_certification", {}).get("delegated_claim")
+    if isinstance(delegated, dict) and delegated.get("status") == "accepted":
+        if not _acceptance_validated(record, ctx.store.run_dir(run_id)):
+            from copy import deepcopy
+
+            record = deepcopy(record)
+            record["verification"]["change_certification"]["delegated_claim"] = {
+                "status": "unknown", "reason": "acceptance_evidence_not_validated",
+            }
     return {**record, "log": _run_log(ctx, run_id, log, offset, limit)}
 
 

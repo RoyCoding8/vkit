@@ -258,6 +258,12 @@ def _verify(server: Server, args: dict[str, Any]) -> Any:
     return query.run_view(ctx, record["run_id"], sections=args.get("sections"))
 
 
+def _model_compare(server: Server, args: dict[str, Any]) -> Any:
+    from ..formal.transitions import compare_transition_request
+
+    return compare_transition_request(args["request"])
+
+
 def _change_certify(server: Server, args: dict[str, Any]) -> Any:
     from ..change_methods import parse_kani_toolchain
 
@@ -403,8 +409,14 @@ _BASE_TOOLS = (
          "passing evidence with identical complete source, policy, checker, and target identity.",
          {**schema(VERIFICATION_REQUEST)["properties"], "sections": _RUN_SECTIONS}, _verify, read_only=False,
          required=tuple(schema(VERIFICATION_REQUEST)["required"]), category="repository"),
+    Tool("model_compare", "Compare two explicit finite transition models on exact named states. "
+         "Checks reachable transitions, guards, assumptions and observations completely within the declared "
+         "budget. Returns semantic differences with shortest witness paths. No source proof or code approval.",
+         {"request": schema("transition-comparison.v1.json")}, _model_compare,
+         required=("request",), category="repository"),
     Tool("change_certify", "Submit a candidate for shadow change analysis against a separately selected target. "
-         "Uses the durable job lifecycle. Results are sampled or model-scoped and never grant approval.",
+         "Uses the durable job lifecycle. Optional delegated claims require target-owned policy, "
+         "an independent Kani model proof and a rejected near miss. No result grants code approval.",
          {"request": schema("change-certification.v1.json"),
           "trusted_target_oid": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
           "method": {"type": "string", "enum": ["auto", "finite_paired", "rust_kani"], "default": "auto"},

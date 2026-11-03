@@ -6,7 +6,8 @@ from typing import Any
 
 from .change_analysis import _run_prepared_change_analysis
 from .change_methods import ChangeMethodPlan, FiniteMethod, KaniMethod
-from .evidence import _retained_path
+from .claim_acceptance import ACCEPTANCE_PATH, PROOF_DIRECTORY, PURPOSES, checked_acceptance
+from .evidence import _retained_path, policy_identity
 from .inputs import CapturedSource
 from .intent import BoundChangeRequest
 from .kani_execution import run_kani_relational
@@ -31,6 +32,8 @@ def run_change_methods(
     methods: ChangeMethodPlan, *, output_dir: Path,
     should_cancel: Callable[[], bool] = lambda: False,
 ) -> dict[str, Any]:
+    if bound.delegation is not None and any(not isinstance(step, KaniMethod) for step in methods.steps):
+        raise ValueError("delegation cannot execute native sampled methods")
     root = _fresh_directory(output_dir)
     results: list[dict[str, Any]] = []
     stopped = None
@@ -95,5 +98,42 @@ def run_change_methods(
             report.update(status="unknown", stopped="cancelled")
     if _artifact_mismatches(root, report):
         report.update(status="unknown", stopped="retained_artifact_changed")
+    if bound.delegation is not None:
+        report["delegated_claim"] = {"status": "unknown", "reason": "claim_proof_not_completed"}
+        if report["status"] == "model_verified" and report["stopped"] is None:
+            try:
+                from .kani_execution import run_kani_claim
+                from .rust_relational import prepare_rust_claim_program
+
+                if len(methods.steps) != 1 or not isinstance(methods.steps[0], KaniMethod):
+                    raise ValueError("delegation requires only the qualified Kani method")
+                method = methods.steps[0]
+                for purpose in PURPOSES:
+                    if should_cancel():
+                        raise ValueError("claim proof cancelled")
+                    program = prepare_rust_claim_program(bound, base, candidate, purpose=purpose)
+                    execution = run_kani_claim(
+                        program, toolchain=method.toolchain,
+                        output_dir=root / PROOF_DIRECTORY / purpose,
+                        timeout_seconds=method.timeout_seconds, should_cancel=should_cancel,
+                    )
+                    expected = "verified" if purpose == "candidate_claim_satisfaction" else "proof_rejected"
+                    if execution.kind != expected:
+                        report["delegated_claim"] = {
+                            "status": "refuted" if purpose == "candidate_claim_satisfaction"
+                            and execution.kind == "proof_rejected" else "unknown",
+                            "reason": execution.reason,
+                        }
+                        break
+                else:
+                    acceptance = checked_acceptance(bound, base, candidate, methods, root, policy_identity())
+                    if should_cancel() or _artifact_mismatches(root, report):
+                        raise ValueError("claim proof cancelled or retained artifacts changed")
+                    ref = _write_artifact(root, ACCEPTANCE_PATH, _json_bytes(acceptance.to_json()), "application/json")
+                    report["delegated_claim"] = {"status": "accepted", "acceptance": ref.to_json()}
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                report["delegated_claim"] = {"status": "unknown", "reason": str(exc)}
+        if should_cancel() and report["delegated_claim"]["status"] != "accepted":
+            report.update(status="unknown", stopped="cancelled")
     _write_artifact(root, "change-certification.json", _json_bytes(report), "application/json")
     return report

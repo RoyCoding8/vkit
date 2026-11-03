@@ -23,6 +23,23 @@
         "kind": { "const": "finite_contract" },
         "contract": { "$ref": "#/$defs/contract" }
       }
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis_sha256", "near_miss"],
+      "properties": {
+        "basis_sha256": { "$ref": "#/$defs/sha256" },
+        "near_miss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["input", "output"],
+          "properties": {
+            "input": { "$ref": "#/$defs/token" },
+            "output": { "$ref": "#/$defs/token" }
+          }
+        }
+      }
     }
   },
   "$defs": {

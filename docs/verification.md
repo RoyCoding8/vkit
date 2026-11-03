@@ -124,6 +124,28 @@ Package qualification classifies deliberate mutations as detected rejections, su
 
 Ledger adequacy qualification separately checks a concrete reserve precondition inhabitant, the equivalence of remaining-capacity and mathematical total-usage admission predicates, and a strict-bound counterexample at exact capacity. A false equivalence must be rejected. A reconstructed zero-bound control records the original Rocq model fix and source digest; it is not a replay of that proof. These checks cover the recorded predicates and witnesses, not specification completeness.
 
+## Delegated claim acceptance
+
+`vkit change certify` and MCP `change_certify` can accept an agent-proposed finite claim when the request includes `delegation`. The host separately selects the trusted target commit. That target must contain an accepted baseline and assumptions under `verification/change-claims/`; the candidate must preserve those records. The basis uses `delegation-basis.v1.json`, and `accepted-claim-bases.v1.json` defines the registry. The request names the basis digest and a legal input with a baseline-permitted output that both the accepted intent and proposed claim forbid.
+
+VKit checks that the accepted intent together with the assumptions entails the claim, and that the claim strictly strengthens the baseline without dropping legal inputs. Delegated requests use only the admitted captured Rust Kani model on Linux x86-64. They require a complete independent claim-satisfaction check and rejection of the generated near-miss mutation. Native samples cannot grant acceptance. Unsupported methods, incomplete results and cancellation leave acceptance unknown.
+
+A successful job retains `change-output/claim-acceptance.v1.json` with `accepted_by` set to `agent_strengthening`. The record binds the basis, claim, commits, captures, checker and both proof results. CLI and MCP summaries expose acceptance only after validating the sealed evidence. The shadow change result and the delegated claim result remain separate; a relational check can pass while the proposed claim is refuted.
+
+Acceptance applies only to `restricted_captured_rust_kani_model`. It does not establish native compiler correspondence, approve code, satisfy a registered check or change the current standing intent. A later trusted target must explicitly adopt the claim as its new baseline. Local host state and the selected verifier remain trusted; receipt hashes do not authenticate an external writer.
+
+## Compare finite transition models
+
+`vkit model compare --request examples/model-comparison/request.json --json` compares two explicit finite models. MCP `model_compare` takes the same JSON object in its `request` argument. The [example](../examples/model-comparison/request.json) changes a toggle so its second click leaves it open. The report identifies the changed transition and gives the two-step path that reaches it.
+
+Each model declares finite state, action, input and observation alphabets. `initial_states` selects the starting states. `assumptions` enumerates permitted environment contexts. Each rule lists its source, action, permitted input values and possible targets. These input sets are the guards. `state_observations` assigns one observation to every state. There is no embedded expression language or executable code.
+
+VKit follows all enabled transitions from all initial states, including cycles and nondeterministic targets. It compares reachable states, reachable assumption contexts, enabled input contexts, transitions and observations. A reachable-state change can therefore change several report categories. Changes confined to unreachable sources, or guards masked by assumptions, do not change reachable behavior. Tokens identify exact semantic states; renamed states and different alphabets are incomparable. Reordering arrays does not change the result.
+
+An `equivalent` or `different` result covers the complete declared finite space under this comparison meaning. Each difference category includes its count and a shortest deterministic witness. An assumption or guard probe names a context to inspect; it is not an executed transition. The optional `max_contexts` budget defaults to 32,768 across both models. Expanded rule edges have a separate 65,536 limit. Exceeding either budget returns `unknown` without partial equivalence. CLI exit codes are zero for equivalent, one for different, and three for incomparable or unknown.
+
+This read-only operation compares caller-provided models. It does not establish trace equivalence across renamed states, liveness, fairness, source conformance or code approval, and it creates no accepted policy record.
+
 ## Capability feedback
 
 CLI `feedback add` and MCP `feedback_add` record a task, a missing capability, and its expected verification benefit. `kind` defaults to `formal`; `reliable` covers other rigorous checks. An optional run ID links the request to retained evidence.

@@ -21,6 +21,7 @@ _MAX_INPUTS = 4096
 _MAX_U32 = 2**32 - 1
 _UNAVAILABLE_REASONS = frozenset(
     {
+        "delegation_requires_rust_kani",
         "rust_kani_requires_rust_binding",
         "rust_kani_requires_native_linux_x86_64",
         "rust_kani_requires_host_toolchain_pin",
@@ -351,6 +352,13 @@ def select_change_methods(
     binding = parse_binding(
         paired._json_value(semantic["binding"], "binding semantic artifact")
     )
+    if bound.delegation is not None:
+        if requested == "finite_paired":
+            return ChangeMethodPlan((), ("delegation_requires_rust_kani",))
+        unavailable = _kani_unavailable_reason(binding.language, kani_toolchain)
+        if unavailable is not None:
+            return ChangeMethodPlan((), (unavailable,))
+        return ChangeMethodPlan((KaniMethod(kani_toolchain),))
     finite = FiniteMethod()
     if requested == "finite_paired":
         return ChangeMethodPlan((finite,))

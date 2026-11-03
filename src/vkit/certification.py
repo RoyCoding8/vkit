@@ -10,6 +10,7 @@ from .schemas import validate
 _SCHEMA = "change-certification.v1.json"
 _INTENT_REVISION_SCHEMA = "intent-revision.v1.json"
 _DIFFERENCE_POLICY_SCHEMA = "finite-differences.v1.json"
+_DELEGATION_BASIS_SCHEMA = "delegation-basis.v1.json"
 
 
 class ComparisonKind(StrEnum):
@@ -72,6 +73,81 @@ class FiniteContract:
             if row.input == input_token:
                 return frozenset(row.outputs)
         return frozenset()
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.to_json())
+
+
+@dataclass(frozen=True)
+class NearMiss:
+    input: str
+    output: str
+
+    def to_json(self) -> dict[str, str]:
+        return {"input": self.input, "output": self.output}
+
+
+@dataclass(frozen=True)
+class DelegationRequest:
+    basis_sha256: str
+    near_miss: NearMiss
+
+    def to_json(self) -> dict[str, Any]:
+        return {"basis_sha256": self.basis_sha256,
+                "near_miss": self.near_miss.to_json()}
+
+
+@dataclass(frozen=True)
+class DelegationBasis:
+    intent_sha256: str
+    baseline: FiniteContract
+    assumptions: FiniteContract
+
+    @classmethod
+    def from_json(cls, raw: Any) -> DelegationBasis:
+        validate("delegation basis", _DELEGATION_BASIS_SCHEMA, raw)
+        if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+            raise ValueError("delegation basis schema_version must be integer 1")
+        return cls(raw["intent_sha256"],
+                   _finite_contract_from_validated_json(raw["baseline"]),
+                   _finite_contract_from_validated_json(raw["assumptions"]))
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "policy": "finite_strengthening_v1",
+            "scope": "restricted_captured_rust_kani_model",
+            "intent_sha256": self.intent_sha256,
+            "baseline": self.baseline.to_json(),
+            "assumptions": self.assumptions.to_json(),
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.to_json())
+
+
+@dataclass(frozen=True)
+class DelegationDerivation:
+    basis: DelegationBasis
+    claim: FiniteContract
+    near_miss: NearMiss
+    strictness_witness: tuple[str, str]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "scope": "delegation_derivation",
+            "basis_sha256": self.basis.digest,
+            "basis": self.basis.to_json(),
+            "claim_sha256": self.claim.digest,
+            "claim": self.claim.to_json(),
+            "near_miss": self.near_miss.to_json(),
+            "strictness_witness": {
+                "input": self.strictness_witness[0],
+                "output": self.strictness_witness[1],
+            },
+        }
 
 
 @dataclass(frozen=True)
@@ -267,6 +343,7 @@ class ChangeCertificationRequest:
     candidate_oid: str
     declared_intent_sha256: str
     claim: FiniteContract
+    delegation: DelegationRequest | None = None
 
     @classmethod
     def from_json(cls, raw: Any) -> ChangeCertificationRequest:
@@ -274,14 +351,24 @@ class ChangeCertificationRequest:
         if len(raw["base_oid"]) != len(raw["candidate_oid"]):
             raise ValueError("base and candidate Git object IDs must use the same object format")
         claim = raw["claim"]
+        delegation = None
+        if "delegation" in raw:
+            item = raw["delegation"]
+            near_miss = item["near_miss"]
+            delegation = DelegationRequest(
+                item["basis_sha256"], NearMiss(near_miss["input"], near_miss["output"])
+            )
         return cls(raw["base_oid"], raw["candidate_oid"], raw["intent_sha256"],
-                   _finite_contract_from_validated_json(claim["contract"]))
+                   _finite_contract_from_validated_json(claim["contract"]), delegation)
 
     def to_json(self) -> dict[str, Any]:
-        return {"schema_version": 1, "base_oid": self.base_oid,
-                "candidate_oid": self.candidate_oid,
-                "intent_sha256": self.declared_intent_sha256,
-                "claim": {"kind": "finite_contract", "contract": self.claim.to_json()}}
+        result = {"schema_version": 1, "base_oid": self.base_oid,
+                  "candidate_oid": self.candidate_oid,
+                  "intent_sha256": self.declared_intent_sha256,
+                  "claim": {"kind": "finite_contract", "contract": self.claim.to_json()}}
+        if self.delegation is not None:
+            result["delegation"] = self.delegation.to_json()
+        return result
 
 
 @dataclass(frozen=True)
@@ -407,6 +494,72 @@ def intent_entails_claim(intent: FiniteContract, claim: FiniteContract) -> Inten
         kind = EntailmentKind.NOT_ENTAILED
     return IntentEntailment(kind, inputs_included, outputs_included,
                             input_witness, output_witness)
+
+
+def check_delegation(
+    intent: IntentRevision,
+    basis: DelegationBasis,
+    claim: FiniteContract,
+    near_miss: NearMiss,
+) -> DelegationDerivation:
+    """Check that target-accepted assumptions authorize a strict claim refinement."""
+    if basis.intent_sha256 != intent.digest:
+        raise ValueError("delegation basis names a different accepted intent")
+
+    baseline = basis.baseline
+    assumptions = basis.assumptions
+    contracts = (intent.contract, baseline, assumptions, claim)
+    if any(contract.domain.digest != intent.contract.domain.digest
+           for contract in contracts[1:]):
+        raise ValueError("delegation contracts use different finite domains")
+
+    legal_inputs = set(intent.contract.admissible_inputs)
+    if not legal_inputs:
+        raise ValueError("delegation requires a nonempty legal input set")
+    if any(set(contract.admissible_inputs) != legal_inputs
+           for contract in contracts[1:]):
+        raise ValueError("delegation contracts must preserve the same legal input set")
+
+    derived_rows = []
+    for token in sorted(legal_inputs):
+        outputs = intent.contract.outputs_for(token) & assumptions.outputs_for(token)
+        if not outputs:
+            raise ValueError(
+                f"intent and assumptions have an empty output intersection for {token!r}"
+            )
+        derived_rows.append(OutputRow(token, tuple(sorted(outputs))))
+    constrained_intent = FiniteContract(
+        intent.contract.domain, tuple(sorted(legal_inputs)), tuple(derived_rows)
+    )
+    entailment = intent_entails_claim(constrained_intent, claim)
+    if entailment.kind is not EntailmentKind.ENTAILED:
+        if entailment.output_witness is not None:
+            token, output = entailment.output_witness
+            raise ValueError(
+                f"accepted intent and assumptions do not entail claim: "
+                f"{output!r} remains allowed for {token!r}"
+            )
+        raise ValueError("accepted intent and assumptions do not entail claim")
+
+    comparison = compare_contracts(baseline, claim)
+    if comparison.kind is not ComparisonKind.STRENGTHENS:
+        raise ValueError("claim must strictly strengthen the baseline without changing legal inputs")
+    witness = comparison.new_to_old.output_witness if comparison.new_to_old else None
+    if witness is None:
+        raise ValueError("strict strengthening has no output witness")
+
+    if near_miss.input not in legal_inputs:
+        raise ValueError("near-miss input is not legal")
+    if near_miss.output not in intent.contract.domain.observations:
+        raise ValueError("near-miss output is outside the observation domain")
+    if near_miss.output not in baseline.outputs_for(near_miss.input):
+        raise ValueError("near-miss output is not allowed by the baseline")
+    if near_miss.output in intent.contract.outputs_for(near_miss.input):
+        raise ValueError("near-miss output is allowed by the accepted intent")
+    if near_miss.output in claim.outputs_for(near_miss.input):
+        raise ValueError("near-miss output is allowed by the proposed claim")
+
+    return DelegationDerivation(basis, claim, near_miss, witness)
 
 
 def assess_differences(

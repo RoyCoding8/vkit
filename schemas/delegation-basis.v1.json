@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/delegation-basis.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy",
+    "scope",
+    "intent_sha256",
+    "baseline",
+    "assumptions"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "policy": { "const": "finite_strengthening_v1" },
+    "scope": { "const": "restricted_captured_rust_kani_model" },
+    "intent_sha256": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+    },
+    "baseline": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/contract"
+    },
+    "assumptions": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/contract"
+    }
+  }
+}

@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/claim-acceptance.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "accepted_by",
+    "scope",
+    "source_proof",
+    "approval_authority",
+    "native_compiler_correspondence",
+    "bound_request_sha256",
+    "intent_sha256",
+    "basis_sha256",
+    "claim_sha256",
+    "claim",
+    "derivation",
+    "target_oid",
+    "candidate_oid",
+    "base_capture_sha256",
+    "candidate_capture_sha256",
+    "checker_sha256",
+    "satisfaction",
+    "near_miss_control"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "accepted_by": {
+      "const": "agent_strengthening"
+    },
+    "scope": {
+      "const": "restricted_captured_rust_kani_model"
+    },
+    "source_proof": {
+      "const": false
+    },
+    "approval_authority": {
+      "const": false
+    },
+    "native_compiler_correspondence": {
+      "const": false
+    },
+    "bound_request_sha256": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+    },
+    "intent_sha256": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+    },
+    "basis_sha256": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+    },
+    "claim_sha256": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+    },
+    "claim": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/contract"
+    },
+    "derivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "basis_sha256",
+        "basis",
+        "claim_sha256",
+        "claim",
+        "near_miss",
+        "strictness_witness"
+      ],
+      "properties": {
+        "scope": {
+          "const": "delegation_derivation"
+        },
+        "basis_sha256": {
+          "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+        },
+        "basis": {
+          "$ref": "https://vkit.local/schemas/delegation-basis.v1.json"
+        },
+        "claim_sha256": {
+          "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+        },
+        "claim": {
+          "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/contract"
+        },
+        "near_miss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input",
+            "output"
+          ],
+          "properties": {
+            "input": {
+              "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/token"
+            },
+            "output": {
+              "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/token"
+            }
+          }
+        },
+        "strictness_witness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input",
+            "output"
+          ],
+          "properties": {
+            "input": {
+              "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/token"
+            },
+            "output": {
+              "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/token"
+            }
+          }
+        }
+      }
+    },
+    "target_oid": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "candidate_oid": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "base_capture_sha256": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+    },
+    "candidate_capture_sha256": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+    },
+    "checker_sha256": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+    },
+    "satisfaction": {
+      "$ref": "https://vkit.invalid/schemas/witness.v1.json#/$defs/artifact"
+    },
+    "near_miss_control": {
+      "$ref": "https://vkit.invalid/schemas/witness.v1.json#/$defs/artifact"
+    }
+  }
+}

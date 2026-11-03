@@ -119,6 +119,7 @@ def policy_identity() -> dict[str, str]:
             "kani_execution.py",
             "change_methods.py",
             "change_service.py",
+            "claim_acceptance.py",
             "witness.py",
             "nowindow.py",
         )
@@ -376,6 +377,10 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
             digest = file_digest(path) if record.get("subject", {}).get("kind") == "registered_check" else sha256(path)
             if digest != item["sha256"]:
                 return False
+        if record.get("subject", {}).get("kind") == "change_certification":
+            from .claim_acceptance import validate_claim_acceptance
+
+            validate_claim_acceptance(record, directory, target, source)
         return True
     except (OSError, ValueError, KeyError, TypeError, ProjectError, SchemaValidationError):
         return False

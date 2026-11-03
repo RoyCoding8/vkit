@@ -6,8 +6,11 @@ from typing import Any
 
 from .certification import (
     ChangeCertificationRequest,
+    DelegationBasis,
+    DelegationDerivation,
     EntailmentKind,
     IntentRevision,
+    check_delegation,
     intent_entails_claim,
 )
 from .inputs import (
@@ -24,6 +27,8 @@ from .schemas import validate
 _ACCEPTED_SCHEMA = "accepted-intents.v1.json"
 _INTENT_DIRECTORY = "verification/change-intents"
 _ACCEPTED_PATH = f"{_INTENT_DIRECTORY}/accepted.v1.json"
+_CLAIM_DIRECTORY = "verification/change-claims"
+_ACCEPTED_BASES_PATH = f"{_CLAIM_DIRECTORY}/accepted.v1.json"
 
 
 @dataclass(frozen=True)
@@ -36,9 +41,10 @@ class BoundChangeRequest:
     intent_revision_blob_oid: str
     base_capture_sha256: str
     candidate_capture_sha256: str
+    delegation: DelegationDerivation | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        result = {
             "scope": "request_preflight",
             "candidate_behavior_checked": False,
             "request": self.request.to_json(),
@@ -50,6 +56,9 @@ class BoundChangeRequest:
             "base_capture_sha256": self.base_capture_sha256,
             "candidate_capture_sha256": self.candidate_capture_sha256,
         }
+        if self.delegation is not None:
+            result["delegation"] = self.delegation.to_json()
+        return result
 
     @property
     def digest(self) -> str:
@@ -128,6 +137,13 @@ def _bind_captured_change_request(
     if not git_ancestor(project, trusted_target_oid, candidate):
         raise ValueError("candidate must descend from the trusted target commit")
 
+    return _bind_captured_policy(request, base, candidate)
+
+
+def _bind_captured_policy(
+    request: ChangeCertificationRequest, base: CapturedSource, candidate: CapturedSource,
+) -> BoundChangeRequest:
+
     target_files = {file.path: file for file in base.files}
     candidate_files = {file.path: file for file in candidate.files}
     accepted_file = _required_file(target_files, _ACCEPTED_PATH, "accepted-intents document")
@@ -169,8 +185,9 @@ def _bind_captured_change_request(
                 f"candidate {artifact.role} artifact differs from accepted intent"
             )
 
+    delegation = _bind_delegation(request, revision, target_files, candidate_files)
     entailment = intent_entails_claim(revision.contract, request.claim)
-    if entailment.kind is not EntailmentKind.ENTAILED:
+    if delegation is None and entailment.kind is not EntailmentKind.ENTAILED:
         details = []
         if entailment.kind is EntailmentKind.VACUOUS:
             details.append("accepted intent has no admissible inputs")
@@ -195,7 +212,33 @@ def _bind_captured_change_request(
         intent_revision_blob_oid=revision_file.blob_oid,
         base_capture_sha256=base.digest,
         candidate_capture_sha256=candidate.digest,
+        delegation=delegation,
     )
+
+
+def _bind_delegation(
+    request: ChangeCertificationRequest, intent: IntentRevision,
+    target_files: dict[str, CapturedFile], candidate_files: dict[str, CapturedFile],
+) -> DelegationDerivation | None:
+    proposal = request.delegation
+    if proposal is None:
+        return None
+    registry = _required_file(target_files, _ACCEPTED_BASES_PATH, "accepted claim bases")
+    accepted = _strict_json(registry, "accepted claim bases")
+    validate("accepted claim bases", "accepted-claim-bases.v1.json", accepted)
+    if proposal.basis_sha256 not in accepted["accepted"]:
+        raise ValueError("delegation basis is not accepted by the trusted target")
+    record = _required_file(
+        target_files, f"{_CLAIM_DIRECTORY}/{proposal.basis_sha256}.v1.json", "delegation basis",
+    )
+    for label, target in (("accepted claim bases", registry), ("delegation basis", record)):
+        candidate = _required_file(candidate_files, target.path, f"candidate {label}")
+        if candidate.content != target.content or candidate.mode != target.mode:
+            raise ValueError(f"candidate {label} differs from trusted target")
+    basis = DelegationBasis.from_json(_strict_json(record, "delegation basis"))
+    if basis.digest != proposal.basis_sha256:
+        raise ValueError("delegation basis digest does not match its accepted identity")
+    return check_delegation(intent, basis, request.claim, proposal.near_miss)
 
 
 def preflight_change_request(

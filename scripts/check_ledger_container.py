@@ -391,7 +391,7 @@ with store.hold(attempt):
 
 def run_durable_probe(directory: Path, source: str, identity: dict) -> dict:
     from vkit import evidence, jobs
-    from vkit.formal.policy import GitCommit, VerificationRequest
+    from vkit.requests import GitCommit, PackageVerificationRequest
     from vkit.formal.service import resolve_commit
     from vkit.inputs import canonical_digest
     from vkit.manifest import parse_manifest
@@ -414,7 +414,7 @@ def run_durable_probe(directory: Path, source: str, identity: dict) -> dict:
     store.approve({component.digest: {"kind": "formal_policy", "policy_sha256": component.digest,
                                      "package_sha256": component.package.sha256,
                                      "checker_sha256": canonical_digest(identity["semantic"]), "accepted_at": now()}})
-    request = VerificationRequest(component.id, GitCommit(oid))
+    request = PackageVerificationRequest(component.claim, GitCommit(oid))
     submitted = jobs.submit_formal(project, request, component, canonical_digest(identity["semantic"]), store=store)
     first = jobs.wait(store, submitted["run_id"], 900)
     from vkit.formal.service import verify

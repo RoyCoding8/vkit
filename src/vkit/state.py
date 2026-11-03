@@ -7,11 +7,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from .formal.policy import FormalComponent, VerificationRequest, WorkingTree
+from .formal.policy import FormalComponent
 from .inputs import InputSet, Snapshot, capture_working_tree
 from .job import FormalGoal, RegisteredCheck, seal_job
 from .manifest import Manifest
 from .paths import ProjectError
+from .requests import PackageVerificationRequest, WorkingTree
 from .store import Store
 from .verifiers.spec import CheckSpec
 
@@ -224,7 +225,7 @@ def formal_states(manifest: Manifest, store: Store, snapshot: Snapshot) -> list[
                 if _formal_approval_matches(approved, component, checker):
                     if source is None:
                         source = capture_working_tree(snapshot.project)
-                    request = VerificationRequest(component.id, WorkingTree())
+                    request = PackageVerificationRequest(component.claim, WorkingTree())
                     key = seal_job(FormalGoal(request, component, checker, source).payload())["job_id"]
                     current = store.evidence_for("formal_goal", component.id, key)
                     freshness = (_FRESH[current["result"]] if current is not None else

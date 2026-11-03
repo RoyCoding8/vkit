@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/accepted-intents.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "accepted"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "accepted": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+      }
+    }
+  },
+  "$defs": {}
+}

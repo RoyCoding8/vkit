@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
-from .formal.policy import FormalComponent, VerificationRequest
+from .formal.policy import FormalComponent
 from .inputs import CapturedSource, canonical_digest
 from .manifest import Manifest
+from .requests import GitCommit, PackageVerificationRequest
 from .schemas import JOB, validate
 from .verifiers.spec import CheckSpec
 
@@ -65,7 +66,7 @@ class RegisteredCheck:
 
 @dataclass(frozen=True)
 class FormalGoal:
-    request: VerificationRequest
+    request: PackageVerificationRequest
     component: FormalComponent
     checker_sha256: str
     source: CapturedSource
@@ -95,12 +96,33 @@ def job_id(payload: dict[str, Any]) -> str:
 
 def seal_job(payload: dict[str, Any]) -> dict[str, Any]:
     job = {**payload, "job_id": job_id(payload)}
-    validate("resolved job", JOB, job)
-    return job
+    return validate_job(job)
 
 
 def validate_job(payload: Any) -> dict[str, Any]:
     validate("resolved job", JOB, payload)
     if payload["job_id"] != job_id(payload):
         raise ValueError("resolved job semantic identity does not match its job ID")
+    if payload["subject"]["kind"] == "formal_goal":
+        request = PackageVerificationRequest.from_json(payload["request"])
+        try:
+            component = FormalComponent.from_json(payload["component"])
+        except (KeyError, TypeError) as exc:
+            raise ValueError("formal job component is malformed") from exc
+        if (request.semantic_json() != payload["request"]
+                or payload["subject"]["id"] != component.id
+                or component.to_json() != payload["component"]
+                or request.claim != component.claim
+                or payload["policy_sha256"] != component.digest
+                or payload["package_sha256"] != component.package.sha256):
+            raise ValueError("formal job request, component, and package identity differ")
+        if isinstance(request.candidate, GitCommit):
+            if (payload["source"]["kind"] != "git_commit"
+                    or payload["source"]["commit"] != request.candidate.oid):
+                raise ValueError("formal job source differs from its requested Git candidate")
+        elif (payload["source"]["kind"] != "working_tree"
+              or payload["source"]["commit"] is not None
+              or payload["source"]["tree"] is not None
+              or payload["source"]["parents"]):
+            raise ValueError("formal job source differs from its working-tree request")
     return payload

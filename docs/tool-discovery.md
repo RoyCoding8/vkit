@@ -8,7 +8,7 @@ Repository jobs and evidence operations share one tool set. Adding an external b
 | --- | --- |
 | Discover enabled tools | `help` |
 | Submit registered checks | `check_run` |
-| Verify an accepted formal component | `verify` |
+| Verify an accepted package claim | `verify` |
 | Inspect, wait, or cancel an attempt | `run_get`, `run_wait`, `run_cancel` |
 | Export or recheck evidence | `evidence_export`, `evidence_replay` |
 
@@ -34,8 +34,12 @@ vkit mcp serve --exposure named
 
 ```text
 invoke(name="check_run", arguments={"check_ids":["proof"],"wait_seconds":0})
-invoke(name="verify", arguments={"component":"allocation","goal":{"kind":"implements"},"candidate":{"kind":"git_commit","oid":"FULL_COMMIT_OID"},"wait_seconds":0})
+invoke(name="verify", arguments={"schema_version":2,"claim":{"kind":"package","component":"allocation","policy_sha256":"<64 lowercase hex characters>","package_sha256":"<64 lowercase hex characters>"},"candidate":{"kind":"git_commit","oid":"<full commit object ID>"}})
 ```
+
+`verify` accepts only a package claim with exact policy and package SHA-256 identities. The claim must match the current accepted manifest component before any job is submitted. The package digest is listed in `verification/manifest.json`; the policy digest is the canonical digest of the complete component policy. The CLI shorthand `vkit verify COMPONENT --working-tree` or `--candidate REVISION` resolves both pins from the current manifest. A request file can be supplied with `vkit verify --request FILE`; it uses the same version 2 shape and cannot supply checker or target authority.
+
+Finite intent requests are not accepted by the public `verify` tool. The finite intent preflight remains a library operation and does not verify candidate source behavior or create verification evidence.
 
 ## Discovery contract
 

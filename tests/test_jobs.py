@@ -13,9 +13,10 @@ import pytest
 from helpers import DRIVER, NO_WINDOW, git, scenario_check, vkit
 from test_external import _project
 from vkit.paths import open_project
-from vkit.formal.policy import FormalComponent, GitCommit, LedgerBindings, PackageIdentity, VerificationRequest
+from vkit.formal.policy import FormalComponent, LedgerBindings, PackageIdentity
 from vkit.outcome import Passed
-from vkit.runner import execute, prepare_formal
+from vkit.runner import execute, prepare_formal, prepare_retry
+from vkit.requests import GitCommit, PackageClaim, PackageVerificationRequest
 from vkit.inputs import canonical_digest
 from vkit.store import Store, write_json
 
@@ -166,23 +167,60 @@ def test_formal_job_executes_from_captured_commit_without_opening_checkout(tmp_p
     ).stdout.strip()
     component = FormalComponent(
         "ledger",
-        PackageIdentity("ledger-core", "1.0.0", "a" * 64),
-        "reserve safety",
+        PackageIdentity("vkit.resource-ledger", "0.1.0", "a" * 64),
+        "ledger.source.v1",
         "source.rs",
-        "strict",
+        "verus-linux-x86_64-v1",
         4,
         LedgerBindings("Ledger::new", "Ledger::reserve", "Ledger::release", "Ledger::reserve_batch", "Ledger::apply_command", "Ledger::run_commands"),
         True,
     )
-    request = VerificationRequest("ledger", GitCommit(oid))
+    request = PackageVerificationRequest(component.claim, GitCommit(oid))
     identity = {"semantic": {"profile": "strict", "image_digest": "b" * 64}, "paths": {"verus_root": "C:/verus"}}
     store = Store.of(project)
     checker = canonical_digest(identity["semantic"])
+    import vkit.runner as runner
+
+    capture_git_commit = runner.capture_git_commit
+    monkeypatch.setattr(runner, "capture_git_commit", lambda *_: pytest.fail("mismatched claim reached source capture"))
+    mismatched = PackageVerificationRequest(
+        PackageClaim(component.id, component.digest, "c" * 64), GitCommit(oid)
+    )
+    with pytest.raises(ValueError, match="package claim"):
+        prepare_formal(project, mismatched, component, checker, store=store)
+    monkeypatch.setattr(runner, "capture_git_commit", capture_git_commit)
     record = prepare_formal(project, request, component, checker, store=store)
     job = json.loads((store.run_dir(record["run_id"]) / "job.json").read_text(encoding="utf-8"))
     assert job["source"]["commit"] == oid
     assert job["source"]["files"][0]["raw_sha256"]
     assert job["checker_sha256"] == checker
+    from vkit.job import job_id, validate_job
+
+    tampered_job = dict(job)
+    tampered_job["request"] = {**job["request"], "claim": {
+        **job["request"]["claim"], "package_sha256": "d" * 64}}
+    tampered_job["job_id"] = job_id(tampered_job)
+    with pytest.raises(ValueError, match="request, component, and package identity"):
+        validate_job(tampered_job)
+    malformed_component = dict(job)
+    malformed_component["component"] = {**job["component"], "profile": "custom"}
+    malformed_component["job_id"] = job_id(malformed_component)
+    from vkit.schemas import SchemaValidationError
+
+    with pytest.raises(SchemaValidationError):
+        validate_job(malformed_component)
+    legacy_job = dict(job)
+    legacy_job["request"] = {"component": "ledger", "goal": {"kind": "implements"},
+                             "candidate": {"kind": "git_commit", "oid": oid}}
+    legacy_job["job_id"] = job_id(legacy_job)
+    job_path = store.run_dir(record["run_id"]) / "job.json"
+    original_job = job_path.read_bytes()
+    try:
+        job_path.write_text(json.dumps(legacy_job), encoding="utf-8")
+        with pytest.raises(SchemaValidationError):
+            prepare_retry(record["run_id"], store=store)
+    finally:
+        job_path.write_bytes(original_job)
     store.approve({component.digest: {"kind": "formal_policy", "policy_sha256": component.digest,
                                     "package_sha256": component.package.sha256,
                                     "checker_sha256": job["checker_sha256"], "accepted_at": "now"}})
@@ -208,6 +246,31 @@ def test_formal_job_executes_from_captured_commit_without_opening_checkout(tmp_p
     assert result["outcome"]["result"] == "PASS"
     assert result["subject"] == {"kind": "formal_goal", "id": "ledger"}
     assert (store.root / "evidence" / "formal_goal" / "ledger" / f"{job['job_id']}.json").is_file()
+    from copy import deepcopy
+    from vkit import evidence
+
+    job_path = store.run_dir(record["run_id"]) / "job.json"
+    original_job = job_path.read_bytes()
+    try:
+        job_path.write_text(json.dumps(legacy_job), encoding="utf-8")
+        assert not evidence.validate_record(result, store.run_dir(record["run_id"]))
+    finally:
+        job_path.write_bytes(original_job)
+
+    tampered_record = deepcopy(result)
+    receipt_path = store.run_dir(record["run_id"]) / "receipt.json"
+    original_receipt = receipt_path.read_bytes()
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    tampered_record["package_sha256"] = receipt["package_sha256"] = "e" * 64
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    from vkit.evidence import sha256
+
+    tampered_record["receipt"]["sha256"] = sha256(receipt_path)
+    try:
+        assert not evidence.validate_record(tampered_record, store.run_dir(record["run_id"]))
+    finally:
+        receipt_path.write_bytes(original_receipt)
+    assert evidence.validate_record(result, store.run_dir(record["run_id"]))
     from dataclasses import replace
 
     project = open_project(moved)
@@ -220,10 +283,14 @@ def test_formal_job_executes_from_captured_commit_without_opening_checkout(tmp_p
         rejected_reuse = prepare_formal(project, reusable, component, checker, store=store)
         assert rejected_reuse["run_id"] != record["run_id"] and rejected_reuse["state"] == "queued"
     store.approve({component.digest: accepted})
-    for changed_component, changed_checker in ((replace(component, max_records=5), checker),
-                                                (component, "d" * 64)):
-        fresh = prepare_formal(project, reusable, changed_component, changed_checker, store=store)
-        assert fresh["run_id"] != record["run_id"] and fresh["state"] == "queued"
+    changed_component = replace(component, max_records=5)
+    with pytest.raises(ValueError, match="package claim"):
+        prepare_formal(project, reusable, changed_component, checker, store=store)
+    changed_request = replace(reusable, claim=changed_component.claim)
+    fresh = prepare_formal(project, changed_request, changed_component, checker, store=store)
+    assert fresh["run_id"] != record["run_id"] and fresh["state"] == "queued"
+    fresh = prepare_formal(project, reusable, component, "d" * 64, store=store)
+    assert fresh["run_id"] != record["run_id"] and fresh["state"] == "queued"
     (moved / "dependency.rs").write_text("pub const LIMIT: u32 = 9;\n", encoding="utf-8")
     git(moved, "add", "dependency.rs")
     git(moved, "commit", "-qm", "change captured dependency")

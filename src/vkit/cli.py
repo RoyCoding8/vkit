@@ -39,6 +39,24 @@ def _emit(payload: dict[str, Any], as_json: bool, human: str) -> None:
     print(json.dumps(payload, indent=2) if as_json else human)
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
+def _read_verification_request(path: str) -> Any:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object)
+    except OSError as exc:
+        raise ValueError(f"cannot read verification request {path!r}: {exc}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"verification request is not valid UTF-8 JSON: {exc}") from exc
+
+
 def _context(args: argparse.Namespace) -> query.Context:
     try:
         return query.open_context(args.project)
@@ -157,11 +175,22 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     ctx = _context(args)
     query.normalize_run_sections(args.section)
-    candidate = ({"kind": "working_tree"} if args.working_tree else
-                 {"kind": "git_commit", "oid": resolve_commit(ctx.project, args.candidate)})
+    if args.request:
+        if args.component is not None or args.working_tree or args.candidate is not None:
+            raise Refused("--request cannot be combined with a component or candidate option", EXIT_INVALID)
+        if args.wait is not None or args.reuse:
+            raise Refused("--request cannot be combined with --wait or --reuse", EXIT_INVALID)
+        request = _read_verification_request(args.request)
+    else:
+        if args.component is None or (not args.working_tree and args.candidate is None):
+            raise Refused("verify requires COMPONENT and either --working-tree or --candidate, or --request FILE", EXIT_INVALID)
+        component = ctx.require_manifest().require_component(args.component)
+        candidate = ({"kind": "working_tree"} if args.working_tree else
+                     {"kind": "git_commit", "oid": resolve_commit(ctx.project, args.candidate)})
+        request = {"schema_version": 2, "claim": component.claim.to_json(),
+                   "candidate": candidate, "wait_seconds": args.wait or 0, "reuse": args.reuse}
     try:
-        record = verify(ctx, {"component": args.component, "goal": {"kind": "implements"},
-                              "candidate": candidate, "wait_seconds": args.wait, "reuse": args.reuse})
+        record = verify(ctx, request)
     except ExecutionSetupError as exc:
         raise Refused(str(exc), EXIT_BLOCKED) from exc
     view = query.run_view(ctx, record["run_id"], sections=args.section)
@@ -535,12 +564,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_check.add_argument("--needed", action="store_true", help="run every check that is stale or missing")
     run_check.add_argument("--detach", action="store_true", help="return after durable submission")
 
-    verify = command(sub, "verify", "verify a component against its accepted mathematical contract")
-    verify.add_argument("component")
-    candidate = verify.add_mutually_exclusive_group(required=True)
+    verify = command(sub, "verify", "verify a pinned package claim against its accepted mathematical contract")
+    verify.add_argument("component", nargs="?")
+    candidate = verify.add_mutually_exclusive_group()
     candidate.add_argument("--working-tree", action="store_true", help="capture current files provisionally")
     candidate.add_argument("--candidate", help="capture a Git revision as raw immutable objects")
-    verify.add_argument("--wait", type=int, default=0, help="wait up to 60 seconds; zero returns the durable job")
+    candidate.add_argument("--request", help="read a strict package verification request JSON file")
+    verify.add_argument("--wait", type=int, help="wait up to 60 seconds; zero returns the durable job")
     verify.add_argument("--reuse", action="store_true", help="reuse intact local proof evidence only for identical source, policy and checker")
     verify.add_argument("--section", choices=[*query.RUN_SECTIONS, "all"], action="append",
                         help="include selected result detail; repeat to select several sections")

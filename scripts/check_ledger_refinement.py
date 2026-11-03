@@ -82,7 +82,7 @@ def qualify_product(directory: Path) -> dict:
     from qualify_ledger_reuse import approve, project_for, runtime_fixture
     from vkit import evidence
     from vkit.formal import verus
-    from vkit.formal.policy import GitCommit, VerificationRequest
+    from vkit.requests import GitCommit, PackageVerificationRequest
     from vkit.runner import execute, prepare_formal
     from vkit.store import Store
 
@@ -97,7 +97,7 @@ def qualify_product(directory: Path) -> dict:
         project, commit = project_for(directory / name / "project", policy, text)
         store = Store.of(project)
         approve(store, policy, identity)
-        record = prepare_formal(project, VerificationRequest(policy.id, GitCommit(commit)), policy,
+        record = prepare_formal(project, PackageVerificationRequest(policy.claim, GitCommit(commit)), policy,
                                 canonical_digest(identity["semantic"]), store=store)
         record = execute(project, record["run_id"], store=store)
         valid = evidence.validate_record(record, store.run_dir(record["run_id"]))

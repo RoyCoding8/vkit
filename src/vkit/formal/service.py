@@ -9,7 +9,7 @@ from .. import jobs
 from ..nowindow import hidden_window
 from ..paths import Project
 from ..query import Context
-from .policy import VerificationRequest
+from ..requests import PackageVerificationRequest
 
 
 def resolve_commit(project: Project, revision: str) -> str:
@@ -24,8 +24,10 @@ def resolve_commit(project: Project, revision: str) -> str:
 
 
 def verify(ctx: Context, raw: Any) -> dict[str, Any]:
-    request = VerificationRequest.from_json(raw)
-    component = ctx.require_manifest().require_component(request.component)
+    request = PackageVerificationRequest.from_json(raw)
+    component = ctx.require_manifest().require_component(request.claim.component)
+    if request.claim != component.claim:
+        raise ValueError("package claim does not match the current component policy and package identities")
     approval = ctx.store.approved().get(component.digest, {})
     if approval.get("kind") != "formal_policy":
         raise ValueError("formal policy is not accepted; run `vkit accept --component " + component.id + "`")

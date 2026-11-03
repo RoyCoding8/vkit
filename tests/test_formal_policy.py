@@ -4,10 +4,8 @@ from copy import deepcopy
 
 import pytest
 
-from vkit.formal.policy import VerificationRequest
 from vkit.manifest import ManifestError, parse_manifest_data
 from vkit.paths import Project
-from vkit.schemas import SchemaValidationError
 
 
 def component():
@@ -81,25 +79,3 @@ def test_duplicate_components_and_unknown_obligations_are_rejected(tmp_path):
     entry["obligations"] = ["only-the-easy-one"]
     with pytest.raises(ManifestError):
         parse(tmp_path, entry)
-
-
-def test_wait_and_reuse_are_excluded_from_verification_request_semantics():
-    raw = {"component": "allocation", "goal": {"kind": "implements"},
-           "candidate": {"kind": "git_commit", "oid": "a" * 40, "target_commit": "b" * 40}}
-    first = VerificationRequest.from_json(raw)
-    second = VerificationRequest.from_json({**raw, "wait_seconds": 60, "reuse": True})
-    assert first.semantic_json() == second.semantic_json() == raw
-    assert (first.wait_seconds, second.wait_seconds) == (0, 60)
-    assert (first.reuse, second.reuse) == (False, True)
-
-
-@pytest.mark.parametrize("change", [
-    {"candidate": {"kind": "working_tree", "target_commit": "a" * 40}},
-    {"candidate": {"kind": "git_commit", "oid": "HEAD"}},
-    {"goal": {"kind": "change"}}, {"goal": {"kind": "implements", "obligations": []}},
-    {"wait_seconds": 61}, {"checker": "my-own-checker"}, {"authority": "protected"},
-])
-def test_request_cannot_override_the_accepted_claim_or_authority(change):
-    raw = {"component": "allocation", "goal": {"kind": "implements"}, "candidate": {"kind": "working_tree"}}
-    with pytest.raises(SchemaValidationError):
-        VerificationRequest.from_json({**raw, **change})

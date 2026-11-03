@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.invalid/schemas/witness.v1.json",
+  "title": "VKit change witness envelope",
+  "oneOf": [
+    {"$ref": "#/$defs/proofRejected"},
+    {"$ref": "#/$defs/unknown"},
+    {"$ref": "#/$defs/infrastructureFailure"},
+    {"$ref": "#/$defs/modelWitness"},
+    {"$ref": "#/$defs/engineCounterexample"}
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "media_type"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "pattern": "^[^/][^\\\\:]*$"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "media_type": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$"}
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_sha256", "claim_sha256", "intent_sha256", "base_capture_sha256",
+        "candidate_capture_sha256", "codec_sha256", "observation_sha256",
+        "environment_sha256", "runner_identity_sha256", "runtime_identity_sha256",
+        "binding_sha256"
+      ],
+      "properties": {
+        "request_sha256": {"$ref": "#/$defs/sha256"},
+        "claim_sha256": {"$ref": "#/$defs/sha256"},
+        "intent_sha256": {"$ref": "#/$defs/sha256"},
+        "base_capture_sha256": {"$ref": "#/$defs/sha256"},
+        "candidate_capture_sha256": {"$ref": "#/$defs/sha256"},
+        "codec_sha256": {"$ref": "#/$defs/sha256"},
+        "observation_sha256": {"$ref": "#/$defs/sha256"},
+        "environment_sha256": {"$ref": "#/$defs/sha256"},
+        "runner_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "binding_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "proofRejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "binding", "diagnostic"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "kind": {"const": "proof_rejected"},
+        "binding": {"$ref": "#/$defs/binding"},
+        "diagnostic": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "unknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "binding", "reason"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "kind": {"const": "unknown"},
+        "binding": {"$ref": "#/$defs/binding"},
+        "reason": {"enum": ["bound_exhausted", "timeout", "interrupted", "unsupported", "incomplete"]}
+      }
+    },
+    "infrastructureFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "binding", "stage", "message"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "kind": {"const": "infrastructure_failure"},
+        "binding": {"$ref": "#/$defs/binding"},
+        "stage": {"enum": ["engine", "import", "compile", "native_playback", "protocol"]},
+        "message": {"type": "string", "minLength": 1},
+        "diagnostic": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "modelNotAttempted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {"kind": {"const": "not_attempted"}}
+    },
+    "modelSameEngineOnly": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "diagnostic"],
+      "properties": {
+        "kind": {"const": "same_engine_only"},
+        "diagnostic": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "modelWitness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "kind", "binding", "model", "config", "property", "trace", "replay"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "kind": {"const": "model_witness"},
+        "binding": {"$ref": "#/$defs/binding"},
+        "model": {"$ref": "#/$defs/artifact"},
+        "config": {"$ref": "#/$defs/artifact"},
+        "property": {"type": "string", "minLength": 1},
+        "trace": {"$ref": "#/$defs/artifact"},
+        "replay": {
+          "oneOf": [
+            {"$ref": "#/$defs/modelNotAttempted"},
+            {"$ref": "#/$defs/modelSameEngineOnly"}
+          ]
+        }
+      }
+    },
+    "playbackNotAttempted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {"kind": {"const": "not_attempted"}}
+    },
+    "playbackUnknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reason"],
+      "properties": {
+        "kind": {"const": "unknown"},
+        "reason": {"enum": ["timeout", "interrupted", "unsupported", "incomplete"]}
+      }
+    },
+    "playbackInfrastructureFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "stage", "message"],
+      "properties": {
+        "kind": {"const": "infrastructure_failure"},
+        "stage": {"enum": ["compile", "native_playback", "protocol"]},
+        "message": {"type": "string", "minLength": 1},
+        "diagnostic": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "playbackNative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "runtime_identity_sha256", "runtime_identity", "observation", "disposition"],
+      "properties": {
+        "kind": {"const": "native"},
+        "runtime_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_identity": {"$ref": "#/$defs/artifact"},
+        "observation": {"$ref": "#/$defs/artifact"},
+        "disposition": {"enum": ["reproduced", "not_reproduced"]}
+      }
+    },
+    "engineCounterexample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "kind", "binding", "counterexample", "input", "playback"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "kind": {"const": "engine_counterexample"},
+        "binding": {"$ref": "#/$defs/binding"},
+        "counterexample": {"$ref": "#/$defs/artifact"},
+        "input": {"$ref": "#/$defs/artifact"},
+        "playback": {
+          "oneOf": [
+            {"$ref": "#/$defs/playbackNotAttempted"},
+            {"$ref": "#/$defs/playbackNative"},
+            {"$ref": "#/$defs/playbackUnknown"},
+            {"$ref": "#/$defs/playbackInfrastructureFailure"}
+          ]
+        }
+      }
+    }
+  }
+}

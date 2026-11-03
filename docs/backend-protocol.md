@@ -130,3 +130,50 @@ Replay runs the checker, not the producer.
 | Filesystem access | Does not prevent a process from mutating and restoring files while it runs. |
 | Isolation | No OS filesystem sandbox is claimed. |
 | Closure declaration | Required from the backend author. Transitive binary dependencies are not inferred. |
+
+## Change witness artifacts
+
+`witness.v1.json` defines an immutable change-witness artifact. The library parser checks it against a separately supplied `WitnessBinding` and the retained artifact bytes.
+
+| Kind | Meaning |
+| --- | --- |
+| `proof_rejected` | A proof attempt was rejected; no native playback is attached. |
+| `engine_counterexample` | Retains the engine input and counterexample, with explicit native playback status where supported. |
+| `model_witness` | Retains the model, configuration and trace; replay is absent or limited to the same model engine. |
+| `unknown` | The attempt was incomplete, unsupported, interrupted, timed out or exhausted its bound. |
+| `infrastructure_failure` | The engine, importer, compiler, playback or protocol failed. |
+
+Native playback records whether the input reproduced the observation under its pinned runtime. A model-only witness cannot carry native playback. Every artifact reference names a normalized retained path, SHA-256 digest and media type. Import rejects changed bytes, filesystem links and non-regular files.
+
+The caller derives the expected binding from actual trusted-target preflight and independently measured runner/runtime identities. Producer-supplied identity fields do not establish their own authority. The binding covers the request, accepted intent, claim, both source captures, codec, observation rules and environment.
+
+The safe Rust qualification can be run from the source checkout:
+
+```text
+python scripts/check_change_witness.py --output tmp/change-witness
+```
+
+It creates disposable Git target/candidate revisions, runs actual preflight, imports a labeled Kani transcript fixture, and compiles and runs the captured u32 sources. It retains the runtime identity and verifies the serialized witness again. This command does not run Kani. The artifact protocol does not alter the external checker receipt format or grant an approval, source-proof result or gate verdict.
+
+## Sampled paired execution
+
+`vkit.paired.run_paired_execution` runs captured base and candidate commits against the same selected inputs. The caller supplies the trusted target separately from the request. Preflight loads accepted intent from that target and protects its binding, codec, observation and environment artifacts.
+
+The current profile accepts a declared `u32 -> u32` function in Rust, Python or TypeScript. Each process receives four little-endian input bytes and returns one canonical decimal u32 line. Fixed drivers read input before importing the candidate module or calling its function. Both sides run separately with declared tool hashes and a closed set of environment variables. TypeScript uses a directly executable native compiler.
+
+`paired-execution-report.v1.json` describes the retained report:
+
+| Status | Meaning |
+| --- | --- |
+| `samples_within_contract` | Every selected observation is stable and the candidate meets the request claim on those inputs. |
+| `observed_violation` | A stable candidate observation violates the request claim. |
+| `unknown` | A timeout, cancellation, budget, unsupported declaration or unstable observation prevents a complete result. |
+| `infrastructure_failure` | Build, launch, protocol, pin, source or retained-artifact checks fail. |
+
+The report retains repeated raw observations, selected and omitted input counts, source captures, semantic artifacts, generated drivers, and runner and runtime identities. A behavior difference can be permitted by the request claim. Repeated agreement does not cover omitted inputs or prove deterministic behavior. Shrinking checks only smaller accepted inputs and records its limit and attempted inputs.
+
+The runner permits at most 128 process invocations, including builds, and 64 KiB of combined stdout and stderr per invocation. A 300-second execution deadline starts after Git preflight. Exhaustion returns incomplete evidence. These bounds do not impose an OS quota on captured sources, build products or filesystem writes.
+
+Retained hashes are checked before report serialization, and input bytes are checked before each launch. These checks detect persistent changes. Candidate code runs with the caller's permissions and can access the host filesystem. The report explicitly records `source_proof:false`, `dependency_closure_checked:false`, and `os_sandbox:false`.
+
+This sampled report is separate from engine counterexamples, formal receipts and protected acceptance. It grants no approval or source-proof verdict.

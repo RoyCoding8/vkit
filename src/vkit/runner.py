@@ -13,7 +13,7 @@ from typing import Any
 from . import proc
 from .budgets import evaluate
 from .evidence import backend_identity, seal
-from .formal.policy import FormalComponent, GitCommit, VerificationRequest, WorkingTree
+from .formal.policy import FormalComponent
 from .inputs import (
     CapturedSource,
     InputSet,
@@ -29,6 +29,7 @@ from .job import FormalGoal, RegisteredCheck, seal_job, validate_job
 from .manifest import Manifest, parse_check_definition
 from .outcome import Blocked, BlockedReason, Failed, Outcome, Passed
 from .paths import Project
+from .requests import GitCommit, PackageVerificationRequest, WorkingTree
 from .store import Store, new_run_id, now, read_json, write_json
 from .verifiers import dispatch, static_adapter
 from .verifiers.dispatch import ScenarioReading
@@ -283,7 +284,7 @@ def prepare(
 
 def prepare_formal(
     project: Project,
-    request: VerificationRequest,
+    request: PackageVerificationRequest,
     component: FormalComponent,
     checker_sha256: str,
     *,
@@ -292,17 +293,13 @@ def prepare_formal(
     source: CapturedSource | None = None,
     authority: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if request.component != component.id:
-        raise ValueError("verification request and formal component IDs differ")
+    if request.claim != component.claim:
+        raise ValueError("verification request package claim differs from the formal component")
     if source is not None:
         if not isinstance(request.candidate, GitCommit) or source.commit != request.candidate.oid:
             raise ValueError("provided capture differs from the requested Git candidate")
     elif isinstance(request.candidate, GitCommit):
         source = capture_git_commit(project, request.candidate.oid)
-        if request.candidate.target_commit is not None:
-            target = request.candidate.target_commit
-            if len(target) != len(request.candidate.oid):
-                raise ValueError("target commit object format differs from candidate")
     elif isinstance(request.candidate, WorkingTree):
         source = capture_working_tree(project)
     else:
@@ -504,10 +501,10 @@ def execute(project: Project | None, run_id: str, *, store: Store) -> dict[str, 
 def _execute_formal(
     job: dict[str, Any], run_id: str, run_dir: Path, store: Store
 ) -> tuple[Outcome, dict[str, Any]]:
-    request = VerificationRequest.from_json(job["request"])
+    request = PackageVerificationRequest.from_json(job["request"])
     component = FormalComponent.from_json(job["component"])
     if (
-        request.component != component.id
+        request.claim != component.claim
         or component.digest != job["policy_sha256"]
         or component.package.sha256 != job["package_sha256"]
     ):

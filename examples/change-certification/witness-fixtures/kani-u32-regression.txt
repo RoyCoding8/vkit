@@ -1,0 +1,9 @@
+// Fixture copied from the recorded regression case. This check does not run Kani.
+#[test]
+fn kani_concrete_playback_regression_2635896623606938374() {
+    let concrete_vals: Vec<Vec<u8>> = vec![
+        // 10
+        vec![10, 0, 0, 0],
+    ];
+    kani::concrete_playback_run(concrete_vals, regression);
+}

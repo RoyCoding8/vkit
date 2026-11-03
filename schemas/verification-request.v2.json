@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/verification-request.v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "claim",
+    "candidate"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "component",
+        "policy_sha256",
+        "package_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "package"
+        },
+        "component": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "policy_sha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]+$"
+        },
+        "package_sha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]+$"
+        }
+      }
+    },
+    "candidate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "working_tree"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "oid"
+          ],
+          "properties": {
+            "kind": {
+              "const": "git_commit"
+            },
+            "oid": {
+              "type": "string",
+              "minLength": 40,
+              "maxLength": 64,
+              "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+              "oneOf": [
+                {
+                  "maxLength": 40
+                },
+                {
+                  "minLength": 64
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "wait_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 60
+    },
+    "reuse": {
+      "type": "boolean"
+    }
+  }
+}

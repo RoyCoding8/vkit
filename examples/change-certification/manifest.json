@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "purpose": "Independent development fixtures for VKit change-certification experiments.",
+  "status": "development_only",
+  "scope_limit": "Finite literal Rust fixtures. These judgments describe the listed contracts and observations only; they do not establish general equivalence, soundness, or unseen-case performance.",
+  "runner": {
+    "compiler": "rustc --test",
+    "source_root": "examples/change-certification/fixtures",
+    "native_dependencies": []
+  },
+  "held_out": {
+    "path": "held-out/README.md",
+    "status": "reserved_empty",
+    "evaluation_status": "No held-out cases or unseen evaluation results are included in this development corpus."
+  },
+  "cases": [
+    {
+      "id": "SC-01",
+      "label": "commutative addition refactor",
+      "kind": "runtime",
+      "suite": "scalar",
+      "source": "scalar.rs",
+      "test": "sc_01_commutative_addition_refactor",
+      "intent": "Refactor addition operand order without changing results.",
+      "requirement": "For every recorded pair, before and after return the mathematical sum.",
+      "supported_domain": "i32 inputs a,b in [-16,16]; the mathematical sum fits i32. The fixture samples three pairs.",
+      "guards": [],
+      "observations": [
+        {"input": "a=3,b=5", "before": "8", "after": "8"},
+        {"input": "a=-2,b=7", "before": "5", "after": "5"},
+        {"input": "a=0,b=0", "before": "0", "after": "0"}
+      ],
+      "expected": {"judgment": "equivalent_on_recorded_rows", "witness": null}
+    },
+    {
+      "id": "SC-02",
+      "label": "guarded checked-division bugfix",
+      "kind": "runtime",
+      "suite": "scalar",
+      "source": "scalar.rs",
+      "test": "sc_02_guarded_checked_division_bugfix",
+      "intent": "Replace panic-prone division at its invalid cases with an explicit None result.",
+      "requirement": "For all i32 pairs, return None when b is zero or when a is i32::MIN and b is -1; otherwise return truncating integer division.",
+      "supported_domain": "All i32 pairs. Recorded observations cover one ordinary pair and both guarded invalid cases.",
+      "guards": ["b == 0", "a == i32::MIN && b == -1"],
+      "observations": [
+        {"input": "a=10,b=2", "before": "Some(5)", "after": "Some(5)"},
+        {"input": "a=10,b=0", "before": "panic", "after": "None"},
+        {"input": "a=i32::MIN,b=-1", "before": "panic", "after": "None"}
+      ],
+      "expected": {"judgment": "approved_guarded_bugfix", "witness": "The two listed guard cases change from panic to None; ordinary division is preserved on the recorded valid pair."}
+    },
+    {
+      "id": "SC-03",
+      "label": "unapproved cap change",
+      "kind": "runtime",
+      "suite": "scalar",
+      "source": "scalar.rs",
+      "test": "sc_03_unapproved_cap_change",
+      "intent": "Candidate silently lowers the documented maximum output.",
+      "requirement": "For x in [0,10], return min(x,10).",
+      "supported_domain": "i32 x in [0,10]. The fixture samples zero, an interior point, and the upper endpoint.",
+      "guards": [],
+      "observations": [
+        {"input": "x=0", "before": "0", "after": "0"},
+        {"input": "x=5", "before": "5", "after": "5"},
+        {"input": "x=10", "before": "10", "after": "9"}
+      ],
+      "expected": {"judgment": "reject_unapproved_behavior_change", "witness": "x=10 changes from 10 to 9 inside the supported domain."}
+    },
+    {
+      "id": "SC-04",
+      "label": "division with a weak contract",
+      "kind": "policy_only",
+      "suite": "scalar",
+      "intent": "A proposed division change supplies no denominator constraint or zero-denominator outcome.",
+      "requirement": "No complete behavior requirement is supplied.",
+      "supported_domain": "Unspecified by the proposal.",
+      "guards": [],
+      "observations": [],
+      "policy_evidence": {"proposal": "divide(i32,i32)->i32", "missing": "denominator domain and zero-denominator behavior"},
+      "expected": {"judgment": "needs_contract", "witness": "The proposal omits the denominator domain and the required zero-denominator behavior."}
+    },
+    {
+      "id": "PA-01",
+      "label": "single-delimiter parser refactor",
+      "kind": "runtime",
+      "suite": "bounded_parser",
+      "source": "bounded_parser.rs",
+      "test": "pa_01_single_delimiter_parser_refactor",
+      "intent": "Replace split-based parsing with a direct delimiter scan while preserving results.",
+      "requirement": "Accept exactly one '=' with nonempty key and value; otherwise return None.",
+      "supported_domain": "UTF-8 strings of at most 10 bytes. The fixture samples three ASCII strings; keys and values may contain any non-'=' byte represented in the string.",
+      "guards": [],
+      "observations": [
+        {"input": "ID=7", "before": "ID:7", "after": "ID:7"},
+        {"input": "x=y", "before": "x:y", "after": "x:y"},
+        {"input": "NO=MORE=1", "before": "None", "after": "None"}
+      ],
+      "expected": {"judgment": "equivalent_on_recorded_rows", "witness": null}
+    },
+    {
+      "id": "PA-02",
+      "label": "guarded lowercase-key parser feature",
+      "kind": "runtime",
+      "suite": "bounded_parser",
+      "source": "bounded_parser.rs",
+      "test": "pa_02_guarded_lowercase_key_feature",
+      "intent": "Allow lowercase keys only when the caller enables the explicit option.",
+      "requirement": "Accept uppercase keys regardless of the option. Accept lowercase keys only when allow_lowercase is true. Reject other key characters and empty values.",
+      "supported_domain": "ASCII strings of at most 12 bytes containing one '='; key/value are tested only with the literal rows below.",
+      "guards": ["allow_lowercase == true", "key contains only ASCII lowercase letters"],
+      "observations": [
+        {"input": "text=7,allow=false", "before": "None", "after": "None"},
+        {"input": "text=7,allow=true", "before": "None", "after": "text:7"},
+        {"input": "TEXT=7,allow=false", "before": "TEXT:7", "after": "TEXT:7"}
+      ],
+      "expected": {"judgment": "approved_guarded_feature", "witness": "text=7 is accepted only when allow_lowercase=true; the uppercase case remains accepted with the option false."}
+    },
+    {
+      "id": "PA-03",
+      "label": "unapproved numeric-prefix parser change",
+      "kind": "runtime",
+      "suite": "bounded_parser",
+      "source": "bounded_parser.rs",
+      "test": "pa_03_unapproved_numeric_prefix_change",
+      "intent": "Candidate accepts a numeric prefix and ignores trailing input.",
+      "requirement": "Parse the entire input as an unsigned 8-bit integer; trailing characters are invalid.",
+      "supported_domain": "ASCII strings of at most 8 bytes. The fixture samples one valid number and one number with a trailing character.",
+      "guards": [],
+      "observations": [
+        {"input": "12", "before": "12", "after": "12"},
+        {"input": "7x", "before": "None", "after": "7"}
+      ],
+      "expected": {"judgment": "reject_unapproved_behavior_change", "witness": "Input 7x changes from None to 7 although the requirement rejects trailing characters."}
+    },
+    {
+      "id": "PA-04",
+      "label": "parser with a weak size contract",
+      "kind": "policy_only",
+      "suite": "bounded_parser",
+      "intent": "A parser proposal does not state a maximum input size or behavior beyond its examples.",
+      "requirement": "No complete parser requirement is supplied.",
+      "supported_domain": "Unspecified by the proposal.",
+      "guards": [],
+      "observations": [],
+      "policy_evidence": {"proposal": "parse(input)->Option<pair>", "missing": "maximum input size and behavior outside the examples"},
+      "expected": {"judgment": "needs_contract", "witness": "The proposal omits an input-size bound and behavior for inputs outside the examples."}
+    },
+    {
+      "id": "RS-01",
+      "label": "fixed-pool allocation refactor",
+      "kind": "runtime",
+      "suite": "resource",
+      "source": "resource.rs",
+      "test": "rs_01_fixed_pool_allocation_refactor",
+      "intent": "Replace the allocation loop with a position lookup while preserving the operation sequence.",
+      "requirement": "A three-slot pool allocates the lowest free slot, returns None when full, releases an occupied slot, and may allocate a released slot again.",
+      "supported_domain": "Single-threaded three-slot pool; exact operation sequence is in the observation row.",
+      "guards": [],
+      "observations": [
+        {"input": "allocate,allocate,allocate,allocate,release(1),allocate", "before": "0,1,2,None,1;111", "after": "0,1,2,None,1;111"}
+      ],
+      "expected": {"judgment": "equivalent_on_recorded_rows", "witness": null}
+    },
+    {
+      "id": "RS-02",
+      "label": "owner-guarded resource release feature",
+      "kind": "runtime",
+      "suite": "resource",
+      "source": "resource.rs",
+      "test": "rs_02_owner_guarded_release_feature",
+      "intent": "Add a release operation that rejects callers who do not own the resource.",
+      "requirement": "Only the recorded owner may release an occupied slot; a wrong owner or an already-free slot must return false and leave the pool unchanged.",
+      "supported_domain": "Three-slot pool; owner and caller identifiers are u8; tested sequence allocates one slot and attempts releases by owner 8 and owner 7.",
+      "guards": ["caller == recorded owner", "slot is occupied"],
+      "observations": [
+        {"input": "allocate(owner=7),release(slot=0,caller=8),release(slot=0,caller=7),release(slot=0,caller=7)", "before": "wrong-owner=true,owner=false,repeat=false;empty", "after": "wrong-owner=false,owner=true,repeat=false;empty"}
+      ],
+      "expected": {"judgment": "approved_guarded_feature", "witness": "Caller 8 is denied without changing owner 7's slot; owner 7 releases it once."}
+    },
+    {
+      "id": "RS-03",
+      "label": "tampered observation claim",
+      "kind": "policy_only",
+      "suite": "resource",
+      "intent": "The candidate's observation record claims release succeeded although the independently observed state is unchanged.",
+      "requirement": "An observation claim must agree with the trusted state observation for the same operation.",
+      "supported_domain": "One release attempt against a fixed resource state.",
+      "guards": ["trusted observation is read independently of the candidate record"],
+      "observations": [],
+      "policy_evidence": {"trusted": "released=false,state=occupied", "candidate_claim": "released=true,state=empty"},
+      "expected": {"judgment": "reject_observation_tampering", "witness": "Candidate claim conflicts with the trusted observation for release and state."}
+    },
+    {
+      "id": "RS-04",
+      "label": "tampered actor authority",
+      "kind": "policy_only",
+      "suite": "resource",
+      "intent": "The candidate record substitutes a privileged actor for the authenticated caller.",
+      "requirement": "The authority identity used for a resource action must equal the trusted caller identity.",
+      "supported_domain": "One release request with distinct caller and claimed actor identifiers.",
+      "guards": ["trusted caller identity comes from invocation context"],
+      "observations": [],
+      "policy_evidence": {"trusted_caller": "guest", "candidate_claimed_actor": "admin"},
+      "expected": {"judgment": "reject_authority_tampering", "witness": "Candidate actor admin does not match trusted caller guest."}
+    }
+  ]
+}

@@ -9,8 +9,10 @@ import pytest
 
 from helpers import git, scenario_check
 from vkit import ci, container, evidence, proc
+from vkit.formal.policy import FormalComponent, LedgerBindings, PackageIdentity
 from vkit.formal.service import resolve_commit
-from vkit.inputs import capture_git_commit
+from vkit.inputs import canonical_digest, capture_git_commit
+from vkit.outcome import Passed
 from vkit.paths import ProjectError, open_project
 from vkit.store import Store
 
@@ -103,6 +105,66 @@ def test_gate_rejects_unrelated_target_or_output_inside_candidate(make_project, 
         ci.run_gate(project, oid, oid, root / "output")
     with pytest.raises(ProjectError, match="Git object ID"):
         ci.run_gate(project, "HEAD", oid, tmp_path / "output")
+
+
+def test_gate_pins_formal_request_to_target_policy_with_mocked_engine_when_candidate_deletes_it(
+    make_project, tmp_path, monkeypatch
+):
+    root = make_project({"src/allocation.rs": "pub fn reserve() {}\n"}, [], accept=False)
+    manifest_path = root / "verification" / "manifest.json"
+    component = FormalComponent(
+        "allocation", PackageIdentity("vkit.resource-ledger", "0.1.0", "a" * 64),
+        "ledger.source.v1", "src/allocation.rs", "verus-linux-x86_64-v1", 7,
+        LedgerBindings("api::new", "api::reserve", "api::release", "api::reserve_batch",
+                       "api::apply_command", "api::run_commands"), True,
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["formal"] = {"components": [component.to_json()]}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    git(root, "add", "verification/manifest.json")
+    git(root, "commit", "-qm", "add accepted formal policy")
+    project = open_project(root)
+    target = resolve_commit(project, "HEAD")
+    candidate_manifest = {"schema_version": 3, "description": "candidate policy", "checks": []}
+    manifest_path.write_text(json.dumps(candidate_manifest), encoding="utf-8")
+    git(root, "add", "verification/manifest.json")
+    git(root, "commit", "-qm", "candidate removes formal policy")
+    candidate = resolve_commit(project, "HEAD")
+
+    semantic = {"profile": "verus-linux-x86_64-v1", "image_id": "sha256:" + "b" * 64}
+    checker = canonical_digest(semantic)
+    from vkit.formal import ledger, verus
+
+    monkeypatch.setattr(verus, "resolve_execution", lambda _: {"semantic": semantic, "paths": {}})
+    monkeypatch.setattr(ledger, "verify_package", lambda _: None)
+
+    def execute_formal(actual, snapshot, run_dir, actual_checker, should_cancel):
+        assert actual == component
+        assert (snapshot / component.entry).read_text(encoding="utf-8") == "pub fn reserve() {}\n"
+        assert actual_checker == checker and not should_cancel()
+        return Passed(()), {"obligations": {"satisfied": ["allocation:reserve"], "counterexamples": []},
+                            "execution_identity": {"semantic": semantic, "digest": checker}}
+
+    monkeypatch.setattr(verus, "execute_formal", execute_formal)
+    output = tmp_path / "private-gate"
+    report = ci.run_gate(project, candidate, target, output)
+    assert report["verdict"] == "READY"
+    assert [(item["kind"], item["id"], item["receipt_valid"], item["outcome"]["result"])
+            for item in report["checks"]] == [("formal_goal", "allocation", True, "PASS")]
+
+    store = Store(output / "store")
+    record = store.record(report["checks"][0]["run_id"])
+    job = json.loads((store.run_dir(record["run_id"]) / "job.json").read_text(encoding="utf-8"))
+    assert job["source"]["commit"] == candidate
+    assert job["component"] == component.to_json()
+    assert job["request"]["claim"] == component.claim.to_json()
+    assert job["authority"]["target_commit"] == target
+    assert evidence.validate_record(record, store.run_dir(record["run_id"]))
+
+    tampered = deepcopy(job)
+    tampered["request"]["claim"]["package_sha256"] = "c" * 64
+    with pytest.raises(ValueError, match="package claim differs from target policy"):
+        ci.validate_authority(tampered, project)
 
 
 def test_evidence_rejects_unlisted_links_and_special_files(tmp_path):

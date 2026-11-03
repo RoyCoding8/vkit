@@ -13,7 +13,7 @@ VKit separates accepted requirements, candidate source, verification execution a
 | Receipt | Record obligations, scope, actual tool inventory and retained artifact hashes. |
 | Gate | Require intact passing evidence for the intended source and policy authority. |
 
-CLI and MCP share the same job service, store and worker lifecycle. Formal requests select a component, the `implements` goal and a source selector. They cannot supply replacement formulas, checker commands or a smaller obligation set.
+CLI and MCP share the same job service, store and worker lifecycle. Formal requests use `schema_version: 2`. Their `claim.kind` must be `package`, and `claim.component` must name an accepted component. The request must include matching `claim.policy_sha256` and `claim.package_sha256` digests and select a candidate source. Requests cannot supply replacement formulas, checker commands or a smaller obligation set. Legacy `implements` goals and finite claims are rejected. Library finite preflight binds a request to a trusted target. It does not verify candidate behavior.
 
 ## Resource-ledger contract
 

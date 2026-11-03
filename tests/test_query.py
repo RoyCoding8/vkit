@@ -13,7 +13,7 @@ from helpers import DRIVER, McpClient, git, scenario_check, vkit
 from vkit.paths import Project
 from vkit.query import Context, doctor, open_context, run_view, run_view_full, status
 from vkit.store import Store, write_json
-from vkit.formal.policy import VerificationRequest, WorkingTree
+from vkit.requests import PackageVerificationRequest, WorkingTree
 from vkit.inputs import canonical_digest
 from vkit.outcome import Passed
 from vkit.runner import execute, prepare_formal
@@ -253,7 +253,7 @@ def _complete_formal(context, monkeypatch, identity):
     verus.execute_formal = execute_formal
     monkeypatch.setitem(sys.modules, "vkit.formal.ledger", ledger)
     monkeypatch.setitem(sys.modules, "vkit.formal.verus", verus)
-    record = prepare_formal(context.project, VerificationRequest(component.id, WorkingTree()),
+    record = prepare_formal(context.project, PackageVerificationRequest(component.claim, WorkingTree()),
                             component, canonical_digest(identity["semantic"]), store=context.store)
     return execute(None, record["run_id"], store=context.store)
 

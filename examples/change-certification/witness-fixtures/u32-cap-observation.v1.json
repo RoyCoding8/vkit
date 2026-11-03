@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"after":{"type":"integer","minimum":0,"maximum":4294967295},"before":{"type":"integer","minimum":0,"maximum":4294967295},"input":{"type":"integer","minimum":0,"maximum":4294967295}},"required":["input","before","after"],"type":"object"}

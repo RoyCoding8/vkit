@@ -23,8 +23,9 @@
     "baseline": {"type": ["object", "null"]},
     "backend": {"type": "object"},
     "inputs": {"type": "object"},
-    "request": {"type": "object"},
-    "component": {"type": "object"},
+    "request": {"$ref": "verification-request.v2.json",
+                "not": {"anyOf": [{"required": ["wait_seconds"]}, {"required": ["reuse"]}]}},
+    "component": {"$ref": "manifest.v3.json#/$defs/formal_component"},
     "policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "checker_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}

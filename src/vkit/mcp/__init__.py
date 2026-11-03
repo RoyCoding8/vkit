@@ -348,9 +348,11 @@ _BASE_TOOLS = (
          {"check_ids": {"type": "array", "items": _STR}, "needed": {"type": "boolean"},
           "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECONDS}},
          _check_run, read_only=False, category="repository"),
-    Tool("verify", "Verify one accepted component against VKit's owned mathematical contract. Captures the "
-         "whole source tree and submits a durable job. The Verus source result covers the six required API "
-         "bindings under the recorded trusted engine; working-tree results are provisional. Returns a compact "
+    Tool("verify", "Verify one package claim whose component, policy SHA-256, and package SHA-256 match the "
+         "current accepted manifest policy. Captures the whole source tree and submits a durable job. The Verus "
+         "source result covers the six required API bindings under the recorded trusted engine; working-tree "
+         "results are provisional. This is source verification, not a source-to-binary theorem. Legacy implements "
+         "requests and finite claims are rejected; finite preflight does not verify candidate source. Returns a compact "
          "summary by default; select sections for details. Set reuse to skip execution only for intact local "
          "passing evidence with identical complete source, policy, checker, and target identity.",
          {**schema(VERIFICATION_REQUEST)["properties"], "sections": _RUN_SECTIONS}, _verify, read_only=False,

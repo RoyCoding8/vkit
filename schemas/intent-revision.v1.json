@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkit.local/schemas/intent-revision.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "requirement",
+    "contract",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "statement"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "contract": {
+      "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/contract"
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding",
+        "codec",
+        "observation",
+        "environment"
+      ],
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/artifact"
+        },
+        "codec": {
+          "$ref": "#/$defs/artifact"
+        },
+        "observation": {
+          "$ref": "#/$defs/artifact"
+        },
+        "environment": {
+          "$ref": "#/$defs/artifact"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "https://vkit.local/schemas/change-certification.v1.json#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

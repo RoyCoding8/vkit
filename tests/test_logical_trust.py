@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import shutil
 import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -39,17 +41,27 @@ def _lean_check():
 
 
 def _run_lean(make_project, source: str):
-    project = make_project({"Challenge.lean": source}, [_lean_check()])
+    check = _lean_check()
+    project = make_project({"Challenge.lean": source}, [check])
     client = McpClient(project)
     try:
-        started, error = client.call("check_run", check_ids=["lean"], wait_seconds=60)
+        started, error = client.call("check_run", check_ids=["lean"], wait_seconds=0)
         assert not error, started
         run_id = started["runs"][0]["run_id"]
-        view, error = client.call(
-            "run_get", run_id=run_id,
-            sections=["provenance", "obligations", "diagnostics", "artifacts"],
+        deadline = time.monotonic() + check["timeout_seconds"] + 60
+        view = None
+        while time.monotonic() < deadline:
+            wait_seconds = min(60, math.ceil(deadline - time.monotonic()))
+            view, error = client.call(
+                "run_wait", run_id=run_id, wait_seconds=wait_seconds,
+                sections=["provenance", "obligations", "diagnostics", "artifacts"],
+            )
+            assert not error, view
+            if view["summary"]["state"] not in ("queued", "running"):
+                break
+        assert view is not None and view["summary"]["state"] not in ("queued", "running"), (
+            f"Lean run {run_id} did not finish within {check['timeout_seconds'] + 60} seconds"
         )
-        assert not error, view
         return project, run_id, view
     finally:
         client.close()

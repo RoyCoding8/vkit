@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from .evidence import backend_identity, validate_record
-from .formal.policy import FormalComponent, VerificationRequest
+from .formal.policy import FormalComponent
 from .inputs import Snapshot, canonical_digest
 from .manifest import Manifest
 from .nowindow import hidden_window
 from .outcome import Blocked, BlockedReason
 from .paths import Project, open_project
+from .requests import GitCommit, PackageVerificationRequest
 from .runner import _child_env, execute, prepare, prepare_formal, prepare_retry
 from .store import Store, new_run_id, now, read_json, write_json
 
@@ -93,7 +94,7 @@ def submit(
 
 def submit_formal(
     project: Project,
-    request: VerificationRequest,
+    request: PackageVerificationRequest,
     component: FormalComponent,
     checker_sha256: str,
     *,
@@ -153,7 +154,6 @@ def replay(
     if source.get("authority") is not None:
         raise ValueError("target-policy evidence requires a fresh trusted-host gate; it cannot grant local authority")
     if source["subject"]["kind"] == "formal_goal":
-        from .formal.policy import GitCommit, VerificationRequest
         from .formal.verus import resolve_execution
         from .inputs import capture_git_commit, capture_working_tree
         from .job import validate_job
@@ -162,7 +162,7 @@ def replay(
         component = manifest.require_component(source["subject"]["id"])
         if component.to_json() != job["component"]:
             raise ValueError("bundle formal policy differs from the current component")
-        request = VerificationRequest.from_json(job["request"])
+        request = PackageVerificationRequest.from_json(job["request"])
         captured = (capture_git_commit(project, request.candidate.oid)
                     if isinstance(request.candidate, GitCommit) else capture_working_tree(project))
         if captured.digest != job["source"]["digest"]:

@@ -98,6 +98,7 @@ def policy_identity() -> dict[str, str]:
             "state.py",
             "store.py",
             "job.py",
+            "requests.py",
             "proc.py",
             "schemas.py",
             "budgets.py",
@@ -106,6 +107,12 @@ def policy_identity() -> dict[str, str]:
             "ci.py",
             "cli.py",
             "paths.py",
+            "certification.py",
+            "intent.py",
+            "paired.py",
+            "paired_profiles.py",
+            "witness.py",
+            "nowindow.py",
         )
     ]
     files += [
@@ -266,6 +273,11 @@ def validate_record(record: dict[str, Any], directory: Path) -> bool:
                 or record["job_id"] != record["key"]
                 or job.get("authority") != record.get("authority")
                 or receipt.get("authority") != record.get("authority")
+            ):
+                return False
+            if record["subject"]["kind"] == "formal_goal" and any(
+                job[name] != record.get(name)
+                for name in ("policy_sha256", "package_sha256", "checker_sha256")
             ):
                 return False
             fields = (

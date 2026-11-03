@@ -12,7 +12,8 @@ import uuid
 from check_ledger_container import ROOT, product_component, run
 from vkit import container, evidence, jobs
 from vkit.formal import ledger, verus
-from vkit.formal.policy import OPERATIONS, GitCommit, LedgerBindings, VerificationRequest
+from vkit.formal.policy import OPERATIONS, LedgerBindings
+from vkit.requests import GitCommit, PackageVerificationRequest
 from vkit.formal.service import resolve_commit
 from vkit.inputs import canonical_digest, capture_git_commit
 from vkit.paths import open_project
@@ -140,7 +141,7 @@ def qualify(directory, source, identity):
         project, oid = project_for(directory / fixture["id"] / "project", component, candidate)
         store = Store.of(project)
         approve(store, component, identity)
-        record = prepare_formal(project, VerificationRequest(component.id, GitCommit(oid)), component, canonical_digest(identity["semantic"]), store=store)
+        record = prepare_formal(project, PackageVerificationRequest(component.claim, GitCommit(oid)), component, canonical_digest(identity["semantic"]), store=store)
         record = execute(None, record["run_id"], store=store)
         run_dir = store.run_dir(record["run_id"])
         if record["outcome"]["result"] != "PASS" or not evidence.validate_record(record, run_dir):
@@ -165,7 +166,7 @@ def qualify(directory, source, identity):
             else:
                 started = time.monotonic()
                 checker = store.approved()[component.digest]["checker_sha256"]
-                record = prepare_formal(project, VerificationRequest(component.id, GitCommit(oid)), component, checker, store=store)
+                record = prepare_formal(project, PackageVerificationRequest(component.claim, GitCommit(oid)), component, checker, store=store)
                 record = execute(None, record["run_id"], store=store)
                 wall = time.monotonic() - started
                 run_dir = store.run_dir(record["run_id"])
@@ -184,8 +185,8 @@ def qualify(directory, source, identity):
 
     cli = json.loads(run([sys.executable, "-m", "vkit.cli", "verify", component.id,
                           "--candidate", oid, "--wait", "60", "--project", str(project.root), "--json"], timeout=900).stdout)
-    mcp, error = Server(project.root).call("verify", {"component": component.id, "goal": {"kind": "implements"},
-        "candidate": {"kind": "git_commit", "oid": oid}, "wait_seconds": 60})
+    mcp, error = Server(project.root).call(
+        "verify", PackageVerificationRequest(component.claim, GitCommit(oid), wait_seconds=60).to_json())
     if error:
         raise RuntimeError(f"installed MCP verification failed: {mcp}")
     surface_records = [jobs.wait(store, r["summary"]["run_id"], 900) for r in (cli, mcp)]
@@ -198,8 +199,8 @@ def qualify(directory, source, identity):
     cli_reused = json.loads(run([sys.executable, "-m", "vkit.cli", "verify", component.id,
         "--candidate", oid, "--reuse", "--project", str(project.root), "--json"], timeout=120).stdout)
     server = Server(project.root)
-    mcp_reused, error = server.call("verify", {"component": component.id,
-        "goal": {"kind": "implements"}, "candidate": {"kind": "git_commit", "oid": oid}, "reuse": True})
+    mcp_reused, error = server.call("verify", PackageVerificationRequest(
+        component.claim, GitCommit(oid), reuse=True).to_json())
     pointer = store.evidence_for("formal_goal", component.id, surface_records[0]["job_id"])
     if pointer is None:
         raise RuntimeError("completed CLI/MCP proofs have no intact published evidence")

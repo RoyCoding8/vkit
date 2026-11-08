@@ -213,7 +213,7 @@ def test_accept_without_yes_is_refused_when_not_interactive(make_project):
     project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])],
                            accept=False)
     code, body = vkit(project, "accept")
-    assert code == 2 and "--yes" in body["error"]
+    assert code == 2 and "VKIT_ALLOW_YES" in body["error"] and "--yes" not in body["error"]
     code, body = vkit(project, "check", "run", "--check", "ok")
     assert only_run(body)["outcome"]["reason"] == "not_approved"
 

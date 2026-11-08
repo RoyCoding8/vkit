@@ -13,6 +13,7 @@ from helpers import git, vkit
 @pytest.fixture(autouse=True)
 def isolated_launch_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("VKIT_CONFIG", str(tmp_path / "user-settings" / "config.json"))
+    monkeypatch.setenv("VKIT_ALLOW_YES", "1")
 
 
 @pytest.fixture

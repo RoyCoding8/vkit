@@ -35,14 +35,41 @@ def test_stop_is_held_while_a_check_is_stale_and_released_when_ready(make_projec
     assert context.startswith("vkit gate: READY")
 
 
-def test_stop_is_not_held_for_evidence_the_agent_cannot_produce(make_project):
+def test_stop_is_held_until_unaccepted_definitions_are_authorized(make_project):
     project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])],
                            accept=False)
     response = hook(project, "Stop", {})
-    assert "decision" not in response and "not_approved: ok" in response["systemMessage"]
+    assert response["decision"] == "block" and "not_approved: ok" in response["reason"]
+    assert "decision" not in hook(project, "Stop", {"stop_hook_active": True})
 
 
-@pytest.mark.parametrize("required,accepted,held", [(True, True, True), (False, True, False), (True, False, False)])
+def test_stop_hook_fails_closed_when_the_gate_cannot_be_read(make_project, monkeypatch):
+    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])],
+                           accept=False)
+    spec = importlib.util.spec_from_file_location("vkit_hook", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    from vkit import query
+
+    def broken(*_args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(query, "status", broken)
+    response = module.handle("Stop", {}, str(project))
+    assert response["decision"] == "block" and "boom" in response["reason"]
+
+
+def test_a_forced_bypass_leaves_a_telemetry_trace(make_project):
+    from vkit.paths import open_project
+
+    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    hook(project, "Stop", {"stop_hook_active": True})
+    log = open_project(project).git_common_dir / "vkit" / "telemetry.jsonl"
+    assert "stop_hook_bypass" in log.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("required,accepted,held", [(True, True, True), (False, True, False), (True, False, True)])
 def test_formal_stop_observes_required_policy_and_acceptance(make_project, monkeypatch, required, accepted, held):
     root = make_project({"src/allocation.rs": "pub fn reserve() {}"}, [], accept=False)
     raw = component()
@@ -66,8 +93,7 @@ def test_formal_stop_observes_required_policy_and_acceptance(make_project, monke
 
     assert (response.get("decision") == "block") is held
     if held:
-        assert "missing: allocation" in response["reason"]
-        assert "verify" in response["reason"] and "allocation" in response["reason"]
+        assert "allocation" in response["reason"]
         assert "decision" not in module.handle("Stop", {"stop_hook_active": True}, str(root))
-    elif not accepted:
-        assert "not_approved: allocation" in response["systemMessage"]
+    else:
+        assert "decision" not in response

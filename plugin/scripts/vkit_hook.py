@@ -7,9 +7,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from typing import Any
 
 FIXABLE = {"stale", "missing", "fresh_fail"}
+BLOCKING = FIXABLE | {"not_approved"}
 
 
 def _required(status: dict[str, Any]) -> list[dict[str, Any]]:
@@ -28,14 +30,36 @@ def _summary(status: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _record_bypass(project: str) -> None:
+    try:
+        from vkit.paths import open_project
+
+        path = open_project(project).git_common_dir / "vkit" / "telemetry.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as out:
+            out.write(json.dumps({"event": "stop_hook_bypass", "project": project, "ts": time.time()}) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def handle(event: str, payload: dict[str, Any], project: str) -> dict[str, Any]:
+    try:
+        return _handle(event, payload, project)
+    except Exception as exc:  # noqa: BLE001
+        detail = f"vkit hook could not read the gate: {type(exc).__name__}: {exc}"
+        return {"systemMessage": detail} if event == "SessionStart" else {"decision": "block", "reason": detail}
+
+
+def _handle(event: str, payload: dict[str, Any], project: str) -> dict[str, Any]:
     from vkit import query
 
     status = query.status(query.open_context(project))
     if event == "SessionStart":
         return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": _summary(status)}}
-    fixable = any(c["state"] in FIXABLE for c in _required(status))
-    if status["gate"]["verdict"] == "READY" or payload.get("stop_hook_active") or not fixable:
+    blocking = any(c["state"] in BLOCKING for c in _required(status))
+    if status["gate"]["verdict"] == "READY" or payload.get("stop_hook_active") or not blocking:
+        if payload.get("stop_hook_active") and blocking and status["gate"]["verdict"] != "READY":
+            _record_bypass(project)
         return {} if status["gate"]["verdict"] == "READY" else {"systemMessage": _summary(status)}
     return {"decision": "block", "reason": _summary(status)}
 
@@ -49,7 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.loads(sys.stdin.read() or "{}")
         response = handle(args.event, payload, args.project)
     except Exception as exc:  # noqa: BLE001
-        response = {"systemMessage": f"vkit hook could not read the gate: {type(exc).__name__}: {exc}"}
+        detail = f"vkit hook could not read the gate: {type(exc).__name__}: {exc}"
+        response = {"systemMessage": detail} if args.event == "SessionStart" else {"decision": "block", "reason": detail}
     print(json.dumps(response))
     return 0
 

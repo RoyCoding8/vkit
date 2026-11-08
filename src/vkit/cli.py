@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from dataclasses import replace
@@ -362,9 +363,13 @@ def cmd_evidence_replay(args: argparse.Namespace) -> int:
 
 def _confirm(args: argparse.Namespace, description: str, question: str) -> bool:
     if args.yes:
-        return True
+        if os.environ.get("VKIT_ALLOW_YES"):
+            return True
+        raise Refused("this action needs operator confirmation; run it interactively or set "
+                      "VKIT_ALLOW_YES in the operator environment:\n" + description, EXIT_INVALID)
     if args.json or not sys.stdin.isatty():
-        raise Refused("review this and pass --yes to accept it:\n" + description, EXIT_INVALID)
+        raise Refused("review this and confirm it interactively as the operator (or set "
+                      "VKIT_ALLOW_YES):\n" + description, EXIT_INVALID)
     print(description)
     return input(f"{question} [y/N] ").strip().lower() == "y"
 

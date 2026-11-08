@@ -15,7 +15,8 @@ from .inputs import Snapshot, matches
 from .manifest import Manifest, ManifestError, parse_manifest
 from .paths import Project, open_project
 from .proposals import pending
-from .state import CheckState, FormalState, Freshness, _resolve_execution, check_states, formal_states as _formal_states, gate, needs_run
+from .state import (CheckState, FormalState, Freshness, _resolve_execution, approved_inventory, check_states,
+                    formal_states as _formal_states, gate, needs_run)
 from .store import Store
 
 DEFAULT_LOG_LIMIT = 16_000
@@ -93,13 +94,21 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
         ids = {s.check.id for s in shown}
         features = [f for f in features if ids & set(f["covered_by"])
                     or any(matches(p, e) for p in wanted for e in f["entry_points"])]
+    inventory = approved_inventory(ctx.store.approved()) if ctx.manifest is not None else None
+    gate_out = (gate(all_states, all_formal, obligations=inventory) if ctx.manifest is not None else
+                {"verdict": "BLOCKED", "reason": ctx.manifest_error, "checks": []})
+    ghost_shape = {"description": "", "kind": "removed_obligation", "category": "source_verification",
+                   "assurance": "empirical", "model_scope": "", "assumptions": [], "establishes": [],
+                   "does_not_establish": [], "key": "", "inputs": {"scope": "", "declared": [], "unmatched": []},
+                   "current": None, "last": None, "running": []}
+    ghosts = [{**ghost_shape, "id": c["id"], "state": "obligation_removed"}
+              for c in gate_out["checks"] if c["state"] == "obligation_removed"]
     return {
         "project": str(ctx.project.root),
         "manifest_error": ctx.manifest_error,
-        "gate": gate(all_states, all_formal) if ctx.manifest is not None else
-        {"verdict": "BLOCKED", "reason": ctx.manifest_error, "checks": []},
+        "gate": gate_out,
         "paths": wanted,
-        "checks": [s.to_json() for s in shown],
+        "checks": [s.to_json() for s in shown] + ghosts,
         "formal": [s.to_json() for s in all_formal],
         "unmapped_paths": [p for p in wanted if not any(s.inputs.covers(p) for s in all_states)],
         "feature_paths_unmapped": [p for p in wanted if not any(matches(p, e) for f in features

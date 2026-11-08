@@ -61,3 +61,63 @@ def test_definition_change_still_requires_reaccept(make_project, monkeypatch):
     manifest2 = _manifest(project)
     fresh = state.check_states(manifest2, store, Snapshot(_project(project)))[0]
     assert fresh.freshness is state.Freshness.NOT_APPROVED
+
+
+def test_removing_a_failing_check_cannot_reach_ready(make_project):
+    import json
+
+    from vkit import query
+
+    project = make_project({"ok.py": PASSES, "bad.py": DRIVER + 'report([("bad", False, "nope")])\n'},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                            scenario_check("bad", "bad.py", scenarios=["bad"], inputs=["bad.py"])])
+    vkit(project, "check", "run", "--check", "ok", "--check", "bad")
+    (project / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "description": "test project",
+        "checks": [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
+    out = query.status(query.open_context(project))
+    assert out["gate"]["verdict"] != "READY"
+    assert any(c["state"] == "obligation_removed" and c["id"] == "bad" for c in out["checks"])
+
+
+def test_renaming_a_check_is_removal_plus_addition(make_project):
+    import json
+
+    from vkit import query
+
+    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok")
+    (project / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "description": "test project",
+        "checks": [scenario_check("ok2", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
+    out = query.status(query.open_context(project))
+    assert out["gate"]["verdict"] != "READY"
+    states = {(c["id"], c["state"]) for c in out["checks"]}
+    assert ("ok", "obligation_removed") in states and ("ok2", "not_approved") in states
+
+
+def test_accepting_a_shrunk_manifest_rebinds_the_inventory(make_project):
+    import json
+
+    from vkit import query
+
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                            scenario_check("gone", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok", "--check", "gone")
+    (project / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "description": "test project",
+        "checks": [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
+    assert query.status(query.open_context(project))["gate"]["verdict"] != "READY"
+    code, _ = vkit(project, "accept", "--yes")
+    assert code == 0
+    assert query.status(query.open_context(project))["gate"]["verdict"] == "READY"
+
+
+def test_unbinding_a_required_formal_component_needs_authority():
+    from types import SimpleNamespace
+
+    formal = [SimpleNamespace(component=SimpleNamespace(id="alloc", digest="d"),
+                              freshness=state.Freshness.FRESH_PASS, required=False, current=None)]
+    out = state.gate([], formal, obligations={"checks": {}, "formal_required": {"alloc": "d"}})
+    assert out["verdict"] != "READY" and "alloc" in out["reason"]

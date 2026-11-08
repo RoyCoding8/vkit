@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 FIXABLE = {"stale", "missing", "fresh_fail"}
-BLOCKING = FIXABLE | {"not_approved"}
+BLOCKING = FIXABLE | {"not_approved", "obligation_removed"}
 
 
 def _required(status: dict[str, Any]) -> list[dict[str, Any]]:
@@ -56,11 +56,11 @@ def _handle(event: str, payload: dict[str, Any], project: str) -> dict[str, Any]
     status = query.status(query.open_context(project))
     if event == "SessionStart":
         return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": _summary(status)}}
-    blocking = any(c["state"] in BLOCKING for c in _required(status))
-    if status["gate"]["verdict"] == "READY" or payload.get("stop_hook_active") or not blocking:
-        if payload.get("stop_hook_active") and blocking and status["gate"]["verdict"] != "READY":
+    blocking = status["gate"]["verdict"] == "REJECTED" or any(c["state"] in BLOCKING for c in _required(status))
+    if status["gate"]["verdict"] in ("READY", "READY_SCOPED") or payload.get("stop_hook_active") or not blocking:
+        if payload.get("stop_hook_active") and blocking and status["gate"]["verdict"] not in ("READY", "READY_SCOPED"):
             _record_bypass(project)
-        return {} if status["gate"]["verdict"] == "READY" else {"systemMessage": _summary(status)}
+        return {} if status["gate"]["verdict"] in ("READY", "READY_SCOPED") else {"systemMessage": _summary(status)}
     return {"decision": "block", "reason": _summary(status)}
 
 

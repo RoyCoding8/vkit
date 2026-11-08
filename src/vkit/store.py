@@ -330,12 +330,17 @@ class Store:
                 "checker_sha256",
                 "accepted_at",
             },
+            "obligation_inventory": {"checks", "formal_required", "accepted_at"},
         }
         fields = required.get(record.get("kind"))
         if fields is None or not fields <= record.keys():
             raise ValueError(
-                "approval must be a complete check_definition or formal_policy record"
+                "approval must be a complete check_definition, formal_policy, or obligation_inventory record"
             )
+        if record.get("kind") == "obligation_inventory":
+            for key in ("checks", "formal_required"):
+                if not isinstance(record[key], dict) or any(not isinstance(v, str) for v in record[key].values()):
+                    raise ValueError("obligation inventory maps must be string maps")
 
     @contextmanager
     def _approval_lock(self) -> Iterator[None]:

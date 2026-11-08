@@ -40,6 +40,13 @@ _FRESH = {
 }
 
 
+def approved_inventory(approved: dict[str, Any]) -> dict[str, Any] | None:
+    record = approved.get("__inventory__")
+    if not isinstance(record, dict):
+        return None
+    return {"checks": record.get("checks", {}), "formal_required": record.get("formal_required", {})}
+
+
 def check_digests(manifest: Manifest) -> dict[str, str]:
     return {check_id: manifest.digest(check_id) for check_id in manifest.checks}
 
@@ -244,13 +251,25 @@ def needs_run(state: CheckState | FormalState) -> bool:
 
 
 def gate(
-    states: Iterable[CheckState], formal: Iterable[FormalState] = ()
+    states: Iterable[CheckState], formal: Iterable[FormalState] = (),
+    obligations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     states = list(states)
     formal = list(formal)
     required = [state for state in formal if state.required]
-    if not states and not required:
+    ghosts = []
+    if obligations is not None:
+        removed = sorted(set(obligations.get("checks", ())) - {s.check.id for s in states})
+        removed += sorted(rid for rid in obligations.get("formal_required", ())
+                          if not any(s.component.id == rid and s.required for s in formal))
+        ghosts = [{"id": rid, "state": "obligation_removed", "run_id": None} for rid in removed]
+    if not states and not required and not ghosts:
         verdict, reason = Verdict.BLOCKED, "no checks are registered"
+    elif obligations is None and states:
+        verdict, reason = Verdict.REJECTED, "obligation_inventory: no accepted inventory binds this manifest"
+    elif ghosts:
+        verdict, reason = Verdict.REJECTED, ("obligation_removed: " + ", ".join(g["id"] for g in ghosts)
+                                             + " were accepted but are no longer registered or required")
     elif any(
         state.freshness is Freshness.FRESH_FAIL
         for state in (*states, *required)
@@ -275,7 +294,7 @@ def gate(
                 "run_id": (state.current or {}).get("run_id"),
             }
             for state in states
-        ],
+        ] + ghosts,
         "formal": [
             {
                 "id": state.component.id,

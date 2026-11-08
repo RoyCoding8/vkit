@@ -458,7 +458,20 @@ def cmd_accept(args: argparse.Namespace) -> int:
                   json.dumps(component.to_json(), indent=2),
                   "coverage: required_api; assurance: trusted_engine; method: verus_source",
                   "checker identity: " + json.dumps(execution, sort_keys=True)]
-    if not pending and not formal_records:
+    inventory = {"kind": "obligation_inventory", "accepted_at": now(),
+                 "checks": {c: manifest.digest(c) for c in sorted(manifest.checks)},
+                 "formal_required": {c: manifest.require_component(c).digest for c in sorted(manifest.components)
+                                     if manifest.require_component(c).required}}
+    from .state import approved_inventory
+
+    previous = approved_inventory(approved)
+    inventory_changed = previous != {k: inventory[k] for k in ("checks", "formal_required")}
+    if inventory_changed:
+        old_checks = set((previous or {}).get("checks", ()))
+        lines.append("obligation inventory: " + json.dumps({
+            "removed": sorted(old_checks - set(inventory["checks"])),
+            "added": sorted(set(inventory["checks"]) - old_checks)}))
+    if not pending and not formal_records and not inventory_changed:
         _emit({"accepted": [], "accepted_components": [], "pending": []}, args.json,
               "every named definition is already accepted")
         return EXIT_OK
@@ -469,6 +482,7 @@ def cmd_accept(args: argparse.Namespace) -> int:
                                     "backend": identities[c]} for c in pending}
     records.update({manifest.require_component(c).digest: {**entry, "accepted_at": now()}
                     for c, (entry, _) in formal_records.items()})
+    records["__inventory__"] = inventory
     ctx.store.approve(records)
     _emit({"accepted": pending, "accepted_components": list(formal_records)}, args.json,
           f"accepted: {', '.join(pending + list(formal_records))}")

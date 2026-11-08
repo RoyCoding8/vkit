@@ -39,19 +39,29 @@ class Doubt:
     field: str
     effect: str
     clearing: str
+    falsifier: tuple[str, str]
 
 
 DOUBTS = (
-    Doubt("fresh_fail", "reject", "fix the subject until the check passes"),
-    Doubt("not_approved", "reject", "authority revision: accept the definition"),
-    Doubt("obligation_removed", "reject", "authority revision: re-accept the manifest"),
-    Doubt("fresh_blocked", "block", "clear the run blocker and re-run"),
-    Doubt("stale", "block", "re-run the check on the current inputs"),
-    Doubt("missing", "block", "run the check to produce evidence"),
-    Doubt("blocked", "block", "clear the reported blocker and re-run"),
-    Doubt("uncovered_change", "scope", "extend coverage or declare does_not_establish"),
-    Doubt("dependency_closure_unobserved", "scope", "declare the inputs or observe the closure"),
-    Doubt("assurance_scope", "scope", "escalate to a stronger backend or narrow the claim"),
+    Doubt("fresh_fail", "reject", "fix the subject until the check passes",
+          ("test_a_failing_check_rejects_the_gate", "test_fixing_the_subject_clears_a_fresh_fail")),
+    Doubt("not_approved", "reject", "authority revision: accept the definition",
+          ("test_an_added_unaccepted_check_is_rejected", "test_definition_change_still_requires_reaccept")),
+    Doubt("obligation_inventory", "reject", "authority revision: accept the manifest to bind the inventory",
+          ("test_a_formal_only_manifest_without_an_inventory_is_rejected",
+           "test_accepting_a_shrunk_manifest_rebinds_the_inventory")),
+    Doubt("obligation_removed", "reject", "authority revision: re-accept the manifest",
+          ("test_removing_a_failing_check_cannot_reach_ready", "test_accepting_a_shrunk_manifest_rebinds_the_inventory")),
+    Doubt("fresh_blocked", "block", "clear the run blocker and re-run",
+          ("test_a_blocked_run_blocks_the_gate", "test_a_cleared_run_reaches_ready")),
+    Doubt("stale", "block", "re-run the check on the current inputs",
+          ("test_vkit_change_stales_evidence_but_keeps_the_approval", "test_definition_change_still_requires_reaccept")),
+    Doubt("missing", "block", "run the check to produce evidence",
+          ("test_accepting_a_shrunk_manifest_rebinds_the_inventory", "test_removing_a_failing_check_cannot_reach_ready")),
+    Doubt("blocked", "block", "clear the reported blocker and re-run",
+          ("test_a_blocked_formal_component_blocks_the_gate", "test_a_cleared_formal_component_reaches_ready")),
+    Doubt("uncovered_change", "scope", "extend coverage or declare does_not_establish",
+          ("test_uncovered_requested_paths_scope_the_ready_verdict", "test_producer_identity_tracks_the_gate_not_the_console")),
 )
 
 
@@ -288,7 +298,7 @@ def gate(
         ghosts = [{"id": rid, "state": "obligation_removed", "run_id": None} for rid in removed]
     if not states and not required and not ghosts:
         verdict, reason = Verdict.BLOCKED, "no checks are registered"
-    elif obligations is None and states:
+    elif obligations is None and (states or required):
         verdict, reason = Verdict.REJECTED, "obligation_inventory: no accepted inventory binds this manifest"
     elif ghosts:
         verdict, reason = Verdict.REJECTED, ("obligation_removed: " + ", ".join(g["id"] for g in ghosts)
@@ -297,23 +307,24 @@ def gate(
         state.freshness is Freshness.FRESH_FAIL
         for state in (*states, *required)
     ):
-        verdict, reason = Verdict.REJECTED, "a required check failed against the current inputs"
+        verdict, reason = Verdict.REJECTED, "fresh_fail: a required check failed against the current inputs"
     elif any(state.freshness is Freshness.NOT_APPROVED for state in (*states, *required)):
-        verdict, reason = Verdict.REJECTED, "a required check definition is not accepted"
+        verdict, reason = Verdict.REJECTED, "not_approved: a required check definition is not accepted"
     elif all(state.freshness is Freshness.FRESH_PASS for state in states) and all(
         state.freshness is Freshness.FRESH_PASS for state in required
     ):
         gaps = list(uncovered)
         if gaps:
-            verdict, reason = Verdict.READY_SCOPED, (f"ready, but {len(gaps)} requested paths are outside "
+            verdict, reason = Verdict.READY_SCOPED, (f"uncovered_change: ready, but {len(gaps)} requested paths are outside "
                                                      f"every check's inputs: {', '.join(gaps)}")
         else:
             verdict, reason = Verdict.READY, "every required check passed against the current inputs"
     else:
-        verdict, reason = (
-            Verdict.BLOCKED,
-            "some required checks have no passing evidence for the current inputs",
-        )
+        gap = "some required checks have no passing evidence for the current inputs"
+        stuck = {s.freshness for s in (*states, *required)}
+        reasons = {Freshness.FRESH_BLOCKED: f"fresh_blocked: {gap}", Freshness.BLOCKED: f"blocked: {gap}",
+                   Freshness.STALE: f"stale: {gap}", Freshness.MISSING: f"missing: {gap}"}
+        verdict, reason = Verdict.BLOCKED, next(reasons[fresh] for fresh in reasons if fresh in stuck)
     return {
         "verdict": verdict.value,
         "reason": reason,

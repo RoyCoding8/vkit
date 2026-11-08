@@ -41,7 +41,7 @@ def test_compact_discovery_exact_contract_and_invocation(make_project):
         assert not error and replay["tools"][0]["inputSchema"]["properties"]["wait_seconds"]["maximum"] == 60
 
         body, error = client.call("invoke", name="gate", arguments={})
-        assert not error and body["verdict"] == "BLOCKED"
+        assert not error and body["verdict"] == "REJECTED"
         raw = client.request("tools/call", {"name": "gate", "arguments": {}})
         assert raw["isError"] and json.loads(raw["content"][0]["text"]) == {
             "error": "unknown or unavailable tool"}
@@ -59,7 +59,7 @@ def test_live_category_precedence_preserves_individual_choices(make_project, exp
     project = _project(make_project)
     client = McpClient(project, exposure=exposure)
     try:
-        assert client.call("gate")[0]["verdict"] == "BLOCKED"
+        assert client.call("gate")[0]["verdict"] == "REJECTED"
         assert vkit(project, "tools", "--disable", "status")[0] == 0
         assert vkit(project, "tools", "--disable-category", "repository")[0] == 0
         body, error = client.call("help")
@@ -73,7 +73,7 @@ def test_live_category_precedence_preserves_individual_choices(make_project, exp
             listed = client.request("tools/list", {})["tools"]
             assert not {"gate", "status", "run_cancel"} & {tool["name"] for tool in listed}
         assert vkit(project, "tools", "--enable-category", "repository")[0] == 0
-        assert client.call("gate")[0]["verdict"] == "BLOCKED"
+        assert client.call("gate")[0]["verdict"] == "REJECTED"
         assert client.call("status") == ({"error": "unknown or unavailable tool"}, True)
         assert load_settings(open_project(project)).disabled_tools == ("status",)
     finally:

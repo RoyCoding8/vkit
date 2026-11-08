@@ -35,7 +35,7 @@ A totals function passes its tests. An edit makes `10 + 20 + 12` return `45`, bu
 - Compare two finite state models and get a shortest sequence of actions that distinguishes their behavior.
 - Check Lean theorems, verify the supported Verus resource-ledger contracts, and run bounded Kani checks of captured Rust models.
 - Run checks and review logs, evidence freshness, feature coverage, and proposals across remembered repositories in the local web console.
-- Check merge candidates against the target branch's accepted requirements in [protected CI](examples/protected-ci/README.md).
+- Check merge candidates against the target branch's accepted requirements in [protected CI](examples/protected-ci/README.md) (`vkit gate --candidate --target`) — the only real authority boundary; the local gate and evidence ledger are the advisory in-flight loop.
 
 ## Get started
 
@@ -73,7 +73,7 @@ Use this as your MCP client's stdio-server launch command:
 uv run vkit mcp serve --project /path/to/your-repository
 ```
 
-The [MCP guide](docs/tool-discovery.md) covers client configuration, tool discovery, and availability settings. An optional [Claude Code plugin](plugin/) adds workflow guidance and hooks.
+The [MCP guide](docs/tool-discovery.md) covers client configuration, tool discovery, and availability settings. An optional [Claude Code plugin](plugin/) adds workflow guidance and a Stop/SubagentStop hook that is advisory with one forced retry (it blocks one stop, then allows; it enforces `not_approved` and `obligation_removed`, and it fails closed on errors).
 
 ## Verification methods
 

@@ -42,12 +42,16 @@ def _record_bypass(project: str) -> None:
         pass
 
 
+def _fail_closed(event: str, exc: Exception) -> dict[str, Any]:
+    detail = f"vkit hook could not read the gate: {type(exc).__name__}: {exc}"
+    return {"systemMessage": detail} if event == "SessionStart" else {"decision": "block", "reason": detail}
+
+
 def handle(event: str, payload: dict[str, Any], project: str) -> dict[str, Any]:
     try:
         return _handle(event, payload, project)
     except Exception as exc:  # noqa: BLE001
-        detail = f"vkit hook could not read the gate: {type(exc).__name__}: {exc}"
-        return {"systemMessage": detail} if event == "SessionStart" else {"decision": "block", "reason": detail}
+        return _fail_closed(event, exc)
 
 
 def _handle(event: str, payload: dict[str, Any], project: str) -> dict[str, Any]:
@@ -73,8 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.loads(sys.stdin.read() or "{}")
         response = handle(args.event, payload, args.project)
     except Exception as exc:  # noqa: BLE001
-        detail = f"vkit hook could not read the gate: {type(exc).__name__}: {exc}"
-        response = {"systemMessage": detail} if args.event == "SessionStart" else {"decision": "block", "reason": detail}
+        response = _fail_closed(args.event, exc)
     print(json.dumps(response))
     return 0
 

@@ -175,10 +175,10 @@ The [protected CI gate](../examples/protected-ci/README.md) loads requirements f
 The local gate and evidence ledger run on a host the operator already trusts. They do not protect against:
 
 - **Shell-level tampering.** Anyone with shell access can edit or delete evidence, approvals, or check definitions directly in VKit storage. Receipt hashes provide integrity relative to trusted local state; they do not authenticate an external writer. Read-time revalidation rejects receipts that are inconsistent with their run record, not a consistently forged record and flags.
-- **Self-approval.** `vkit accept --yes` records acceptance without a human decision.
-- **Deletion of checks.** Removing a check definition removes its obligations from the local gate.
+- **Self-approval.** `vkit accept --yes` is refused unless the operator environment sets `VKIT_ALLOW_YES`; an operator-authorized `--yes` in the same shell remains CI-gate scope.
+- **Deletion of checks.** Removing a check definition is detected and `REJECTED` by the local gate as `obligation_removed`; hiding it requires shell-level store edits, which remain CI-gate scope.
 
-These cases are [protected CI gate](../examples/protected-ci/README.md) scope: the gate loads requirements from the exact target commit and checks the combined candidate in a store outside candidate execution, so candidate-side tampering, self-approval, and check deletion cannot satisfy it. Until the Phase-0 authority fixes land, the local ledger stays advisory. The Stop/SubagentStop hook is likewise advisory with one forced retry: it blocks one stop, then allows it; it does not enforce `not_approved` and fails open on errors.
+These cases are [protected CI gate](../examples/protected-ci/README.md) scope: the gate loads requirements from the exact target commit and checks the combined candidate in a store outside candidate execution, so candidate-side tampering, self-approval, and check deletion cannot satisfy it. The local ledger stays advisory. The Stop/SubagentStop hook is likewise advisory with one forced retry: it blocks one stop, then allows it; it enforces `not_approved` and `obligation_removed`, and it fails closed on errors.
 
 ## Foundations
 

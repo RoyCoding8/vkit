@@ -105,6 +105,7 @@ def _producer_modules() -> dict[str, Path]:
             pkg = name
             path = path / "__init__.py"
         else:
+            pkg = name.rsplit(".", 1)[0]
             path = path.with_suffix(".py")
         if not path.is_file():
             continue

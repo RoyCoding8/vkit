@@ -412,6 +412,67 @@ def _accept_proposal(args: argparse.Namespace, ctx: query.Context) -> int:
     return EXIT_OK
 
 
+_LIST_FIELDS = ("required_scenarios", "required_tests", "scenarios", "inputs")
+
+
+def _def_change(old: Any, new: Any) -> tuple[str, list[str]]:
+    if not isinstance(old, dict):
+        return "incomparable", ["prior accepted definition not recorded"]
+    changes = [(key, old.get(key), new.get(key)) for key in sorted(set(old) | set(new))
+               if old.get(key) != new.get(key)]
+    if not changes:
+        return "unchanged", []
+    stronger = weaker = False
+    lines = []
+    for key, was, current in changes:
+        lines.append(f"{key}: {was!r} -> {current!r}")
+        if key in _LIST_FIELDS:
+            was, current = was or [], current or []
+            if not set(was) <= set(current):
+                weaker = True
+            if not set(current) <= set(was):
+                stronger = True
+        elif key == "timeout_seconds":
+            if was is None or current is None:
+                stronger = weaker = True
+            else:
+                stronger = stronger or current < was
+                weaker = weaker or current > was
+        else:
+            stronger = weaker = True
+    label = ("strengthening" if stronger and not weaker else
+             "weakening" if weaker and not stronger else "incomparable")
+    return label, lines
+
+
+def _accept_card(manifest, identities, pending, formal_records, approved, snapshot) -> list[str]:
+    lines = []
+    for check_id in pending:
+        entry = manifest.entries[check_id]
+        prior = next((r for r in approved.values()
+                      if r.get("kind") == "check_definition" and r.get("check_id") == check_id), None)
+        label, changes = _def_change((prior or {}).get("definition"), entry)
+        lines.append(f"{check_id} ({manifest.digest(check_id)[:12]}): definition change vs prior acceptance: {label}")
+        lines += [f"  {change}" for change in changes]
+        subject = entry.get("subject") or {}
+        bound = (f"bound to {len(subject['paths'])} path(s)" if subject.get("paths")
+                 else "NOT BOUND - a passing result may be vacuous")
+        lines.append(f"  null-subject sentinel: {bound} [pending 1.0]")
+        lines.append("  inputs: " + ", ".join(entry.get("inputs", ())))
+        lines.append("  checker identity: " + json.dumps(identities[check_id], sort_keys=True))
+    for component_id, (record, execution) in formal_records.items():
+        component = manifest.require_component(component_id)
+        lines += [f"formal component {component_id} ({component.digest[:12]})",
+                  json.dumps(component.to_json(), indent=2),
+                  "coverage: required_api; assurance: trusted_engine; method: verus_source",
+                  "checker identity: " + json.dumps(execution, sort_keys=True)]
+    sets = [snapshot.inputs(check.inputs) for check in manifest.checks.values()]
+    uncovered = [f for f in snapshot.files if not any(s.covers(f) for s in sets)]
+    lines.append("uncovered paths: " + (", ".join(uncovered[:20])
+                + (f" (+{len(uncovered) - 20} more)" if len(uncovered) > 20 else "") if uncovered else "none"))
+    return lines
+
+
 def cmd_accept(args: argparse.Namespace) -> int:
     ctx = _context(args)
     if args.proposal:
@@ -447,17 +508,9 @@ def cmd_accept(args: argparse.Namespace) -> int:
                   "checker_sha256": canonical_digest(execution["semantic"])}
         if any(approved.get(component.digest, {}).get(key) != value for key, value in record.items()):
             formal_records[component_id] = (record, execution["semantic"])
-    lines = []
-    for check_id in pending:
-        lines.append(f"{check_id} ({manifest.digest(check_id)[:12]})")
-        lines.append(json.dumps(manifest.entries[check_id], indent=2))
-        lines.append("checker identity: " + json.dumps(identities[check_id], sort_keys=True))
-    for component_id, (record, execution) in formal_records.items():
-        component = manifest.require_component(component_id)
-        lines += [f"formal component {component_id} ({component.digest[:12]})",
-                  json.dumps(component.to_json(), indent=2),
-                  "coverage: required_api; assurance: trusted_engine; method: verus_source",
-                  "checker identity: " + json.dumps(execution, sort_keys=True)]
+    from .inputs import Snapshot
+
+    lines = _accept_card(manifest, identities, pending, formal_records, approved, Snapshot(ctx.project))
     inventory = {"kind": "obligation_inventory", "accepted_at": now(),
                  "checks": {c: manifest.digest(c) for c in sorted(manifest.checks)},
                  "formal_required": {c: manifest.require_component(c).digest for c in sorted(manifest.components)
@@ -479,7 +532,7 @@ def cmd_accept(args: argparse.Namespace) -> int:
         print("nothing accepted")
         return EXIT_BLOCKED
     records = {manifest.digest(c): {"kind": "check_definition", "check_id": c, "accepted_at": now(),
-                                    "backend": identities[c]} for c in pending}
+                                    "backend": identities[c], "definition": manifest.entries[c]} for c in pending}
     records.update({manifest.require_component(c).digest: {**entry, "accepted_at": now()}
                     for c, (entry, _) in formal_records.items()})
     records["__inventory__"] = inventory

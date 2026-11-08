@@ -144,10 +144,10 @@ def test_uncovered_requested_paths_scope_the_ready_verdict(make_project):
 
 def test_every_doubt_has_a_clearing_action():
     for doubt in state.DOUBTS:
-        assert doubt.effect in ("reject", "block", "scope") and doubt.clearing
+        assert doubt.effect in ("reject", "block", "scope") and doubt.clearing and doubt.falsifier
     covered = {d.field for d in state.DOUBTS}
     assert {f.value for f in state.Freshness} - {"fresh_pass"} <= covered
-    assert {"obligation_removed", "uncovered_change", "dependency_closure_unobserved"} <= covered
+    assert {"obligation_removed", "uncovered_change"} <= covered
 
 
 def test_an_added_unaccepted_check_is_rejected(make_project):
@@ -163,3 +163,91 @@ def test_an_added_unaccepted_check_is_rejected(make_project):
                    scenario_check("extra", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
     out = query.status(query.open_context(project))
     assert out["gate"]["verdict"] == "REJECTED"
+
+
+def test_a_failing_check_rejects_the_gate(make_project):
+    from vkit import query
+
+    project = make_project({"ok.py": DRIVER + 'report([("ok", False, "nope")])\n'},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok")
+    out = query.status(query.open_context(project))
+    assert out["gate"]["verdict"] == "REJECTED" and "fresh_fail:" in out["gate"]["reason"]
+    assert out["checks"][0]["state"] == "fresh_fail"
+
+
+def test_fixing_the_subject_clears_a_fresh_fail(make_project):
+    from vkit import query
+
+    project = make_project({"ok.py": DRIVER + 'report([("ok", False, "nope")])\n'},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok")
+    (project / "ok.py").write_text(PASSES, encoding="utf-8")
+    vkit(project, "check", "run", "--check", "ok")
+    assert query.status(query.open_context(project))["gate"]["verdict"] == "READY"
+
+
+def test_a_blocked_run_blocks_the_gate():
+    from types import SimpleNamespace
+
+    states = [SimpleNamespace(check=SimpleNamespace(id="c"), freshness=state.Freshness.FRESH_BLOCKED, current=None)]
+    out = state.gate(states, obligations={"checks": {"c": "d"}, "formal_required": {}})
+    assert out["verdict"] == "BLOCKED" and out["reason"].startswith("fresh_blocked:")
+
+
+def test_a_cleared_run_reaches_ready():
+    from types import SimpleNamespace
+
+    states = [SimpleNamespace(check=SimpleNamespace(id="c"), freshness=state.Freshness.FRESH_PASS, current=None)]
+    out = state.gate(states, obligations={"checks": {"c": "d"}, "formal_required": {}})
+    assert out["verdict"] == "READY"
+
+
+def test_a_blocked_formal_component_blocks_the_gate():
+    from types import SimpleNamespace
+
+    formal = [SimpleNamespace(component=SimpleNamespace(id="f", digest="d"),
+                              freshness=state.Freshness.BLOCKED, required=True, current=None)]
+    out = state.gate([], formal, obligations={"checks": {}, "formal_required": {"f": "d"}})
+    assert out["verdict"] == "BLOCKED" and out["reason"].startswith("blocked:")
+
+
+def test_a_cleared_formal_component_reaches_ready():
+    from types import SimpleNamespace
+
+    formal = [SimpleNamespace(component=SimpleNamespace(id="f", digest="d"),
+                              freshness=state.Freshness.FRESH_PASS, required=True, current=None)]
+    out = state.gate([], formal, obligations={"checks": {}, "formal_required": {"f": "d"}})
+    assert out["verdict"] == "READY"
+
+
+def test_a_formal_only_manifest_without_an_inventory_is_rejected():
+    from types import SimpleNamespace
+
+    formal = [SimpleNamespace(component=SimpleNamespace(id="alloc", digest="d"),
+                              freshness=state.Freshness.FRESH_PASS, required=True, current=None)]
+    out = state.gate([], formal)
+    assert out["verdict"] == "REJECTED" and "obligation_inventory:" in out["reason"]
+
+
+def test_registry_falsifiers_name_real_tests():
+    import inspect
+    import re
+    import sys
+
+    import test_cli_authority
+    import test_evidence_identity
+
+    modules = (sys.modules[__name__], test_cli_authority, test_evidence_identity)
+    registry = {"test_registry_falsifiers_name_real_tests", "test_every_doubt_has_a_clearing_action"}
+    bundles = []
+    for doubt in state.DOUBTS:
+        mutant, honest = doubt.falsifier
+        assert mutant != honest and not {mutant, honest} & registry, doubt.field
+        for name in doubt.falsifier:
+            assert any(callable(getattr(m, name, None)) for m in modules), doubt.field
+        bundles.append(doubt.falsifier)
+    assert len(set(bundles)) == len(bundles)
+    tokens = set(re.findall(r'"([a-z_]+): ', inspect.getsource(state.gate)))
+    fields = [doubt.field for doubt in state.DOUBTS]
+    assert len(set(fields)) == len(fields) and tokens == set(fields)

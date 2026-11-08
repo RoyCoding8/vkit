@@ -331,7 +331,7 @@ def test_formal_setup_failure_is_a_blocked_status_and_doctor_finding(tmp_path, m
     import vkit.query as query
     monkeypatch.setattr(query, "_resolve_execution", unavailable)
     result = status(context)
-    assert result["gate"]["verdict"] == "BLOCKED"
+    assert result["gate"]["verdict"] == "REJECTED"
     assert result["formal"][0]["state"] == "blocked"
     checked = doctor(context)
     assert checked["ok"] is False

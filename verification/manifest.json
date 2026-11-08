@@ -204,7 +204,7 @@
         "tests/test_mcp.py::test_an_agent_runs_waits_reads_and_exports_durable_check_evidence",
         "tests/test_mcp.py::test_a_request_with_a_command_or_unknown_field_is_refused",
         "tests/test_plugin.py::test_stop_is_held_while_a_check_is_stale_and_released_when_ready",
-        "tests/test_plugin.py::test_stop_is_not_held_for_evidence_the_agent_cannot_produce",
+        "tests/test_plugin.py::test_stop_is_held_until_unaccepted_definitions_are_authorized",
         "tests/test_proposals.py::test_an_agent_proposes_a_rule_and_only_acceptance_makes_it_run",
         "tests/test_static.py::test_only_findings_outside_the_pinned_baseline_fail",
         "tests/test_source_hygiene.py::test_source_describes_what_the_code_does_now_not_how_it_got_here",
@@ -214,7 +214,7 @@
         "tests/test_ci_gate.py::test_protected_profile_rejects_candidate_owned_checker",
         "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[True-True-True]",
         "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[False-True-False]",
-        "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[True-False-False]",
+        "tests/test_plugin.py::test_formal_stop_observes_required_policy_and_acceptance[True-False-True]",
         "tests/test_lifecycle.py::test_runtime_observations_cover_contention_concurrent_attempts_and_recovery"
       ],
       "runner": {

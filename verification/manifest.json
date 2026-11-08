@@ -329,7 +329,7 @@
       "toolchain": {
         "tool": "tlc",
         "version": "2026.11.06.222357",
-        "jar_sha256": "c57d4d7bbee3ed2c89c32cb9c60cac728f751e80e2570bc4b7368ae39291fc21"
+        "jar_sha256": "e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f"
       },
       "prerequisites": [
         {

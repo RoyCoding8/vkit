@@ -35,6 +35,8 @@ jobs:
     name: Lean and TLC evidence
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      VKIT_ALLOW_YES: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

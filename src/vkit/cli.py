@@ -431,8 +431,7 @@ def cmd_accept(args: argparse.Namespace) -> int:
     from .evidence import backend_identity
 
     identities = {c: backend_identity(manifest.require(c)) for c in wanted}
-    pending = [c for c in wanted if approved.get(manifest.digest(c), {}).get("kind") != "check_definition"
-               or approved.get(manifest.digest(c), {}).get("backend") != identities[c]]
+    pending = [c for c in wanted if approved.get(manifest.digest(c), {}).get("kind") != "check_definition"]
     from .formal.verus import ExecutionSetupError, resolve_execution
     from .inputs import canonical_digest
 

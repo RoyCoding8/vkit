@@ -177,10 +177,7 @@ def check_states(
         )["job_id"]
         current = store.evidence(check_id, key)
         last = store.latest(check_id)
-        if (
-            approved.get(digests[check_id], {}).get("kind") != "check_definition"
-            or approved[digests[check_id]].get("backend") != backend
-        ):
+        if approved.get(digests[check_id], {}).get("kind") != "check_definition":
             freshness = Freshness.NOT_APPROVED
         elif current is not None:
             freshness = _FRESH[current["result"]]

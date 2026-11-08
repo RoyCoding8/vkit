@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 import shutil
@@ -83,50 +84,50 @@ def _artifact_names(directory: Path) -> set[str]:
     return {name for name in names if name not in _UNSEALED and not name.startswith(("snapshot/", "target-snapshot/", "replay/"))}
 
 
+_PRODUCER_ROOTS = (
+    "budgets", "certification", "change_analysis", "change_service", "ci", "claim_acceptance", "claimkind",
+    "container", "evidence", "formal", "inputs", "intent", "job", "jobs", "manifest", "outcome", "proc",
+    "query", "requests", "replay_assets", "runner", "schemas", "state", "store", "verifiers", "witness",
+)
+
+
+def _producer_modules() -> dict[str, Path]:
+    package = Path(__file__).parent
+    found: dict[str, Path] = {}
+    pending = [(f"{__package__}.{name}", f"{__package__}.{name}") for name in _PRODUCER_ROOTS]
+    while pending:
+        name, pkg = pending.pop()
+        if name in found or not name.startswith(f"{__package__}"):
+            continue
+        relative = name[len(f"{__package__}."):] if name != f"{__package__}" else ""
+        path = package.joinpath(*relative.split(".")) if relative else package
+        if path.is_dir():
+            pkg = name
+            path = path / "__init__.py"
+        else:
+            path = path.with_suffix(".py")
+        if not path.is_file():
+            continue
+        found[name] = path
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                pending.extend((alias.name, alias.name) for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                base = pkg
+                for _ in range(node.level - 1):
+                    base = base.rsplit(".", 1)[0]
+                if node.level:
+                    target = f"{base}.{node.module}" if node.module else base
+                else:
+                    target = node.module or ""
+                pending.append((target, target))
+    return found
+
+
 def policy_identity() -> dict[str, str]:
     package = Path(__file__).parent
-    files = [
-        package / name
-        for name in (
-            "runner.py",
-            "jobs.py",
-            "evidence.py",
-            "replay_assets.py",
-            "inputs.py",
-            "manifest.py",
-            "outcome.py",
-            "state.py",
-            "store.py",
-            "job.py",
-            "requests.py",
-            "proc.py",
-            "schemas.py",
-            "budgets.py",
-            "claimkind.py",
-            "container.py",
-            "ci.py",
-            "cli.py",
-            "paths.py",
-            "certification.py",
-            "intent.py",
-            "paired.py",
-            "change_analysis.py",
-            "paired_profiles.py",
-            "rust_source.py",
-            "rust_relational.py",
-            "kani_result.py",
-            "kani_toolchain.py",
-            "kani_execution.py",
-            "change_methods.py",
-            "change_service.py",
-            "claim_acceptance.py",
-            "witness.py",
-            "nowindow.py",
-        )
-    ]
-    files += [
-        p for p in (package / "verifiers").glob("*") if p.suffix in (".py", ".js")
-    ]
+    files = list(_producer_modules().values())
+    files += [p for p in (package / "verifiers").glob("*") if p.suffix in (".py", ".js")]
     files += list((package / "formal").rglob("*.py"))
     from .schemas import _schema_dir
 

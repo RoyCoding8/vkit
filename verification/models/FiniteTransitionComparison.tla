@@ -14,8 +14,8 @@ vars == <<refInitial, candInitial, refAssumptions, candAssumptions,
           refRules, candRules>>
 
 Init ==
-    /\ refInitial \in SUBSET States \ {{}}
-    /\ candInitial \in SUBSET States \ {{}}
+    /\ refInitial \in (SUBSET States) \ {{}}
+    /\ candInitial \in (SUBSET States) \ {{}}
     /\ refAssumptions \in SUBSET Contexts
     /\ candAssumptions \in SUBSET Contexts
     /\ refRules \in SUBSET Edges
@@ -92,8 +92,8 @@ ModelId(initial, assumptions, rules) ==
         64 * (InitialMask(initial) - 1)
 
 TypeOK ==
-    /\ refInitial \in SUBSET States \ {{}}
-    /\ candInitial \in SUBSET States \ {{}}
+    /\ refInitial \in (SUBSET States) \ {{}}
+    /\ candInitial \in (SUBSET States) \ {{}}
     /\ refAssumptions \in SUBSET Contexts
     /\ candAssumptions \in SUBSET Contexts
     /\ refRules \in SUBSET Edges

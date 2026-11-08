@@ -28,7 +28,7 @@ from vkit.store import Store  # noqa: E402
 
 FIXTURES = ROOT / "examples" / "formal-ci"
 LEAN_TOOLCHAIN = ROOT / "examples" / "lean-proof" / "lean-toolchain"
-TLC_VERSION = "2026.11.02.164701"
+TLC_VERSION = "2026.11.06.222357"
 RESULT_EXIT = {"PASS": 0, "FAIL": 1, "BLOCKED": 3}
 
 

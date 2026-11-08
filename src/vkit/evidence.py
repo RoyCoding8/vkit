@@ -163,7 +163,8 @@ def backend_identity(check) -> dict[str, Any]:
     for name in candidates:
         name = name.replace("{{python}}", sys.executable)
         resolved = shutil.which(name) or (name if Path(name).is_file() else None)
-        tools[name] = (
+        key = os.path.normcase(str(Path(resolved).resolve()) if resolved else str(Path(name)))
+        tools[key] = (
             None
             if resolved is None
             else {

@@ -95,7 +95,8 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
         features = [f for f in features if ids & set(f["covered_by"])
                     or any(matches(p, e) for p in wanted for e in f["entry_points"])]
     inventory = approved_inventory(ctx.store.approved()) if ctx.manifest is not None else None
-    gate_out = (gate(all_states, all_formal, obligations=inventory) if ctx.manifest is not None else
+    unmapped = [p for p in wanted if not any(s.inputs.covers(p) for s in all_states)]
+    gate_out = (gate(all_states, all_formal, obligations=inventory, uncovered=unmapped) if ctx.manifest is not None else
                 {"verdict": "BLOCKED", "reason": ctx.manifest_error, "checks": []})
     ghost_shape = {"description": "", "kind": "removed_obligation", "category": "source_verification",
                    "assurance": "empirical", "model_scope": "", "assumptions": [], "establishes": [],
@@ -110,7 +111,7 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
         "paths": wanted,
         "checks": [s.to_json() for s in shown] + ghosts,
         "formal": [s.to_json() for s in all_formal],
-        "unmapped_paths": [p for p in wanted if not any(s.inputs.covers(p) for s in all_states)],
+        "unmapped_paths": unmapped,
         "feature_paths_unmapped": [p for p in wanted if not any(matches(p, e) for f in features
                                                                 for e in f["entry_points"])],
         "features": features,

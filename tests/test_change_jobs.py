@@ -131,7 +131,7 @@ def test_shadow_pass_does_not_satisfy_same_named_required_check(tmp_path):
     record = execute(project, queued["run_id"], store=store)
     assert record["outcome"]["result"] == "PASS", record["outcome"]
     assert query.status(query.open_context(project.root))["gate"] == before
-    assert before["verdict"] == "BLOCKED"
+    assert before["verdict"] == "REJECTED"
     assert store.latest(subject_id) is None
     assert store.latest_for("formal_goal", subject_id) is None
     assert store.latest_for("change_certification", subject_id)["run_id"] == record["run_id"]

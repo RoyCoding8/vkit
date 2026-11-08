@@ -267,7 +267,7 @@ def test_required_formal_goal_blocks_a_passing_registered_check_when_unapproved(
     result = status(open_context(project))
     assert result["checks"][0]["state"] == "fresh_pass"
     assert result["formal"][0]["state"] == "not_approved"
-    assert result["gate"]["verdict"] == "BLOCKED"
+    assert result["gate"]["verdict"] == "REJECTED"
     assert result["gate"]["formal"] == [{"id": "allocation", "state": "not_approved",
                                             "required": True, "run_id": None}]
 

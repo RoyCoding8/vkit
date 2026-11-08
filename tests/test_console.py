@@ -356,7 +356,7 @@ def test_console_check_run_does_not_accept_an_unapproved_check(make_project):
                 run["outcome"]["reason"]) == (200, False, "done", "BLOCKED", "not_approved")
         status, raw = _get(port, "/api/status")
         check = json.loads(raw)
-        assert status == 200 and check["gate"]["verdict"] == "BLOCKED"
+        assert status == 200 and check["gate"]["verdict"] == "REJECTED"
         assert check["checks"][0]["state"] == "not_approved"
 
 

@@ -29,8 +29,30 @@ class Freshness(str, enum.Enum):
 
 class Verdict(str, enum.Enum):
     READY = "READY"
+    READY_SCOPED = "READY_SCOPED"
     REJECTED = "REJECTED"
     BLOCKED = "BLOCKED"
+
+
+@dataclass(frozen=True)
+class Doubt:
+    field: str
+    effect: str
+    clearing: str
+
+
+DOUBTS = (
+    Doubt("fresh_fail", "reject", "fix the subject until the check passes"),
+    Doubt("not_approved", "reject", "authority revision: accept the definition"),
+    Doubt("obligation_removed", "reject", "authority revision: re-accept the manifest"),
+    Doubt("fresh_blocked", "block", "clear the run blocker and re-run"),
+    Doubt("stale", "block", "re-run the check on the current inputs"),
+    Doubt("missing", "block", "run the check to produce evidence"),
+    Doubt("blocked", "block", "clear the reported blocker and re-run"),
+    Doubt("uncovered_change", "scope", "extend coverage or declare does_not_establish"),
+    Doubt("dependency_closure_unobserved", "scope", "declare the inputs or observe the closure"),
+    Doubt("assurance_scope", "scope", "escalate to a stronger backend or narrow the claim"),
+)
 
 
 _FRESH = {
@@ -253,6 +275,7 @@ def needs_run(state: CheckState | FormalState) -> bool:
 def gate(
     states: Iterable[CheckState], formal: Iterable[FormalState] = (),
     obligations: dict[str, Any] | None = None,
+    uncovered: Iterable[str] = (),
 ) -> dict[str, Any]:
     states = list(states)
     formal = list(formal)
@@ -275,10 +298,17 @@ def gate(
         for state in (*states, *required)
     ):
         verdict, reason = Verdict.REJECTED, "a required check failed against the current inputs"
+    elif any(state.freshness is Freshness.NOT_APPROVED for state in (*states, *required)):
+        verdict, reason = Verdict.REJECTED, "a required check definition is not accepted"
     elif all(state.freshness is Freshness.FRESH_PASS for state in states) and all(
         state.freshness is Freshness.FRESH_PASS for state in required
     ):
-        verdict, reason = Verdict.READY, "every required check passed against the current inputs"
+        gaps = list(uncovered)
+        if gaps:
+            verdict, reason = Verdict.READY_SCOPED, (f"ready, but {len(gaps)} requested paths are outside "
+                                                     f"every check's inputs: {', '.join(gaps)}")
+        else:
+            verdict, reason = Verdict.READY, "every required check passed against the current inputs"
     else:
         verdict, reason = (
             Verdict.BLOCKED,

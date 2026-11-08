@@ -121,3 +121,45 @@ def test_unbinding_a_required_formal_component_needs_authority():
                               freshness=state.Freshness.FRESH_PASS, required=False, current=None)]
     out = state.gate([], formal, obligations={"checks": {}, "formal_required": {"alloc": "d"}})
     assert out["verdict"] != "READY" and "alloc" in out["reason"]
+
+
+def test_unaccepted_definitions_are_rejected_not_merely_blocked(make_project):
+    from vkit import query
+
+    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])],
+                           accept=False)
+    out = query.status(query.open_context(project))
+    assert out["gate"]["verdict"] == "REJECTED"
+
+
+def test_uncovered_requested_paths_scope_the_ready_verdict(make_project):
+    from vkit import query
+
+    project = make_project({"ok.py": PASSES, "README.md": "hi"},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok")
+    out = query.status(query.open_context(project), paths=["README.md"])
+    assert out["gate"]["verdict"] == "READY_SCOPED" and "README.md" in out["gate"]["reason"]
+
+
+def test_every_doubt_has_a_clearing_action():
+    for doubt in state.DOUBTS:
+        assert doubt.effect in ("reject", "block", "scope") and doubt.clearing
+    covered = {d.field for d in state.DOUBTS}
+    assert {f.value for f in state.Freshness} - {"fresh_pass"} <= covered
+    assert {"obligation_removed", "uncovered_change", "dependency_closure_unobserved"} <= covered
+
+
+def test_an_added_unaccepted_check_is_rejected(make_project):
+    import json
+
+    from vkit import query
+
+    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok")
+    (project / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "description": "test project",
+        "checks": [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                   scenario_check("extra", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
+    out = query.status(query.open_context(project))
+    assert out["gate"]["verdict"] == "REJECTED"

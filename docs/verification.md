@@ -14,6 +14,7 @@ This reference covers formal components, change certification, model comparison,
 | Worker | Check actual tools, execute the required procedure and publish evidence. |
 | Receipt | Record obligations, scope, actual tool inventory and retained artifact hashes. |
 | Gate | Require intact passing evidence for the intended source and policy authority. |
+| Protected CI gate | `vkit gate --candidate --target`. Require target-owned accepted requirements over the freshly checked combined candidate. The only real authority boundary; the local ledger is the advisory in-flight loop. |
 
 CLI and MCP share the same job service, store and worker lifecycle. Formal requests use `schema_version: 2`. Their `claim.kind` must be `package`, and `claim.component` must name an accepted component. The request must include matching `claim.policy_sha256` and `claim.package_sha256` digests and select a candidate source. Requests cannot supply replacement formulas, checker commands or a smaller obligation set. Legacy `implements` goals and finite claims are rejected. Library finite preflight binds a request to a trusted target. It does not verify candidate behavior.
 
@@ -158,7 +159,7 @@ Each submission creates a Markdown file under the repository's shared Git direct
 
 A local gate is `READY` only when all registered checks and required formal components have intact current passing evidence. A failed empirical check can produce `REJECTED`; missing, stale or inconclusive evidence produces `BLOCKED`. Display filters cannot reduce requirements.
 
-The [protected CI gate](../examples/protected-ci/README.md) loads requirements from the exact target commit and freshly checks the combined candidate. It uses a private store outside candidate execution and imports neither local approvals nor branch receipts. Host workflow, installation, policy governance and merge enforcement must be protected separately.
+The [protected CI gate](../examples/protected-ci/README.md) loads requirements from the exact target commit and freshly checks the combined candidate. It uses a private store outside candidate execution and imports neither local approvals nor branch receipts. It is the only real authority boundary in VKit; the local gate and evidence ledger are the advisory in-flight loop. Host workflow, installation, policy governance and merge enforcement must be protected separately.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -168,6 +169,16 @@ The [protected CI gate](../examples/protected-ci/README.md) loads requirements f
 | `3` | BLOCKED. |
 | `4` | Internal error. |
 | `5` | Unavailable interface. |
+
+## What this does not protect against
+
+The local gate and evidence ledger run on a host the operator already trusts. They do not protect against:
+
+- **Shell-level tampering.** Anyone with shell access can edit or delete evidence, approvals, or check definitions directly in VKit storage. Receipt hashes provide integrity relative to trusted local state; they do not authenticate an external writer. Read-time revalidation rejects receipts that are inconsistent with their run record, not a consistently forged record and flags.
+- **Self-approval.** `vkit accept --yes` records acceptance without a human decision.
+- **Deletion of checks.** Removing a check definition removes its obligations from the local gate.
+
+These cases are [protected CI gate](../examples/protected-ci/README.md) scope: the gate loads requirements from the exact target commit and checks the combined candidate in a store outside candidate execution, so candidate-side tampering, self-approval, and check deletion cannot satisfy it. Until the Phase-0 authority fixes land, the local ledger stays advisory. The Stop/SubagentStop hook is likewise advisory with one forced retry: it blocks one stop, then allows it; it does not enforce `not_approved` and fails open on errors.
 
 ## Foundations
 

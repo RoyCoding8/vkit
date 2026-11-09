@@ -52,7 +52,7 @@ def test_stop_hook_fails_closed_when_the_gate_cannot_be_read(make_project, monke
 
     from vkit import query
 
-    def broken(*_args):
+    def broken(*_args, **_kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(query, "status", broken)
@@ -97,3 +97,28 @@ def test_formal_stop_observes_required_policy_and_acceptance(make_project, monke
         assert "decision" not in module.handle("Stop", {"stop_hook_active": True}, str(root))
     else:
         assert "decision" not in response
+
+
+def test_session_start_records_a_base_commit_and_stop_scopes_to_the_changed_paths(make_project):
+    from vkit.paths import open_project
+
+    project = make_project({"ok.py": PASSES, "README.md": "run lookup\n"},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok")
+    hook(project, "SessionStart", {})
+    assert (open_project(project).git_common_dir / "vkit" / "session_base.txt").is_file()
+    (project / "README.md").write_text("changed\n", encoding="utf-8")
+    response = hook(project, "Stop", {})
+    assert "decision" not in response
+    assert "READY_SCOPED" in response["systemMessage"] and "README.md" in response["systemMessage"]
+
+
+def test_stop_without_a_session_base_falls_back_to_the_full_gate_and_notes_it(make_project):
+    from vkit.paths import open_project
+
+    project = make_project({"ok.py": PASSES, "README.md": "run lookup\n"},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok")
+    assert hook(project, "Stop", {}) == {}
+    log = open_project(project).git_common_dir / "vkit" / "telemetry.jsonl"
+    assert "session_base_missing" in log.read_text(encoding="utf-8")

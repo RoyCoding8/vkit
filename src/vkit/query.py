@@ -6,7 +6,7 @@ import json
 import math
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -39,6 +39,7 @@ class Context:
     store: Store
     manifest: Manifest | None
     manifest_error: str | None
+    snapshot: Snapshot | None = None
 
     def require_manifest(self) -> Manifest:
         if self.manifest is None:
@@ -58,13 +59,13 @@ def open_context(path: str | Path) -> Context:
 def states(ctx: Context) -> list[CheckState]:
     if ctx.manifest is None:
         return []
-    return check_states(ctx.manifest, ctx.store, Snapshot(ctx.project))
+    return check_states(ctx.manifest, ctx.store, ctx.snapshot or Snapshot(ctx.project))
 
 
 def formal_states(ctx: Context) -> list[FormalState]:
     if ctx.manifest is None:
         return []
-    return _formal_states(ctx.manifest, ctx.store, Snapshot(ctx.project))
+    return _formal_states(ctx.manifest, ctx.store, ctx.snapshot or Snapshot(ctx.project))
 
 def _features(ctx: Context, by_id: dict[str, CheckState]) -> tuple[list[dict[str, Any]], str | None]:
     try:
@@ -82,12 +83,23 @@ def _features(ctx: Context, by_id: dict[str, CheckState]) -> tuple[list[dict[str
     return rows, None
 
 
-def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
+def status(ctx: Context, paths: Iterable[str] = (), session: bool = False) -> dict[str, Any]:
     """Every check's freshness and the gate; narrowed to checks reading `paths` when given."""
+    wanted = [p.replace("\\", "/") for p in paths]
+    candidates = None
+    if session and wanted and ctx.manifest is not None:
+        candidates = {i: c for i, c in ctx.manifest.checks.items()
+                      if not c.inputs or any(matches(p, d) for p in wanted for d in c.inputs)}
+        declared = [d for c in candidates.values() for d in c.inputs]
+        full = Snapshot(ctx.project)
+        snapshot = full if not declared else Snapshot(ctx.project, sorted(
+            {f for f in full.files if any(matches(f, d) for d in declared)}))
+        ctx = replace(ctx, manifest=replace(ctx.manifest, checks=candidates), snapshot=snapshot)
+    if ctx.manifest is not None and ctx.snapshot is None:
+        ctx = replace(ctx, snapshot=Snapshot(ctx.project))
     all_states = states(ctx)
     all_formal = formal_states(ctx)
     by_id = {s.check.id: s for s in all_states}
-    wanted = [p.replace("\\", "/") for p in paths]
     shown = [s for s in all_states if not wanted or any(s.inputs.covers(p) for p in wanted)]
     features, feature_error = _features(ctx, by_id)
     if wanted:
@@ -95,9 +107,17 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
         features = [f for f in features if ids & set(f["covered_by"])
                     or any(matches(p, e) for p in wanted for e in f["entry_points"])]
     inventory = approved_inventory(ctx.store.approved()) if ctx.manifest is not None else None
+    if candidates is not None and inventory is not None:
+        inventory = {**inventory, "checks": {k: v for k, v in inventory["checks"].items() if k in candidates}}
     unmapped = [p for p in wanted if not any(s.inputs.covers(p) for s in all_states)]
-    gate_out = (gate(all_states, all_formal, obligations=inventory, uncovered=unmapped) if ctx.manifest is not None else
+    closure = {p for p in wanted if any(p in {n for n, _ in s.inputs.files} for s in all_states)}
+    gate_out = (gate(all_states, all_formal, obligations=inventory, uncovered=[p for p in wanted if p not in closure])
+                if ctx.manifest is not None else
                 {"verdict": "BLOCKED", "reason": ctx.manifest_error, "checks": []})
+    if candidates is not None and not all_states and not all_formal and gate_out["reason"] == "no checks are registered":
+        gate_out = {"verdict": "READY_SCOPED", "checks": [], "formal": [],
+                    "reason": f"uncovered_change: {len(wanted)} changed path(s) are outside every check's inputs: "
+                              f"{', '.join(wanted)}"}
     ghost_shape = {"description": "", "kind": "removed_obligation", "category": "source_verification",
                    "assurance": "empirical", "model_scope": "", "assumptions": [], "establishes": [],
                    "does_not_establish": [], "key": "", "inputs": {"scope": "", "declared": [], "unmatched": []},
@@ -112,6 +132,9 @@ def status(ctx: Context, paths: Iterable[str] = ()) -> dict[str, Any]:
         "checks": [s.to_json() for s in shown] + ghosts,
         "formal": [s.to_json() for s in all_formal],
         "unmapped_paths": unmapped,
+        "coverage_kinds": ({"closure": sorted(closure),
+                            "scope_claim": [p for p in wanted if p not in closure and p not in unmapped]}
+                           if wanted else {}),
         "feature_paths_unmapped": [p for p in wanted if not any(matches(p, e) for f in features
                                                                 for e in f["entry_points"])],
         "features": features,

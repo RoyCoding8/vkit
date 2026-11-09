@@ -337,3 +337,79 @@ def test_formal_setup_failure_is_a_blocked_status_and_doctor_finding(tmp_path, m
     assert checked["ok"] is False
     assert checked["findings"][-1]["kind"] == "formal_goal"
     assert "Docker or Verus unavailable" in checked["findings"][-1]["detail"]
+
+
+PASSES = DRIVER + 'report([("ok", True, "ok")])\n'
+GEN_DRIVER = DRIVER + 'report([("ok", open("generated/x.py", encoding="utf-8").read() == "y\\n", "gen")])\n'
+
+
+def gen_check():
+    return {"id": "gen", "kind": "scenario", "timeout_seconds": 60, "artifact": "result.json",
+            "command": ["{{python}}", "generated/check_gen.py", "{{run_dir}}/result.json"],
+            "required_scenarios": ["ok"], "inputs": ["generated/*"],
+            "subject": {"paths": ["generated/x.py"], "digest": None}, "claim_id": "gen"}
+
+
+def test_status_names_closure_and_scope_claim_coverage_for_requested_paths(make_project):
+    project = make_project({"ok.py": PASSES, "generated/x.py": "y\n", "generated/check_gen.py": GEN_DRIVER},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]), gen_check()])
+    vkit(project, "check", "run", "--needed")
+    (project / "generated" / "credentials").write_text("k\n", encoding="utf-8")
+    out = status(open_context(project), paths=["ok.py", "generated/credentials"])
+    assert out["gate"]["verdict"] == "READY_SCOPED"
+    assert out["coverage_kinds"] == {"closure": ["ok.py"], "scope_claim": ["generated/credentials"]}
+    assert out["unmapped_paths"] == []
+    closure = status(open_context(project), paths=["ok.py"])
+    assert closure["gate"]["verdict"] == "READY"
+    assert closure["coverage_kinds"] == {"closure": ["ok.py"], "scope_claim": []}
+
+
+def test_session_status_computes_only_checks_reading_the_changed_paths(make_project, monkeypatch):
+    from vkit import evidence
+
+    project = make_project({"ok.py": PASSES, "other.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                            scenario_check("other", "other.py", scenarios=["ok"], inputs=["other.py"])])
+    vkit(project, "check", "run", "--needed")
+    ctx = open_context(project)
+    calls = []
+    real = evidence.backend_identity
+    monkeypatch.setattr(evidence, "backend_identity", lambda check: calls.append(check.id) or real(check))
+    out = status(ctx, paths=["ok.py"], session=True)
+    assert calls == ["ok"]
+    assert [c["id"] for c in out["checks"]] == ["ok"] and out["gate"]["verdict"] == "READY"
+    status(ctx)
+    calls.clear()
+    status(ctx)
+    assert sorted(calls) == ["ok", "other"]
+
+
+def test_session_status_walks_the_tree_once(make_project, monkeypatch):
+    import vkit.inputs
+
+    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    ctx = open_context(project)
+    calls = []
+    real = vkit.inputs.source_files
+    monkeypatch.setattr(vkit.inputs, "source_files", lambda p: calls.append(p) or real(p))
+    status(ctx, paths=["ok.py"], session=True)
+    assert len(calls) == 1
+    status(ctx)
+    assert len(calls) == 2
+
+
+def test_session_status_scopes_the_verdict_to_uncovered_change(make_project):
+    project = make_project({"ok.py": PASSES, "README.md": "notes\n"},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok")
+    out = status(open_context(project), paths=["README.md"], session=True)
+    assert out["gate"]["verdict"] == "READY_SCOPED" and "README.md" in out["gate"]["reason"]
+
+
+def test_session_status_treats_declared_glob_coverage_as_a_scope_claim(make_project):
+    project = make_project({"ok.py": PASSES, "generated/x.py": "y\n", "generated/check_gen.py": GEN_DRIVER},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]), gen_check()])
+    vkit(project, "check", "run", "--needed")
+    (project / "generated" / "credentials").write_text("k\n", encoding="utf-8")
+    out = status(open_context(project), paths=["generated/credentials"], session=True)
+    assert out["gate"]["verdict"] == "READY_SCOPED" and out["coverage_kinds"]["scope_claim"] == ["generated/credentials"]

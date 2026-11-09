@@ -209,6 +209,15 @@ def test_an_input_edited_during_the_run_blocks_the_result(make_project):
 PASSES = DRIVER + 'report([("ok", True, "printed ok")])\n'
 
 
+SENTINEL_DRIVER = DRIVER + 'import pathlib\nreport([("ok", pathlib.Path("subject.py").read_text().strip() != "", "read")])\n'
+
+
+def sentinel_project(make_project, driver: str, *, accept: bool = True):
+    check = scenario_check("ok", "driver.py", scenarios=["ok"], inputs=["driver.py", "subject.py"])
+    check["subject"] = {"paths": ["subject.py"], "digest": None}
+    return make_project({"driver.py": driver, "subject.py": "value = 1\n"}, [check], accept=accept)
+
+
 def test_accept_without_yes_is_refused_when_not_interactive(make_project):
     project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])],
                            accept=False)
@@ -216,6 +225,36 @@ def test_accept_without_yes_is_refused_when_not_interactive(make_project):
     assert code == 2 and "VKIT_ALLOW_YES" in body["error"] and "--yes" not in body["error"]
     code, body = vkit(project, "check", "run", "--check", "ok")
     assert only_run(body)["outcome"]["reason"] == "not_approved"
+
+
+def test_accept_records_a_vacuous_null_subject_sentinel(make_project):
+    project = sentinel_project(make_project, DRIVER + 'report([("ok", True, "always")])\n')
+    records = json.loads((project / ".git" / "vkit" / "approved.json").read_text())["records"]
+    definition = next(r for r in records.values() if r["kind"] == "check_definition")
+    assert definition["oracle"]["sentinel"] == {"verdict": "vacuous", "subject": ["subject.py"]}
+    assert list(definition["oracle"]["files"]) == ["driver.py"]
+
+
+def test_rewriting_the_evaluator_after_acceptance_requires_a_new_acceptance(make_project):
+    project = sentinel_project(make_project, SENTINEL_DRIVER)
+    assert vkit(project, "check", "run", "--check", "ok")[0] == 0
+    assert vkit(project, "gate")[0] == 0
+    (project / "driver.py").write_text(DRIVER + 'report([("ok", True, "always")])\n', encoding="utf-8")
+    code, gate = vkit(project, "gate")
+    assert (code, gate["verdict"], gate["checks"][0]["state"]) == (1, "REJECTED", "not_approved")
+    assert vkit(project, "accept", "--yes")[0] == 0
+    (project / "driver.py").write_text(SENTINEL_DRIVER.replace('"read"', '"read v2"'), encoding="utf-8")
+    assert vkit(project, "accept", "--yes")[0] == 0
+    assert vkit(project, "check", "run", "--check", "ok")[0] == 0
+    assert vkit(project, "gate")[0] == 0
+
+
+def test_accept_records_the_authority_that_granted_it(make_project):
+    project = sentinel_project(make_project, SENTINEL_DRIVER)
+    approved = json.loads((project / ".git" / "vkit" / "approved.json").read_text())["records"]
+    records = [r for r in approved.values() if r["kind"] == "check_definition"]
+    assert records[0]["confirmed_via"] in ("operator_env", "shell_env")
+    assert list(records[0]["oracle"]["files"]) == ["driver.py"]
 
 
 def test_status_names_paths_no_check_reads(make_project):

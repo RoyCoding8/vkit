@@ -96,22 +96,64 @@ def test_renaming_a_check_is_removal_plus_addition(make_project):
     assert ("ok", "obligation_removed") in states and ("ok2", "not_approved") in states
 
 
-def test_accepting_a_shrunk_manifest_rebinds_the_inventory(make_project):
+def _shrink(project, kept):
     import json
 
+    (project / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "description": "test project", "checks": kept}), encoding="utf-8")
+
+
+def test_a_partial_accept_cannot_rebind_a_removed_obligation(make_project):
     from vkit import query
 
     project = make_project({"ok.py": PASSES},
                            [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
                             scenario_check("gone", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
     vkit(project, "check", "run", "--check", "ok", "--check", "gone")
-    (project / "verification" / "manifest.json").write_text(json.dumps({
-        "schema_version": 3, "description": "test project",
-        "checks": [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
-    assert query.status(query.open_context(project))["gate"]["verdict"] != "READY"
-    code, _ = vkit(project, "accept", "--yes")
-    assert code == 0
+    _shrink(project, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    assert vkit(project, "accept", "--check", "ok", "--yes")[0] == 0
+    out = query.status(query.open_context(project))
+    assert out["gate"]["verdict"] != "READY"
+    assert any(c["id"] == "gone" and c["state"] == "obligation_removed" for c in out["checks"])
+
+
+def test_dropping_a_fresh_fail_obligation_stays_rejected_until_the_next_acceptance(make_project):
+    from vkit import query
+
+    project = make_project({"ok.py": PASSES, "bad.py": DRIVER + 'report([("bad", False, "nope")])\n'},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                            scenario_check("bad", "bad.py", scenarios=["bad"], inputs=["bad.py"])])
+    vkit(project, "check", "run", "--check", "ok", "--check", "bad")
+    _shrink(project, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    assert vkit(project, "accept", "--drop", "bad", "--yes")[0] == 0
+    assert query.status(query.open_context(project))["gate"]["verdict"] == "REJECTED"
+    assert vkit(project, "accept", "--yes")[0] == 0
     assert query.status(query.open_context(project))["gate"]["verdict"] == "READY"
+
+
+def test_dropping_a_passing_obligation_clears_the_gate(make_project):
+    from vkit import query
+
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                            scenario_check("gone", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok", "--check", "gone")
+    _shrink(project, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    assert vkit(project, "accept", "--drop", "gone", "--yes")[0] == 0
+    assert query.status(query.open_context(project))["gate"]["verdict"] == "READY"
+
+
+def test_rewriting_an_evaluator_script_invalidates_the_acceptance(make_project):
+    from helpers import DRIVER
+    from vkit import query
+
+    driver = DRIVER + 'import pathlib\nreport([("ok", pathlib.Path("subject.py").read_text().strip() != "", "read")])\n'
+    check = scenario_check("ok", "driver.py", scenarios=["ok"], inputs=["driver.py", "subject.py"])
+    check["subject"] = {"paths": ["subject.py"], "digest": None}
+    project = make_project({"driver.py": driver, "subject.py": "value = 1\n"}, [check])
+    assert query.status(query.open_context(project))["checks"][0]["state"] != "not_approved"
+    (project / "driver.py").write_text(driver.replace('"read"', '"read v2"'), encoding="utf-8")
+    assert query.status(query.open_context(project))["checks"][0]["state"] == "not_approved"
 
 
 def test_unbinding_a_required_formal_component_needs_authority():
@@ -179,10 +221,13 @@ def test_a_failing_check_rejects_the_gate(make_project):
 def test_fixing_the_subject_clears_a_fresh_fail(make_project):
     from vkit import query
 
-    project = make_project({"ok.py": DRIVER + 'report([("ok", False, "nope")])\n'},
-                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    driver = DRIVER + 'import pathlib\nreport([("ok", pathlib.Path("subject.py").read_text().strip() != "", "read")])\n'
+    check = scenario_check("ok", "driver.py", scenarios=["ok"], inputs=["driver.py", "subject.py"])
+    check["subject"] = {"paths": ["subject.py"], "digest": None}
+    project = make_project({"driver.py": driver, "subject.py": ""}, [check])
     vkit(project, "check", "run", "--check", "ok")
-    (project / "ok.py").write_text(PASSES, encoding="utf-8")
+    assert query.status(query.open_context(project))["gate"]["verdict"] == "REJECTED"
+    (project / "subject.py").write_text("value = 1\n", encoding="utf-8")
     vkit(project, "check", "run", "--check", "ok")
     assert query.status(query.open_context(project))["gate"]["verdict"] == "READY"
 

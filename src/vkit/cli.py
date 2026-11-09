@@ -361,17 +361,36 @@ def cmd_evidence_replay(args: argparse.Namespace) -> int:
     return _RESULT_EXIT.get((record.get("outcome") or {}).get("result"), EXIT_OK)
 
 
-def _confirm(args: argparse.Namespace, description: str, question: str) -> bool:
+AGENT_MARKERS = ("vkit_hook", "claude", "codex")
+
+
+def _parent_commands(depth: int = 8) -> list[str]:
+    commands, pid = [], os.getppid()
+    for _ in range(depth):
+        try:
+            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+            commands.append(Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace"))
+        except (OSError, IndexError, ValueError):
+            return commands
+        if pid <= 1:
+            break
+    return commands
+
+
+def _confirm(args: argparse.Namespace, description: str, question: str) -> str | None:
     if args.yes:
-        if os.environ.get("VKIT_ALLOW_YES") == "1":
-            return True
-        raise Refused("this action needs operator confirmation; run it interactively or set "
-                      "VKIT_ALLOW_YES in the operator environment:\n" + description, EXIT_INVALID)
+        if os.environ.get("VKIT_ALLOW_YES") != "1":
+            raise Refused("this action needs operator confirmation; run it interactively or set "
+                          "VKIT_ALLOW_YES in the operator environment:\n" + description, EXIT_INVALID)
+        if any(marker in command.lower() for command in _parent_commands() for marker in AGENT_MARKERS):
+            raise Refused("this acceptance was spawned by an agent hook chain, not an operator; "
+                          "a human must accept it:\n" + description, EXIT_INVALID)
+        return "operator_env" if sys.stdin.isatty() else "shell_env"
     if args.json or not sys.stdin.isatty():
         raise Refused("review this and confirm it interactively as the operator (or set "
                       "VKIT_ALLOW_YES):\n" + description, EXIT_INVALID)
     print(description)
-    return input(f"{question} [y/N] ").strip().lower() == "y"
+    return "interactive" if input(f"{question} [y/N] ").strip().lower() == "y" else None
 
 
 def cmd_proposals(args: argparse.Namespace) -> int:
@@ -401,10 +420,20 @@ def _accept_proposal(args: argparse.Namespace, ctx: query.Context) -> int:
 
     try:
         proposal = find(ctx.store, args.proposal)
-        if not _confirm(args, proposal.describe(), "apply this proposal to the working tree?"):
+        via = _confirm(args, proposal.describe(), "apply this proposal to the working tree?")
+        if via is None:
             print("nothing accepted")
             return EXIT_BLOCKED
         accepted = apply(ctx.project, ctx.store, proposal)
+        if accepted:
+            from .evidence import backend_identity
+            from .manifest import parse_manifest
+            from .state import sentinel as probe
+
+            manifest = parse_manifest(ctx.project)
+            checked = {c: probe(ctx.project, manifest.require(c)) for c in accepted}
+            ctx.store.approve({manifest.digest(c): _definition_record(
+                manifest, c, backend_identity(manifest.require(c)), checked[c], via) for c in accepted})
     except ProposalError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
     _emit({"proposal": proposal.digest, "accepted_checks": accepted}, args.json,
@@ -445,19 +474,72 @@ def _def_change(old: Any, new: Any) -> tuple[str, list[str]]:
     return label, lines
 
 
-def _accept_card(manifest, identities, pending, formal_records, approved, snapshot) -> list[str]:
+def _demonstrated_label(label: str, demo: dict[str, int] | None) -> str:
+    if label != "strengthening":
+        return label
+    if not demo or not demo["added"]:
+        return "strengthening (unproven: no rejection corpus)"
+    return f"strengthening (demonstrated over the declared corpus: {demo['added']} added obligation(s))"
+
+
+def _corpus(prior_definition: Any, entry: Any) -> dict[str, int]:
+    prior = prior_definition if isinstance(prior_definition, dict) else {}
+    return {"added": sum(len(set(entry.get(key) or ()) - set(prior.get(key) or ())) for key in _LIST_FIELDS)}
+
+
+def _prior_acceptances(approved: dict[str, Any], check_id: str) -> list[dict[str, Any]]:
+    records = [r for r in approved.values()
+               if r.get("kind") == "check_definition" and r.get("check_id") == check_id]
+    return sorted(records, key=lambda r: r.get("accepted_at") or "")
+
+
+def _oracle_diff(prior: dict[str, Any], check) -> str:
+    from .state import evaluator_digests
+
+    was, current = prior.get("oracle", {}).get("files", {}), evaluator_digests(check)
+    changed = [f"{name} {was.get(name, '<absent>')[:12]} -> {current.get(name, '<removed>')[:12]}"
+               for name in sorted(set(was) | set(current)) if was.get(name) != current.get(name)]
+    return "oracle (evaluator content) vs last acceptance: " + ("; ".join(changed) or "unchanged")
+
+
+def _sentinel_line(found: dict[str, Any]) -> str:
+    if found["verdict"] == "rejected":
+        return "null-subject sentinel: rejects the null subject (" + ", ".join(found["subject"]) + " emptied)"
+    if found["verdict"] == "vacuous":
+        return ("null-subject sentinel: VACUOUS - the evaluator passes with "
+                + ", ".join(found["subject"]) + " emptied")
+    return {"not_bound": "null-subject sentinel: NOT BOUND - no subject path distinct from the evaluator",
+            "exempt": "null-subject sentinel: exempt for this check kind",
+            "unavailable": "null-subject sentinel: unavailable - " + found.get("detail", "unknown")}[found["verdict"]]
+
+
+def _accept_card(manifest, identities, pending, formal_records, approved, snapshot, store, sentinels=None) -> list[str]:
+    from .state import sentinel
+
+    sentinels = sentinels or {}
     lines = []
     for check_id in pending:
         entry = manifest.entries[check_id]
-        prior = next((r for r in approved.values()
-                      if r.get("kind") == "check_definition" and r.get("check_id") == check_id), None)
+        check = manifest.require(check_id)
+        priors = _prior_acceptances(approved, check_id)
+        prior = priors[-1] if priors else None
         label, changes = _def_change((prior or {}).get("definition"), entry)
-        lines.append(f"{check_id} ({manifest.digest(check_id)[:12]}): definition change vs prior acceptance: {label}")
+        demo = _corpus((prior or {}).get("definition"), entry)
+        lines.append(f"{check_id} ({manifest.digest(check_id)[:12]}): "
+                     f"{_demonstrated_label(label, demo)} vs last acceptance"
+                     + (f" ({prior.get('accepted_at')}, {prior.get('confirmed_via') or 'unrecorded'})"
+                        if prior else ""))
         lines += [f"  {change}" for change in changes]
-        subject = entry.get("subject") or {}
-        bound = (f"bound to {len(subject['paths'])} path(s)" if subject.get("paths")
-                 else "NOT BOUND - a passing result may be vacuous")
-        lines.append(f"  null-subject sentinel: {bound} [pending 1.0]")
+        if prior is not None:
+            first_label, _ = _def_change(priors[0].get("definition"), entry)
+            if priors[0] is not prior:
+                lines.append(f"  {_demonstrated_label(first_label, demo)} vs first acceptance"
+                             f" ({priors[0].get('accepted_at')}, {priors[0].get('confirmed_via') or 'unrecorded'})")
+            lines.append("  " + _oracle_diff(prior, check))
+        lines.append("  " + _sentinel_line(sentinels.get(check_id) or sentinel(snapshot.project, check)))
+        last = store.latest(check_id)
+        lines.append("  evidence: " + (f"last run {last['run_id']} {last['result']}" if last
+                                        else "no finished run - accept-before-run relies on this card"))
         lines.append("  inputs: " + ", ".join(entry.get("inputs", ())))
         lines.append("  checker identity: " + json.dumps(identities[check_id], sort_keys=True))
     for component_id, (record, execution) in formal_records.items():
@@ -466,11 +548,47 @@ def _accept_card(manifest, identities, pending, formal_records, approved, snapsh
                   json.dumps(component.to_json(), indent=2),
                   "coverage: required_api; assurance: trusted_engine; method: verus_source",
                   "checker identity: " + json.dumps(execution, sort_keys=True)]
-    sets = [snapshot.inputs(check.inputs) for check in manifest.checks.values()]
+    sets = [snapshot.inputs(c.inputs) for c in manifest.checks.values()]
     uncovered = [f for f in snapshot.files if not any(s.covers(f) for s in sets)]
     lines.append("uncovered paths: " + (", ".join(uncovered[:20])
                 + (f" (+{len(uncovered) - 20} more)" if len(uncovered) > 20 else "") if uncovered else "none"))
     return lines
+
+
+def _inventory_diff(previous: dict[str, Any] | None, inventory: dict[str, Any],
+                    required: dict[str, bool] | None = None) -> list[str]:
+    if previous is None:
+        return []
+    lines = []
+    for key, prefix in (("checks", "obligation inventory: "), ("formal_required", "formal obligations: ")):
+        was, current = previous.get(key, {}), inventory[key]
+        delta = {"removed": sorted(set(was) - set(current)), "added": sorted(set(current) - set(was)),
+                 "rebound": sorted(name for name in current if was.get(name) != current[name])}
+        if any(delta.values()):
+            lines.append(prefix + json.dumps(delta))
+    lines += [f"formal obligation no longer required: {name} (still bound until --drop {name})"
+              for name in sorted(previous.get("formal_required", {}))
+              if required is not None and name not in required]
+    lines += [f"formal obligation demoted: {name} (still bound until --drop {name})"
+              for name in sorted(previous.get("formal_required", {}))
+              if required is not None and required.get(name) is False]
+    lines += [f"drop requested: {name} (last evidence run {run})"
+              for name, run in sorted(inventory["dropped"].items())
+              if previous.get("dropped", {}).get(name) != run]
+    lines += [f"drop recorded by this acceptance revision: {name}"
+              for name in sorted(previous.get("dropped", {})) if name not in inventory["dropped"]]
+    return lines
+
+
+def _definition_record(manifest, check_id: str, identity: dict[str, Any],
+                       checked: dict[str, Any], via: str) -> dict[str, Any]:
+    from .inputs import canonical_digest
+    from .state import evaluator_digests
+
+    files = evaluator_digests(manifest.require(check_id))
+    return {"kind": "check_definition", "check_id": check_id, "accepted_at": now(), "confirmed_via": via,
+            "backend": identity, "definition": manifest.entries[check_id],
+            "oracle": {"files": files, "digest": canonical_digest(files), "sentinel": checked}}
 
 
 def cmd_accept(args: argparse.Namespace) -> int:
@@ -490,9 +608,11 @@ def cmd_accept(args: argparse.Namespace) -> int:
         raise Refused(str(exc), EXIT_INVALID) from exc
     approved = ctx.store.approved()
     from .evidence import backend_identity
+    from .state import oracle_matches, sentinel
 
     identities = {c: backend_identity(manifest.require(c)) for c in wanted}
-    pending = [c for c in wanted if approved.get(manifest.digest(c), {}).get("kind") != "check_definition"]
+    pending = [c for c in wanted if not oracle_matches(approved, manifest.require(c), manifest.digest(c))]
+    sentinels = {check_id: sentinel(ctx.project, manifest.require(check_id)) for check_id in pending}
     from .formal.verus import ExecutionSetupError, resolve_execution
     from .inputs import canonical_digest
 
@@ -509,36 +629,42 @@ def cmd_accept(args: argparse.Namespace) -> int:
         if any(approved.get(component.digest, {}).get(key) != value for key, value in record.items()):
             formal_records[component_id] = (record, execution["semantic"])
     from .inputs import Snapshot
-
-    lines = _accept_card(manifest, identities, pending, formal_records, approved, Snapshot(ctx.project))
-    inventory = {"kind": "obligation_inventory", "accepted_at": now(),
-                 "checks": {c: manifest.digest(c) for c in sorted(manifest.checks)},
-                 "formal_required": {c: manifest.require_component(c).digest for c in sorted(manifest.components)
-                                     if manifest.require_component(c).required}}
     from .state import approved_inventory
 
     previous = approved_inventory(approved)
-    inventory_changed = previous != {k: inventory[k] for k in ("checks", "formal_required")}
-    if inventory_changed:
-        old_checks = set((previous or {}).get("checks", ()))
-        lines.append("obligation inventory: " + json.dumps({
-            "removed": sorted(old_checks - set(inventory["checks"])),
-            "added": sorted(set(inventory["checks"]) - old_checks)}))
+    inventory = {"kind": "obligation_inventory", "accepted_at": now(),
+                 "checks": dict((previous or {}).get("checks", {})),
+                 "formal_required": dict((previous or {}).get("formal_required", {})),
+                 "dropped": {} if not args.drop else dict((previous or {}).get("dropped", {}))}
+    inventory["checks"].update({c: manifest.digest(c) for c in wanted})
+    inventory["formal_required"].update({c: manifest.require_component(c).digest for c in components
+                                          if manifest.require_component(c).required})
+    for name in args.drop or ():
+        inventory["checks"].pop(name, None)
+        inventory["formal_required"].pop(name, None)
+        last = ctx.store.latest(name) or ctx.store.latest_for("formal_goal", name)
+        if last is not None and last.get("result") == "FAIL":
+            inventory["dropped"][name] = last["run_id"]
+    lines = _accept_card(manifest, identities, pending, formal_records, approved, Snapshot(ctx.project),
+                         ctx.store, sentinels)
+    lines += _inventory_diff(previous, inventory, {c: comp.required for c, comp in manifest.components.items()})
+    inventory_changed = previous != {k: inventory[k] for k in ("checks", "formal_required", "dropped")}
     if not pending and not formal_records and not inventory_changed:
         _emit({"accepted": [], "accepted_components": [], "pending": []}, args.json,
               "every named definition is already accepted")
         return EXIT_OK
-    if not _confirm(args, "\n".join(lines), f"accept {len(pending) + len(formal_records)} definition(s)?"):
+    via = _confirm(args, "\n".join(lines), f"accept {len(pending) + len(formal_records)} definition(s)?")
+    if via is None:
         print("nothing accepted")
         return EXIT_BLOCKED
-    records = {manifest.digest(c): {"kind": "check_definition", "check_id": c, "accepted_at": now(),
-                                    "backend": identities[c], "definition": manifest.entries[c]} for c in pending}
-    records.update({manifest.require_component(c).digest: {**entry, "accepted_at": now()}
+    records = {manifest.digest(c): _definition_record(manifest, c, identities[c], sentinels[c], via)
+               for c in pending}
+    records.update({manifest.require_component(c).digest: {**entry, "accepted_at": now(), "confirmed_via": via}
                     for c, (entry, _) in formal_records.items()})
-    records["__inventory__"] = inventory
+    records["__inventory__"] = {**inventory, "confirmed_via": via}
     ctx.store.approve(records)
-    _emit({"accepted": pending, "accepted_components": list(formal_records)}, args.json,
-          f"accepted: {', '.join(pending + list(formal_records))}")
+    _emit({"accepted": pending, "accepted_components": list(formal_records), "confirmed_via": via}, args.json,
+          f"accepted ({via}): {', '.join(pending + list(formal_records))}")
     return EXIT_OK
 
 
@@ -698,6 +824,7 @@ def build_parser() -> argparse.ArgumentParser:
     accept.add_argument("--check", action="append", help="a check id (repeatable); default every check")
     accept.add_argument("--component", action="append", help="a formal component id (repeatable)")
     accept.add_argument("--proposal", help="apply a pending proposal by digest prefix instead")
+    accept.add_argument("--drop", action="append", help="remove an accepted obligation slot (repeatable)")
     accept.add_argument("--yes", action="store_true", help="accept without the interactive prompt")
     command(sub, "proposals", "list changes agents proposed and nobody has accepted or rejected")
     reject = command(sub, "reject", "discard a pending proposal")

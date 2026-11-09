@@ -681,15 +681,18 @@ def _execute(
         if record["inputs"]["unmatched"]:
             return Blocked(BlockedReason.INPUT_MISSING, "target policy inputs are missing"), None, None, {}
         return execute_empirical(check, store, record, resolved_job)
+    from .state import oracle_matches
+
     approval = store.approved().get(digest, {})
     if (
         approval.get("kind") != "check_definition"
         or approval.get("backend") != record["backend"]
+        or not oracle_matches(store.approved(), check, digest)
     ):
         return (
             Blocked(
                 BlockedReason.NOT_APPROVED,
-                "this check and checker identity have not been accepted; run `vkit accept`",
+                "this check, its checker identity or its evaluator content have not been accepted; run `vkit accept`",
             ),
             None,
             None,

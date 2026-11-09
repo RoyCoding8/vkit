@@ -36,7 +36,7 @@ def test_an_agent_runs_waits_reads_and_exports_durable_check_evidence(make_proje
 
         (project / "ok.py").write_text(PASSES + "\n", encoding="utf-8")
         body, _ = client.call("status", paths=["ok.py", "README.md"])
-        assert ([c["state"] for c in body["checks"]], body["unmapped_paths"]) == (["stale"], ["README.md"])
+        assert ([c["state"] for c in body["checks"]], body["unmapped_paths"]) == (["not_approved"], ["README.md"])
 
         body, _ = client.call("run_get", run_id=run_id)
         assert body["summary"]["run_id"] == run_id and "log" not in body

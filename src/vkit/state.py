@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import enum
+import hashlib
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .formal.policy import FormalComponent
@@ -14,7 +17,7 @@ from .manifest import Manifest
 from .paths import ProjectError
 from .requests import PackageVerificationRequest, WorkingTree
 from .store import Store
-from .verifiers.spec import CheckSpec
+from .verifiers.spec import CheckKind, CheckSpec
 
 
 class Freshness(str, enum.Enum):
@@ -49,15 +52,16 @@ DOUBTS = (
           ("test_an_added_unaccepted_check_is_rejected", "test_definition_change_still_requires_reaccept")),
     Doubt("obligation_inventory", "reject", "authority revision: accept the manifest to bind the inventory",
           ("test_a_formal_only_manifest_without_an_inventory_is_rejected",
-           "test_accepting_a_shrunk_manifest_rebinds_the_inventory")),
+           "test_dropping_a_passing_obligation_clears_the_gate")),
     Doubt("obligation_removed", "reject", "authority revision: re-accept the manifest",
-          ("test_removing_a_failing_check_cannot_reach_ready", "test_accepting_a_shrunk_manifest_rebinds_the_inventory")),
+          ("test_removing_a_failing_check_cannot_reach_ready",
+           "test_dropping_a_fresh_fail_obligation_stays_rejected_until_the_next_acceptance")),
     Doubt("fresh_blocked", "block", "clear the run blocker and re-run",
           ("test_a_blocked_run_blocks_the_gate", "test_a_cleared_run_reaches_ready")),
     Doubt("stale", "block", "re-run the check on the current inputs",
           ("test_vkit_change_stales_evidence_but_keeps_the_approval", "test_definition_change_still_requires_reaccept")),
     Doubt("missing", "block", "run the check to produce evidence",
-          ("test_accepting_a_shrunk_manifest_rebinds_the_inventory", "test_removing_a_failing_check_cannot_reach_ready")),
+          ("test_a_partial_accept_cannot_rebind_a_removed_obligation", "test_fixing_the_subject_clears_a_fresh_fail")),
     Doubt("blocked", "block", "clear the reported blocker and re-run",
           ("test_a_blocked_formal_component_blocks_the_gate", "test_a_cleared_formal_component_reaches_ready")),
     Doubt("uncovered_change", "scope", "extend coverage or declare does_not_establish",
@@ -72,11 +76,110 @@ _FRESH = {
 }
 
 
+SENTINEL_KINDS = frozenset({CheckKind.SCENARIO, CheckKind.PYTEST, CheckKind.NODE_TEST, CheckKind.PROPERTY})
+SENTINEL_TIMEOUT = 3.0
+
+
 def approved_inventory(approved: dict[str, Any]) -> dict[str, Any] | None:
     record = approved.get("__inventory__")
     if not isinstance(record, dict):
         return None
-    return {"checks": record.get("checks", {}), "formal_required": record.get("formal_required", {})}
+    return {"checks": record.get("checks", {}), "formal_required": record.get("formal_required", {}),
+            "dropped": record.get("dropped", {})}
+
+
+def evaluator(check: CheckSpec) -> dict[str, bytes]:
+    from .verifiers.spec import ExternalCheck, LeanCheck, TlcCheck
+
+    variant = getattr(check, "variant", None) or check
+    names: tuple[str, ...] = ()
+    if isinstance(variant, ExternalCheck):
+        return {}
+    elif hasattr(variant, "command"):
+        names = tuple(variant.command)
+    elif hasattr(variant, "required_tests"):
+        names = tuple(test.split("::")[0] for test in variant.required_tests)
+    elif isinstance(variant, TlcCheck):
+        names = (variant.model.path, variant.config)
+    elif isinstance(variant, LeanCheck):
+        names = (variant.challenge.path, *((variant.solution.path,) if variant.solution else ()))
+    root = check.cwd.resolve()
+    files = {}
+    for name in names:
+        if "{{" in name:
+            continue
+        path = (root / name).resolve()
+        if path.is_file() and path.is_relative_to(root):
+            files[path.relative_to(root).as_posix()] = path.read_bytes()
+    return files
+
+
+def evaluator_digests(check: CheckSpec) -> dict[str, str]:
+    return {name: hashlib.sha256(data).hexdigest() for name, data in sorted(evaluator(check).items())}
+
+
+def oracle_matches(approved: dict[str, Any], check: CheckSpec, digest: str) -> bool:
+    record = approved.get(digest, {})
+    return (record.get("kind") == "check_definition"
+            and record.get("oracle", {}).get("files") == evaluator_digests(check))
+
+
+def sentinel_subject(check: CheckSpec) -> list[str]:
+    oracle = set(evaluator(check))
+    return sorted(set(check.subject.paths) - oracle) or sorted(set(check.inputs) - oracle)
+
+
+def _null_probe(project, check: CheckSpec, emptied: set[str]) -> bool:
+    from . import proc
+    from .inputs import capture_working_tree
+    from .outcome import Passed
+    from .runner import _child_env
+    from .verifiers import dispatch
+
+    files = evaluator(check)
+    source = capture_working_tree(project)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for item in source.files:
+            target = root.joinpath(*item.path.split("/"))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(files.get(item.path, b"" if item.path in emptied else item.content))
+        for name, data in files.items():
+            target = root.joinpath(*name.split("/"))
+            if not target.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+        run_dir = root / ".vkit-null-subject"
+        run_dir.mkdir()
+        try:
+            location = root.joinpath(*check.cwd.resolve().relative_to(project.root.resolve()).parts)
+        except ValueError:
+            location = root
+        location.mkdir(parents=True, exist_ok=True)
+        proc.run(dispatch.argv_for(check, run_dir, None), cwd=location,
+                 stdout_path=run_dir / "stdout.log", stderr_path=run_dir / "stderr.log",
+                 timeout_seconds=min(float(check.timeout_seconds), SENTINEL_TIMEOUT), env=_child_env())
+        artifact = run_dir / check.artifact_name
+        raw = artifact.read_bytes() if artifact.is_file() else None
+    if raw is None:
+        return True
+    try:
+        return not isinstance(dispatch.outcome_from_reading(dispatch.interpret(check, raw)), Passed)
+    except (ValueError, KeyError, TypeError):
+        return True
+
+
+def sentinel(project, check: CheckSpec) -> dict[str, Any]:
+    if check.kind not in SENTINEL_KINDS:
+        return {"verdict": "exempt"}
+    subject = sentinel_subject(check)
+    if not subject:
+        return {"verdict": "not_bound"}
+    try:
+        rejected = _null_probe(project, check, set(subject))
+    except (OSError, ValueError, RuntimeError, ProjectError) as exc:
+        return {"verdict": "unavailable", "detail": str(exc)}
+    return {"verdict": "rejected" if rejected else "vacuous", "subject": subject}
 
 
 def check_digests(manifest: Manifest) -> dict[str, str]:
@@ -216,7 +319,7 @@ def check_states(
         )["job_id"]
         current = store.evidence(check_id, key)
         last = store.latest(check_id)
-        if approved.get(digests[check_id], {}).get("kind") != "check_definition":
+        if not oracle_matches(approved, check, digests[check_id]):
             freshness = Freshness.NOT_APPROVED
         elif current is not None:
             freshness = _FRESH[current["result"]]
@@ -292,10 +395,11 @@ def gate(
     required = [state for state in formal if state.required]
     ghosts = []
     if obligations is not None:
-        removed = sorted(set(obligations.get("checks", ())) - {s.check.id for s in states})
-        removed += sorted(rid for rid in obligations.get("formal_required", ())
-                          if not any(s.component.id == rid and s.required for s in formal))
-        ghosts = [{"id": rid, "state": "obligation_removed", "run_id": None} for rid in removed]
+        removed = set(obligations.get("checks", ())) - {s.check.id for s in states}
+        removed |= {rid for rid in obligations.get("formal_required", ())
+                    if not any(s.component.id == rid and s.required for s in formal)}
+        removed |= set(obligations.get("dropped", ()))
+        ghosts = [{"id": rid, "state": "obligation_removed", "run_id": None} for rid in sorted(removed)]
     if not states and not required and not ghosts:
         verdict, reason = Verdict.BLOCKED, "no checks are registered"
     elif obligations is None and (states or required):

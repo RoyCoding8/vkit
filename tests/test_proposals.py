@@ -9,6 +9,7 @@ from vkit.formal.policy import FormalComponent
 from vkit.inputs import canonical_digest
 from vkit.paths import Project
 from vkit.proposals import ProposalError, apply, submit
+from vkit.query import open_context, status
 from vkit.store import Store
 
 PASSES = DRIVER + 'report([("ok", True, "printed ok")])\n'
@@ -153,3 +154,25 @@ def test_invalid_merged_manifest_is_rejected_before_proposal_files_are_written(t
     with pytest.raises(ProposalError):
         apply(project, store, proposal)
     assert not (tmp_path / "new.txt").exists()
+
+
+def test_accepting_a_proposal_binds_the_added_obligation_in_the_inventory(make_project):
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    client = McpClient(project)
+    try:
+        body, error = client.call("propose",
+                                  checks=[scenario_check("extra", "extra.py", scenarios=["ok"], inputs=["extra.py"])],
+                                  files={"extra.py": PASSES}, rationale="extra coverage")
+        assert error is False
+        digest = body["proposal"]
+    finally:
+        client.close()
+    assert vkit(project, "accept", "--proposal", digest[:12], "--yes")[0] == 0
+    (project / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "description": "test project",
+        "checks": [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
+    full = vkit(project, "status")[1]["gate"]
+    session = status(open_context(project), paths=["ok.py"], session=True)["gate"]
+    for gate in (full, session):
+        assert gate["verdict"] == "REJECTED" and "obligation_removed" in gate["reason"]

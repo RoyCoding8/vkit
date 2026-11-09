@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from helpers import DRIVER, NO_WINDOW, pytest_kind_check, scenario_check, vkit, vkit_argv
+from helpers import DRIVER, NO_WINDOW, McpClient, pytest_kind_check, scenario_check, vkit, vkit_argv
 
 CALC = '''
 def add(a, b):
@@ -105,6 +105,37 @@ def _wait_for_running(project: Path) -> str:
             return running[0]
         time.sleep(0.2)
     raise AssertionError("the run never appeared as running")
+
+
+def test_a_proposal_restore_of_a_dropped_slot_clears_the_marker_and_never_double_reports(make_project):
+    passing = DRIVER + 'report([("ok", True, "ok")])\n'
+    failing = DRIVER + 'report([("ok", False, "broken")])\n'
+    project = make_project({"ok.py": passing, "bad.py": failing},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                            scenario_check("bad", "bad.py", scenarios=["ok"], inputs=["bad.py"])])
+    vkit(project, "check", "run", "--needed")
+    (project / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "description": "test project",
+        "checks": [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
+    assert vkit(project, "accept", "--check", "ok", "--drop", "bad", "--yes")[0] == 0
+    dropped = vkit(project, "status")[1]["gate"]
+    assert dropped["verdict"] == "REJECTED" and "obligation_removed" in dropped["reason"]
+    client = McpClient(project)
+    try:
+        body, error = client.call("propose",
+                                  checks=[scenario_check("bad", "bad2.py", scenarios=["ok"], inputs=["bad2.py"])],
+                                  files={"bad2.py": passing}, rationale="restore bad")
+        assert error is False
+        digest = body["proposal"]
+    finally:
+        client.close()
+    assert vkit(project, "accept", "--proposal", digest[:12], "--yes")[0] == 0
+    restored = vkit(project, "status")[1]["gate"]
+    assert restored["verdict"] != "REJECTED" and "obligation_removed" not in restored["reason"]
+    assert [c["id"] for c in restored["checks"]].count("bad") == 1
+    assert vkit(project, "check", "run", "--check", "bad")[0] == 0
+    ready = vkit(project, "status")[1]["gate"]
+    assert ready["verdict"] == "READY" and [c["id"] for c in ready["checks"]].count("bad") == 1
 
 
 def test_run_cancel_stops_a_running_check(make_project):

@@ -257,6 +257,14 @@ def test_a_cleared_run_reaches_ready():
     assert out["verdict"] == "READY"
 
 
+def test_the_gate_never_ghosts_an_id_it_already_reports_as_a_state():
+    from types import SimpleNamespace
+
+    states = [SimpleNamespace(check=SimpleNamespace(id="bad"), freshness=state.Freshness.FRESH_BLOCKED, current=None)]
+    out = state.gate(states, obligations={"checks": {"bad": "d"}, "formal_required": {}, "dropped": {"bad": "r1"}})
+    assert [c["id"] for c in out["checks"]].count("bad") == 1
+
+
 def test_a_blocked_formal_component_blocks_the_gate():
     from types import SimpleNamespace
 

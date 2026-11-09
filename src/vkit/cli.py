@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import query
-from .manifest import ManifestError
+from .manifest import Manifest, ManifestError
 from .paths import Project, ProjectError
 from .schemas import SchemaValidationError
 from .settings import load_launcher_settings, load_settings, save_settings
-from .store import now
+from .store import Store, now
 from .workspaces import remember
 
 EXIT_OK = 0
@@ -365,13 +365,16 @@ AGENT_MARKERS = ("vkit_hook", "claude", "codex", "pi", "deepai", "mcp", "node", 
 
 
 def _telemetry(project: Any, event: str) -> None:
+    import time
+
     try:
         from .store import Store
 
         root = Store.of(project).root
         root.mkdir(parents=True, exist_ok=True)
         with (root / "telemetry.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"at": now(), "event": event}) + "\n")
+            handle.write(json.dumps({"event": event, "project": str(getattr(project, "root", "")),
+                                     "ts": time.time()}) + "\n")
     except OSError:
         pass
 
@@ -453,6 +456,7 @@ def _accept_proposal(args: argparse.Namespace, ctx: query.Context) -> int:
             ctx.store.approve({manifest.digest(c): _definition_record(
                 manifest, c, backend_identity(manifest.require(c)), checked[c], via,
                 evaluator_digests(manifest.require(c))) for c in accepted})
+            ctx.store.approve({"__inventory__": _inventory_record(ctx.store, manifest, accepted, via)})
     except ProposalError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
     _emit({"proposal": proposal.digest, "accepted_checks": accepted}, args.json,
@@ -619,6 +623,24 @@ def _definition_record(manifest, check_id: str, identity: dict[str, Any],
                        "external": external}}
 
 
+def _inventory_record(store: Store, manifest: Manifest, ids: list[str], via: str,
+                      *, dropped: dict[str, str] | None = None,
+                      formal: dict[str, str] | None = None,
+                      drop_names: tuple[str, ...] = ()) -> dict[str, Any]:
+    from .state import approved_inventory
+
+    base = approved_inventory(store.approved()) or {}
+    checks = {**base.get("checks", {}), **{c: manifest.digest(c) for c in ids}}
+    for name in (*(dropped or {}), *drop_names):
+        checks.pop(name, None)
+    return {"kind": "obligation_inventory", "accepted_at": now(),
+            "checks": checks,
+            "formal_required": {**base.get("formal_required", {}), **(formal or {})},
+            "dropped": {**{n: r for n, r in base.get("dropped", {}).items() if n not in ids},
+                        **(dropped or {})},
+            "confirmed_via": via}
+
+
 def _pinned_or_refuse(manifest, check_ids: list[str]) -> None:
     from .state import evaluator_gaps
 
@@ -706,7 +728,10 @@ def cmd_accept(args: argparse.Namespace) -> int:
                for c in pending}
     records.update({manifest.require_component(c).digest: {**entry, "accepted_at": now(), "confirmed_via": via}
                     for c, (entry, _) in formal_records.items()})
-    records["__inventory__"] = {**inventory, "confirmed_via": via}
+    records["__inventory__"] = _inventory_record(ctx.store, manifest, wanted, via,
+                                                  dropped=inventory["dropped"],
+                                                  formal=inventory["formal_required"],
+                                                  drop_names=tuple(args.drop or ()))
     ctx.store.approve(records)
     _emit({"accepted": pending, "accepted_components": list(formal_records), "confirmed_via": via}, args.json,
           f"accepted ({via}): {', '.join(pending + list(formal_records))}")

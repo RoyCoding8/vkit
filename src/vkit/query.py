@@ -83,6 +83,20 @@ def _features(ctx: Context, by_id: dict[str, CheckState]) -> tuple[list[dict[str
     return rows, None
 
 
+def _telemetry_diagnostics(store: Store) -> list[dict[str, Any]]:
+    try:
+        lines = (store.root / "telemetry.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries = []
+    for line in lines[-20:]:
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return entries
+
+
 def status(ctx: Context, paths: Iterable[str] = (), session: bool = False) -> dict[str, Any]:
     """Every check's freshness and the gate; narrowed to checks reading `paths` when given."""
     wanted = [p.replace("\\", "/") for p in paths]
@@ -92,6 +106,11 @@ def status(ctx: Context, paths: Iterable[str] = (), session: bool = False) -> di
         registered = set(ctx.manifest.checks)
         candidates = {i: c for i, c in ctx.manifest.checks.items()
                       if not c.inputs or any(matches(p, d) for p in wanted for d in c.inputs)}
+        bound = approved_inventory(ctx.store.approved())
+        if bound is not None:
+            candidates.update({i: c for i, c in ctx.manifest.checks.items()
+                               if i not in candidates and i in bound["checks"]
+                               and bound["checks"][i] != ctx.manifest.digest(i)})
         declared = [d for c in candidates.values() for d in c.inputs]
         full = Snapshot(ctx.project)
         snapshot = full if not declared or any(not c.inputs for c in candidates.values()) else Snapshot(
@@ -147,6 +166,7 @@ def status(ctx: Context, paths: Iterable[str] = (), session: bool = False) -> di
                                                                 for e in f["entry_points"])],
         "features": features,
         "feature_error": feature_error,
+        "diagnostics": _telemetry_diagnostics(ctx.store),
         "needs_run": [s.check.id for s in all_states if needs_run(s)],
         "formal_needs_run": [s.component.id for s in all_formal if needs_run(s)],
         "proposals": [{"digest": p.digest, "rationale": p.body["rationale"],

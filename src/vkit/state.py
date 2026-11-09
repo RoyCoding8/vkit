@@ -434,10 +434,11 @@ def gate(
     required = [state for state in formal if state.required]
     ghosts = []
     if obligations is not None:
-        removed = set(obligations.get("checks", ())) - {s.check.id for s in states}
+        registered = {s.check.id for s in states}
+        removed = set(obligations.get("checks", ())) - registered
         removed |= {rid for rid in obligations.get("formal_required", ())
                     if not any(s.component.id == rid and s.required for s in formal)}
-        removed |= set(obligations.get("dropped", ()))
+        removed |= set(obligations.get("dropped", ())) - registered
         ghosts = [{"id": rid, "state": "obligation_removed", "run_id": None} for rid in sorted(removed)]
     if not states and not required and not ghosts:
         verdict, reason = Verdict.BLOCKED, "no checks are registered"

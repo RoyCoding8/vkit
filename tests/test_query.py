@@ -439,6 +439,27 @@ def test_session_status_converges_a_mixed_manifest_with_a_whole_tree_check(make_
     assert states["whole"] == "fresh_pass" and out["gate"]["verdict"] == "READY"
 
 
+def test_session_status_rejects_a_definition_swapped_outside_the_session_scope(make_project):
+    project = make_project({"ok.py": PASSES, "victim.py": PASSES, "victim2.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                            scenario_check("victim", "victim.py", scenarios=["ok"], inputs=["victim.py"])])
+    vkit(project, "check", "run", "--needed")
+    manifest = json.loads((project / "verification" / "manifest.json").read_text(encoding="utf-8"))
+    manifest["checks"][1]["command"][1] = "victim2.py"
+    (project / "verification" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    out = status(open_context(project), paths=["ok.py"], session=True)
+    assert out["gate"]["verdict"] == "REJECTED" and "not_approved" in out["gate"]["reason"]
+
+
+def test_status_surfaces_telemetry_entries_as_diagnostics(make_project):
+    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    store = Store.of(Project(project, project / ".git"))
+    entry = {"event": "provenance_walk_degraded", "project": str(project), "ts": 1.0}
+    with (store.root / "telemetry.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry) + "\n")
+    assert status(open_context(project))["diagnostics"][-1] == entry
+
+
 def test_a_requested_path_falls_under_exactly_one_coverage_kind(make_project):
     project = make_project({"ok.py": PASSES, "generated/x.py": "y\n", "generated/check_gen.py": GEN_DRIVER},
                            [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]), gen_check()])

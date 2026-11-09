@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -204,4 +205,6 @@ def test_a_degraded_provenance_walk_is_recorded_in_the_telemetry_sink(monkeypatc
     assert "provenance_walk_degraded" in line
     vkit.cli._telemetry(SimpleNamespace(git_common_dir=tmp_path), "second_event")
     lines = (tmp_path / "vkit" / "telemetry.jsonl").read_text(encoding="utf-8").splitlines()
-    assert "second_event" in lines[-1]
+    for line in lines:
+        entry = json.loads(line)
+        assert sorted(entry) == ["event", "project", "ts"]

@@ -361,28 +361,45 @@ def cmd_evidence_replay(args: argparse.Namespace) -> int:
     return _RESULT_EXIT.get((record.get("outcome") or {}).get("result"), EXIT_OK)
 
 
-AGENT_MARKERS = ("vkit_hook", "claude", "codex")
+AGENT_MARKERS = ("vkit_hook", "claude", "codex", "pi", "deepai", "mcp", "node", "aider")
 
 
-def _parent_commands(depth: int = 8) -> list[str]:
-    commands, pid = [], os.getppid()
+def _telemetry(project: Any, event: str) -> None:
+    try:
+        from .store import Store
+
+        root = Store.of(project).root
+        root.mkdir(parents=True, exist_ok=True)
+        with (root / "telemetry.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"at": now(), "event": event}) + "\n")
+    except OSError:
+        pass
+
+
+def _parent_commands(depth: int = 8) -> tuple[list[str], bool]:
+    commands, pid, degraded = [], os.getppid(), False
     for _ in range(depth):
         try:
-            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
             commands.append(Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace"))
+            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
         except (OSError, IndexError, ValueError):
-            return commands
+            degraded = pid > 1
+            break
         if pid <= 1:
             break
-    return commands
+    return commands, degraded
 
 
-def _confirm(args: argparse.Namespace, description: str, question: str) -> str | None:
+def _confirm(args: argparse.Namespace, description: str, question: str,
+             project: Project | None = None) -> str | None:
     if args.yes:
         if os.environ.get("VKIT_ALLOW_YES") != "1":
             raise Refused("this action needs operator confirmation; run it interactively or set "
                           "VKIT_ALLOW_YES in the operator environment:\n" + description, EXIT_INVALID)
-        if any(marker in command.lower() for command in _parent_commands() for marker in AGENT_MARKERS):
+        commands, degraded = _parent_commands()
+        if degraded:
+            _telemetry(project, "provenance_walk_degraded") if project else None
+        if any(marker in command.lower() for command in commands for marker in AGENT_MARKERS):
             raise Refused("this acceptance was spawned by an agent hook chain, not an operator; "
                           "a human must accept it:\n" + description, EXIT_INVALID)
         return "operator_env" if sys.stdin.isatty() else "shell_env"
@@ -420,7 +437,7 @@ def _accept_proposal(args: argparse.Namespace, ctx: query.Context) -> int:
 
     try:
         proposal = find(ctx.store, args.proposal)
-        via = _confirm(args, proposal.describe(), "apply this proposal to the working tree?")
+        via = _confirm(args, proposal.describe(), "apply this proposal to the working tree?", ctx.project)
         if via is None:
             print("nothing accepted")
             return EXIT_BLOCKED
@@ -428,12 +445,14 @@ def _accept_proposal(args: argparse.Namespace, ctx: query.Context) -> int:
         if accepted:
             from .evidence import backend_identity
             from .manifest import parse_manifest
-            from .state import sentinel as probe
+            from .state import evaluator_digests, sentinel as probe
 
             manifest = parse_manifest(ctx.project)
+            _pinned_or_refuse(manifest, accepted)
             checked = {c: probe(ctx.project, manifest.require(c)) for c in accepted}
             ctx.store.approve({manifest.digest(c): _definition_record(
-                manifest, c, backend_identity(manifest.require(c)), checked[c], via) for c in accepted})
+                manifest, c, backend_identity(manifest.require(c)), checked[c], via,
+                evaluator_digests(manifest.require(c))) for c in accepted})
     except ProposalError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
     _emit({"proposal": proposal.digest, "accepted_checks": accepted}, args.json,
@@ -479,7 +498,7 @@ def _demonstrated_label(label: str, demo: dict[str, int] | None) -> str:
         return label
     if not demo or not demo["added"]:
         return "strengthening (unproven: no rejection corpus)"
-    return f"strengthening (demonstrated over the declared corpus: {demo['added']} added obligation(s))"
+    return f"strengthening (declared: {demo['added']} added obligation(s), not executed)"
 
 
 def _corpus(prior_definition: Any, entry: Any) -> dict[str, int]:
@@ -495,7 +514,10 @@ def _prior_acceptances(approved: dict[str, Any], check_id: str) -> list[dict[str
 
 def _oracle_diff(prior: dict[str, Any], check) -> str:
     from .state import evaluator_digests
+    from .verifiers.spec import ExternalCheck
 
+    if isinstance(getattr(check, "variant", None) or check, ExternalCheck):
+        return "oracle: external check - evaluator content is not pinned"
     was, current = prior.get("oracle", {}).get("files", {}), evaluator_digests(check)
     changed = [f"{name} {was.get(name, '<absent>')[:12]} -> {current.get(name, '<removed>')[:12]}"
                for name in sorted(set(was) | set(current)) if was.get(name) != current.get(name)]
@@ -503,11 +525,15 @@ def _oracle_diff(prior: dict[str, Any], check) -> str:
 
 
 def _sentinel_line(found: dict[str, Any]) -> str:
-    if found["verdict"] == "rejected":
+    if found["verdict"] == "rejects":
         return "null-subject sentinel: rejects the null subject (" + ", ".join(found["subject"]) + " emptied)"
     if found["verdict"] == "vacuous":
         return ("null-subject sentinel: VACUOUS - the evaluator passes with "
                 + ", ".join(found["subject"]) + " emptied")
+    if found["verdict"] == "timeout":
+        return "null-subject sentinel: TIMEOUT - no artifact before the probe deadline; a slow evaluator proves nothing"
+    if found["verdict"] == "error":
+        return "null-subject sentinel: ERROR - the probe produced no judgeable artifact (crash or missing report)"
     return {"not_bound": "null-subject sentinel: NOT BOUND - no subject path distinct from the evaluator",
             "exempt": "null-subject sentinel: exempt for this check kind",
             "unavailable": "null-subject sentinel: unavailable - " + found.get("detail", "unknown")}[found["verdict"]]
@@ -575,20 +601,32 @@ def _inventory_diff(previous: dict[str, Any] | None, inventory: dict[str, Any],
     lines += [f"drop requested: {name} (last evidence run {run})"
               for name, run in sorted(inventory["dropped"].items())
               if previous.get("dropped", {}).get(name) != run]
-    lines += [f"drop recorded by this acceptance revision: {name}"
+    lines += [f"drop marker cleared by this acceptance revision: {name} (slot re-accepted; its obligations bind again)"
               for name in sorted(previous.get("dropped", {})) if name not in inventory["dropped"]]
     return lines
 
 
 def _definition_record(manifest, check_id: str, identity: dict[str, Any],
-                       checked: dict[str, Any], via: str) -> dict[str, Any]:
+                       checked: dict[str, Any], via: str, files: dict[str, str]) -> dict[str, Any]:
     from .inputs import canonical_digest
-    from .state import evaluator_digests
+    from .verifiers.spec import ExternalCheck
 
-    files = evaluator_digests(manifest.require(check_id))
+    external = isinstance(getattr(manifest.require(check_id), "variant", None) or manifest.require(check_id),
+                          ExternalCheck)
     return {"kind": "check_definition", "check_id": check_id, "accepted_at": now(), "confirmed_via": via,
             "backend": identity, "definition": manifest.entries[check_id],
-            "oracle": {"files": files, "digest": canonical_digest(files), "sentinel": checked}}
+            "oracle": {"files": files, "digest": canonical_digest(files), "sentinel": checked,
+                       "external": external}}
+
+
+def _pinned_or_refuse(manifest, check_ids: list[str]) -> None:
+    from .state import evaluator_gaps
+
+    for check_id in check_ids:
+        gaps = evaluator_gaps(manifest.require(check_id))
+        if gaps:
+            raise Refused(f"{check_id}: evaluator content is not pinned ({'; '.join(gaps)}); "
+                          "an empty oracle would match every future edit, so acceptance is refused", EXIT_INVALID)
 
 
 def cmd_accept(args: argparse.Namespace) -> int:
@@ -608,11 +646,17 @@ def cmd_accept(args: argparse.Namespace) -> int:
         raise Refused(str(exc), EXIT_INVALID) from exc
     approved = ctx.store.approved()
     from .evidence import backend_identity
-    from .state import oracle_matches, sentinel
+    from .state import evaluator_digests, evaluator_gaps, oracle_matches, sentinel
 
     identities = {c: backend_identity(manifest.require(c)) for c in wanted}
     pending = [c for c in wanted if not oracle_matches(approved, manifest.require(c), manifest.digest(c))]
+    for check_id in pending:
+        gaps = evaluator_gaps(manifest.require(check_id))
+        if gaps:
+            raise Refused(f"{check_id}: evaluator content is not pinned ({'; '.join(gaps)}); "
+                          "an empty oracle would match every future edit, so acceptance is refused", EXIT_INVALID)
     sentinels = {check_id: sentinel(ctx.project, manifest.require(check_id)) for check_id in pending}
+    oracle = {check_id: evaluator_digests(manifest.require(check_id)) for check_id in pending}
     from .formal.verus import ExecutionSetupError, resolve_execution
     from .inputs import canonical_digest
 
@@ -635,7 +679,8 @@ def cmd_accept(args: argparse.Namespace) -> int:
     inventory = {"kind": "obligation_inventory", "accepted_at": now(),
                  "checks": dict((previous or {}).get("checks", {})),
                  "formal_required": dict((previous or {}).get("formal_required", {})),
-                 "dropped": {} if not args.drop else dict((previous or {}).get("dropped", {}))}
+                 "dropped": {name: run for name, run in (previous or {}).get("dropped", {}).items()
+                             if name not in wanted}}
     inventory["checks"].update({c: manifest.digest(c) for c in wanted})
     inventory["formal_required"].update({c: manifest.require_component(c).digest for c in components
                                           if manifest.require_component(c).required})
@@ -653,11 +698,11 @@ def cmd_accept(args: argparse.Namespace) -> int:
         _emit({"accepted": [], "accepted_components": [], "pending": []}, args.json,
               "every named definition is already accepted")
         return EXIT_OK
-    via = _confirm(args, "\n".join(lines), f"accept {len(pending) + len(formal_records)} definition(s)?")
+    via = _confirm(args, "\n".join(lines), f"accept {len(pending) + len(formal_records)} definition(s)?", ctx.project)
     if via is None:
         print("nothing accepted")
         return EXIT_BLOCKED
-    records = {manifest.digest(c): _definition_record(manifest, c, identities[c], sentinels[c], via)
+    records = {manifest.digest(c): _definition_record(manifest, c, identities[c], sentinels[c], via, oracle[c])
                for c in pending}
     records.update({manifest.require_component(c).digest: {**entry, "accepted_at": now(), "confirmed_via": via}
                     for c, (entry, _) in formal_records.items()})

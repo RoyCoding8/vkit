@@ -681,7 +681,7 @@ def _execute(
         if record["inputs"]["unmatched"]:
             return Blocked(BlockedReason.INPUT_MISSING, "target policy inputs are missing"), None, None, {}
         return execute_empirical(check, store, record, resolved_job)
-    from .state import oracle_matches
+    from .state import evaluator_digests, oracle_matches
 
     approval = store.approved().get(digest, {})
     if (
@@ -741,6 +741,16 @@ def _execute(
             )
         reading, exit = None, None
     else:
+        if evaluator_digests(check) != approval.get("oracle", {}).get("files"):
+            return (
+                Blocked(
+                    BlockedReason.NOT_APPROVED,
+                    "evaluator bytes changed between the acceptance check and execution; run `vkit accept` again",
+                ),
+                None,
+                None,
+                {},
+            )
         exit = proc.run(
             dispatch.argv_for(
                 check, run_dir, None, input_digest=record["inputs"]["digest"]

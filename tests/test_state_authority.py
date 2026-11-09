@@ -117,7 +117,7 @@ def test_a_partial_accept_cannot_rebind_a_removed_obligation(make_project):
     assert any(c["id"] == "gone" and c["state"] == "obligation_removed" for c in out["checks"])
 
 
-def test_dropping_a_fresh_fail_obligation_stays_rejected_until_the_next_acceptance(make_project):
+def test_dropping_a_fresh_fail_obligation_stays_rejected_until_an_acceptance_rebinds_the_slot(make_project):
     from vkit import query
 
     project = make_project({"ok.py": PASSES, "bad.py": DRIVER + 'report([("bad", False, "nope")])\n'},
@@ -128,6 +128,15 @@ def test_dropping_a_fresh_fail_obligation_stays_rejected_until_the_next_acceptan
     assert vkit(project, "accept", "--drop", "bad", "--yes")[0] == 0
     assert query.status(query.open_context(project))["gate"]["verdict"] == "REJECTED"
     assert vkit(project, "accept", "--yes")[0] == 0
+    assert query.status(query.open_context(project))["gate"]["verdict"] == "REJECTED"
+    import json
+
+    (project / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "description": "test project",
+        "checks": [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                   scenario_check("bad", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
+    assert vkit(project, "accept", "--check", "bad", "--yes")[0] == 0
+    assert vkit(project, "check", "run", "--check", "bad")[0] == 0
     assert query.status(query.open_context(project))["gate"]["verdict"] == "READY"
 
 
@@ -296,3 +305,45 @@ def test_registry_falsifiers_name_real_tests():
     tokens = set(re.findall(r'"([a-z_]+): ', inspect.getsource(state.gate)))
     fields = [doubt.field for doubt in state.DOUBTS]
     assert len(set(fields)) == len(fields) and tokens == set(fields)
+
+
+def test_an_unpinnable_evaluator_refuses_acceptance(make_project):
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "absent.py", scenarios=["ok"], inputs=["ok.py"])], accept=False)
+    code, body = vkit(project, "accept", "--yes")
+    assert code == 2 and "absent.py" in body["error"] and "not pinned" in body["error"]
+
+
+def test_an_evaluator_outside_the_check_cwd_refuses_acceptance(make_project):
+    check = scenario_check("ok", "../driver.py", scenarios=["ok"], inputs=["ok.py"])
+    check["cwd"] = "verification"
+    project = make_project({"ok.py": PASSES, "driver.py": DRIVER + 'report([("ok", True, "x")])\n'}, [check],
+                           accept=False)
+    code, body = vkit(project, "accept", "--yes")
+    assert code == 2 and "../driver.py" in body["error"]
+
+
+def test_an_empty_oracle_never_matches_a_local_check(make_project):
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])], accept=False)
+    manifest = _manifest(project)
+    approved = {manifest.digest("ok"): {"kind": "check_definition", "check_id": "ok", "backend": {},
+                                        "accepted_at": "2024-01-01T00:00:00.000+00:00", "oracle": {"files": {}}}}
+    assert not state.oracle_matches(approved, manifest.require("ok"), manifest.digest("ok"))
+
+
+def test_the_gate_records_a_reason_token_for_a_non_rejecting_sentinel(make_project):
+    from vkit import query
+
+    vacuous = make_project({"driver.py": DRIVER + 'report([("ok", True, "always")])\n', "subject.py": "v\n"},
+                           [dict(scenario_check("ok", "driver.py", scenarios=["ok"], inputs=["driver.py", "subject.py"]),
+                                 subject={"paths": ["subject.py"], "digest": None})])
+    out = query.status(query.open_context(vacuous))
+    entry = next(c for c in out["gate"]["checks"] if c["id"] == "ok")
+    assert entry["sentinel"] == "vacuous"
+    genuine = make_project({"driver.py": DRIVER + 'import pathlib\nreport([("ok", pathlib.Path("subject.py").read_text().strip() != "", "read")])\n',
+                            "subject.py": "v\n"},
+                           [dict(scenario_check("ok", "driver.py", scenarios=["ok"], inputs=["driver.py", "subject.py"]),
+                                 subject={"paths": ["subject.py"], "digest": None})])
+    out = query.status(query.open_context(genuine))
+    assert all("sentinel" not in c for c in out["gate"]["checks"])

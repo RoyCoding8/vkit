@@ -87,13 +87,15 @@ def status(ctx: Context, paths: Iterable[str] = (), session: bool = False) -> di
     """Every check's freshness and the gate; narrowed to checks reading `paths` when given."""
     wanted = [p.replace("\\", "/") for p in paths]
     candidates = None
+    registered: set[str] | None = None
     if session and wanted and ctx.manifest is not None:
+        registered = set(ctx.manifest.checks)
         candidates = {i: c for i, c in ctx.manifest.checks.items()
                       if not c.inputs or any(matches(p, d) for p in wanted for d in c.inputs)}
         declared = [d for c in candidates.values() for d in c.inputs]
         full = Snapshot(ctx.project)
-        snapshot = full if not declared else Snapshot(ctx.project, sorted(
-            {f for f in full.files if any(matches(f, d) for d in declared)}))
+        snapshot = full if not declared or any(not c.inputs for c in candidates.values()) else Snapshot(
+            ctx.project, sorted({f for f in full.files if any(matches(f, d) for d in declared)}))
         ctx = replace(ctx, manifest=replace(ctx.manifest, checks=candidates), snapshot=snapshot)
     if ctx.manifest is not None and ctx.snapshot is None:
         ctx = replace(ctx, snapshot=Snapshot(ctx.project))
@@ -106,12 +108,18 @@ def status(ctx: Context, paths: Iterable[str] = (), session: bool = False) -> di
         ids = {s.check.id for s in shown}
         features = [f for f in features if ids & set(f["covered_by"])
                     or any(matches(p, e) for p in wanted for e in f["entry_points"])]
-    inventory = approved_inventory(ctx.store.approved()) if ctx.manifest is not None else None
-    if candidates is not None and inventory is not None:
-        inventory = {**inventory, "checks": {k: v for k, v in inventory["checks"].items() if k in candidates}}
-    unmapped = [p for p in wanted if not any(s.inputs.covers(p) for s in all_states)]
-    closure = {p for p in wanted if any(p in {n for n, _ in s.inputs.files} for s in all_states)}
-    gate_out = (gate(all_states, all_formal, obligations=inventory, uncovered=[p for p in wanted if p not in closure])
+    records = ctx.store.approved() if ctx.manifest is not None else {}
+    inventory = approved_inventory(records) if ctx.manifest is not None else None
+    if candidates is not None and inventory is not None and registered is not None:
+        inventory = {**inventory, "checks": {k: v for k, v in inventory["checks"].items()
+                                             if k not in registered or k in candidates}}
+    covered = [p for p in wanted if any(s.inputs.covers(p) for s in all_states)]
+    unmapped = [p for p in wanted if p not in covered]
+    closure = {p for p in covered if any(p in {n for n, _ in s.inputs.files} for s in all_states)}
+    sentinels = {s.check.id: verdict for s in all_states
+                 if (verdict := (records.get(s.digest, {}).get("oracle", {}) or {}).get("sentinel", {}).get("verdict"))
+                 and verdict != "rejects"}
+    gate_out = (gate(all_states, all_formal, obligations=inventory, uncovered=unmapped, sentinels=sentinels)
                 if ctx.manifest is not None else
                 {"verdict": "BLOCKED", "reason": ctx.manifest_error, "checks": []})
     if candidates is not None and not all_states and not all_formal and gate_out["reason"] == "no checks are registered":
@@ -133,7 +141,7 @@ def status(ctx: Context, paths: Iterable[str] = (), session: bool = False) -> di
         "formal": [s.to_json() for s in all_formal],
         "unmapped_paths": unmapped,
         "coverage_kinds": ({"closure": sorted(closure),
-                            "scope_claim": [p for p in wanted if p not in closure and p not in unmapped]}
+                            "scope_claim": [p for p in covered if p not in closure]}
                            if wanted else {}),
         "feature_paths_unmapped": [p for p in wanted if not any(matches(p, e) for f in features
                                                                 for e in f["entry_points"])],

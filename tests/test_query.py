@@ -356,7 +356,7 @@ def test_status_names_closure_and_scope_claim_coverage_for_requested_paths(make_
     vkit(project, "check", "run", "--needed")
     (project / "generated" / "credentials").write_text("k\n", encoding="utf-8")
     out = status(open_context(project), paths=["ok.py", "generated/credentials"])
-    assert out["gate"]["verdict"] == "READY_SCOPED"
+    assert out["gate"]["verdict"] == "READY"
     assert out["coverage_kinds"] == {"closure": ["ok.py"], "scope_claim": ["generated/credentials"]}
     assert out["unmapped_paths"] == []
     closure = status(open_context(project), paths=["ok.py"])
@@ -412,4 +412,40 @@ def test_session_status_treats_declared_glob_coverage_as_a_scope_claim(make_proj
     vkit(project, "check", "run", "--needed")
     (project / "generated" / "credentials").write_text("k\n", encoding="utf-8")
     out = status(open_context(project), paths=["generated/credentials"], session=True)
-    assert out["gate"]["verdict"] == "READY_SCOPED" and out["coverage_kinds"]["scope_claim"] == ["generated/credentials"]
+    assert out["gate"]["verdict"] == "READY" and out["coverage_kinds"]["scope_claim"] == ["generated/credentials"]
+
+
+def test_session_status_surfaces_a_deleted_accepted_obligation(make_project):
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                            scenario_check("gone", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
+    vkit(project, "check", "run", "--check", "ok", "--check", "gone")
+    (project / "verification" / "manifest.json").write_text(json.dumps({
+        "schema_version": 3, "description": "test project",
+        "checks": [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])]}), encoding="utf-8")
+    assert vkit(project, "accept", "--check", "ok", "--yes")[0] == 0
+    out = status(open_context(project), paths=["ok.py"], session=True)
+    assert out["gate"]["verdict"] == "REJECTED" and "obligation_removed" in out["gate"]["reason"]
+    assert any(c["id"] == "gone" and c["state"] == "obligation_removed" for c in out["checks"])
+
+
+def test_session_status_converges_a_mixed_manifest_with_a_whole_tree_check(make_project):
+    project = make_project({"ok.py": PASSES},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]),
+                            scenario_check("whole", "ok.py", scenarios=["ok"], inputs=[])])
+    vkit(project, "check", "run", "--needed")
+    out = status(open_context(project), paths=["ok.py"], session=True)
+    states = {c["id"]: c["state"] for c in out["checks"]}
+    assert states["whole"] == "fresh_pass" and out["gate"]["verdict"] == "READY"
+
+
+def test_a_requested_path_falls_under_exactly_one_coverage_kind(make_project):
+    project = make_project({"ok.py": PASSES, "generated/x.py": "y\n", "generated/check_gen.py": GEN_DRIVER},
+                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"]), gen_check()])
+    vkit(project, "check", "run", "--needed")
+    (project / "generated" / "credentials").write_text("k\n", encoding="utf-8")
+    out = status(open_context(project), paths=["ok.py", "generated/credentials", "README.md"])
+    kinds = out["coverage_kinds"]
+    assert kinds["closure"] == ["ok.py"] and kinds["scope_claim"] == ["generated/credentials"]
+    assert out["unmapped_paths"] == ["README.md"]
+    assert out["gate"]["verdict"] == "READY_SCOPED"

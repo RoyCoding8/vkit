@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +15,7 @@ def _tty(monkeypatch, interactive: bool) -> None:
 def test_confirm_names_which_authority_granted_the_acceptance(monkeypatch):
     args = argparse.Namespace(yes=True, json=False)
     monkeypatch.setenv("VKIT_ALLOW_YES", "1")
-    monkeypatch.setattr("vkit.cli._parent_commands", lambda: ["bash"])
+    monkeypatch.setattr("vkit.cli._parent_commands", lambda: (["bash"], False))
     _tty(monkeypatch, True)
     assert _confirm(args, "approve the definition", "accept it?") == "operator_env"
     _tty(monkeypatch, False)
@@ -27,7 +26,7 @@ def test_confirm_refuses_an_acceptance_spawned_from_the_agent_hook_chain(monkeyp
     args = argparse.Namespace(yes=True, json=False)
     monkeypatch.setenv("VKIT_ALLOW_YES", "1")
     _tty(monkeypatch, False)
-    monkeypatch.setattr("vkit.cli._parent_commands", lambda: ["bash", "python vkit_hook.py Stop"])
+    monkeypatch.setattr("vkit.cli._parent_commands", lambda: (["bash", "python vkit_hook.py Stop"], False))
     with pytest.raises(Refused):
         _confirm(args, "approve the definition", "accept it?")
 
@@ -44,7 +43,7 @@ def test_interactive_confirm_records_interactive_authority(monkeypatch):
 def test_yes_requires_operator_authorization(monkeypatch):
     args = argparse.Namespace(yes=True, json=False)
     _tty(monkeypatch, True)
-    monkeypatch.setattr("vkit.cli._parent_commands", lambda: [])
+    monkeypatch.setattr("vkit.cli._parent_commands", lambda: ([], False))
     monkeypatch.delenv("VKIT_ALLOW_YES", raising=False)
     with pytest.raises(Refused) as exc:
         _confirm(args, "approve the definition", "accept it?")
@@ -68,12 +67,13 @@ def test_definition_changes_are_labeled():
     assert _def_change(base, dict(base))[0] == "unchanged"
 
 
-def test_a_strengthening_label_is_demonstrated_or_reads_unproven():
+def test_a_strengthening_label_declares_instead_of_demonstrating():
     from vkit.cli import _demonstrated_label
 
     assert _demonstrated_label("strengthening", None) == "strengthening (unproven: no rejection corpus)"
     shown = _demonstrated_label("strengthening", {"added": 2})
-    assert "2 added obligation(s)" in shown and "unproven" not in shown
+    assert shown == "strengthening (declared: 2 added obligation(s), not executed)"
+    assert "demonstrated" not in shown
     assert _demonstrated_label("weakening", None) == "weakening"
 
 
@@ -131,7 +131,7 @@ def test_accept_card_renders_formal_obligation_removal_and_demotion():
     assert "formal obligation demoted: alloc" in lines
 
 
-def test_the_strengthening_label_is_demonstrated_over_the_declared_obligations(make_project):
+def test_the_strengthening_label_declares_the_added_obligations_without_claiming_execution(make_project):
     from helpers import DRIVER, scenario_check
 
     base = scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])
@@ -141,4 +141,67 @@ def test_the_strengthening_label_is_demonstrated_over_the_declared_obligations(m
     approved = {"f" * 64: {"kind": "check_definition", "check_id": "ok",
                            "accepted_at": "2024-01-01T00:00:00.000+00:00", "definition": base}}
     card = _card(project, approved, ["ok"])
-    assert "strengthening (demonstrated over the declared corpus: 1 added obligation(s))" in card
+    assert "declared: 1 added obligation(s), not executed" in card and "demonstrated" not in card
+
+
+def test_the_card_names_a_timeout_and_an_error_sentinel_honestly():
+    from vkit.cli import _sentinel_line
+
+    assert "TIMEOUT" in _sentinel_line({"verdict": "timeout"})
+    assert "ERROR" in _sentinel_line({"verdict": "error"})
+
+
+def test_a_cleared_drop_marker_is_described_not_misdescribed():
+    from vkit.cli import _inventory_diff
+
+    previous = {"checks": {}, "formal_required": {}, "dropped": {"bad": "r1"}}
+    cleared = "\n".join(_inventory_diff(previous, {"checks": {}, "formal_required": {}, "dropped": {}}, None))
+    assert "drop marker cleared by this acceptance revision: bad" in cleared
+    assert "recorded" not in cleared
+    kept = "\n".join(_inventory_diff(previous, {"checks": {}, "formal_required": {}, "dropped": {"bad": "r1"}}, None))
+    assert "cleared" not in kept
+
+
+def test_the_provenance_walk_reports_its_own_degradation(monkeypatch):
+    import vkit.cli
+
+    class Unreadable:
+        def __init__(self, *args):
+            pass
+
+        def read_text(self):
+            raise OSError("no /proc")
+
+        def read_bytes(self):
+            raise OSError("no /proc")
+
+    monkeypatch.setattr(vkit.cli, "Path", Unreadable)
+    commands, degraded = vkit.cli._parent_commands()
+    assert commands == [] and degraded
+
+
+def test_a_degraded_provenance_walk_is_recorded_in_the_telemetry_sink(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import vkit.cli
+
+    class Unreadable:
+        def __init__(self, *args):
+            pass
+
+        def read_text(self):
+            raise OSError("no /proc")
+
+        def read_bytes(self):
+            raise OSError("no /proc")
+
+    monkeypatch.setattr(vkit.cli, "Path", Unreadable)
+    args = argparse.Namespace(yes=True, json=False)
+    monkeypatch.setenv("VKIT_ALLOW_YES", "1")
+    _tty(monkeypatch, False)
+    assert _confirm(args, "d", "q", SimpleNamespace(git_common_dir=tmp_path)) == "shell_env"
+    line = (tmp_path / "vkit" / "telemetry.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    assert "provenance_walk_degraded" in line
+    vkit.cli._telemetry(SimpleNamespace(git_common_dir=tmp_path), "second_event")
+    lines = (tmp_path / "vkit" / "telemetry.jsonl").read_text(encoding="utf-8").splitlines()
+    assert "second_event" in lines[-1]

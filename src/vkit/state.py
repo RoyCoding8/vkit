@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import secrets
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -55,7 +56,7 @@ DOUBTS = (
            "test_dropping_a_passing_obligation_clears_the_gate")),
     Doubt("obligation_removed", "reject", "authority revision: re-accept the manifest",
           ("test_removing_a_failing_check_cannot_reach_ready",
-           "test_dropping_a_fresh_fail_obligation_stays_rejected_until_the_next_acceptance")),
+           "test_dropping_a_fresh_fail_obligation_stays_rejected_until_an_acceptance_rebinds_the_slot")),
     Doubt("fresh_blocked", "block", "clear the run blocker and re-run",
           ("test_a_blocked_run_blocks_the_gate", "test_a_cleared_run_reaches_ready")),
     Doubt("stale", "block", "re-run the check on the current inputs",
@@ -88,24 +89,33 @@ def approved_inventory(approved: dict[str, Any]) -> dict[str, Any] | None:
             "dropped": record.get("dropped", {})}
 
 
-def evaluator(check: CheckSpec) -> dict[str, bytes]:
-    from .verifiers.spec import ExternalCheck, LeanCheck, TlcCheck
+def _variant(check: CheckSpec) -> Any:
+    return getattr(check, "variant", None) or check
 
-    variant = getattr(check, "variant", None) or check
-    names: tuple[str, ...] = ()
+
+def _evaluator_names(variant: Any) -> tuple[str, ...]:
+    from .verifiers.spec import LeanCheck, TlcCheck
+
+    if hasattr(variant, "command"):
+        return tuple(variant.command)
+    if hasattr(variant, "required_tests"):
+        return tuple(test.split("::")[0] for test in variant.required_tests)
+    if isinstance(variant, TlcCheck):
+        return (variant.model.path, variant.config)
+    if isinstance(variant, LeanCheck):
+        return (variant.challenge.path, *((variant.solution.path,) if variant.solution else ()))
+    return ()
+
+
+def evaluator(check: CheckSpec) -> dict[str, bytes]:
+    from .verifiers.spec import ExternalCheck
+
+    variant = _variant(check)
     if isinstance(variant, ExternalCheck):
         return {}
-    elif hasattr(variant, "command"):
-        names = tuple(variant.command)
-    elif hasattr(variant, "required_tests"):
-        names = tuple(test.split("::")[0] for test in variant.required_tests)
-    elif isinstance(variant, TlcCheck):
-        names = (variant.model.path, variant.config)
-    elif isinstance(variant, LeanCheck):
-        names = (variant.challenge.path, *((variant.solution.path,) if variant.solution else ()))
     root = check.cwd.resolve()
     files = {}
-    for name in names:
+    for name in _evaluator_names(variant):
         if "{{" in name:
             continue
         path = (root / name).resolve()
@@ -114,14 +124,41 @@ def evaluator(check: CheckSpec) -> dict[str, bytes]:
     return files
 
 
+def evaluator_gaps(check: CheckSpec) -> list[str]:
+    from .verifiers.spec import ExternalCheck
+
+    variant = _variant(check)
+    if isinstance(variant, ExternalCheck):
+        return []
+    root = check.cwd.resolve()
+    gaps = {}
+    for name in _evaluator_names(variant):
+        if "{{" in name:
+            if name != "{{python}}" and not name.startswith("{{run_dir}}"):
+                gaps[name] = "templated token"
+            continue
+        path = (root / name).resolve()
+        if not path.is_relative_to(root):
+            gaps[name] = "outside cwd"
+        elif not path.is_file():
+            gaps[name] = "missing"
+    return [f"{name}: {reason}" for name, reason in sorted(gaps.items())]
+
+
 def evaluator_digests(check: CheckSpec) -> dict[str, str]:
     return {name: hashlib.sha256(data).hexdigest() for name, data in sorted(evaluator(check).items())}
 
 
 def oracle_matches(approved: dict[str, Any], check: CheckSpec, digest: str) -> bool:
+    from .verifiers.spec import ExternalCheck
+
     record = approved.get(digest, {})
-    return (record.get("kind") == "check_definition"
-            and record.get("oracle", {}).get("files") == evaluator_digests(check))
+    if record.get("kind") != "check_definition":
+        return False
+    files = evaluator_digests(check)
+    if isinstance(_variant(check), ExternalCheck):
+        return record.get("oracle", {}).get("external") is True
+    return bool(files) and record.get("oracle", {}).get("files") == files
 
 
 def sentinel_subject(check: CheckSpec) -> list[str]:
@@ -129,9 +166,9 @@ def sentinel_subject(check: CheckSpec) -> list[str]:
     return sorted(set(check.subject.paths) - oracle) or sorted(set(check.inputs) - oracle)
 
 
-def _null_probe(project, check: CheckSpec, emptied: set[str]) -> bool:
+def _null_probe(project, check: CheckSpec, emptied: set[str]) -> str:
     from . import proc
-    from .inputs import capture_working_tree
+    from .inputs import capture_working_tree, matches
     from .outcome import Passed
     from .runner import _child_env
     from .verifiers import dispatch
@@ -143,30 +180,31 @@ def _null_probe(project, check: CheckSpec, emptied: set[str]) -> bool:
         for item in source.files:
             target = root.joinpath(*item.path.split("/"))
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(files.get(item.path, b"" if item.path in emptied else item.content))
+            target.write_bytes(files.get(item.path, b"" if any(matches(item.path, e) for e in emptied) else item.content))
         for name, data in files.items():
             target = root.joinpath(*name.split("/"))
             if not target.is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
-        run_dir = root / ".vkit-null-subject"
+        run_dir = root / f".probe-{secrets.token_hex(8)}"
         run_dir.mkdir()
         try:
             location = root.joinpath(*check.cwd.resolve().relative_to(project.root.resolve()).parts)
         except ValueError:
             location = root
         location.mkdir(parents=True, exist_ok=True)
-        proc.run(dispatch.argv_for(check, run_dir, None), cwd=location,
-                 stdout_path=run_dir / "stdout.log", stderr_path=run_dir / "stderr.log",
-                 timeout_seconds=min(float(check.timeout_seconds), SENTINEL_TIMEOUT), env=_child_env())
+        finished = proc.run(dispatch.argv_for(check, run_dir, None), cwd=location,
+                            stdout_path=run_dir / "stdout.log", stderr_path=run_dir / "stderr.log",
+                            timeout_seconds=min(float(check.timeout_seconds), SENTINEL_TIMEOUT), env=_child_env())
         artifact = run_dir / check.artifact_name
         raw = artifact.read_bytes() if artifact.is_file() else None
     if raw is None:
-        return True
+        return "timeout" if finished is not None and finished.timed_out else "error"
     try:
-        return not isinstance(dispatch.outcome_from_reading(dispatch.interpret(check, raw)), Passed)
+        passing = isinstance(dispatch.outcome_from_reading(dispatch.interpret(check, raw)), Passed)
     except (ValueError, KeyError, TypeError):
-        return True
+        return "error"
+    return "vacuous" if passing else "rejects"
 
 
 def sentinel(project, check: CheckSpec) -> dict[str, Any]:
@@ -176,10 +214,10 @@ def sentinel(project, check: CheckSpec) -> dict[str, Any]:
     if not subject:
         return {"verdict": "not_bound"}
     try:
-        rejected = _null_probe(project, check, set(subject))
+        verdict = _null_probe(project, check, set(subject))
     except (OSError, ValueError, RuntimeError, ProjectError) as exc:
         return {"verdict": "unavailable", "detail": str(exc)}
-    return {"verdict": "rejected" if rejected else "vacuous", "subject": subject}
+    return {"verdict": verdict, "subject": subject}
 
 
 def check_digests(manifest: Manifest) -> dict[str, str]:
@@ -389,6 +427,7 @@ def gate(
     states: Iterable[CheckState], formal: Iterable[FormalState] = (),
     obligations: dict[str, Any] | None = None,
     uncovered: Iterable[str] = (),
+    sentinels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     states = list(states)
     formal = list(formal)
@@ -437,6 +476,7 @@ def gate(
                 "id": state.check.id,
                 "state": state.freshness.value,
                 "run_id": (state.current or {}).get("run_id"),
+                **({"sentinel": sentinels[state.check.id]} if sentinels and state.check.id in sentinels else {}),
             }
             for state in states
         ] + ghosts,

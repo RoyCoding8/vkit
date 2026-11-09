@@ -272,3 +272,26 @@ def test_a_check_with_no_declared_inputs_goes_stale_on_any_edit(make_project):
     (project / "README.md").write_text("changed", encoding="utf-8")
     code, body = vkit(project, "status")
     assert (body["checks"][0]["state"], body["checks"][0]["inputs"]["scope"]) == ("stale", "whole tree (3 files)")
+
+
+SPOOF_DRIVER = DRIVER + '''import pathlib
+spoofed = any(p.name == ".vkit-null-subject" for p in pathlib.Path.cwd().rglob("*"))
+report([("ok", spoofed or pathlib.Path("subject.py").read_text().strip() != "", "read")])
+'''
+
+
+def test_the_probe_does_not_advertise_its_name_to_the_evaluator(make_project):
+    project = sentinel_project(make_project, SPOOF_DRIVER)
+    records = json.loads((project / ".git" / "vkit" / "approved.json").read_text())["records"]
+    definition = next(r for r in records.values() if r["kind"] == "check_definition")
+    assert definition["oracle"]["sentinel"]["verdict"] == "rejects"
+
+
+def test_a_sentinel_timeout_is_not_recorded_as_a_rejection(make_project):
+    slow = DRIVER + 'import time\ntime.sleep(2)\nreport([("ok", True, "x")])\n'
+    check = scenario_check("ok", "driver.py", scenarios=["ok"], inputs=["driver.py", "subject.py"], timeout=0.5)
+    check["subject"] = {"paths": ["subject.py"], "digest": None}
+    project = make_project({"driver.py": slow, "subject.py": "v\n"}, [check])
+    records = json.loads((project / ".git" / "vkit" / "approved.json").read_text())["records"]
+    definition = next(r for r in records.values() if r["kind"] == "check_definition")
+    assert definition["oracle"]["sentinel"]["verdict"] == "timeout"

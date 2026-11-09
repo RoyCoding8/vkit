@@ -363,7 +363,7 @@ def cmd_evidence_replay(args: argparse.Namespace) -> int:
 
 def _confirm(args: argparse.Namespace, description: str, question: str) -> bool:
     if args.yes:
-        if os.environ.get("VKIT_ALLOW_YES"):
+        if os.environ.get("VKIT_ALLOW_YES") == "1":
             return True
         raise Refused("this action needs operator confirmation; run it interactively or set "
                       "VKIT_ALLOW_YES in the operator environment:\n" + description, EXIT_INVALID)

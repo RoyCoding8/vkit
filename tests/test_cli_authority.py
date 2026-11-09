@@ -15,6 +15,9 @@ def test_yes_requires_operator_authorization(monkeypatch):
     assert "--yes" not in str(exc.value)
     monkeypatch.setenv("VKIT_ALLOW_YES", "1")
     assert _confirm(args, "approve the definition", "accept it?") is True
+    monkeypatch.setenv("VKIT_ALLOW_YES", "0")
+    with pytest.raises(Refused):
+        _confirm(args, "approve the definition", "accept it?")
 
 
 def test_definition_changes_are_labeled():

@@ -369,7 +369,7 @@ def cmd_evidence_replay(args: argparse.Namespace) -> int:
     return _RESULT_EXIT.get((record.get("outcome") or {}).get("result"), EXIT_OK)
 
 
-AGENT_MARKERS = ("vkit_hook", "claude", "codex", "pi", "deepai", "mcp", "node", "aider")
+AGENT_MARKERS = ("vkit_hook", "claude", "codex", "deepai", "aider", "mcp")
 
 
 def _telemetry(project: Any, event: str) -> None:
@@ -387,7 +387,7 @@ def _telemetry(project: Any, event: str) -> None:
         pass
 
 
-def _parent_commands(depth: int = 8) -> tuple[list[str], bool]:
+def _parent_commands(depth: int = 2) -> tuple[list[str], bool]:
     commands, pid, degraded = [], os.getppid(), False
     for _ in range(depth):
         try:

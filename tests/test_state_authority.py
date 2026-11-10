@@ -342,16 +342,17 @@ def test_registered_bundles_actually_flip():
             if line.startswith("def test_"):
                 name = line[4:].split("(")[0]
                 nodes[name] = f"tests/{path.name}::{name}"
-    env = {**os.environ, "PYTHONPATH": str(root / "tests"), "VKIT_FLIP_MUTANT": "1"}
+    env = {**os.environ, "PYTHONPATH": str(root / "tests"), "VKIT_FLIP_MUTANT": "1",
+           "VKIT_ALLOW_YES": "1"}
     for doubt in state.DOUBTS:
         mutant, honest = doubt.falsifier
         assert mutant in nodes and honest in nodes, doubt.field
         good = subprocess.run([sys.executable, "-m", "pytest", "-q", "--no-header", nodes[honest]],
-                              cwd=root, capture_output=True, text=True, timeout=900, **NO_WINDOW)
-        assert good.returncode == 0, (doubt.field, honest, good.stdout[-2000:])
+                              cwd=root, env=env, capture_output=True, text=True, timeout=900, **NO_WINDOW)
+        assert good.returncode == 0, (doubt.field, honest, good.stdout[-2000:], good.stderr[-500:])
         bad = subprocess.run([sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "flip_plugin", nodes[mutant]],
                              cwd=root, env=env, capture_output=True, text=True, timeout=900, **NO_WINDOW)
-        assert bad.returncode != 0, (doubt.field, mutant, bad.stdout[-2000:])
+        assert bad.returncode != 0, (doubt.field, mutant, bad.stdout[-2000:], bad.stderr[-500:])
 
 
 def test_an_unpinnable_evaluator_refuses_acceptance(make_project):

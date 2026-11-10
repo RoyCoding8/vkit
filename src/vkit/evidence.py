@@ -206,7 +206,8 @@ def deps_receipt(
             path = entry["p"] if "p" in entry else None
             if entry["e"] in ("spawn", "exec"):
                 spawns.append({"argv": entry.get("argv", []), **({} if entry["e"] == "spawn" else {"exec": True})})
-                if any(token == "-I" for arg in entry.get("argv", []) for token in str(arg).split()):
+                if any(token.strip("\"'(), ") == "-I"
+                       for raw in entry.get("argv", []) for token in str(raw).split()):
                     isolated = True
             elif entry["e"] == "probe":
                 if path not in absent:
@@ -308,9 +309,11 @@ def deps_recorder_source() -> str:
                 elif event in ("os.listdir", "os.scandir"):
                     _bind("enumerate", args[0])
                 elif event == "subprocess.Popen":
-                    _emit({"e": "spawn", "argv": [str(a) for a in args[:2] if a]})
+                    seq = args[1] if isinstance(args[1], (list, tuple)) else str(args[1] or "").split()
+                    _emit({"e": "spawn", "argv": [str(a) for a in (args[0], *seq) if a]})
                 elif event == "os.exec":
-                    _emit({"e": "exec", "argv": [str(a) for a in (args[1] or ())]})
+                    seq = args[1] if isinstance(args[1], (list, tuple)) else str(args[1] or "").split()
+                    _emit({"e": "exec", "argv": [str(a) for a in seq]})
             sys.addaudithook(_hook)
     ''')
 

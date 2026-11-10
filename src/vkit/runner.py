@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 import platform
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from . import proc
 from .budgets import evaluate
-from .evidence import backend_identity, policy_identity, seal
+from .evidence import backend_identity, deps_receipt, deps_recorder_source, evaluator_closure, pin_evaluators, policy_identity, seal
 from .formal.policy import FormalComponent
 from .inputs import (
     CapturedSource,
@@ -49,12 +51,22 @@ def missing_prerequisite(check: CheckSpec) -> Blocked | None:
     return None
 
 
-def _child_env() -> dict[str, str]:
+def _child_env(extra: tuple[str, ...] = ()) -> dict[str, str]:
     previous = os.environ.get("PYTHONPATH")
     paths = dict.fromkeys(
-        [_VKIT_SRC, *(previous.split(os.pathsep) if previous else [])]
+        [*extra, _VKIT_SRC, *(previous.split(os.pathsep) if previous else [])]
     )
     return {**os.environ, "PYTHONPATH": os.pathsep.join(paths)}
+
+
+def _pinned_intact(pin: dict[str, Any]) -> bool:
+    try:
+        info = Path(pin["path"]).stat()
+    except OSError:
+        return False
+    return [info.st_dev, info.st_ino] == pin["inode"] and (
+        hashlib.sha256(Path(pin["path"]).read_bytes()).hexdigest() == pin["sha256"]
+    )
 
 
 def _derive(
@@ -681,7 +693,7 @@ def _execute(
         if record["inputs"]["unmatched"]:
             return Blocked(BlockedReason.INPUT_MISSING, "target policy inputs are missing"), None, None, {}
         return execute_empirical(check, store, record, resolved_job)
-    from .state import evaluator_digests, oracle_matches
+    from .state import oracle_matches
 
     approval = store.approved().get(digest, {})
     if (
@@ -741,7 +753,8 @@ def _execute(
             )
         reading, exit = None, None
     else:
-        if evaluator_digests(check) != approval.get("oracle", {}).get("files"):
+        pinned = pin_evaluators(check)
+        if {name: pin["sha256"] for name, pin in pinned.items()} != approval.get("oracle", {}).get("files"):
             return (
                 Blocked(
                     BlockedReason.NOT_APPROVED,
@@ -751,17 +764,48 @@ def _execute(
                 None,
                 {},
             )
-        exit = proc.run(
-            dispatch.argv_for(
-                check, run_dir, None, input_digest=record["inputs"]["digest"]
-            ),
-            cwd=check.cwd,
-            env=_child_env(),
-            stdout_path=run_dir / "stdout.log",
-            stderr_path=run_dir / "stderr.log",
-            timeout_seconds=check.timeout_seconds,
-            should_cancel=lambda: store.cancel_requested(run_id),
+        closure = evaluator_closure(check)
+        with tempfile.TemporaryDirectory(prefix="vkit-deps-") as recorder:
+            root = Path(recorder)
+            (root / "sitecustomize.py").write_text(deps_recorder_source(), encoding="utf-8")
+            log_path = root / "deps-log.jsonl"
+            env = _child_env((str(root),))
+            env["VKIT_DEPS_LOG"] = str(log_path)
+            exit = proc.run(
+                dispatch.argv_for(
+                    check, run_dir, None, input_digest=record["inputs"]["digest"]
+                ),
+                cwd=check.cwd,
+                env=env,
+                stdout_path=run_dir / "stdout.log",
+                stderr_path=run_dir / "stderr.log",
+                timeout_seconds=check.timeout_seconds,
+                should_cancel=lambda: store.cancel_requested(run_id),
+            )
+            log = (
+                [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                if log_path.is_file() else None
+            )
+        opened = {entry["p"] for entry in log or () if entry["e"] in ("read", "enumerate")}
+        unused = tuple(
+            item["path"] for item in record["inputs"]["files"]
+            if str((check.cwd / item["path"]).resolve()).replace(os.sep, "/") not in opened
         )
+        drift = [name for name, pin in pinned.items() if not _pinned_intact(pin)]
+        write_json(
+            run_dir / "deps.json",
+            deps_receipt(log=log, pinned=pinned, closure=closure, declared=unused, drift=drift),
+        )
+        if drift:
+            return (
+                Blocked(
+                    BlockedReason.NOT_APPROVED,
+                    "evaluator bytes changed during execution: " + ", ".join(drift),
+                ),
+                None,
+                exit,
+                {},
+            )
         outcome, reading = _derive(
             check, exit, run_dir / check.artifact_name, record["baseline"]
         )

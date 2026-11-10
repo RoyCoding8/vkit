@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +124,195 @@ def _producer_modules() -> dict[str, Path]:
                     target = node.module or ""
                 pending.append((target, target))
     return found
+
+
+def evaluator_closure(check) -> dict[str, bytes]:
+    from .state import evaluator
+
+    root = check.cwd.resolve()
+    files = {name: bytes(data) for name, data in evaluator(check).items()}
+    seeds = set(files)
+    for name in files:
+        parent = Path(name).parent
+        while True:
+            if (root / parent / "conftest.py").is_file():
+                seeds.add((parent / "conftest.py").as_posix())
+            if not parent.parent or parent == Path("."):
+                break
+            parent = parent.parent
+    pending = sorted(seeds)
+    while pending:
+        name = pending.pop()
+        if name in files and name not in seeds:
+            continue
+        path = root / name
+        if not path.is_file():
+            continue
+        if name not in files:
+            files[name] = path.read_bytes()
+        try:
+            tree = ast.parse(files[name].decode("utf-8", "surrogateescape"))
+        except SyntaxError:
+            continue
+        base = name.split("/")[:-1]
+        for node in ast.walk(tree):
+            targets: list[str] = []
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                rel = list(base)
+                for _ in range(node.level):
+                    if rel:
+                        rel.pop()
+                module = node.module or ""
+                prefix = "/".join([*rel, *module.split(".")]) if module else "/".join(rel)
+                first = node.names[0].name if node.names else ""
+                targets = [prefix, f"{prefix}.{first}" if first else prefix]
+            for target in targets:
+                dotted = target.replace(".", "/")
+                for candidate in (f"{dotted}.py", f"{dotted}/__init__.py"):
+                    if candidate and candidate not in files and (root / candidate).is_file():
+                        pending.append(candidate)
+    return files
+
+
+def pin_evaluators(check) -> dict[str, dict[str, Any]]:
+    from .state import evaluator
+
+    root = check.cwd.resolve()
+    pinned: dict[str, dict[str, Any]] = {}
+    for name in sorted(evaluator(check)):
+        path = root / name
+        with path.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        info = path.stat()
+        pinned[name] = {"path": str(path.resolve()), "sha256": digest,
+                        "inode": [info.st_dev, info.st_ino]}
+    return pinned
+
+
+def deps_receipt(
+    *, log: list[dict[str, Any]] | None = None, pinned: dict[str, dict[str, Any]] | None = None,
+    closure: dict[str, bytes] | None = None, declared: tuple[str, ...] = (),
+    host_log: dict[str, Any] | None = None, drift: list[str] | None = None,
+) -> dict[str, Any]:
+    bindings: dict[str, Any] = {}
+    absent: list[str] = []
+    spawns: list[dict[str, Any]] = []
+    isolated = False
+    if log:
+        provenance = "in-band recorder"
+        for entry in log:
+            path = entry["p"] if "p" in entry else None
+            if entry["e"] in ("spawn", "exec"):
+                spawns.append({"argv": entry.get("argv", []), **({} if entry["e"] == "spawn" else {"exec": True})})
+                if any(token == "-I" for arg in entry.get("argv", []) for token in str(arg).split()):
+                    isolated = True
+            elif entry["e"] == "probe":
+                if path not in absent:
+                    absent.append(path)
+            else:
+                current = bindings.setdefault(path, {"op": entry["e"]})
+                if entry.get("sha256"):
+                    current["op"] = "read"
+                    current["sha256"] = entry["sha256"]
+    elif host_log:
+        provenance = "host-traced"
+        bindings.update(host_log.get("bindings", {}))
+    else:
+        provenance = "none"
+    does_not_establish = []
+    if isolated:
+        provenance = "none"
+        does_not_establish.append(
+            "dependency closure: the evaluator re-executed into an isolated (-I) interpreter; its opens are untraced")
+    elif provenance == "none":
+        does_not_establish.append("dependency closure: the execution world did not load the in-band recorder")
+    does_not_establish.extend([
+        "env reads: names and values are unobservable to the in-band recorder",
+        "native code and isolated descendants: their file opens are not traced",
+    ])
+    receipt: dict[str, Any] = {
+        "schema": "deps.v1",
+        "closure_provenance": provenance,
+        "established": provenance != "none",
+        "claim": "opened-file closure for non-isolated Python descendants under the pinned interpreter digest",
+        "does_not_establish": does_not_establish,
+        "bindings": bindings,
+        "negative_bindings": {"absent_probes": sorted(absent), "unused_declared": sorted(declared)},
+        "subprocesses": spawns,
+        "unsupported": {
+            "env_reads": "env reads are unobservable to the in-band recorder; a result may depend on unbound environment values",
+            "native_code": "native reads and isolated descendants are outside the recorder",
+            "isolated_descendants": "python -I children ignore PYTHONPATH and are untraced",
+        },
+        "staleness": {
+            "semantics": "one-shot",
+            "detail": ("a dependency discovered after job seal binds by identity and stales the run exactly once; "
+                       "the re-run binds it at open time, so convergence needs no re-acceptance"),
+        },
+        "residual_window": ("a symlink swap between the open-time hash and spawn that is swapped back before the "
+                            "post-run hash is undetected; the post-run hash over the pinned resolved path bounds the window"),
+    }
+    if pinned:
+        receipt["open_time_digests"] = {name: pin["sha256"] for name, pin in pinned.items()}
+    if closure is not None:
+        receipt["discovered_closure"] = {
+            name: hashlib.sha256(data).hexdigest() for name, data in sorted(closure.items())
+        }
+    if drift:
+        receipt["evaluator_drift"] = drift
+    return receipt
+
+
+def deps_recorder_source() -> str:
+    return textwrap.dedent('''
+        import hashlib, json, os, sys
+        _LOG = os.environ.get("VKIT_DEPS_LOG")
+        if _LOG:
+            _busy = False
+            def _emit(entry):
+                try:
+                    with open(_LOG, "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(entry) + "\\n")
+                except OSError:
+                    pass
+            def _bind(op, path):
+                if not isinstance(path, (str, bytes)):
+                    return
+                if isinstance(path, bytes):
+                    path = os.fsdecode(path)
+                path = os.path.abspath(path).replace("\\\\", "/")
+                entry = {"e": op, "p": path}
+                try:
+                    if op == "read" and os.path.isfile(path) and os.path.getsize(path) <= (1 << 20):
+                        with open(path, "rb") as handle:
+                            entry["sha256"] = hashlib.file_digest(handle, "sha256").hexdigest()
+                    elif not os.path.exists(path):
+                        entry["e"] = "probe"
+                except OSError:
+                    pass
+                _emit(entry)
+            def _hook(event, args):
+                global _busy
+                if _busy:
+                    return
+                if event == "open":
+                    mode = str(args[1] or "")
+                    if "r" in mode or mode == "":
+                        _busy = True
+                        try:
+                            _bind("read", args[0])
+                        finally:
+                            _busy = False
+                elif event in ("os.listdir", "os.scandir"):
+                    _bind("enumerate", args[0])
+                elif event == "subprocess.Popen":
+                    _emit({"e": "spawn", "argv": [str(a) for a in args[:2] if a]})
+                elif event == "os.exec":
+                    _emit({"e": "exec", "argv": [str(a) for a in (args[1] or ())]})
+            sys.addaudithook(_hook)
+    ''')
 
 
 def policy_identity() -> dict[str, str]:

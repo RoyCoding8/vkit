@@ -11,9 +11,11 @@ Layout under `<git common dir>/vkit/`:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from collections.abc import Iterator
@@ -27,6 +29,7 @@ from .nowindow import is_windows
 from .paths import Project
 
 STATE_DIR = "vkit"
+_SNAPSHOT_LIMIT = 4
 _RUN_ID = re.compile(r"[A-Za-z0-9_-]+")
 _SUBJECT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -37,6 +40,12 @@ def now() -> str:
 
 def new_run_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+
+
+def _identity(files: dict[str, bytes]) -> str:
+    digests = {name: hashlib.sha256(data).hexdigest() for name, data in sorted(files.items())}
+    return hashlib.sha256(json.dumps(digests, sort_keys=True, separators=(",", ":"),
+                              ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _subject_dir(subject: dict[str, Any]) -> Path:
@@ -279,6 +288,53 @@ class Store:
                 return True
             _unlock(handle)
             return False
+
+    def retain_evaluator(self, check_id: str, files: dict[str, bytes]) -> str:
+        identity = _identity(files)
+        base = self.root / "evaluators" / check_id / identity
+        for name, data in files.items():
+            target = base / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        return identity
+
+    def evaluator_bytes(self, check_id: str, identity: str | None) -> dict[str, bytes] | None:
+        if not identity:
+            return None
+        base = self.root / "evaluators" / check_id / identity
+        if not base.is_dir():
+            return None
+        return {path.relative_to(base).as_posix(): path.read_bytes()
+                for path in sorted(base.rglob("*")) if path.is_file()}
+
+    def label_fail(self, check_id: str, identity: str, label: str) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        write_json(self.root / "corpus" / f"{check_id}.json",
+                   {**(read_json(self.root / "corpus" / f"{check_id}.json") or {}), identity: label})
+        marker = self.root / "fails" / check_id / identity / "label"
+        if marker.is_file():
+            marker.write_text(label, encoding="utf-8")
+
+    def retain_fail(self, check_id: str, identity: str, files: dict[str, bytes]) -> None:
+        base = self.root / "fails" / check_id / identity
+        for name, data in files.items():
+            target = base / "files" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        corpus = read_json(self.root / "corpus" / f"{check_id}.json") or {}
+        (base / "label").write_text(corpus.get(identity) or "good", encoding="utf-8")
+        snaps = self.root / "fails" / check_id
+        dirs = sorted((p for p in snaps.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in dirs[_SNAPSHOT_LIMIT:]:
+            shutil.rmtree(stale, ignore_errors=True)
+
+    def fail_snapshot(self, check_id: str, identity: str) -> dict[str, Any] | None:
+        files = self.root / "fails" / check_id / identity / "files"
+        if not files.is_dir():
+            return None
+        return {"files": {path.relative_to(files).as_posix(): path.read_bytes()
+                          for path in sorted(files.rglob("*")) if path.is_file()},
+                "label": (files.parent / "label").read_text(encoding="utf-8")}
 
     def request_cancel(self, run_id: str) -> None:
         (self.run_dir(run_id) / "cancel").touch()

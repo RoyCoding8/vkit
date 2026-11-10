@@ -462,8 +462,12 @@ _BASE_TOOLS = (
                      "required": ["components"], "properties": {
                          "components": {"type": "array", "items": {"type": "object"}}}},
           "rationale": _STR}, _propose, read_only=False, category="repository"),
-    Tool("gate", "READY only when every registered check passed against the current inputs; REJECTED when one "
-         "failed; otherwise BLOCKED with the checks that lack fresh evidence.", {}, _gate, category="repository"),
+    Tool("gate", "Verdict algebra READY, READY_SCOPED, REJECTED, BLOCKED. READY only when every registered check "
+         "passed against the current inputs; READY_SCOPED marks uncovered_change - requested paths outside every "
+         "check's inputs; REJECTED on fresh_fail, not_approved, obligation_inventory, obligation_removed or "
+         "weakened_check; otherwise BLOCKED (fresh_blocked, stale, missing, blocked, incomparable) with the checks "
+         "that lack fresh evidence and a named clearing action. ci.py verdicts map via state.CI_VERDICTS: FAILED "
+         "maps to REJECTED.", {}, _gate, category="repository"),
 )
 _INVOKE = {
     "name": "invoke", "description": "Run one enabled tool using its discovered name and arguments. "

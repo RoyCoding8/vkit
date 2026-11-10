@@ -163,7 +163,10 @@ def run_gate(project: Project, candidate: str, target: str, output: Path) -> dic
                             "outcome": Blocked(BlockedReason.INTERNAL_ERROR, str(exc)).to_json()})
     ready = all(r["receipt_valid"] and r["outcome"]["result"] == "PASS" for r in results)
     verdict = "READY" if ready else "FAILED" if any(r["outcome"]["result"] == "FAIL" for r in results) else "BLOCKED"
-    report = {"verdict": verdict, "candidate": candidate, "target": target,
+    from .state import CI_VERDICTS
+
+    report = {"verdict": verdict, "verdict_algebra": CI_VERDICTS[verdict].value,
+              "candidate": candidate, "target": target,
               "authority": authority, "checks": results,
               "reason": "all target requirements passed on the exact candidate" if ready else "target requirements are not established"}
     write_json(output / "gate.json", report)

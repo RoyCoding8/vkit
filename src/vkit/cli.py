@@ -179,6 +179,14 @@ def cmd_check_run(args: argparse.Namespace) -> int:
     records = [jobs.submit(ctx.project, manifest, check_id, store=ctx.store) for check_id in check_ids]
     if not args.detach:
         records = [jobs.wait(ctx.store, r["run_id"]) for r in records]
+        from .inputs import canonical_digest, capture_working_tree
+        from .state import evaluator_digests
+        tree = {item.path: item.content for item in capture_working_tree(ctx.project).files}
+        for record in records:
+            check_id = (record.get("subject") or {}).get("id")
+            if (record.get("outcome") or {}).get("result") == "FAIL" and check_id in manifest.checks:
+                ctx.store.retain_fail(check_id,
+                                      canonical_digest(evaluator_digests(manifest.require(check_id))), tree)
     results = {(r.get("outcome") or {}).get("result", "BLOCKED" if r["state"] == "interrupted" else None)
                for r in records}
     _emit({"command": "check run", "runs": records}, args.json,
@@ -452,6 +460,9 @@ def _accept_proposal(args: argparse.Namespace, ctx: query.Context) -> int:
 
             manifest = parse_manifest(ctx.project)
             _pinned_or_refuse(manifest, accepted)
+            from .state import evaluator
+            for c in accepted:
+                ctx.store.retain_evaluator(c, evaluator(manifest.require(c)))
             checked = {c: probe(ctx.project, manifest.require(c)) for c in accepted}
             ctx.store.approve({manifest.digest(c): _definition_record(
                 manifest, c, backend_identity(manifest.require(c)), checked[c], via,
@@ -516,16 +527,27 @@ def _prior_acceptances(approved: dict[str, Any], check_id: str) -> list[dict[str
     return sorted(records, key=lambda r: r.get("accepted_at") or "")
 
 
-def _oracle_diff(prior: dict[str, Any], check) -> str:
-    from .state import evaluator_digests
+def _oracle_diff(store: Store, prior: dict[str, Any], check) -> list[str]:
+    import difflib
+
+    from .state import evaluator
     from .verifiers.spec import ExternalCheck
 
     if isinstance(getattr(check, "variant", None) or check, ExternalCheck):
-        return "oracle: external check - evaluator content is not pinned"
-    was, current = prior.get("oracle", {}).get("files", {}), evaluator_digests(check)
-    changed = [f"{name} {was.get(name, '<absent>')[:12]} -> {current.get(name, '<removed>')[:12]}"
-               for name in sorted(set(was) | set(current)) if was.get(name) != current.get(name)]
-    return "oracle (evaluator content) vs last acceptance: " + ("; ".join(changed) or "unchanged")
+        return ["oracle: external check - evaluator content is not pinned"]
+    was = store.evaluator_bytes(check.id, (prior.get("oracle") or {}).get("digest"))
+    if was is None:
+        return ["oracle: prior evaluator bytes are not retained (pre byte-store acceptance)"]
+    current = evaluator(check)
+    changed = [name for name in sorted(set(was) | set(current)) if was.get(name) != current.get(name)]
+    lines = ["oracle byte diff vs last acceptance: " + ("; ".join(changed) or "unchanged")]
+    for name in changed:
+        diff = list(difflib.unified_diff(
+            was.get(name, b"").decode("utf-8", "replace").splitlines(),
+            current.get(name, b"").decode("utf-8", "replace").splitlines(),
+            fromfile=f"{name} (accepted)", tofile=f"{name} (candidate)", lineterm=""))
+        lines += [f"  {line}" for line in diff[:20]]
+    return lines
 
 
 def _sentinel_line(found: dict[str, Any]) -> str:
@@ -565,7 +587,7 @@ def _accept_card(manifest, identities, pending, formal_records, approved, snapsh
             if priors[0] is not prior:
                 lines.append(f"  {_demonstrated_label(first_label, demo)} vs first acceptance"
                              f" ({priors[0].get('accepted_at')}, {priors[0].get('confirmed_via') or 'unrecorded'})")
-            lines.append("  " + _oracle_diff(prior, check))
+            lines += ["  " + line for line in _oracle_diff(store, prior, check)]
         lines.append("  " + _sentinel_line(sentinels.get(check_id) or sentinel(snapshot.project, check)))
         last = store.latest(check_id)
         lines.append("  evidence: " + (f"last run {last['run_id']} {last['result']}" if last
@@ -679,6 +701,20 @@ def cmd_accept(args: argparse.Namespace) -> int:
                           "an empty oracle would match every future edit, so acceptance is refused", EXIT_INVALID)
     sentinels = {check_id: sentinel(ctx.project, manifest.require(check_id)) for check_id in pending}
     oracle = {check_id: evaluator_digests(manifest.require(check_id)) for check_id in pending}
+    from .state import comparison, evaluator
+
+    comparisons = {}
+    for check_id in pending:
+        priors = _prior_acceptances(approved, check_id)
+        outcome = comparison(ctx.store, ctx.project, manifest.require(check_id), priors[-1] if priors else None)
+        comparisons[check_id] = outcome
+        if outcome["outcome"] == "weakened_check":
+            raise Refused(f"{check_id}: weakened_check - the candidate evaluator passes a retained legitimate "
+                          "FAIL; acceptance is refused: " + json.dumps(outcome["receipts"], indent=2),
+                          EXIT_BLOCKED)
+        if outcome["outcome"] == "incomparable":
+            raise Refused(f"{check_id}: incomparable - the accepted evaluator cannot run against the current "
+                          f"candidate; clearing: {outcome['clearing']}", EXIT_BLOCKED)
     from .formal.verus import ExecutionSetupError, resolve_execution
     from .inputs import canonical_digest
 
@@ -714,6 +750,9 @@ def cmd_accept(args: argparse.Namespace) -> int:
             inventory["dropped"][name] = last["run_id"]
     lines = _accept_card(manifest, identities, pending, formal_records, approved, Snapshot(ctx.project),
                          ctx.store, sentinels)
+    for check_id, outcome in comparisons.items():
+        lines.append(f"{check_id} comparison: {outcome['outcome']}"
+                     + (f" - clearing: {outcome['clearing']}" if outcome["clearing"] else ""))
     lines += _inventory_diff(previous, inventory, {c: comp.required for c, comp in manifest.components.items()})
     inventory_changed = previous != {k: inventory[k] for k in ("checks", "formal_required", "dropped")}
     if not pending and not formal_records and not inventory_changed:
@@ -732,6 +771,8 @@ def cmd_accept(args: argparse.Namespace) -> int:
                                                   dropped=inventory["dropped"],
                                                   formal=inventory["formal_required"],
                                                   drop_names=tuple(args.drop or ()))
+    for check_id in pending:
+        ctx.store.retain_evaluator(check_id, evaluator(manifest.require(check_id)))
     ctx.store.approve(records)
     _emit({"accepted": pending, "accepted_components": list(formal_records), "confirmed_via": via}, args.json,
           f"accepted ({via}): {', '.join(pending + list(formal_records))}")

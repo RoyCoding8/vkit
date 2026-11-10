@@ -60,14 +60,20 @@ DOUBTS = (
     Doubt("fresh_blocked", "block", "clear the run blocker and re-run",
           ("test_a_blocked_run_blocks_the_gate", "test_a_cleared_run_reaches_ready")),
     Doubt("stale", "block", "re-run the check on the current inputs",
-          ("test_vkit_change_stales_evidence_but_keeps_the_approval", "test_definition_change_still_requires_reaccept")),
-    Doubt("missing", "block", "run the check to produce evidence",
+          ("test_a_stale_check_blocks_the_gate", "test_a_cleared_run_reaches_ready")),    Doubt("missing", "block", "run the check to produce evidence",
           ("test_a_partial_accept_cannot_rebind_a_removed_obligation", "test_fixing_the_subject_clears_a_fresh_fail")),
     Doubt("blocked", "block", "clear the reported blocker and re-run",
           ("test_a_blocked_formal_component_blocks_the_gate", "test_a_cleared_formal_component_reaches_ready")),
     Doubt("uncovered_change", "scope", "extend coverage or declare does_not_establish",
-          ("test_uncovered_requested_paths_scope_the_ready_verdict", "test_producer_identity_tracks_the_gate_not_the_console")),
+          ("test_uncovered_requested_paths_scope_the_ready_verdict", "test_a_cleared_run_reaches_ready")),
+    Doubt("weakened_check", "reject", "fix the evaluator or accept the weakening with both runs displayed",
+          ("test_a_weakened_evaluator_refuses_acceptance", "test_a_labeled_false_positive_fix_is_fixed_evaluator")),
+    Doubt("incomparable", "block", "re-accept the reference",
+          ("test_an_unrunnable_accepted_evaluator_is_incomparable",
+           "test_restoring_the_reference_clears_an_incomparable_comparison")),
 )
+CI_VERDICTS = {"READY": Verdict.READY, "FAILED": Verdict.REJECTED, "BLOCKED": Verdict.BLOCKED}
+_EFFECT_ORDER = ("reject", "block", "scope")
 
 
 _FRESH = {
@@ -166,26 +172,22 @@ def sentinel_subject(check: CheckSpec) -> list[str]:
     return sorted(set(check.subject.paths) - oracle) or sorted(set(check.inputs) - oracle)
 
 
-def _null_probe(project, check: CheckSpec, emptied: set[str]) -> str:
+def _probe_run(project, check: CheckSpec, evaluator_files: dict[str, bytes],
+               tree: dict[str, bytes]) -> str:
     from . import proc
-    from .inputs import capture_working_tree, matches
     from .outcome import Passed
     from .runner import _child_env
     from .verifiers import dispatch
-
-    files = evaluator(check)
-    source = capture_working_tree(project)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        for item in source.files:
-            target = root.joinpath(*item.path.split("/"))
+        for path, content in tree.items():
+            target = root.joinpath(*path.split("/"))
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(files.get(item.path, b"" if any(matches(item.path, e) for e in emptied) else item.content))
-        for name, data in files.items():
+            target.write_bytes(content)
+        for name, data in evaluator_files.items():
             target = root.joinpath(*name.split("/"))
-            if not target.is_file():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
         run_dir = root / f".probe-{secrets.token_hex(8)}"
         run_dir.mkdir()
         try:
@@ -199,12 +201,60 @@ def _null_probe(project, check: CheckSpec, emptied: set[str]) -> str:
         artifact = run_dir / check.artifact_name
         raw = artifact.read_bytes() if artifact.is_file() else None
     if raw is None:
-        return "timeout" if finished is not None and finished.timed_out else "error"
+        return "timeout" if finished is not None and finished.timed_out else "BLOCKED"
     try:
         passing = isinstance(dispatch.outcome_from_reading(dispatch.interpret(check, raw)), Passed)
     except (ValueError, KeyError, TypeError):
-        return "error"
-    return "vacuous" if passing else "rejects"
+        return "BLOCKED"
+    return "PASS" if passing else "FAIL"
+
+
+def _null_probe(project, check: CheckSpec, emptied: set[str]) -> str:
+    from .inputs import capture_working_tree, matches
+    source = capture_working_tree(project)
+    tree = {item.path: (b"" if any(matches(item.path, e) for e in emptied) else item.content)
+            for item in source.files}
+    return {"PASS": "vacuous", "FAIL": "rejects", "timeout": "timeout", "BLOCKED": "error"}[
+        _probe_run(project, check, evaluator(check), tree)]
+
+
+def comparison(store: Store, project, check: CheckSpec, prior: dict[str, Any] | None) -> dict[str, Any]:
+    from .inputs import capture_working_tree
+    identity = ((prior or {}).get("oracle") or {}).get("digest")
+    if not identity:
+        return {"outcome": "unchanged", "clearing": None, "receipts": []}
+    accepted = store.evaluator_bytes(check.id, identity)
+    if accepted is None:
+        return {"outcome": "incomparable", "clearing": "re-accept the reference",
+                "receipts": [{"run": "accepted evaluator bytes", "result": "not retained"}]}
+    receipts = []
+    try:
+        tree = {item.path: item.content for item in capture_working_tree(project).files}
+        candidate = _probe_run(project, check, accepted, tree)
+    except (OSError, ValueError, RuntimeError, ProjectError):
+        candidate = "BLOCKED"
+    receipts.append({"run": "accepted evaluator vs current candidate", "result": candidate})
+    if candidate == "BLOCKED":
+        return {"outcome": "incomparable", "clearing": "re-accept the reference", "receipts": receipts}
+    current = evaluator(check)
+    if current == accepted or not set(accepted) & set(current):
+        return {"outcome": "unchanged", "clearing": None, "receipts": receipts}
+    snapshot = store.fail_snapshot(check.id, identity)
+    if snapshot:
+        try:
+            snap = _probe_run(project, check, evaluator(check), snapshot["files"])
+        except (OSError, ValueError, RuntimeError, ProjectError):
+            snap = "BLOCKED"
+        receipts.append({"run": f"candidate evaluator vs retained FAIL (label {snapshot['label']})",
+                         "was": "FAIL", "result": snap})
+        if snap == "PASS":
+            if snapshot["label"] == "bad":
+                return {"outcome": "fixed_evaluator", "clearing": "accept the fixed evaluator",
+                        "receipts": receipts}
+            return {"outcome": "weakened_check",
+                    "clearing": "fix the evaluator or accept the weakening with both runs displayed",
+                    "receipts": receipts}
+    return {"outcome": "unchanged", "clearing": None, "receipts": receipts}
 
 
 def sentinel(project, check: CheckSpec) -> dict[str, Any]:
@@ -428,50 +478,63 @@ def gate(
     obligations: dict[str, Any] | None = None,
     uncovered: Iterable[str] = (),
     sentinels: dict[str, str] | None = None,
+    comparisons: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     states = list(states)
     formal = list(formal)
     required = [state for state in formal if state.required]
     ghosts = []
-    if obligations is not None:
-        registered = {s.check.id for s in states}
-        removed = set(obligations.get("checks", ())) - registered
-        removed |= {rid for rid in obligations.get("formal_required", ())
-                    if not any(s.component.id == rid and s.required for s in formal)}
-        removed |= set(obligations.get("dropped", ())) - registered
-        ghosts = [{"id": rid, "state": "obligation_removed", "run_id": None} for rid in sorted(removed)]
-    if not states and not required and not ghosts:
-        verdict, reason = Verdict.BLOCKED, "no checks are registered"
-    elif obligations is None and (states or required):
-        verdict, reason = Verdict.REJECTED, "obligation_inventory: no accepted inventory binds this manifest"
-    elif ghosts:
-        verdict, reason = Verdict.REJECTED, ("obligation_removed: " + ", ".join(g["id"] for g in ghosts)
-                                             + " were accepted but are no longer registered or required")
-    elif any(
-        state.freshness is Freshness.FRESH_FAIL
-        for state in (*states, *required)
-    ):
-        verdict, reason = Verdict.REJECTED, "fresh_fail: a required check failed against the current inputs"
-    elif any(state.freshness is Freshness.NOT_APPROVED for state in (*states, *required)):
-        verdict, reason = Verdict.REJECTED, "not_approved: a required check definition is not accepted"
-    elif all(state.freshness is Freshness.FRESH_PASS for state in states) and all(
-        state.freshness is Freshness.FRESH_PASS for state in required
-    ):
-        gaps = list(uncovered)
-        if gaps:
-            verdict, reason = Verdict.READY_SCOPED, (f"uncovered_change: ready, but {len(gaps)} requested paths are outside "
-                                                     f"every check's inputs: {', '.join(gaps)}")
-        else:
-            verdict, reason = Verdict.READY, "every required check passed against the current inputs"
+    weak = sorted(cid for cid, out in (comparisons or {}).items() if out["outcome"] == "weakened_check")
+    incomp = sorted(cid for cid, out in (comparisons or {}).items() if out["outcome"] == "incomparable")
+    if weak:
+        verdict, reason = Verdict.REJECTED, "weakened_check: " + ", ".join(weak) + " passes a retained legitimate FAIL"
+    elif incomp:
+        verdict, reason = Verdict.BLOCKED, "incomparable: " + ", ".join(incomp) + " cannot be compared; re-accept the reference"
     else:
-        gap = "some required checks have no passing evidence for the current inputs"
-        stuck = {s.freshness for s in (*states, *required)}
-        reasons = {Freshness.FRESH_BLOCKED: f"fresh_blocked: {gap}", Freshness.BLOCKED: f"blocked: {gap}",
-                   Freshness.STALE: f"stale: {gap}", Freshness.MISSING: f"missing: {gap}"}
-        verdict, reason = Verdict.BLOCKED, next(reasons[fresh] for fresh in reasons if fresh in stuck)
+        if obligations is not None:
+            registered = {s.check.id for s in states}
+            removed = set(obligations.get("checks", ())) - registered
+            removed |= {rid for rid in obligations.get("formal_required", ())
+                        if not any(s.component.id == rid and s.required for s in formal)}
+            removed |= set(obligations.get("dropped", ())) - registered
+            ghosts = [{"id": rid, "state": "obligation_removed", "run_id": None} for rid in sorted(removed)]
+        if not states and not required and not ghosts:
+            verdict, reason = Verdict.BLOCKED, "no checks are registered"
+        elif obligations is None and (states or required):
+            verdict, reason = Verdict.REJECTED, "obligation_inventory: no accepted inventory binds this manifest"
+        elif ghosts:
+            verdict, reason = Verdict.REJECTED, ("obligation_removed: " + ", ".join(g["id"] for g in ghosts)
+                                                 + " were accepted but are no longer registered or required")
+        elif any(
+            state.freshness is Freshness.FRESH_FAIL
+            for state in (*states, *required)
+        ):
+            verdict, reason = Verdict.REJECTED, "fresh_fail: a required check failed against the current inputs"
+        elif any(state.freshness is Freshness.NOT_APPROVED for state in (*states, *required)):
+            verdict, reason = Verdict.REJECTED, "not_approved: a required check definition is not accepted"
+        elif all(state.freshness is Freshness.FRESH_PASS for state in states) and all(
+            state.freshness is Freshness.FRESH_PASS for state in required
+        ):
+            gaps = list(uncovered)
+            if gaps:
+                verdict, reason = Verdict.READY_SCOPED, (f"uncovered_change: ready, but {len(gaps)} requested paths are outside "
+                                                         f"every check's inputs: {', '.join(gaps)}")
+            else:
+                verdict, reason = Verdict.READY, "every required check passed against the current inputs"
+        else:
+            gap = "some required checks have no passing evidence for the current inputs"
+            stuck = {s.freshness for s in (*states, *required)}
+            reasons = {Freshness.FRESH_BLOCKED: f"fresh_blocked: {gap}", Freshness.BLOCKED: f"blocked: {gap}",
+                       Freshness.STALE: f"stale: {gap}", Freshness.MISSING: f"missing: {gap}"}
+            verdict, reason = Verdict.BLOCKED, next(reasons[fresh] for fresh in reasons if fresh in stuck)
+    fields = {s.freshness.value for s in (*states, *required) if s.freshness is not Freshness.FRESH_PASS}
+    fields.add(reason.split(":")[0])
+    doubts = sorted((d for d in DOUBTS if d.field in fields), key=lambda d: _EFFECT_ORDER.index(d.effect))
     return {
         "verdict": verdict.value,
         "reason": reason,
+        "clearing": doubts[0].clearing if doubts else None,
+        "doubts": [{"field": d.field, "effect": d.effect, "clearing": d.clearing} for d in doubts],
         "checks": [
             {
                 "id": state.check.id,

@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from helpers import DRIVER, NO_WINDOW, McpClient, pytest_kind_check, scenario_check, vkit, vkit_argv
+from helpers import DRIVER, NO_WINDOW, McpClient, git, pytest_kind_check, scenario_check, vkit, vkit_argv
 
 CALC = '''
 def add(a, b):
@@ -326,3 +326,37 @@ def test_a_sentinel_timeout_is_not_recorded_as_a_rejection(make_project):
     records = json.loads((project / ".git" / "vkit" / "approved.json").read_text())["records"]
     definition = next(r for r in records.values() if r["kind"] == "check_definition")
     assert definition["oracle"]["sentinel"]["verdict"] == "timeout"
+
+
+def test_ci_verdicts_map_onto_the_four_verdict_algebra(make_project, tmp_path, monkeypatch):
+    from vkit import ci, container, proc
+    from vkit.formal.service import resolve_commit
+    from vkit.paths import open_project
+    from vkit.state import Verdict
+
+    check = scenario_check("required", "driver.py", scenarios=["bound"], inputs=["driver.py"])
+    check["command"] = ["{{python}}", "-I", "-c", "raise RuntimeError('must never execute on host')", "{{run_dir}}/result.json"]
+    root = make_project({"driver.py": "raise RuntimeError('must never execute on host')"}, [check], accept=False)
+    project = open_project(root)
+    target = resolve_commit(project, "HEAD")
+    (root / "verification/manifest.json").unlink()
+    git(root, "add", "-u")
+    git(root, "commit", "-qm", "candidate deletes policy")
+    candidate = resolve_commit(project, "HEAD")
+    monkeypatch.setattr(ci.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(container, "image_id", lambda image: image)
+    monkeypatch.setenv("VKIT_CI_IMAGE", "sha256:" + "a" * 64)
+
+    def execute_container(**kwargs):
+        options = kwargs["options"]
+        mounts = [options[i + 1] for i, arg in enumerate(options) if arg == "--mount"]
+        output = next(m for m in mounts if "target=/output" in m)
+        path = Path(output.split("source=", 1)[1].split(",", 1)[0])
+        path.joinpath("result.json").write_text(json.dumps({"schema_version": 1, "scenarios": [
+            {"id": "bound", "result": "PASS", "observation": "fixture result"}]}))
+        return container.ContainerRun(proc.Exit(0), "b" * 64, True)
+
+    monkeypatch.setattr(container, "run_container", execute_container)
+    report = ci.run_gate(project, candidate, target, tmp_path / "private-gate")
+    assert report["verdict"] == "READY"
+    assert report["verdict_algebra"] == Verdict.READY.value

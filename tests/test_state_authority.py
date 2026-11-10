@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from helpers import DRIVER, scenario_check, vkit
+from helpers import DRIVER, NO_WINDOW, scenario_check, vkit
 from vkit import state
 from vkit.evidence import backend_identity, policy_identity
 from vkit.inputs import Snapshot
@@ -299,8 +299,9 @@ def test_registry_falsifiers_name_real_tests():
 
     import test_cli_authority
     import test_evidence_identity
+    import test_weakening
 
-    modules = (sys.modules[__name__], test_cli_authority, test_evidence_identity)
+    modules = (sys.modules[__name__], test_cli_authority, test_evidence_identity, test_weakening)
     registry = {"test_registry_falsifiers_name_real_tests", "test_every_doubt_has_a_clearing_action"}
     bundles = []
     for doubt in state.DOUBTS:
@@ -313,6 +314,44 @@ def test_registry_falsifiers_name_real_tests():
     tokens = set(re.findall(r'"([a-z_]+): ', inspect.getsource(state.gate)))
     fields = [doubt.field for doubt in state.DOUBTS]
     assert len(set(fields)) == len(fields) and tokens == set(fields)
+
+
+def test_the_gate_names_a_clearing_action_ordered_by_effect():
+    from types import SimpleNamespace
+
+    states = [SimpleNamespace(check=SimpleNamespace(id="a"), freshness=state.Freshness.STALE, current=None),
+              SimpleNamespace(check=SimpleNamespace(id="b"), freshness=state.Freshness.FRESH_FAIL, current=None)]
+    out = state.gate(states, obligations={"checks": {}, "formal_required": {}})
+    assert out["verdict"] == "REJECTED" and out["clearing"]
+    fields = [d["field"] for d in out["doubts"]]
+    assert "fresh_fail" in fields and "stale" in fields
+    effect = {d.field: d.effect for d in state.DOUBTS}
+    assert fields == sorted(fields, key=lambda f: ("reject", "block", "scope").index(effect[f]))
+
+
+def test_registered_bundles_actually_flip():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    nodes = {}
+    for path in (root / "tests").glob("test_*.py"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("def test_"):
+                name = line[4:].split("(")[0]
+                nodes[name] = f"tests/{path.name}::{name}"
+    env = {**os.environ, "PYTHONPATH": str(root / "tests"), "VKIT_FLIP_MUTANT": "1"}
+    for doubt in state.DOUBTS:
+        mutant, honest = doubt.falsifier
+        assert mutant in nodes and honest in nodes, doubt.field
+        good = subprocess.run([sys.executable, "-m", "pytest", "-q", "--no-header", nodes[honest]],
+                              cwd=root, capture_output=True, text=True, timeout=900, **NO_WINDOW)
+        assert good.returncode == 0, (doubt.field, honest, good.stdout[-2000:])
+        bad = subprocess.run([sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "flip_plugin", nodes[mutant]],
+                             cwd=root, env=env, capture_output=True, text=True, timeout=900, **NO_WINDOW)
+        assert bad.returncode != 0, (doubt.field, mutant, bad.stdout[-2000:])
 
 
 def test_an_unpinnable_evaluator_refuses_acceptance(make_project):

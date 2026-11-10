@@ -67,3 +67,14 @@ def test_a_request_with_a_command_or_unknown_field_is_refused(make_project):
         assert error and "61" in body["error"]
     finally:
         client.close()
+
+
+def test_tool_descriptions_carry_the_verdict_and_doubt_contract():
+    from vkit.mcp import tool_definitions
+    from vkit.state import DOUBTS, Verdict
+
+    text = " ".join(t["description"] for t in tool_definitions())
+    for verdict in Verdict:
+        assert verdict.value in text, verdict.value
+    for doubt in DOUBTS:
+        assert doubt.field in text, doubt.field

@@ -8,7 +8,7 @@ import sys
 import pytest
 from helpers import NO_WINDOW
 from vkit.formal import transitions
-from scripts.checks.check_transition_comparison import MARKER, check_rows, request_from_ids, resolve_source
+from formal.checks.check_transition_comparison import MARKER, check_rows, request_from_ids, resolve_source
 
 ROOT = Path(__file__).resolve().parents[2]
 compare_transition_request = transitions.compare_transition_request
@@ -62,7 +62,7 @@ def test_reachable_transition_delta_has_the_shortest_path() -> None:
 
 
 def test_complete_tlc_pair_space_matches_the_public_comparator(tmp_path: Path) -> None:
-    command = [sys.executable, str(ROOT / "scripts" / "checks" / "check_transition_comparison.py"),
+    command = [sys.executable, str(ROOT / "formal" / "checks" / "check_transition_comparison.py"),
                "--output", str(tmp_path / "transition-tlc"), "--vkit-source", str(SOURCE)]
     done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
                           timeout=1200, check=False, **NO_WINDOW)

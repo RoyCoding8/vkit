@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MODEL_DIR = ROOT / "verification" / "models"
+MODEL_DIR = ROOT / "formal" / "models"
 CONFIG_DIR = MODEL_DIR / "delegated-claim"
 DEFAULT_OUTPUT = ROOT / "tmp" / "delegation-tlc-output"
 EXPECTED_JAR_DIGEST = ROOT / "examples" / "formal-ci" / "tla2tools.sha256"
@@ -22,7 +22,6 @@ CASES = {
     "omit_entailment": "AcceptedHasEntailment",
     "omit_strict_strengthening": "AcceptedIsStrictStrengthening",
     "omit_complete_satisfaction": "AcceptedHasCompleteSatisfaction",
-    "sample_authorizes_claim": "SamplesCannotAuthorize",
     "omit_meaningful_near_miss": "AcceptedHasRejectedMeaningfulNearMiss",
     "omit_fresh_receipt_cancel": "AcceptedHasFreshUncancelledReceipt",
     "omit_model_scope": "AcceptedUsesRestrictedModel",

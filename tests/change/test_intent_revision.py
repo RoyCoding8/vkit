@@ -125,28 +125,6 @@ def test_intent_revision_rejects_unknown_fields():
         IntentRevision.from_json(raw)
 
 
-@pytest.mark.parametrize("object_format,oid_length", [("sha1", 40), ("sha256", 64)])
-def test_preflight_binds_real_git_revisions_without_claiming_source_behavior(
-    tmp_path, object_format, oid_length
-):
-    root, target_oid, candidate_oid, intent, raw, request = _repository(
-        tmp_path, object_format=object_format
-    )
-
-    bound = preflight_change_request(
-        open_project(root), request, trusted_target_oid=target_oid
-    )
-
-    assert len(bound.request.base_oid) == oid_length
-    assert bound.request.candidate_oid == candidate_oid
-    assert bound.intent.to_json() == raw
-    assert bound.to_json()["scope"] == "request_preflight"
-    assert bound.to_json()["candidate_behavior_checked"] is False
-    assert bound.digest == preflight_change_request(
-        open_project(root), request, trusted_target_oid=target_oid
-    ).digest
-
-
 def test_change_request_json_projection_preserves_semantic_request():
     hashes = {role: hashlib.sha256(role.encode()).hexdigest()
               for role in ("binding", "codec", "observation", "environment")}

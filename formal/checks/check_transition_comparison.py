@@ -14,8 +14,8 @@ import time
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-MODEL = ROOT / "verification" / "models" / "FiniteTransitionComparison.tla"
-CONFIG = ROOT / "verification" / "models" / "finite-transition" / "complete.cfg"
+MODEL = ROOT / "formal" / "models" / "FiniteTransitionComparison.tla"
+CONFIG = ROOT / "formal" / "models" / "finite-transition" / "complete.cfg"
 EXPECTED_JAR = ROOT / "examples" / "formal-ci" / "tla2tools.sha256"
 DEFAULT_OUTPUT = ROOT / "tmp" / "transition-comparison"
 MARKER = "VKIT_FINITE_TRANSITION_PAIR_V1"
@@ -82,7 +82,7 @@ def hidden_options() -> dict[str, Any]:
 
 
 def decode_tla_tuple(raw: str) -> tuple[Any, int]:
-    scripts = str(ROOT / "scripts" / "checks")
+    scripts = str(ROOT / "formal" / "checks")
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
     from check_difference_decisions import decode_tla_tuple as decode

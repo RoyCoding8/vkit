@@ -244,7 +244,7 @@
         "src",
         "schemas",
         "tests",
-        "scripts/checks/check_lifecycle.py",
+        "formal/checks/check_lifecycle.py",
         "plugin",
         "pyproject.toml"
       ],
@@ -252,7 +252,7 @@
         "paths": [
           "src",
           "tests",
-          "scripts/checks/check_lifecycle.py"
+          "formal/checks/check_lifecycle.py"
         ],
         "digest": null
       },
@@ -264,7 +264,7 @@
       "description": "Comments in src/vkit; only the ones in the pinned baseline are allowed.",
       "command": [
         "{{python}}",
-        "scripts/checks/comment_lint.py",
+        "scripts/tools/comment_lint.py",
         "src/vkit",
         "{{run_dir}}/comments.sarif"
       ],
@@ -272,7 +272,7 @@
       "artifact": "comments.sarif",
       "inputs": [
         "src/vkit",
-        "scripts/checks/comment_lint.py"
+        "scripts/tools/comment_lint.py"
       ],
       "subject": {
         "paths": [
@@ -290,22 +290,22 @@
       "timeout_seconds": 120,
       "artifact": "checker-report.json",
       "inputs": [
-        "verification/lifecycle/Attempts.tla",
-        "verification/lifecycle/Attempts.cfg"
+        "formal/models/lifecycle/Attempts.tla",
+        "formal/models/lifecycle/Attempts.cfg"
       ],
       "subject": {
         "paths": [
-          "verification/lifecycle/Attempts.tla",
-          "verification/lifecycle/Attempts.cfg"
+          "formal/models/lifecycle/Attempts.tla",
+          "formal/models/lifecycle/Attempts.cfg"
         ],
         "digest": null
       },
       "claim_id": "lifecycle-model",
       "model": {
         "module": "Attempts",
-        "path": "verification/lifecycle/Attempts.tla"
+        "path": "formal/models/lifecycle/Attempts.tla"
       },
-      "config": "verification/lifecycle/Attempts.cfg",
+      "config": "formal/models/lifecycle/Attempts.cfg",
       "properties": [
         "TypeOK",
         "NoFalsePass",

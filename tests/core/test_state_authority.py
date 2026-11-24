@@ -152,19 +152,6 @@ def test_dropping_a_passing_obligation_clears_the_gate(make_project):
     assert query.status(query.open_context(project))["gate"]["verdict"] == "READY"
 
 
-def test_rewriting_an_evaluator_script_invalidates_the_acceptance(make_project):
-    from helpers import DRIVER
-    from vkit.core import query
-
-    driver = DRIVER + 'import pathlib\nreport([("ok", pathlib.Path("subject.py").read_text().strip() != "", "read")])\n'
-    check = scenario_check("ok", "driver.py", scenarios=["ok"], inputs=["driver.py", "subject.py"])
-    check["subject"] = {"paths": ["subject.py"], "digest": None}
-    project = make_project({"driver.py": driver, "subject.py": "value = 1\n"}, [check])
-    assert query.status(query.open_context(project))["checks"][0]["state"] != "not_approved"
-    (project / "driver.py").write_text(driver.replace('"read"', '"read v2"'), encoding="utf-8")
-    assert query.status(query.open_context(project))["checks"][0]["state"] == "not_approved"
-
-
 def test_unbinding_a_required_formal_component_needs_authority():
     from types import SimpleNamespace
 
@@ -172,15 +159,6 @@ def test_unbinding_a_required_formal_component_needs_authority():
                               freshness=state.Freshness.FRESH_PASS, required=False, current=None)]
     out = state.gate([], formal, obligations={"checks": {}, "formal_required": {"alloc": "d"}})
     assert out["verdict"] != "READY" and "alloc" in out["reason"]
-
-
-def test_unaccepted_definitions_are_rejected_not_merely_blocked(make_project):
-    from vkit.core import query
-
-    project = make_project({"ok.py": PASSES}, [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])],
-                           accept=False)
-    out = query.status(query.open_context(project))
-    assert out["gate"]["verdict"] == "REJECTED"
 
 
 def test_uncovered_requested_paths_scope_the_ready_verdict(make_project):

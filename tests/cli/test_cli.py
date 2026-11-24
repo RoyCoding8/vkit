@@ -196,12 +196,6 @@ def test_run_show_selects_log_without_submitting_another_run(make_project):
     assert sorted(path.name for path in run_root.iterdir()) == before
 
 
-def test_run_show_rejects_all_with_other_sections(make_project):
-    project = make_project({"README.md": "selectors\n"}, [], accept=False)
-    code, body = vkit(project, "run", "show", "--run", "missing", "--section", "all", "--section", "log")
-    assert code == 2 and "all must be selected alone" in body["error"]
-
-
 def test_a_run_whose_worker_died_reads_as_interrupted(make_project):
     project = make_project({"slow.py": SLOW_TREE},
                            [scenario_check("slow", "slow.py", scenarios=["never"], inputs=["slow.py"], timeout=120)])

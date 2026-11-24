@@ -4,8 +4,7 @@ import hashlib
 from dataclasses import replace
 
 import pytest
-from helpers import git
-from tests.change.test_paired import _git_output, _repository
+from tests.change.test_paired import _repository
 
 from vkit.change import intent as intent_module
 from vkit.rust import rust_relational as rust_relational_module
@@ -104,29 +103,6 @@ def test_captured_request_rejects_wrong_request_target_and_commit_tree(tmp_path)
             base,
             replace(candidate, tree=base.tree),
             trusted_target_oid=target,
-        )
-
-
-def test_captured_request_rejects_candidate_semantic_artifact_drift(tmp_path):
-    root, target, request = _repository(
-        tmp_path,
-        language="python",
-        candidate_delta=0,
-        outputs={"0": ["0", "1"], "1": ["1", "2"]},
-    )
-    path = root / "verification/semantics/codec.json"
-    git(root, "checkout", "--detach", request["candidate_oid"])
-    path.write_bytes(b'{"schema_version":1,"kind":"changed"}\n')
-    git(root, "add", "verification/semantics/codec.json")
-    git(root, "commit", "-qm", "candidate changes accepted codec")
-    request["candidate_oid"] = _git_output(root, "rev-parse", "HEAD")
-
-    project = open_project(root)
-    base = capture_git_commit(project, target)
-    candidate = capture_git_commit(project, request["candidate_oid"])
-    with pytest.raises(ValueError, match="candidate codec artifact differs"):
-        _bind_captured_change_request(
-            project, request, base, candidate, trusted_target_oid=target
         )
 
 

@@ -22,8 +22,8 @@ LABEL = "vkit.ledger.run_id"
 FORMAL_LABEL = "vkit.formal.run_id"
 SOURCE_REL = Path("src/vkit/formal/packages/resource_ledger/ledger.rs")
 TRUSTED_FILES = (
-    Path("scripts/checks/check_verus_ledger.py"),
-    Path("scripts/checks/check_p2_contracts.py"),
+    Path("formal/checks/check_verus_ledger.py"),
+    Path("formal/checks/check_p2_contracts.py"),
     Path("src/vkit/__init__.py"),
     Path("src/vkit/runtime/__init__.py"),
     Path("src/vkit/runtime/nowindow.py"),
@@ -712,7 +712,7 @@ def main() -> int:
         command = container_command(image_id, docker_base(run_id, cidfile), trusted, source,
                                     args.archive, args.verus_root, args.rustup_home,
                                     args.cargo_home, candidate_output,
-                                    ["python3", "/trusted/scripts/checks/check_verus_ledger.py",
+                                    ["python3", "/trusted/formal/checks/check_verus_ledger.py",
                                      "--verus-root", "/assets/verus",
                                      "--archive", f"/assets/{args.archive.name}",
                                      "--output", "/output/evidence"])

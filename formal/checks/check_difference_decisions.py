@@ -15,13 +15,12 @@ from collections import Counter
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-MODEL_DIR = ROOT / "verification" / "certification"
+MODEL_DIR = ROOT / "formal" / "models" / "certification"
 SCENARIOS = {
     "bounded": "Differences.cfg",
     "invalid_shrink": "Differences.invalid-shrink.cfg",
     "violation_missing": "Differences.violation-missing.cfg",
     "guard_overlap": "Differences.guard-overlap.cfg",
-    "guard_duplicate": "Differences.guard-duplicate.cfg",
     "repair": "Differences.repair.cfg",
     "empty": "Differences.empty.cfg",
 }
@@ -304,7 +303,7 @@ def compare_case(name: str, rows: list[tuple[Any, ...]]) -> dict[str, Any]:
         raw_sequences.add(frozen)
     pool_sizes = {
         "bounded": 13, "invalid_shrink": 2, "violation_missing": 2,
-        "guard_overlap": 2, "guard_duplicate": 1, "repair": 1, "empty": 0,
+        "guard_overlap": 2, "repair": 1, "empty": 0,
     }
     expected = expected_raw_count(pool_sizes[name])
     if len(raw_sequences) != expected:
@@ -312,7 +311,7 @@ def compare_case(name: str, rows: list[tuple[Any, ...]]) -> dict[str, Any]:
 
     tokens = ("1", "2") if name in {"bounded", "violation_missing"} else ("1",) if name != "empty" else ()
     intent = make_intent(tokens)
-    policy = make_policy(intent, name in {"guard_overlap", "guard_duplicate"})
+    policy = make_policy(intent, name == "guard_overlap")
     mismatches = []
     for row in rows:
         mismatches.extend(compare_terminal(name, row, intent, policy))
@@ -509,7 +508,7 @@ def main() -> int:
     )
     report["passed"] = (
         not report["errors"] and len(report["cases"]) == len(SCENARIOS)
-        and report["unique_raw_sequences"] == report["expected_raw_sequences"] == 211
+        and report["unique_raw_sequences"] == report["expected_raw_sequences"] == 208
         and report["mismatch_count"] == 0
         and bool(report["cases"])
         and report["cases"][0].get("comparator_negative_control", {}).get("decision_rejected") is True

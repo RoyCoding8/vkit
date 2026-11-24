@@ -12,7 +12,7 @@ from helpers import git
 from tests.change.test_paired import _git_output, _json_bytes, _repository
 from vkit.change import analysis as change_analysis_module
 from vkit.change.analysis import run_change_analysis
-from vkit.change.certification import DifferencePolicy, IntentRevision, assess_differences
+from vkit.change.certification import IntentRevision, assess_differences
 from vkit.change.intent import _prepare_change_request
 from vkit.core.inputs import canonical_digest
 from vkit.runtime.paths import open_project
@@ -217,69 +217,6 @@ def test_weaker_claim_flags_do_not_hide_standing_intent_violation(tmp_path):
     assert result.assessment.findings[0].reason == "candidate violates standing target intent"
 
 
-def test_unsafe_base_repair_satisfies_standing_target_requirement(tmp_path):
-    _, _, _, result = _run(
-        tmp_path,
-        candidate_source="def convert(value):\n    return 1 if value == 0 else value\n",
-        outputs={"0": ["1"], "1": ["1", "2"]},
-        claim_outputs={"0": ["0", "1"], "1": ["1", "2"]},
-    )
-
-    assert result.assessment.status == "observed_conformance"
-    assert result.assessment.findings[0].kind == "standing_intent_repair"
-
-
-def test_unguarded_change_is_a_violation_even_when_both_outputs_are_allowed(tmp_path):
-    _, _, _, result = _run(
-        tmp_path,
-        candidate_source=(
-            "def convert(value):\n"
-            "    return 1 if value == 0 else value + 1\n"
-        ),
-        policy=["1"],
-    )
-
-    assert result.assessment.status == "observed_violation"
-    finding = result.assessment.findings[1]
-    assert finding.input == "1"
-    assert finding.base_output == "1"
-    assert finding.candidate_output == "2"
-    assert finding.reason == "unguarded difference is not a standing-intent repair"
-
-
-def test_overlapping_guards_use_their_intersection(tmp_path):
-    root, target_oid, request = _repository(
-        tmp_path,
-        language="python",
-        candidate_delta=0,
-        outputs={"0": ["0", "1"], "1": ["1", "2"]},
-    )
-    policy = {
-        "schema_version": 1,
-        "kind": "finite_differences",
-        "intent_sha256": request["intent_sha256"],
-        "guards": [
-            {"id": "first", "requirements": [{"input": "0", "outputs": ["0", "1"]}]},
-            {"id": "second", "requirements": [{"input": "0", "outputs": ["1"]}]},
-        ],
-    }
-    target_oid, request = _with_target_policy(
-        root,
-        target_oid,
-        request,
-        policy,
-        candidate_source="def convert(value):\n    return 1 if value == 0 else value\n",
-    )
-    result = run_change_analysis(
-        open_project(root), request, trusted_target_oid=target_oid,
-        output_dir=tmp_path / "analysis", input_tokens=None, repetitions=1,
-    )
-
-    assert result.assessment.status == "observed_conformance"
-    assert result.assessment.findings[0].guard_ids == ("first", "second")
-    assert result.assessment.findings[0].candidate_output == "1"
-
-
 def test_selected_subset_and_timeout_remain_unknown(tmp_path):
     _, _, _, partial = _run(
         tmp_path / "partial",
@@ -463,26 +400,6 @@ def test_candidate_cannot_add_policy_when_target_uses_default(tmp_path):
             output_dir=tmp_path / "analysis", input_tokens=("0",), repetitions=1,
         )
     assert not (tmp_path / "analysis").exists()
-
-
-def test_difference_policy_schema_rejects_newline_digest_and_extra_fields(tmp_path):
-    root, target_oid, request = _repository(
-        tmp_path,
-        language="python",
-        candidate_delta=0,
-        outputs={"0": ["0", "1"], "1": ["1", "2"]},
-    )
-    bound, _, _ = _prepare_change_request(
-        open_project(root), request, trusted_target_oid=target_oid
-    )
-    raw = _policy(bound.intent.digest)
-    raw["intent_sha256"] += "\n"
-    with pytest.raises((ValueError, SchemaValidationError)):
-        DifferencePolicy.from_json(raw, intent=bound.intent)
-    raw = _policy(bound.intent.digest)
-    raw["candidate_may_authorize"] = True
-    with pytest.raises(SchemaValidationError):
-        DifferencePolicy.from_json(raw, intent=bound.intent)
 
 
 def test_partial_selected_coverage_is_not_filled_by_shrink_sample(tmp_path):

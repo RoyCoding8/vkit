@@ -13,7 +13,7 @@ from helpers import NO_WINDOW, ROOT
 
 
 MANIFEST = ROOT / "examples/change-certification/manifest.json"
-RUNNER = ROOT / "scripts/checks/check_change_corpus.py"
+RUNNER = ROOT / "formal/checks/check_change_corpus.py"
 
 
 def run_corpus(output_dir: Path, manifest: Path | None = None, env: dict[str, str] | None = None):

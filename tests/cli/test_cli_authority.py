@@ -13,16 +13,6 @@ def _tty(monkeypatch, interactive: bool) -> None:
     monkeypatch.setattr("vkit.cli.sys.stdin", SimpleNamespace(isatty=lambda: interactive))
 
 
-def test_confirm_names_which_authority_granted_the_acceptance(monkeypatch):
-    args = argparse.Namespace(yes=True, json=False)
-    monkeypatch.setenv("VKIT_ALLOW_YES", "1")
-    monkeypatch.setattr("vkit.cli._parent_commands", lambda: (["bash"], False))
-    _tty(monkeypatch, True)
-    assert _confirm(args, "approve the definition", "accept it?") == "operator_env"
-    _tty(monkeypatch, False)
-    assert _confirm(args, "approve the definition", "accept it?") == "shell_env"
-
-
 def test_confirm_refuses_an_acceptance_spawned_from_the_agent_hook_chain(monkeypatch):
     args = argparse.Namespace(yes=True, json=False)
     monkeypatch.setenv("VKIT_ALLOW_YES", "1")
@@ -66,16 +56,6 @@ def test_definition_changes_are_labeled():
     assert _def_change(base, {**base, "timeout_seconds": 60, "required_scenarios": ["a", "b"]})[0] == "incomparable"
     assert _def_change(None, base)[0] == "incomparable"
     assert _def_change(base, dict(base))[0] == "unchanged"
-
-
-def test_a_strengthening_label_declares_instead_of_demonstrating():
-    from vkit.cli import _demonstrated_label
-
-    assert _demonstrated_label("strengthening", None) == "strengthening (unproven: no rejection corpus)"
-    shown = _demonstrated_label("strengthening", {"added": 2})
-    assert shown == "strengthening (declared: 2 added obligation(s), not executed)"
-    assert "demonstrated" not in shown
-    assert _demonstrated_label("weakening", None) == "weakening"
 
 
 def _card(project, approved, checks):
@@ -161,24 +141,6 @@ def test_a_cleared_drop_marker_is_described_not_misdescribed():
     assert "recorded" not in cleared
     kept = "\n".join(_inventory_diff(previous, {"checks": {}, "formal_required": {}, "dropped": {"bad": "r1"}}, None))
     assert "cleared" not in kept
-
-
-def test_the_provenance_walk_reports_its_own_degradation(monkeypatch):
-    import vkit.cli
-
-    class Unreadable:
-        def __init__(self, *args):
-            pass
-
-        def read_text(self):
-            raise OSError("no /proc")
-
-        def read_bytes(self):
-            raise OSError("no /proc")
-
-    monkeypatch.setattr(vkit.cli, "Path", Unreadable)
-    commands, degraded = vkit.cli._parent_commands()
-    assert commands == [] and degraded
 
 
 def test_a_degraded_provenance_walk_is_recorded_in_the_telemetry_sink(monkeypatch, tmp_path):

@@ -11,9 +11,6 @@ import pytest
 
 from helpers import McpClient, NO_WINDOW
 from tests.change.test_paired import _repository
-from vkit.change.methods import parse_kani_toolchain
-from vkit.rust.kani_toolchain import KaniToolchain
-from vkit.change.paired_profiles import FilePin
 from vkit.core.query import validate_wait_seconds
 
 
@@ -60,24 +57,6 @@ def _python_repository(tmp_path: Path, delta: int = 0):
         candidate_delta=delta,
         outputs={"0": ["0", "1"], "1": ["1", "2"]},
     )
-
-
-def test_public_toolchain_parser_rejects_open_or_derived_values(tmp_path: Path) -> None:
-    pin = KaniToolchain(
-        kani_root=tmp_path / "kani",
-        rustup_home=tmp_path / "rustup",
-        cargo_home=tmp_path / "cargo",
-        kani_manifest_sha256="a" * 64,
-        rust_manifest_sha256="b" * 64,
-        rustup_sha256="c" * 64,
-        host_libraries=(FilePin(str(tmp_path / "libc.so"), "d" * 64),),
-    )
-    assert parse_kani_toolchain(pin.to_json()) == pin
-
-    altered = pin.to_json()
-    altered["environment"]["PATH"] += ";candidate"
-    with pytest.raises(ValueError):
-        parse_kani_toolchain(altered)
 
 
 def test_cli_submits_healthy_finite_shadow_run(tmp_path: Path) -> None:

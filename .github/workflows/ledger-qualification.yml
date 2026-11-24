@@ -6,28 +6,28 @@ on:
     paths:
       - .github/workflows/ledger-qualification.yml
       - examples/verus-qualification/**
-      - scripts/checks/check_ledger_container.py
-      - scripts/checks/qualify_ledger_reuse.py
+      - formal/checks/check_ledger_container.py
+      - formal/checks/qualify_ledger_reuse.py
       - examples/ledger-reuse/**
       - examples/ledger-refinement/**
-      - scripts/checks/check_ledger_refinement.py
+      - formal/checks/check_ledger_refinement.py
       - src/vkit/**
       - schemas/**
-      - scripts/checks/check_verus_ledger.py
-      - scripts/checks/check_p2_contracts.py
+      - formal/checks/check_verus_ledger.py
+      - formal/checks/check_p2_contracts.py
   pull_request:
     paths:
       - .github/workflows/ledger-qualification.yml
       - examples/verus-qualification/**
-      - scripts/checks/check_ledger_container.py
-      - scripts/checks/qualify_ledger_reuse.py
+      - formal/checks/check_ledger_container.py
+      - formal/checks/qualify_ledger_reuse.py
       - examples/ledger-reuse/**
       - examples/ledger-refinement/**
-      - scripts/checks/check_ledger_refinement.py
+      - formal/checks/check_ledger_refinement.py
       - src/vkit/**
       - schemas/**
-      - scripts/checks/check_verus_ledger.py
-      - scripts/checks/check_p2_contracts.py
+      - formal/checks/check_verus_ledger.py
+      - formal/checks/check_p2_contracts.py
   workflow_dispatch:
 
 permissions:
@@ -97,7 +97,7 @@ jobs:
         env:
           IMAGE_TAG: vkit-ledger-qualification-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          "$RUNNER_TEMP/vkit-venv/bin/python" scripts/checks/check_ledger_container.py \
+          "$RUNNER_TEMP/vkit-venv/bin/python" formal/checks/check_ledger_container.py \
             --image "$IMAGE_TAG" \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --verus-root "$RUNNER_TEMP/verus/verus-x86-linux" \
@@ -112,7 +112,7 @@ jobs:
         run: |
           PYTHON=python3
           if [ -x "$RUNNER_TEMP/vkit-venv/bin/python" ]; then PYTHON="$RUNNER_TEMP/vkit-venv/bin/python"; fi
-          PYTHONPATH="$GITHUB_WORKSPACE/src" "$PYTHON" scripts/checks/check_ledger_container.py \
+          PYTHONPATH="$GITHUB_WORKSPACE/src" "$PYTHON" formal/checks/check_ledger_container.py \
             --image "$IMAGE_TAG" \
             --cleanup-run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output "$RUNNER_TEMP/verus-ledger-evidence"

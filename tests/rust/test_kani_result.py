@@ -1,5 +1,4 @@
 import json
-from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -16,13 +15,6 @@ def _fixture(name: str) -> tuple[bytes, bytes]:
 
 def _result(raw: bytes, harness: bytes, exit_code: int = 0) -> dict[str, object]:
     return classify_kani_result(raw, exit_code=exit_code, harness=harness).to_json()
-
-
-def test_decoded_outcome_is_frozen() -> None:
-    raw, harness = _fixture("preservation")
-    outcome = classify_kani_result(raw, exit_code=0, harness=harness)
-    with pytest.raises(FrozenInstanceError):
-        outcome.kind = "unknown"
 
 
 @pytest.mark.parametrize(

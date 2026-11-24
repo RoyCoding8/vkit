@@ -16,8 +16,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK_ID = "lifecycle-model"
-MODEL_REL = Path("verification/lifecycle/Attempts.tla")
-CONFIG_REL = Path("verification/lifecycle/Attempts.cfg")
+MODEL_REL = Path("formal/models/lifecycle/Attempts.tla")
+CONFIG_REL = Path("formal/models/lifecycle/Attempts.cfg")
 PROPERTIES = [
     "TypeOK",
     "NoFalsePass",

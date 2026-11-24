@@ -44,7 +44,7 @@ The caller derives the expected binding from actual trusted-target preflight and
 The safe Rust qualification can be run from the source checkout:
 
 ```text
-python scripts/check_change_witness.py --output tmp/change-witness
+python formal/checks/check_change_witness.py --output tmp/change-witness
 ```
 
 It creates disposable Git target/candidate revisions, runs actual preflight, imports a labeled Kani transcript fixture, and compiles and runs the captured u32 sources. It retains the runtime identity and verifies the serialized witness again. This command does not run Kani. The artifact protocol does not alter the external checker receipt format or grant an approval, source-proof result or gate verdict.

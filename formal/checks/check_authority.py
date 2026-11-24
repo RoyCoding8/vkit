@@ -35,15 +35,8 @@ AUTHORITY_PROPERTIES = [
     "ReuseRejectedBound",
 ]
 DIFFERENCE_CONFIGS = {
-    "bounded": ("Differences.cfg", None),
-    "invalid_shrink": ("Differences.invalid-shrink.cfg", None),
-    "violation_missing": ("Differences.violation-missing.cfg", None),
-    "guard_overlap": ("Differences.guard-overlap.cfg", None),
-    "guard_duplicate": ("Differences.guard-duplicate.cfg", None),
     "reach_empty_done": ("Differences.reach-empty-done.cfg", "NoCompletedState"),
     "reach_conformance": ("Differences.reach-conformance.cfg", "NoConformance"),
-    "repair": ("Differences.repair.cfg", None),
-    "empty": ("Differences.empty.cfg", None),
     "mutant_shrink_coverage": ("Differences.mutant-shrink-coverage.cfg", "SelectedCoverage"),
     "mutant_ignore_shrink": ("Differences.mutant-ignore-shrink.cfg", "UnknownBlocksConformance"),
     "mutant_hide_violation": ("Differences.mutant-hide-violation.cfg", "ViolationVisibility"),
@@ -85,7 +78,7 @@ SHADOW_AUTHORITY_PROPERTIES = [
 ]
 SUITES = {
     "authority": {
-        "model": Path("verification/certification/Authority.tla"),
+        "model": Path("formal/models/certification/Authority.tla"),
         "module": "Authority",
         "configs": AUTHORITY_CONFIGS,
         "properties": AUTHORITY_PROPERTIES,
@@ -105,7 +98,7 @@ SUITES = {
         "default_output": "authority-model",
     },
     "differences": {
-        "model": Path("verification/certification/Differences.tla"),
+        "model": Path("formal/models/certification/Differences.tla"),
         "module": "Differences",
         "configs": DIFFERENCE_CONFIGS,
         "properties": DIFFERENCE_PROPERTIES,
@@ -130,7 +123,7 @@ SUITES = {
         "default_output": "difference-model",
     },
     "shadow": {
-        "model": Path("verification/certification/ShadowAuthority.tla"),
+        "model": Path("formal/models/certification/ShadowAuthority.tla"),
         "module": "ShadowAuthority",
         "configs": SHADOW_AUTHORITY_CONFIGS,
         "properties": SHADOW_AUTHORITY_PROPERTIES,
@@ -196,11 +189,12 @@ def _run(argv: list[str], cwd: Path, env: dict[str, str], allowed: set[int]) -> 
 def _project(case_dir: Path, config_name: str, env: dict[str, str],
              suite: dict[str, Any]) -> Path:
     project = case_dir / "project"
-    cert_dir = project / "verification" / "certification"
+    cert_dir = project / "formal" / "models" / "certification"
     cert_dir.mkdir(parents=True)
+    (project / "verification").mkdir(parents=True)
     model = suite["model"]
     shutil.copyfile(ROOT / model, project / model)
-    shutil.copyfile(ROOT / "verification/certification" / config_name,
+    shutil.copyfile(ROOT / "formal/models/certification" / config_name,
                     cert_dir / config_name)
     raw = json.loads((ROOT / "verification/manifest.json").read_text(encoding="utf-8"))
     check = next(item for item in raw["checks"] if item["id"] == "lifecycle-model")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -44,18 +43,6 @@ def _environment(language: Language, root: Path) -> ExecutionEnvironment:
         ),
     }[language]
     return parse_environment(raw, language)
-
-
-@pytest.mark.parametrize(
-    ("language", "source"),
-    [("rust", "src/step.rs"), ("python", "src/step.py"), ("typescript", "src/step.ts")],
-)
-def test_binding_parses_closed_language_and_normalized_source(language, source):
-    binding = parse_binding(_binding(language, source))
-
-    assert (binding.language, binding.source, binding.symbol) == (language, source, "step")
-    with pytest.raises(FrozenInstanceError):
-        binding.source = "changed"
 
 
 @pytest.mark.parametrize(

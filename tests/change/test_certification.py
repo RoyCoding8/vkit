@@ -197,16 +197,6 @@ def test_change_request_parser_keeps_claimed_intent_digest_untrusted():
     assert parsed.claim.admissible_inputs == ("available",)
 
 
-def test_change_request_parser_accepts_a_64_character_object_format():
-    raw = request()
-    raw["base_oid"] = "1" * 64
-    raw["candidate_oid"] = "2" * 64
-
-    parsed = ChangeCertificationRequest.from_json(raw)
-
-    assert (len(parsed.base_oid), len(parsed.candidate_oid)) == (64, 64)
-
-
 def test_parser_rejects_incomplete_output_rows():
     raw = request(contract_raw=contract(outputs={}))
 

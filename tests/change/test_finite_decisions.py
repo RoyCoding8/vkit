@@ -1,4 +1,4 @@
-from scripts.checks.check_finite_decisions import run
+from formal.checks.check_finite_decisions import run
 
 
 def test_finite_decision_checker_exhausts_declared_space_and_rejects_mutants():
@@ -27,7 +27,7 @@ def test_finite_decision_checker_exhausts_declared_space_and_rejects_mutants():
     assert len(report["evaluator_sha256"]) == 64
     assert len(report["reference_model_sha256"]) == 64
     assert report["evaluator"] == "src/vkit/change/certification.py"
-    assert report["reference_model"] == "verification/certification/Differences.tla"
+    assert report["reference_model"] == "formal/models/certification/Differences.tla"
     assert report["expected_status_counts"] == report["observed_status_counts"]
     assert {key: value for key, value in report["observed_status_counts"].items()
             if key.startswith("aggregate:")} == {

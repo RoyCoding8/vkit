@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 from helpers import NO_WINDOW, ROOT
-SCRIPT = ROOT / "scripts/checks/check_change_engines.py"
+SCRIPT = ROOT / "formal/checks/check_change_engines.py"
 spec = importlib.util.spec_from_file_location("check_change_engines", SCRIPT)
 assert spec and spec.loader
 probe = importlib.util.module_from_spec(spec)

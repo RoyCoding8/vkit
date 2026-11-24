@@ -507,11 +507,11 @@ def run() -> dict[str, Any]:
         "checker_sha256": sha256(Path(__file__).read_bytes()).hexdigest(),
         "evaluator": "src/vkit/change/certification.py",
         "evaluator_sha256": sha256((ROOT / "src" / "vkit" / "change" / "certification.py").read_bytes()).hexdigest(),
-        "reference_model": "verification/certification/Differences.tla",
+        "reference_model": "formal/models/certification/Differences.tla",
         "reference_model_sha256": sha256(
-            (ROOT / "verification" / "certification" / "Differences.tla").read_bytes()
+            (ROOT / "formal" / "models" / "certification" / "Differences.tla").read_bytes()
         ).hexdigest(),
-        "selected_tlc_bridge": "scripts/checks/check_difference_decisions.py",
+        "selected_tlc_bridge": "formal/checks/check_difference_decisions.py",
         "dimensions": {
             "inputs": list(INPUTS),
             "standing_output_atoms": list(OUTPUTS),

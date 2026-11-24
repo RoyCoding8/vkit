@@ -4,7 +4,7 @@ import importlib.util
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
-    "check_lifecycle", Path(__file__).resolve().parents[2] / "scripts/checks/check_lifecycle.py"
+    "check_lifecycle", Path(__file__).resolve().parents[2] / "formal/checks/check_lifecycle.py"
 )
 assert spec and spec.loader
 lifecycle = importlib.util.module_from_spec(spec)

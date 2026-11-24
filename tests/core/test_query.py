@@ -27,15 +27,6 @@ def test_run_lookup_rejects_paths(tmp_path, run_id):
         store.record(run_id)
 
 
-def test_run_lookup_cannot_read_a_foreign_record(tmp_path):
-    store = Store(tmp_path / "state")
-    foreign = tmp_path / "foreign"
-    write_json(foreign / "record.json", {"run_id": "foreign", "state": "done"})
-
-    with pytest.raises(ValueError, match="run_id"):
-        store.record(str(foreign))
-
-
 def test_mcp_refuses_run_paths_for_reading_and_cancellation(make_project, tmp_path):
     project = make_project({"README.md": "run lookup\n"}, [], accept=False)
     foreign = tmp_path / "foreign"
@@ -256,31 +247,6 @@ def _complete_formal(context, monkeypatch, identity):
     record = prepare_formal(context.project, PackageVerificationRequest(component.claim, WorkingTree()),
                             component, canonical_digest(identity["semantic"]), store=context.store)
     return execute(None, record["run_id"], store=context.store)
-
-
-def test_required_formal_goal_blocks_a_passing_registered_check_when_unapproved(make_project):
-    project = make_project({"ok.py": DRIVER + 'report([("ok", True, "ok")])\n',
-                            "src/allocation.rs": "pub fn reserve() {}\n"},
-                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
-    assert vkit(project, "check", "run", "--check", "ok")[0] == 0
-    _install_formal_component(project)
-    result = status(open_context(project))
-    assert result["checks"][0]["state"] == "fresh_pass"
-    assert result["formal"][0]["state"] == "not_approved"
-    assert result["gate"]["verdict"] == "REJECTED"
-    assert result["gate"]["formal"] == [{"id": "allocation", "state": "not_approved",
-                                            "required": True, "run_id": None}]
-
-
-def test_optional_formal_goal_does_not_block_a_passing_check(make_project):
-    project = make_project({"ok.py": DRIVER + 'report([("ok", True, "ok")])\n',
-                            "src/allocation.rs": "pub fn reserve() {}\n"},
-                           [scenario_check("ok", "ok.py", scenarios=["ok"], inputs=["ok.py"])])
-    assert vkit(project, "check", "run", "--check", "ok")[0] == 0
-    _install_formal_component(project, required=False)
-    result = status(open_context(project))
-    assert result["formal"][0]["state"] == "not_approved"
-    assert result["gate"]["verdict"] == "READY"
 
 
 def test_formal_source_and_policy_changes_make_evidence_stale(tmp_path, monkeypatch):

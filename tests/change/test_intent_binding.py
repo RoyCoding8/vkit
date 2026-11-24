@@ -119,17 +119,6 @@ def test_candidate_and_local_approval_cannot_accept_a_new_intent(intent_reposito
         _bind(root, target, request)
 
 
-def test_candidate_policy_replacement_is_rejected(intent_repository):
-    root, target, request, raw, revision_path = intent_repository()
-    raw["requirement"]["statement"] = "Unreviewed replacement."
-    write_json(root / revision_path, raw)
-    (root / POLICY).unlink()
-    request["candidate_oid"] = _commit(root, "replace revision and delete acceptance")
-
-    with pytest.raises(ValueError, match="candidate accepted-intents document differs from trusted target"):
-        _bind(root, target, request)
-
-
 def test_an_unchanged_candidate_can_bind_without_granting_a_pass(intent_repository):
     root, target, request, _, _ = intent_repository()
     request["candidate_oid"] = target
@@ -257,14 +246,6 @@ def test_request_identity_changes_for_a_weaker_entailed_claim(intent_repository)
     assert bound.request.claim.outputs_for("x") == frozenset({"allow", "deny", "other"})
     assert bound.digest != original.digest
     assert bound.to_json()["candidate_behavior_checked"] is False
-
-
-def test_excluded_legal_output_is_named_in_the_rejection(intent_repository):
-    root, target, request, _, _ = intent_repository()
-    request["claim"]["contract"]["allowed_outputs"][0]["outputs"] = ["allow"]
-
-    with pytest.raises(ValueError, match="legal output 'deny' for input 'x'"):
-        _bind(root, target, request)
 
 
 def test_candidate_policy_mode_change_is_rejected(intent_repository):

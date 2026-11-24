@@ -8,7 +8,7 @@ import {
 } from "./node_modules/@material/material-color-utilities/utils/string_utils.js";
 import { themeFromSourceColor } from "./node_modules/@material/material-color-utilities/utils/theme_utils.js";
 
-const output = new URL("../../src/vkit/console-assets/", import.meta.url);
+const output = new URL("../../src/vkit/console/static/assets/", import.meta.url);
 await mkdir(output, { recursive: true });
 await build({
   entryPoints: [fileURLToPath(new URL("material.js", import.meta.url))],

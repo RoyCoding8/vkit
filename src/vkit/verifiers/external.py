@@ -11,14 +11,13 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-from .. import proc
-from ..evidence import is_link
-from ..inputs import canonical_digest, file_digest
-from ..outcome import Blocked, BlockedReason, Outcome, Passed
+from vkit.runtime import proc
+from vkit.core.evidence import is_link
+from vkit.core.inputs import canonical_digest, file_digest
+from vkit.core.outcome import Blocked, BlockedReason, Outcome, Passed
 from .spec import ExternalCheck, PinnedCommand, PinnedFile
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_PLACEHOLDERS = frozenset({"python", "snapshot", "run_dir", "request", "evidence", "receipt"})
 
 
 class ExternalProtocolError(ValueError):
@@ -27,7 +26,7 @@ class ExternalProtocolError(ValueError):
 
 def identity(check: ExternalCheck) -> dict[str, Any]:
     """Resolve and verify every pinned executable and declared dependency."""
-    from ..evidence import policy_identity
+    from vkit.core.evidence import policy_identity
 
     return {
         "protocol": 1,
@@ -68,7 +67,6 @@ def execute(
         started = time.monotonic()
         producer_exit = _run_command(
             check.backend,
-            check,
             run_dir,
             snapshot,
             cwd,
@@ -85,10 +83,14 @@ def execute(
         _ensure_identity(check, current_identity)
         _verify_snapshot(snapshot, job_files)
         files = _evidence_files(evidence_dir, check.evidence_artifacts)
-        evidence_digest = _evidence_digest(files)
+        evidence_digest = canonical_digest(files)
         remaining = check.timeout_seconds - (time.monotonic() - started)
         if remaining <= 0:
-            return Blocked(BlockedReason.TIMEOUT, "producer exhausted the job deadline"), {}
+            timeout = Blocked(BlockedReason.TIMEOUT, "producer exhausted the job deadline")
+            return timeout, _failure_metadata(
+                check, job, current_identity, "backend", timeout,
+                evidence_files=files, evidence_digest=evidence_digest,
+            )
         return _check_evidence(
             check,
             run_dir,
@@ -125,7 +127,7 @@ def replay(
         evidence_dir = run_dir / "evidence"
         evidence_dir.mkdir(parents=True, exist_ok=True)
         files = _copy_evidence(source_evidence, evidence_dir, check.evidence_artifacts)
-        evidence_digest = _evidence_digest(files)
+        evidence_digest = canonical_digest(files)
         return _check_evidence(
             check,
             run_dir,
@@ -172,7 +174,6 @@ def _check_evidence(
     _verify_snapshot(snapshot, job_files)
     checker_exit = _run_command(
         check.checker,
-        check,
         run_dir,
         snapshot,
         cwd,
@@ -333,10 +334,10 @@ def _validate_job(
     if entry.get("specification") != check.specification:
         raise ExternalProtocolError("job specification differs from the parsed check")
     snapshot = run_dir / "snapshot"
-    specification = _safe_snapshot_path(snapshot, check.specification)
+    specification = _safe_subpath(snapshot, check.specification, "snapshot")
     cwd_raw = entry.get("cwd") or "."
     _safe_relative(cwd_raw, "check cwd", allow_dot=True)
-    cwd = snapshot if cwd_raw == "." else _safe_snapshot_path(snapshot, cwd_raw)
+    cwd = snapshot if cwd_raw == "." else _safe_subpath(snapshot, cwd_raw, "snapshot")
     if not cwd.is_dir() or is_link(cwd) or not _within(cwd, snapshot):
         raise ExternalProtocolError("snapshot check working directory is missing or unsafe")
     return snapshot, cwd, specification, job_files
@@ -406,7 +407,6 @@ def _ensure_identity(check: ExternalCheck, expected: dict[str, Any]) -> None:
 
 def _run_command(
     command: PinnedCommand,
-    check: ExternalCheck,
     run_dir: Path,
     snapshot: Path,
     cwd: Path,
@@ -472,7 +472,7 @@ def _exit_problem(exit: proc.Exit, stage: str) -> Blocked | None:
 def _evidence_files(evidence_dir: Path, artifacts: tuple[str, ...]) -> list[dict[str, str]]:
     files = []
     for relative in sorted(artifacts):
-        path = _safe_artifact_path(evidence_dir, relative)
+        path = _safe_subpath(evidence_dir, relative, "evidence artifact")
         if not path.is_file() or is_link(path):
             raise ExternalProtocolError(f"required evidence artifact is missing or unsafe: {relative}")
         files.append({"path": relative, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
@@ -484,54 +484,35 @@ def _copy_evidence(source: Path, destination: Path, artifacts: tuple[str, ...]) 
         raise ExternalProtocolError("retained evidence directory is missing or unsafe")
     files = []
     for relative in sorted(artifacts):
-        src = _safe_artifact_path(source, relative)
+        src = _safe_subpath(source, relative, "evidence artifact")
         if not src.is_file() or is_link(src):
             raise ExternalProtocolError(f"retained evidence artifact is missing or unsafe: {relative}")
-        dest = _safe_artifact_path(destination, relative)
+        dest = _safe_subpath(destination, relative, "evidence artifact")
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
         files.append({"path": relative, "sha256": hashlib.sha256(dest.read_bytes()).hexdigest()})
     return files
 
 
-def _evidence_digest(files: list[dict[str, str]]) -> str:
-    return canonical_digest(files)
-
-
 def _verify_snapshot(snapshot: Path, files: dict[str, str]) -> None:
     for relative, expected in files.items():
-        path = _safe_snapshot_path(snapshot, relative)
+        path = _safe_subpath(snapshot, relative, "snapshot")
         if not path.is_file() or file_digest(path) != expected:
             raise ExternalProtocolError(f"snapshot input changed or is missing: {relative}")
 
 
-def _safe_snapshot_path(snapshot: Path, relative: str) -> Path:
-    rel = _safe_relative(relative, "snapshot path")
-    candidate = snapshot.joinpath(*rel.parts)
-    current = snapshot
-    if is_link(current):
-        raise ExternalProtocolError("snapshot root is a symlink")
-    for part in rel.parts:
-        current = current / part
-        if is_link(current):
-            raise ExternalProtocolError(f"snapshot path contains a symlink: {relative}")
-    if not _within(candidate, snapshot):
-        raise ExternalProtocolError(f"snapshot path is unsafe: {relative}")
-    return candidate
-
-
-def _safe_artifact_path(root: Path, relative: str) -> Path:
+def _safe_subpath(root: Path, relative: str, what: str) -> Path:
     if is_link(root):
-        raise ExternalProtocolError("evidence root is a symlink")
-    rel = _safe_relative(relative, "evidence artifact")
+        raise ExternalProtocolError(f"{what} root is a symlink")
+    rel = _safe_relative(relative, f"{what} path")
     candidate = root.joinpath(*rel.parts)
-    if not _within(candidate, root):
-        raise ExternalProtocolError(f"evidence artifact escapes its directory: {relative}")
     current = root
     for part in rel.parts:
         current = current / part
         if is_link(current):
-            raise ExternalProtocolError(f"evidence artifact path contains a symlink: {relative}")
+            raise ExternalProtocolError(f"{what} path contains a symlink: {relative}")
+    if not _within(candidate, root):
+        raise ExternalProtocolError(f"{what} path escapes its directory: {relative}")
     return candidate
 
 

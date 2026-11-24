@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..outcome import Blocked, BlockedReason
+from vkit.core.outcome import Blocked, BlockedReason
 from .obligation import CaseObligation, case_results, scenario_results
 from .spec import PytestCheck
 
@@ -310,12 +310,12 @@ def _is_generator(document: Any) -> bool:
     """Whether a `generator` block has the shape this code reads."""
     if not isinstance(document, dict) or not _GENERATOR_KEYS <= set(document):
         return False
-    if not isinstance(document["max_examples"], int):
+    if type(document["max_examples"]) is not int:
         return False
-    if not isinstance(document["stateful_step_count"], int):
+    if type(document["stateful_step_count"]) is not int:
         return False
     deadline = document["deadline"]
-    if deadline is not None and not isinstance(deadline, (int, float)):
+    if deadline is not None and (not isinstance(deadline, (int, float)) or isinstance(deadline, bool)):
         return False
     return isinstance(document["suppress_health_check"], list)
 

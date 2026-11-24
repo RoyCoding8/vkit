@@ -5,11 +5,11 @@ import os
 import subprocess
 from typing import Any
 
-from .. import jobs
-from ..nowindow import hidden_window
-from ..paths import Project
-from ..query import Context
-from ..requests import PackageVerificationRequest
+from vkit.core import jobs
+from vkit.runtime.nowindow import hidden_window
+from vkit.runtime.paths import Project
+from vkit.core.query import Context
+from vkit.change.requests import PackageVerificationRequest
 
 
 def resolve_commit(project: Project, revision: str) -> str:
@@ -32,7 +32,7 @@ def verify(ctx: Context, raw: Any) -> dict[str, Any]:
     if approval.get("kind") != "formal_policy":
         raise ValueError("formal policy is not accepted; run `vkit accept --component " + component.id + "`")
     if request.reuse:
-        from ..inputs import canonical_digest
+        from vkit.core.inputs import canonical_digest
         from .verus import resolve_execution
 
         current = resolve_execution(component)

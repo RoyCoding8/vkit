@@ -13,13 +13,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import query
-from .manifest import Manifest, ManifestError
-from .paths import Project, ProjectError
-from .schemas import SchemaValidationError
-from .settings import load_launcher_settings, load_settings, save_settings
-from .store import Store, now
-from .workspaces import remember
+from vkit.core import query
+from vkit.core.manifest import Manifest, ManifestError
+from vkit.runtime.paths import Project, ProjectError
+from vkit.core.schemas import SchemaValidationError
+from vkit.console.settings import load_launcher_settings, load_settings, save_settings
+from vkit.core.store import Store, now
+from vkit.console.workspaces import remember
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -104,7 +104,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_feedback_add(args: argparse.Namespace) -> int:
-    from .feedback import submit
+    from vkit.core.feedback import submit
 
     request = {"task": args.task, "missing_capability": args.missing_capability,
                "benefit": args.benefit, "kind": args.kind, "run_id": args.run}
@@ -114,7 +114,7 @@ def cmd_feedback_add(args: argparse.Namespace) -> int:
 
 
 def cmd_feedback_list(args: argparse.Namespace) -> int:
-    from .feedback import collect
+    from vkit.core.feedback import collect
 
     report = collect(_context(args).store, kind=args.kind, offset=args.offset, limit=args.limit)
     _emit(report, args.json, "\n".join(
@@ -142,14 +142,11 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_gate(args: argparse.Namespace) -> int:
     if args.candidate is not None or args.target is not None or args.output is not None:
-        from .ci import run_gate
-        from .paths import open_project
+        from vkit.core.ci import run_gate
 
         if not all((args.candidate, args.target, args.output)):
             raise Refused("the committed gate requires --candidate, --target and --output", EXIT_INVALID)
-        project = open_project(args.project)
-        _remember_workspace(project, "cli")
-        report = run_gate(project, args.candidate, args.target, Path(args.output))
+        report = run_gate(_context(args).project, args.candidate, args.target, Path(args.output))
         _emit(report, args.json, f"{report['verdict']}: {report['reason']}")
         return EXIT_OK if report["verdict"] == "READY" else EXIT_FAILED if report["verdict"] == "FAILED" else EXIT_BLOCKED
     report = query.status(_context(args))["gate"]
@@ -161,7 +158,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
 
 def cmd_check_run(args: argparse.Namespace) -> int:
-    from . import jobs
+    from vkit.core import jobs
 
     ctx = _context(args)
     try:
@@ -179,8 +176,8 @@ def cmd_check_run(args: argparse.Namespace) -> int:
     records = [jobs.submit(ctx.project, manifest, check_id, store=ctx.store) for check_id in check_ids]
     if not args.detach:
         records = [jobs.wait(ctx.store, r["run_id"]) for r in records]
-        from .inputs import canonical_digest, capture_working_tree
-        from .state import evaluator_digests
+        from vkit.core.inputs import canonical_digest, capture_working_tree
+        from vkit.core.state import evaluator_digests
         tree = {item.path: item.content for item in capture_working_tree(ctx.project).files}
         for record in records:
             check_id = (record.get("subject") or {}).get("id")
@@ -198,8 +195,8 @@ def cmd_check_run(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    from .formal.service import resolve_commit, verify
-    from .formal.verus import ExecutionSetupError
+    from vkit.formal.service import resolve_commit, verify
+    from vkit.formal.verus import ExecutionSetupError
 
     ctx = _context(args)
     query.normalize_run_sections(args.section)
@@ -227,7 +224,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_model_compare(args: argparse.Namespace) -> int:
-    from .formal.transitions import compare_transition_request
+    from vkit.formal.transitions import compare_transition_request
 
     report = compare_transition_request(_read_json_file(args.request, "transition comparison request"))
     lines = [f"model comparison: {report['kind']} ({report['scope']})"]
@@ -250,8 +247,8 @@ def cmd_model_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_change_certify(args: argparse.Namespace) -> int:
-    from . import jobs
-    from .change_methods import parse_kani_toolchain
+    from vkit.core import jobs
+    from vkit.change.methods import parse_kani_toolchain
 
     ctx = _context(args)
     wait_seconds = query.validate_wait_seconds(args.wait)
@@ -302,7 +299,7 @@ def cmd_run_cancel(args: argparse.Namespace) -> int:
 
 
 def cmd_run_wait(args: argparse.Namespace) -> int:
-    from .jobs import wait
+    from vkit.core.jobs import wait
 
     ctx = _context(args)
     query.normalize_run_sections(args.section)
@@ -336,7 +333,7 @@ def _run_view_line(view: dict[str, Any]) -> str:
 
 
 def cmd_run_retry(args: argparse.Namespace) -> int:
-    from . import jobs
+    from vkit.core import jobs
 
     ctx = _context(args)
     previous = ctx.store.record(args.run)
@@ -350,7 +347,7 @@ def cmd_run_retry(args: argparse.Namespace) -> int:
 
 
 def cmd_evidence_export(args: argparse.Namespace) -> int:
-    from .evidence import export
+    from vkit.core.evidence import export
 
     result = export(_context(args).store, args.run, Path(args.output), include_assets=args.include_assets)
     _emit(result, args.json, f"exported evidence to {result['bundle']}")
@@ -358,7 +355,7 @@ def cmd_evidence_export(args: argparse.Namespace) -> int:
 
 
 def cmd_evidence_replay(args: argparse.Namespace) -> int:
-    from . import jobs
+    from vkit.core import jobs
 
     ctx = _context(args)
     record = jobs.replay(ctx.project, ctx.require_manifest(), Path(args.bundle), store=ctx.store,
@@ -376,8 +373,6 @@ def _telemetry(project: Any, event: str) -> None:
     import time
 
     try:
-        from .store import Store
-
         root = Store.of(project).root
         root.mkdir(parents=True, exist_ok=True)
         with (root / "telemetry.jsonl").open("a", encoding="utf-8") as handle:
@@ -394,11 +389,23 @@ def _parent_commands(depth: int = 2) -> tuple[list[str], bool]:
             commands.append(Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace"))
             pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
         except (OSError, IndexError, ValueError):
-            degraded = pid > 1
+            degraded = True
             break
         if pid <= 1:
             break
     return commands, degraded
+
+
+def _command_has_agent_marker(command: str) -> bool:
+    for raw in command.lower().split():
+        token = raw.strip("\"'")
+        if not token:
+            continue
+        base = token.replace("\\", "/").rsplit("/", 1)[-1]
+        stem = os.path.splitext(base)[0]
+        if base in AGENT_MARKERS or stem in AGENT_MARKERS or any(base.startswith(f"{m}-") for m in AGENT_MARKERS):
+            return True
+    return False
 
 
 def _confirm(args: argparse.Namespace, description: str, question: str,
@@ -410,7 +417,7 @@ def _confirm(args: argparse.Namespace, description: str, question: str,
         commands, degraded = _parent_commands()
         if degraded:
             _telemetry(project, "provenance_walk_degraded") if project else None
-        if any(marker in command.lower() for command in commands for marker in AGENT_MARKERS):
+        if any(_command_has_agent_marker(command) for command in commands):
             raise Refused("this acceptance was spawned by an agent hook chain, not an operator; "
                           "a human must accept it:\n" + description, EXIT_INVALID)
         return "operator_env" if sys.stdin.isatty() else "shell_env"
@@ -422,7 +429,7 @@ def _confirm(args: argparse.Namespace, description: str, question: str,
 
 
 def cmd_proposals(args: argparse.Namespace) -> int:
-    from .proposals import pending
+    from vkit.core.proposals import pending
 
     found = pending(_context(args).store)
     _emit({"proposals": [{"digest": p.digest, **p.body} for p in found]}, args.json,
@@ -431,7 +438,7 @@ def cmd_proposals(args: argparse.Namespace) -> int:
 
 
 def cmd_reject(args: argparse.Namespace) -> int:
-    from .proposals import ProposalError, find, reject
+    from vkit.core.proposals import ProposalError, find, reject
 
     ctx = _context(args)
     try:
@@ -444,7 +451,7 @@ def cmd_reject(args: argparse.Namespace) -> int:
 
 
 def _accept_proposal(args: argparse.Namespace, ctx: query.Context) -> int:
-    from .proposals import ProposalError, apply, find
+    from vkit.core.proposals import ProposalError, apply, find
 
     try:
         proposal = find(ctx.store, args.proposal)
@@ -454,13 +461,13 @@ def _accept_proposal(args: argparse.Namespace, ctx: query.Context) -> int:
             return EXIT_BLOCKED
         accepted = apply(ctx.project, ctx.store, proposal)
         if accepted:
-            from .evidence import backend_identity
-            from .manifest import parse_manifest
-            from .state import evaluator_digests, sentinel as probe
+            from vkit.core.evidence import backend_identity
+            from vkit.core.manifest import parse_manifest
+            from vkit.core.state import evaluator_digests, sentinel as probe
 
             manifest = parse_manifest(ctx.project)
             _pinned_or_refuse(manifest, accepted)
-            from .state import evaluator
+            from vkit.core.state import evaluator
             for c in accepted:
                 ctx.store.retain_evaluator(c, evaluator(manifest.require(c)))
             checked = {c: probe(ctx.project, manifest.require(c)) for c in accepted}
@@ -530,8 +537,8 @@ def _prior_acceptances(approved: dict[str, Any], check_id: str) -> list[dict[str
 def _oracle_diff(store: Store, prior: dict[str, Any], check) -> list[str]:
     import difflib
 
-    from .state import evaluator
-    from .verifiers.spec import ExternalCheck
+    from vkit.core.state import evaluator
+    from vkit.verifiers.spec import ExternalCheck
 
     if isinstance(getattr(check, "variant", None) or check, ExternalCheck):
         return ["oracle: external check - evaluator content is not pinned"]
@@ -566,7 +573,7 @@ def _sentinel_line(found: dict[str, Any]) -> str:
 
 
 def _accept_card(manifest, identities, pending, formal_records, approved, snapshot, store, sentinels=None) -> list[str]:
-    from .state import sentinel
+    from vkit.core.state import sentinel
 
     sentinels = sentinels or {}
     lines = []
@@ -634,8 +641,8 @@ def _inventory_diff(previous: dict[str, Any] | None, inventory: dict[str, Any],
 
 def _definition_record(manifest, check_id: str, identity: dict[str, Any],
                        checked: dict[str, Any], via: str, files: dict[str, str]) -> dict[str, Any]:
-    from .inputs import canonical_digest
-    from .verifiers.spec import ExternalCheck
+    from vkit.core.inputs import canonical_digest
+    from vkit.verifiers.spec import ExternalCheck
 
     external = isinstance(getattr(manifest.require(check_id), "variant", None) or manifest.require(check_id),
                           ExternalCheck)
@@ -649,22 +656,25 @@ def _inventory_record(store: Store, manifest: Manifest, ids: list[str], via: str
                       *, dropped: dict[str, str] | None = None,
                       formal: dict[str, str] | None = None,
                       drop_names: tuple[str, ...] = ()) -> dict[str, Any]:
-    from .state import approved_inventory
+    from vkit.core.state import approved_inventory
 
     base = approved_inventory(store.approved()) or {}
     checks = {**base.get("checks", {}), **{c: manifest.digest(c) for c in ids}}
+    formal_required = {**base.get("formal_required", {}), **(formal or {})}
     for name in (*(dropped or {}), *drop_names):
         checks.pop(name, None)
+        formal_required.pop(name, None)
+    reaccepted = {*ids, *(formal or {})}
     return {"kind": "obligation_inventory", "accepted_at": now(),
             "checks": checks,
-            "formal_required": {**base.get("formal_required", {}), **(formal or {})},
-            "dropped": {**{n: r for n, r in base.get("dropped", {}).items() if n not in ids},
+            "formal_required": formal_required,
+            "dropped": {**{n: r for n, r in base.get("dropped", {}).items() if n not in reaccepted},
                         **(dropped or {})},
             "confirmed_via": via}
 
 
 def _pinned_or_refuse(manifest, check_ids: list[str]) -> None:
-    from .state import evaluator_gaps
+    from vkit.core.state import evaluator_gaps
 
     for check_id in check_ids:
         gaps = evaluator_gaps(manifest.require(check_id))
@@ -689,19 +699,15 @@ def cmd_accept(args: argparse.Namespace) -> int:
     except ManifestError as exc:
         raise Refused(str(exc), EXIT_INVALID) from exc
     approved = ctx.store.approved()
-    from .evidence import backend_identity
-    from .state import evaluator_digests, evaluator_gaps, oracle_matches, sentinel
+    from vkit.core.evidence import backend_identity
+    from vkit.core.state import evaluator_digests, oracle_matches, sentinel
 
     identities = {c: backend_identity(manifest.require(c)) for c in wanted}
     pending = [c for c in wanted if not oracle_matches(approved, manifest.require(c), manifest.digest(c))]
-    for check_id in pending:
-        gaps = evaluator_gaps(manifest.require(check_id))
-        if gaps:
-            raise Refused(f"{check_id}: evaluator content is not pinned ({'; '.join(gaps)}); "
-                          "an empty oracle would match every future edit, so acceptance is refused", EXIT_INVALID)
+    _pinned_or_refuse(manifest, pending)
     sentinels = {check_id: sentinel(ctx.project, manifest.require(check_id)) for check_id in pending}
     oracle = {check_id: evaluator_digests(manifest.require(check_id)) for check_id in pending}
-    from .state import comparison, evaluator
+    from vkit.core.state import comparison, evaluator
 
     comparisons = {}
     for check_id in pending:
@@ -715,8 +721,8 @@ def cmd_accept(args: argparse.Namespace) -> int:
         if outcome["outcome"] == "incomparable":
             raise Refused(f"{check_id}: incomparable - the accepted evaluator cannot run against the current "
                           f"candidate; clearing: {outcome['clearing']}", EXIT_BLOCKED)
-    from .formal.verus import ExecutionSetupError, resolve_execution
-    from .inputs import canonical_digest
+    from vkit.formal.verus import ExecutionSetupError, resolve_execution
+    from vkit.core.inputs import canonical_digest
 
     formal_records = {}
     for component_id in components:
@@ -730,15 +736,15 @@ def cmd_accept(args: argparse.Namespace) -> int:
                   "checker_sha256": canonical_digest(execution["semantic"])}
         if any(approved.get(component.digest, {}).get(key) != value for key, value in record.items()):
             formal_records[component_id] = (record, execution["semantic"])
-    from .inputs import Snapshot
-    from .state import approved_inventory
+    from vkit.core.inputs import Snapshot
+    from vkit.core.state import approved_inventory
 
     previous = approved_inventory(approved)
     inventory = {"kind": "obligation_inventory", "accepted_at": now(),
                  "checks": dict((previous or {}).get("checks", {})),
                  "formal_required": dict((previous or {}).get("formal_required", {})),
                  "dropped": {name: run for name, run in (previous or {}).get("dropped", {}).items()
-                             if name not in wanted}}
+                             if name not in wanted and name not in components}}
     inventory["checks"].update({c: manifest.digest(c) for c in wanted})
     inventory["formal_required"].update({c: manifest.require_component(c).digest for c in components
                                           if manifest.require_component(c).required})
@@ -816,7 +822,7 @@ def cmd_features(args: argparse.Namespace) -> int:
 
 
 def cmd_project_inspect(args: argparse.Namespace) -> int:
-    from .discover import inspect_repository
+    from vkit.core.discover import inspect_repository
 
     inspection = inspect_repository(_context(args).project)
     found = bool(inspection.by_kind("test"))
@@ -825,7 +831,7 @@ def cmd_project_inspect(args: argparse.Namespace) -> int:
 
 
 def cmd_mcp_serve(args: argparse.Namespace) -> int:
-    from .mcp import MCPUnavailable, Server, serve_stdio
+    from vkit.mcp import MCPUnavailable, Server, serve_stdio
 
     project = _context(args).project
     if args.json:
@@ -839,10 +845,10 @@ def cmd_mcp_serve(args: argparse.Namespace) -> int:
 
 
 def cmd_tools(args: argparse.Namespace) -> int:
-    from .mcp import BY_NAME, Server
+    from vkit.mcp import BY_NAME, Server
 
     project = _context(args).project
-    from .categories import INFRASTRUCTURE_TOOLS
+    from vkit.core.categories import INFRASTRUCTURE_TOOLS
 
     name = args.enable or args.disable
     if name:
@@ -875,13 +881,13 @@ def cmd_tools(args: argparse.Namespace) -> int:
 
 
 def cmd_console(args: argparse.Namespace) -> int:
-    from .console import serve
+    from vkit.console.server import serve
 
     return serve(_context(args).project, port=args.port, open_browser=args.open_browser)
 
 
 def cmd_tui(args: argparse.Namespace) -> int:
-    from .tui import launch
+    from vkit.console.tui import launch
 
     return launch(_context(args).project, port=args.port)
 
@@ -921,7 +927,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_feedback.add_argument("--limit", type=int, default=20)
     tools = command(sub, "tools", "discover enabled tools or change their saved availability")
     tools.add_argument("--query", default="", help="filter enabled tools by words")
-    from .categories import CATEGORIES
+    from vkit.core.categories import CATEGORIES
 
     tools.add_argument("--category", choices=list(CATEGORIES), help="filter enabled tools by category")
     tools.add_argument("--offset", type=int, default=0)
@@ -1049,9 +1055,7 @@ _DISPATCH = {
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    handler = getattr(args, "handler", None)
-    if handler is None:
-        handler = _DISPATCH[(args.command, getattr(args, f"{args.command}_command", None))]
+    handler = _DISPATCH[(args.command, getattr(args, f"{args.command}_command", None))]
     try:
         if args.project is None or args.command in {"console", "tui"}:
             defaults = load_launcher_settings()

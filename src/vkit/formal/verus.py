@@ -15,9 +15,9 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .. import container
-from ..inputs import canonical_digest, is_secret
-from ..outcome import Blocked, BlockedReason, Outcome, Passed, ScenarioResult
+from vkit.runtime import container
+from vkit.core.inputs import canonical_digest, is_secret
+from vkit.core.outcome import Blocked, BlockedReason, Outcome, Passed, ScenarioResult
 from .policy import FormalComponent
 
 PROFILE = "verus-linux-x86_64-v1"
@@ -27,6 +27,7 @@ _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _VERIFICATION = re.compile(r"verification results:: [1-9][0-9]* verified, 0 errors")
 _STRICT = ("--no-cheating", "--no-external-by-default", "--num-threads", "2")
 _DIAGNOSTICS = ("-V", "axiom-usage-info", "--log", "call-graph")
+_RUNTIME_PHASES = frozenset({"verus_version", "z3_version", "rust_version"})
 
 
 class ExecutionSetupError(ValueError):
@@ -159,15 +160,15 @@ def resolve_execution(component: FormalComponent, environment: dict[str, str] | 
         "rustup_home": "VKIT_RUSTUP_HOME",
         "cargo_home": "VKIT_CARGO_HOME",
     }
-    paths = {
-        key: Path(environment.get(name, "")).expanduser().resolve()
-        for key, name in names.items()
-    }
     if any(not environment.get(name) for name in names.values()):
         raise ExecutionSetupError(
             BlockedReason.TOOL_MISSING,
             "Verus archive, tools, Rustup home, and Cargo home must be configured",
         )
+    paths = {
+        key: Path(environment[name]).expanduser().resolve()
+        for key, name in names.items()
+    }
     try:
         from . import ledger
 
@@ -186,7 +187,7 @@ def resolve_execution(component: FormalComponent, environment: dict[str, str] | 
         if not (cargo_home / "bin" / "rustup").is_file():
             raise ValueError("configured Cargo home is missing the Rustup executable")
         package_identity = _package_identity(package)
-        from ..evidence import policy_identity
+        from vkit.core.evidence import policy_identity
 
         semantic = {
             "protocol": 1,
@@ -252,7 +253,8 @@ for phase in plan['phases']:
     if code != 0:
         print('phase_exit:' + phase['id'] + ':' + str(code), file=sys.stderr)
         sys.exit(10)
-    text = open(phase['log'], encoding='utf-8', errors='replace').read()
+    with open(phase['log'], encoding='utf-8', errors='replace') as log:
+        text = log.read()
     if phase.get('marker') and phase['marker'] not in text:
         print('runtime_mismatch:' + phase['id'], file=sys.stderr)
         sys.exit(11)
@@ -271,6 +273,7 @@ def _verus_phases(
     source: str,
     expected: str,
     toolchain: str,
+    verus_version: str,
 ) -> list[dict[str, Any]]:
     verifier = "/assets/verus/verus"
     rustup = "/assets/cargo/bin/rustup"
@@ -289,7 +292,7 @@ def _verus_phases(
         }
 
     phases = [
-        phase("verus_version", [verifier, "--version"]),
+        phase("verus_version", [verifier, "--version"], verus_version),
         phase(
             "z3_version", ["/assets/verus/z3", "--version"], f"Z3 version {Z3_VERSION}"
         ),
@@ -333,8 +336,6 @@ def _verus_phases(
         f"ledger={output}/ledger.vir",
         "--extern",
         f"ledger={output}/libledger.rlib",
-        "-L",
-        output,
         "--import",
         f"candidate_api={output}/candidate_api.vir",
         "--extern",
@@ -373,7 +374,9 @@ def _expected_logs(
             return False, f"missing verifier log: {phase['id']}"
         text = log_path.read_text(encoding="utf-8", errors="replace")
         if phase.get("marker") and phase["marker"] not in text:
-            return False, f"runtime identity mismatch: {phase['id']}"
+            if phase["id"] in _RUNTIME_PHASES:
+                return False, f"runtime identity mismatch: {phase['id']}"
+            return False, f"formal obligation failed: {phase['id']}"
         if phase.get("verified") and _VERIFICATION.search(text) is None:
             return False, f"formal obligation failed: {phase['id']}"
     return True, None
@@ -438,26 +441,12 @@ def execute_formal(
             "/output/candidate_api.rs",
             "/trusted/rendered/expected.rs",
             toolchain,
+            str(current["semantic"]["verus"]["version"]["version"]),
         )
-        runtime_commands = [
-            phase
-            for phase in phases
-            if phase["id"] in {"verus_version", "z3_version", "rust_version"}
-        ]
-        phases[0]["marker"] = str(current["semantic"]["verus"]["version"]["version"])
         plan = {
             "source": f"/source/{component.entry}",
             "source_sha256": source_sha256,
-            "phases": [
-                {
-                    "id": phase["id"],
-                    "argv": phase["argv"],
-                    "log": phase["log"],
-                    "marker": phase["marker"],
-                    "verified": phase["verified"],
-                }
-                for phase in phases
-            ],
+            "phases": phases,
         }
         options = [
             *container.sealed_options(),
@@ -519,11 +508,10 @@ def execute_formal(
                 return Blocked(BlockedReason.TOOL_MISSING, container_error.strip()), {}
             if "phase_timeout:" in container_error:
                 return Blocked(BlockedReason.TIMEOUT, container_error.strip()), {}
-            if "runtime_mismatch:" in container_error:
-                return Blocked(BlockedReason.TOOL_MISSING, container_error.strip()), {}
             if any(
-                f"phase_exit:{phase['id']}:" in container_error
-                for phase in runtime_commands
+                f"runtime_mismatch:{phase_id}" in container_error
+                or f"phase_exit:{phase_id}:" in container_error
+                for phase_id in _RUNTIME_PHASES
             ):
                 return Blocked(BlockedReason.TOOL_MISSING, container_error.strip()), {}
             return Blocked(

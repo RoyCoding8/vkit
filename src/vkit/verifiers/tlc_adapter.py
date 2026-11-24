@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..outcome import Blocked, BlockedReason, ScenarioResult
+from vkit.core.outcome import Blocked, BlockedReason, ScenarioResult
 from .obligation import PropertyObligation, obligation_to_json
 from .spec import TlcCheck
 
@@ -312,21 +312,22 @@ def interpret(raw: bytes, check: TlcCheck) -> AdapterResult | Blocked:
         )
     violated = exploration.violation_reported or report.exit_code in VIOLATION_STATUSES
 
-    if not violated and report.exit_code == SUCCESS and not exploration.exhaustive:
-        return _refuse(
-            "incomplete_exploration", BlockedReason.INTERNAL_ERROR,
-            f"TLC exited 0 but left {exploration.left_on_queue} states on the queue, "
-            "so the exploration was cut short. 'Explored everything' and 'stopped "
-            "early' both end with a green exit code, and only the queue count "
-            "tells them apart.",
-        )
-    if not violated and report.exit_code == SUCCESS and not exploration.completed_banner:
-        return _refuse(
-            "incomplete_exploration", BlockedReason.INTERNAL_ERROR,
-            "TLC exited 0 with a complete state queue but never printed its "
-            "completion banner, so this reader cannot confirm the run finished "
-            "rather than being cut off between the two.",
-        )
+    if not violated and report.exit_code == SUCCESS:
+        if exploration.left_on_queue != 0:
+            return _refuse(
+                "incomplete_exploration", BlockedReason.INTERNAL_ERROR,
+                f"TLC exited 0 but left {exploration.left_on_queue} states on the queue, "
+                "so the exploration was cut short. 'Explored everything' and 'stopped "
+                "early' both end with a green exit code, and only the queue count "
+                "tells them apart.",
+            )
+        if not exploration.completed_banner:
+            return _refuse(
+                "incomplete_exploration", BlockedReason.INTERNAL_ERROR,
+                "TLC exited 0 with a complete state queue but never printed its "
+                "completion banner, so this reader cannot confirm the run finished "
+                "rather than being cut off between the two.",
+            )
 
     text = _config_text(check, variant)
     if isinstance(text, Blocked):
@@ -508,20 +509,28 @@ def _config_text(check: Any, variant: TlcCheck) -> str | Blocked:
     return path.read_bytes().replace(b"\r\n", b"\n").decode("utf-8", "replace")
 
 
+_CONFIG_KEYWORDS = (
+    r"SPECIFICATION|INIT|NEXT|CONSTANTS?|INVARIANTS?|PROPERTY|PROPERTIES|"
+    r"CONSTRAINTS?|ACTION_CONSTRAINTS?|CHECK_DEADLOCK|VIEW|SYMMETRY"
+)
+
+
+def _strip_tla_comments(config_text: str) -> str:
+    text = re.sub(r"\(\*.*?\*\)", "", config_text, flags=re.DOTALL)
+    return re.sub(r"\\\*[^\n]*", "", text)
+
+
 def _checked_properties(config_text: str) -> tuple[str, ...]:
     """Read singular, plural, inline and multiline TLC property declarations."""
-    text = re.sub(r"\(\*.*?\*\)", "", config_text, flags=re.DOTALL)
-    text = re.sub(r"\\\*[^\n]*", "", text)
     names: list[str] = []
     in_properties = False
-    keywords = r"SPECIFICATION|INIT|NEXT|CONSTANTS?|CONSTRAINTS?|ACTION_CONSTRAINTS?|CHECK_DEADLOCK|VIEW|SYMMETRY"
-    for line in text.splitlines():
+    for line in _strip_tla_comments(config_text).splitlines():
         line = line.strip()
         header = re.match(r"^(INVARIANTS?|PROPERTY|PROPERTIES)\b(.*)$", line)
         if header:
             in_properties = True
             line = header[2].strip()
-        elif re.match(rf"^(?:{keywords})\b", line):
+        elif re.match(rf"^(?:{_CONFIG_KEYWORDS})\b", line):
             in_properties = False
         if in_properties and line:
             tokens = line.split()
@@ -565,14 +574,20 @@ def _constants(config_text: str) -> dict[str, int]:
     """Every constant the config assigns, with its cardinality (`..` ranges are inclusive, a bare
     integer is 1).
     """
-    block = re.search(r"^CONSTANTS\n((?:[ \t]+\S+.*\n)+)", config_text, re.MULTILINE)
-    if not block:
-        return {}
     found: dict[str, int] = {}
-    for line in block.group(1).splitlines():
-        match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$", line)
-        if match:
-            found[match.group(1)] = _cardinality(match.group(2))
+    in_constants = False
+    for line in _strip_tla_comments(config_text).splitlines():
+        line = line.strip()
+        header = re.match(r"^CONSTANTS?\b(.*)$", line)
+        if header:
+            in_constants = True
+            line = header[1].strip()
+        elif re.match(rf"^(?:{_CONFIG_KEYWORDS})\b", line):
+            in_constants = False
+        if in_constants and line:
+            match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$", line)
+            if match:
+                found[match.group(1)] = _cardinality(match.group(2))
     return found
 
 

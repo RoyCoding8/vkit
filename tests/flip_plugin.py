@@ -1,7 +1,8 @@
 import os
 
 if os.environ.get("VKIT_FLIP_MUTANT"):
-    from vkit import query, state
+    from vkit.core import query
+    from vkit.core import state
 
     def ready_mutant(*_args, **_kwargs):
         return {"verdict": "READY", "reason": "every required check passed against the current inputs",

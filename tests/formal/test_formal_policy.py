@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+from copy import deepcopy
+
+import pytest
+
+from vkit.core.manifest import ManifestError, parse_manifest_data
+from vkit.runtime.paths import Project
+
+
+def component():
+    return {"id": "allocation", "package": {"id": "vkit.resource-ledger", "version": "0.1.0",
+                                            "sha256": "a" * 64},
+            "contract": "ledger.source.v1", "source": {"entry": "src/allocation.rs"},
+            "profile": "verus-linux-x86_64-v1", "parameters": {"max_records": 7},
+            "bindings": {"new": "api::new", "reserve": "api::reserve", "release": "api::release",
+                         "reserve_batch": "api::reserve_batch", "apply_command": "api::apply_command",
+                         "run_commands": "api::run_commands"}, "required": True}
+
+
+def parse(tmp_path, entry):
+    return parse_manifest_data({"schema_version": 3, "checks": [], "formal": {"components": [entry]}},
+                               project=Project(tmp_path, tmp_path / ".git"), origin="test manifest")
+
+
+def test_manifest_resolves_a_complete_owned_component(tmp_path):
+    original = component()
+    manifest = parse(tmp_path, original)
+    actual = manifest.require_component("allocation")
+    assert actual.to_json() == original
+    assert actual.max_records == 7
+    assert actual.bindings.run_commands == "api::run_commands"
+    assert not manifest.checks
+
+
+@pytest.mark.parametrize("field,value", [
+    ("contract", "ledger.total.v1"), ("profile", "custom-verus"),
+    ("bindings", {"reserve": "reserve"}),
+    ("source", {"entry": "../outside.rs"}), ("source", {"entry": "src/./file.rs"}),
+    ("source", {"entry": "C:/outside.rs"}), ("source", {"entry": "src\\file.rs"}),
+    ("parameters", {"max_records": 0}), ("parameters", {"max_records": True}),
+])
+def test_manifest_rejects_weakened_or_unsupported_component_policy(tmp_path, field, value):
+    entry = component()
+    entry[field] = value
+    with pytest.raises(ManifestError):
+        parse(tmp_path, entry)
+
+
+@pytest.mark.parametrize("binding", ["crate::reserve", "unsafe::reserve", "_", "reserve(); assume(false)"])
+def test_binding_paths_cannot_inject_rust_or_replace_the_crate_prefix(tmp_path, binding):
+    entry = component()
+    entry["bindings"]["reserve"] = binding
+    with pytest.raises(ManifestError):
+        parse(tmp_path, entry)
+
+
+def test_representation_is_accepted_policy_and_round_trips(tmp_path):
+    entry = component()
+    entry["representation"] = "columns::Columns"
+    parsed = parse(tmp_path, entry).require_component("allocation")
+    assert parsed.representation == "columns::Columns"
+    assert parsed.to_json() == entry
+
+
+@pytest.mark.parametrize("representation", ["unsafe::State", "_", "State<u32>", "State; assume(false)"])
+def test_representation_cannot_inject_rust_or_set_a_concrete_size(tmp_path, representation):
+    entry = component()
+    entry["representation"] = representation
+    with pytest.raises(ManifestError):
+        parse(tmp_path, entry)
+
+
+def test_duplicate_components_and_unknown_obligations_are_rejected(tmp_path):
+    entry = component()
+    raw = {"schema_version": 3, "checks": [], "formal": {"components": [entry, deepcopy(entry)]}}
+    with pytest.raises(ManifestError, match="duplicate formal component"):
+        parse_manifest_data(raw, project=Project(tmp_path, tmp_path / ".git"), origin="duplicate")
+    entry["obligations"] = ["only-the-easy-one"]
+    with pytest.raises(ManifestError):
+        parse(tmp_path, entry)

@@ -18,7 +18,7 @@ OUTPUT_LIMIT = 40000
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from vkit.nowindow import hidden_window  # noqa: E402
+from vkit.runtime.nowindow import hidden_window  # noqa: E402
 
 
 def _run(argv: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict:

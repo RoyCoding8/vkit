@@ -85,16 +85,16 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
               output.write(f"VKIT_TLA2TOOLS_JAR={jar}\n")
       - run: uv sync --python 3.11 --extra test
-      - run: uv run python scripts/verify_formal.py --backend all --output "${{ runner.temp }}/vkit-formal-evidence"
-      - run: uv run pytest tests/test_logical_trust.py tests/test_tlc_evidence.py -q
-      - run: uv run python scripts/check_lifecycle.py
-      - run: uv run python scripts/check_authority.py --output "${{ runner.temp }}/vkit-authority-evidence"
-      - run: uv run python scripts/check_authority.py --suite differences --output "${{ runner.temp }}/vkit-difference-evidence"
-      - run: uv run python scripts/check_authority.py --suite shadow --output "${{ runner.temp }}/vkit-shadow-authority-evidence"
-      - run: uv run python scripts/check_delegated_claim_authority.py --output "${{ runner.temp }}/vkit-delegated-claim-evidence"
-      - run: uv run python scripts/check_difference_decisions.py --output "${{ runner.temp }}/vkit-difference-decisions"
-      - run: uv run python scripts/check_finite_decisions.py --output "${{ runner.temp }}/vkit-finite-decisions/report.json"
-      - run: uv run pytest tests/test_transition_model.py -q --basetemp "${{ runner.temp }}/vkit-transition-evidence"
+      - run: uv run python scripts/checks/verify_formal.py --backend all --output "${{ runner.temp }}/vkit-formal-evidence"
+      - run: uv run pytest tests/formal/test_logical_trust.py tests/formal/test_tlc_evidence.py -q
+      - run: uv run python scripts/checks/check_lifecycle.py
+      - run: uv run python scripts/checks/check_authority.py --output "${{ runner.temp }}/vkit-authority-evidence"
+      - run: uv run python scripts/checks/check_authority.py --suite differences --output "${{ runner.temp }}/vkit-difference-evidence"
+      - run: uv run python scripts/checks/check_authority.py --suite shadow --output "${{ runner.temp }}/vkit-shadow-authority-evidence"
+      - run: uv run python scripts/checks/check_delegated_claim_authority.py --output "${{ runner.temp }}/vkit-delegated-claim-evidence"
+      - run: uv run python scripts/checks/check_difference_decisions.py --output "${{ runner.temp }}/vkit-difference-decisions"
+      - run: uv run python scripts/checks/check_finite_decisions.py --output "${{ runner.temp }}/vkit-finite-decisions/report.json"
+      - run: uv run pytest tests/formal/test_transition_model.py -q --basetemp "${{ runner.temp }}/vkit-transition-evidence"
       - name: Retain formal evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

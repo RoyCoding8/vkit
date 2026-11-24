@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from ..budgets import Measurement
-from ..outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
-from ..schemas import CHECK_ARTIFACT, SchemaValidationError, parse_artifact, validate
+from vkit.core.budgets import Measurement
+from vkit.core.outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
+from vkit.core.schemas import CHECK_ARTIFACT, SchemaValidationError, parse_artifact, validate
 from . import lean_adapter, node_adapter, property_adapter, pytest_adapter, static_adapter, tlc_adapter
 from .obligation import CaseObligation, obligation_to_json
 from .spec import CheckKind, ExternalCheck
@@ -125,7 +125,7 @@ ADAPTERS: dict[CheckKind, Adapter] = {
 
 def argv_for(check: Any, run_dir: Path, python: str | None, *, input_digest: str | None = None) -> tuple[str, ...]:
     if isinstance(check, ExternalCheck):
-        raise TypeError("external checks require dispatch.execute_external, not a single argv")
+        raise TypeError("external checks require external.execute, not a single argv")
     return ADAPTERS[check.kind].argv_for(check, run_dir, python)
 
 

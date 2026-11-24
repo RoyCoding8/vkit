@@ -7,7 +7,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from vkit.nowindow import hidden_window
+from vkit.runtime.nowindow import hidden_window
 
 ROOT = Path(__file__).resolve().parents[1]
 NO_WINDOW = hidden_window()

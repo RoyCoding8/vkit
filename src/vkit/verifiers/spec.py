@@ -5,8 +5,8 @@ import enum
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..budgets import Budget
-from ..claimkind import ClaimCategory
+from vkit.core.budgets import Budget
+from vkit.core.claimkind import ClaimCategory
 from .obligation import CaseObligation, Obligation, PropertyObligation, TheoremObligation
 
 

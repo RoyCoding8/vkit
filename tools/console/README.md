@@ -2,7 +2,7 @@
 
 This directory contains the frontend build sources. For running checks and managing workspaces, see the [console guide](../../docs/console.md).
 
-The interface uses Material Web components, Material 3 color roles, and self-hosted Roboto fonts. Generated assets live in `src/vkit/console-assets` and ship in the Python package. Running the console needs neither Node nor an internet connection.
+The interface uses Material Web components, Material 3 color roles, and self-hosted Roboto fonts. Generated assets live in `src/vkit/console/static/assets` and ship in the Python package. Running the console needs neither Node nor an internet connection.
 
 ## Rebuild the assets
 

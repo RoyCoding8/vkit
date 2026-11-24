@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from itertools import product
 from typing import Any
 
-from ..inputs import canonical_digest
-from ..schemas import validate
+from vkit.core.inputs import canonical_digest
+from vkit.core.schemas import validate
 
 Context = tuple[str, str, str]
 Edge = tuple[str, str, str, str]
@@ -42,11 +41,15 @@ class FiniteTransitionModel:
             tuple(sorted(raw[key]))
             for key in ("states", "actions", "inputs", "observations", "initial_states")
         )
-        if not set(initial) <= set(states):
+        state_set, action_set, input_set, observation_set = (
+            set(states), set(actions), set(inputs), set(observations),
+        )
+        if not set(initial) <= state_set:
             raise ValueError("initial states must belong to the declared states")
         assumptions = frozenset((row["state"], row["action"], row["input"])
                                 for row in raw["assumptions"])
-        if not assumptions <= set(product(states, actions, inputs)):
+        if any(state not in state_set or action not in action_set or value not in input_set
+               for state, action, value in assumptions):
             raise ValueError("assumptions must use declared state, action and input tokens")
         rules = tuple(sorted(TransitionRule(row["source"], row["action"],
                                             tuple(sorted(row["inputs"])), tuple(sorted(row["targets"])))
@@ -54,13 +57,13 @@ class FiniteTransitionModel:
         if len(set(rules)) != len(rules):
             raise ValueError("duplicate normalized transition rule")
         for rule in rules:
-            if (rule.source not in states or rule.action not in actions
-                    or not set(rule.inputs) <= set(inputs) or not set(rule.targets) <= set(states)):
+            if (rule.source not in state_set or rule.action not in action_set
+                    or not set(rule.inputs) <= input_set or not set(rule.targets) <= state_set):
                 raise ValueError("transition rules must use declared tokens")
         state_observations = tuple(sorted((row["state"], row["value"])
                                           for row in raw["state_observations"]))
         if (tuple(state for state, _ in state_observations) != states
-                or any(value not in observations for _, value in state_observations)):
+                or any(value not in observation_set for _, value in state_observations)):
             raise ValueError("state observations must assign one declared value to every state")
         return cls(states, actions, inputs, observations, initial, assumptions, rules, state_observations)
 

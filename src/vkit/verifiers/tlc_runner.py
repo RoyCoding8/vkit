@@ -20,7 +20,7 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from vkit.nowindow import hidden_window  # noqa: E402
+from vkit.runtime.nowindow import hidden_window  # noqa: E402
 from vkit.verifiers.tlc_witness import same_state_sequence, source_locations, trace_states, without_internal_state  # noqa: E402
 
 OUTPUT_LIMIT = 40000
@@ -58,24 +58,24 @@ def refuse_java_overrides(directory: Path, model_paths: tuple[str, ...]) -> str 
     a `classpath.txt`, or a symlink leaving the project could replace a trusted operator. The
     whole project tree is scanned.
     """
-    found = sorted(
-        entry.relative_to(directory).as_posix()
-        for entry in directory.rglob("*")
-        if entry.is_file() and entry.suffix.lower() == ".class"
-    )
-    classpaths = sorted(
-        entry.relative_to(directory).as_posix()
-        for entry in directory.rglob("classpath.txt") if entry.is_file()
-    )
-    external_links = []
+    found: list[str] = []
+    classpaths: list[str] = []
+    external_links: list[str] = []
     root = directory.resolve()
     for entry in directory.rglob("*"):
-        if not entry.is_symlink():
-            continue
-        try:
-            entry.resolve().relative_to(root)
-        except (OSError, RuntimeError, ValueError):
-            external_links.append(entry.relative_to(directory).as_posix())
+        rel = entry.relative_to(directory).as_posix()
+        if entry.is_symlink():
+            try:
+                entry.resolve().relative_to(root)
+            except (OSError, RuntimeError, ValueError):
+                external_links.append(rel)
+        if entry.is_file():
+            if entry.suffix.lower() == ".class":
+                found.append(rel)
+            elif entry.name == "classpath.txt":
+                classpaths.append(rel)
+    found.sort()
+    classpaths.sort()
     external_links.sort()
     if not found and not classpaths and not external_links:
         return None
@@ -229,7 +229,7 @@ def main(argv: list[str]) -> int:
         report["failure"] = f"the pinned tla2tools jar {jar} does not exist"
         return _write(report, Path(args.report))
     report["jar_sha256"] = _digest(jar)
-    if args.jar_sha256 and args.jar_sha256 != report["jar_sha256"]:
+    if args.jar_sha256 != report["jar_sha256"]:
         report["complete"] = False
         report["failure"] = (
             f"the tla2tools jar measures {report['jar_sha256']} and the check pinned "
@@ -242,7 +242,7 @@ def main(argv: list[str]) -> int:
     metadir.mkdir(parents=True, exist_ok=True)
 
     stem = (
-        str(config_source.with_suffix("")).strip()
+        str(config_source.with_suffix(""))
         if config_source.suffix == ".cfg" else str(config_source)
     )
     report_path = Path(args.report).resolve()
@@ -340,7 +340,7 @@ def _validate_witness(
         _write(result, validation_path)
         return result
     parsed = trace_states(original)
-    if parsed is None or _has_lasso(original):
+    if parsed is None:
         result["status"] = "unsupported"
         result["reason"] = "only complete finite safety traces in TLC JSON format are supported"
         _write(result, validation_path)
@@ -352,7 +352,6 @@ def _validate_witness(
         args, jar, stem, workdir, candidate, replay_output, metadir / "witness-replay",
         property_name, 0,
     )
-    (final_path.parent / "tlc-replay-input-0.json").unlink(missing_ok=True)
     if replayed is None:
         result["status"] = "rejected"
         result["reason"] = reason
@@ -371,12 +370,9 @@ def _validate_witness(
             index += 1
             continue
         attempt = result["minimization"]["attempts"] + 1
-        input_path = final_path.parent / "tlc-replay-candidate.json"
-        input_path.write_text(json.dumps(reduced, sort_keys=True), encoding="utf-8")
         replayed, _ = _replay_candidate(
             args, jar, stem, workdir, reduced, replay_output,
             metadir / "witness-replay", property_name, attempt,
-            input_path=input_path,
         )
         result["minimization"]["attempts"] = attempt
         if replayed is not None:
@@ -387,11 +383,11 @@ def _validate_witness(
             index = 2
         else:
             index += 1
-        input_path.unlink(missing_ok=True)
 
     result["minimization"]["budget_exhausted"] = (
-        result["minimization"]["attempts"] >= TRACE_MINIMIZATION_MAX_ATTEMPTS
-        or time.monotonic() >= deadline
+        state_count > 2 and index < state_count
+        and (result["minimization"]["attempts"] >= TRACE_MINIMIZATION_MAX_ATTEMPTS
+             or time.monotonic() >= deadline)
     )
     result["minimization"]["minimal_within_budget"] = not result["minimization"]["budget_exhausted"]
     if not _sources_unchanged(model_source, config_source, model_digest, config_digest):
@@ -424,40 +420,34 @@ def _replay_candidate(
     candidate_path = input_path or replay_output.parent / f"tlc-replay-input-{attempt}.json"
     if input_path is None:
         candidate_path.write_text(json.dumps(candidate, sort_keys=True), encoding="utf-8")
-    replay_output.unlink(missing_ok=True)
-    metadir.mkdir(parents=True, exist_ok=True)
-    argv = [
-        args.java, "-XX:+UseParallelGC", "-Xmx2g", "-cp", str(jar), "tlc2.TLC",
-        "-nowarning", "-cleanup", "-workers", str(args.workers), "-metadir", str(metadir),
-        "-config", stem, "-loadTrace", "json", str(candidate_path),
-        "-dumpTrace", "json", str(replay_output), args.model,
-    ]
     try:
-        run = _run(argv, workdir, timeout=TRACE_REPLAY_TIMEOUT_SECONDS)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"native trace replay failed: {exc}"
-    match = re.search(
-        r"Error: Invariant ([A-Za-z_][A-Za-z0-9_]*) is violated\.", run["stdout"],
-    )
-    if run["exit_code"] != 12 or not match or match.group(1) != property_name:
-        return None, "native trace replay did not reproduce the same invariant violation"
-    try:
-        replayed = json.loads(replay_output.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return None, f"TLC replay did not produce a readable counterexample: {exc}"
-    if not same_state_sequence(candidate, replayed):
-        return None, "TLC replay returned a different state sequence than the submitted candidate"
-    if input_path is None:
-        candidate_path.unlink(missing_ok=True)
-    return replayed, ""
-
-
-def _has_lasso(document: dict) -> bool:
-    counterexample = document.get("counterexample")
-    actions = counterexample.get("action", []) if isinstance(counterexample, dict) else []
-    return any(action[2][0] <= action[0][0] for action in actions
-               if isinstance(action, list) and len(action) == 3
-               and isinstance(action[0], list) and isinstance(action[2], list))
+        replay_output.unlink(missing_ok=True)
+        metadir.mkdir(parents=True, exist_ok=True)
+        argv = [
+            args.java, "-XX:+UseParallelGC", "-Xmx2g", "-cp", str(jar), "tlc2.TLC",
+            "-nowarning", "-cleanup", "-workers", str(args.workers), "-metadir", str(metadir),
+            "-config", stem, "-loadTrace", "json", str(candidate_path),
+            "-dumpTrace", "json", str(replay_output), args.model,
+        ]
+        try:
+            run = _run(argv, workdir, timeout=TRACE_REPLAY_TIMEOUT_SECONDS)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, f"native trace replay failed: {exc}"
+        match = re.search(
+            r"Error: Invariant ([A-Za-z_][A-Za-z0-9_]*) is violated\.", run["stdout"],
+        )
+        if run["exit_code"] != 12 or not match or match.group(1) != property_name:
+            return None, "native trace replay did not reproduce the same invariant violation"
+        try:
+            replayed = json.loads(replay_output.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return None, f"TLC replay did not produce a readable counterexample: {exc}"
+        if not same_state_sequence(candidate, replayed):
+            return None, "TLC replay returned a different state sequence than the submitted candidate"
+        return replayed, ""
+    finally:
+        if input_path is None:
+            candidate_path.unlink(missing_ok=True)
 
 
 def _state_sequence_digest(document: dict) -> str:

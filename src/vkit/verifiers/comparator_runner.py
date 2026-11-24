@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from vkit.nowindow import hidden_window
+from vkit.runtime.nowindow import hidden_window
 
 TAIL = 4000
 
@@ -27,7 +27,7 @@ def sandbox() -> str:
         return "missing"
     try:
         done = subprocess.run([landrun, "--version"], capture_output=True, text=True, timeout=30, **hidden_window())
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         return "missing"
     return "none (landrun passthrough)" if "passthrough" in done.stdout + done.stderr else "landrun"
 

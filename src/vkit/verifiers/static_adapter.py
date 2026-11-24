@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from ..outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
+from vkit.core.outcome import Blocked, BlockedReason, Failed, Outcome, Passed, ScenarioResult
 
 
 @dataclass(frozen=True)
@@ -48,16 +48,18 @@ def read(raw: bytes, root_uri: str = "") -> StaticReading | Blocked:
     try:
         document = json.loads(raw.decode("utf-8-sig"))
         runs = document["runs"]
-    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        if not isinstance(runs, list):
+            raise TypeError("runs must be a list")
+        findings = []
+        for run in runs:
+            for result in run.get("results") or []:
+                path, line = _location(result)
+                if root_uri and path.lower().startswith(root_uri.lower()):
+                    path = path[len(root_uri):]
+                message = (result.get("message") or {}).get("text", "")
+                findings.append(Finding(str(result.get("ruleId", "?")), path.lstrip("/"), line, message))
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
         return Blocked(BlockedReason.ARTIFACT_MALFORMED, f"not a SARIF log: {exc}")
-    findings = []
-    for run in runs:
-        for result in run.get("results") or []:
-            path, line = _location(result)
-            if root_uri and path.lower().startswith(root_uri.lower()):
-                path = path[len(root_uri):]
-            message = (result.get("message") or {}).get("text", "")
-            findings.append(Finding(str(result.get("ruleId", "?")), path.lstrip("/"), line, message))
     return StaticReading(tuple(findings))
 
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from ..outcome import Blocked, BlockedReason
+from vkit.core.outcome import Blocked, BlockedReason
 from . import pytest_adapter
 from .obligation import CaseObligation, case_results, scenario_results
 from .spec import HypothesisSettings, PropertyCheck
@@ -193,9 +193,7 @@ def pytest_configure(config: Any) -> None:  # noqa: D103 - a pytest plugin hook
         raise SettingsRefused(
             f"the pinned generator settings are not JSON: {exc}"
         ) from None
-    if not isinstance(document, dict) or not isinstance(
-        document.get("max_examples"), int
-    ):
+    if not isinstance(document, dict) or type(document.get("max_examples")) is not int:
         raise SettingsRefused(
             "the pinned generator settings do not name a whole number of "
             f"examples, which is the one field a property run cannot do without. "

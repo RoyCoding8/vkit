@@ -12,8 +12,8 @@ import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 
-from ..outcome import Blocked, BlockedReason
-from ..nowindow import hidden_window
+from vkit.core.outcome import Blocked, BlockedReason
+from vkit.runtime.nowindow import hidden_window
 from .obligation import CaseObligation, case_results, scenario_results
 from .spec import NodeTestCheck
 
@@ -362,16 +362,23 @@ def _entries(text: str) -> list[CaseOutcome] | Blocked:
     return parsed
 
 
+_YAML_OPEN = re.compile(r"^[ \t]*---[ \t]*$", re.MULTILINE)
+_YAML_CLOSE = re.compile(r"^[ \t]*\.\.\.[ \t]*$", re.MULTILINE)
+
+
 def _block_after(text: str, start: int) -> str | None:
     """The `---` to `...` block following one entry, or None."""
     window = text[start:start + 8192]
-    opening = window.find("---")
-    if opening == -1:
+    next_entry = _ENTRY.search(window)
+    if next_entry is not None:
+        window = window[:next_entry.start()]
+    opening = _YAML_OPEN.search(window)
+    if opening is None:
         return None
-    closing = window.find("...", opening)
-    if closing == -1:
+    closing = _YAML_CLOSE.search(window, opening.end())
+    if closing is None:
         return None
-    return window[opening:closing]
+    return window[opening.end():closing.start()]
 
 
 def _field(block: str, name: str) -> str:

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..outcome import Blocked, BlockedReason, ScenarioResult
+from vkit.core.outcome import Blocked, BlockedReason, ScenarioResult
 from .obligation import TheoremObligation, obligation_to_json
 from .spec import LeanCheck, LeanProfile
 
@@ -223,12 +223,12 @@ def source_diagnostics(
             if not expected or _digest(resolved) != expected:
                 continue
             line, column = message.get("line", 0), message.get("column", 0)
-            if not isinstance(line, int) or line < 1 or not isinstance(column, int) or column < 0:
+            if type(line) is not int or line < 1 or type(column) is not int or column < 0:
                 continue
             location = {"path": relative, "source_sha256": expected,
                         "start": {"line": line, "column": column + 1}}
             end_line, end_column = message.get("end_line", 0), message.get("end_column", 0)
-            if isinstance(end_line, int) and end_line > 0 and isinstance(end_column, int) and end_column >= 0:
+            if type(end_line) is int and end_line > 0 and type(end_column) is int and end_column >= 0:
                 location["end"] = {"line": end_line, "column": end_column + 1}
             diagnostics.append({
                 "kind": "lean_message",
@@ -401,16 +401,15 @@ def interpret(raw: bytes, check: LeanCheck) -> AdapterResult | Blocked:
                 "elaborates and then says nothing about the statement.",
             )
 
-    if profile == LeanProfile.REVIEWED:
-        if (len(initial_builds) != 1 or len(rechecks) != 1
-                or not initial_builds[0].get("olean_digest")
-                or initial_builds[0].get("olean_digest") != rechecks[0].get("olean_digest")):
-            return _refuse(
-                "recheck_diverged", BlockedReason.INTERNAL_ERROR,
-                "the reviewed profile requires a fresh second elaboration of the "
-                "same bytes, and the two did not produce the same module. A second "
-                "check that cannot reproduce the first is not a recheck.",
-            )
+    if (len(initial_builds) != 1 or len(rechecks) != 1
+            or not initial_builds[0].get("olean_digest")
+            or initial_builds[0].get("olean_digest") != rechecks[0].get("olean_digest")):
+        return _refuse(
+            "recheck_diverged", BlockedReason.INTERNAL_ERROR,
+            "the reviewed profile requires a fresh second elaboration of the "
+            "same bytes, and the two did not produce the same module. A second "
+            "check that cannot reproduce the first is not a recheck.",
+        )
 
     audit = _audit_step(report)
     if audit is None:
@@ -487,11 +486,11 @@ def _audit_step(report: LeanRun) -> dict | None:
 
 
 def _unresolved(audit: dict, check: LeanCheck) -> tuple[str, ...]:
-    """Required declarations the audit's error text names as unresolved."""
-    blob = " ".join(m["data"] for m in audit.get("messages", ()))
+    """Required declarations the axiom audit failed to resolve."""
+    resolved = _audit_records(audit, check.challenge.module)
     return tuple(
-        theorem for theorem in (t.theorem for t in check.theorems)
-        if theorem not in blob
+        t.theorem for t in check.theorems
+        if t.theorem not in resolved
     )
 
 

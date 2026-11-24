@@ -13,13 +13,16 @@ from typing import Any, Callable
 
 from jsonschema import ValidationError, validate
 
-from .. import __version__, evidence, jobs, query
-from ..categories import CATEGORIES, INFRASTRUCTURE_TOOLS
-from ..manifest import ManifestError
-from ..paths import Project, open_project
-from ..schemas import VERIFICATION_REQUEST, SchemaValidationError, schema
-from ..settings import load_settings
-from ..workspaces import remember
+from .. import __version__
+from vkit.core import evidence
+from vkit.core import jobs
+from vkit.core import query
+from vkit.core.categories import CATEGORIES, INFRASTRUCTURE_TOOLS
+from vkit.core.manifest import ManifestError
+from vkit.runtime.paths import Project, open_project
+from vkit.core.schemas import VERIFICATION_REQUEST, SchemaValidationError, schema
+from vkit.console.settings import load_settings
+from vkit.console.workspaces import remember
 
 MAX_WAIT_SECONDS = query.MAX_WAIT_SECONDS
 INSTRUCTIONS = (
@@ -157,13 +160,13 @@ def _features(server: Server, args: dict[str, Any]) -> Any:
 
 
 def _feedback_add(server: Server, args: dict[str, Any]) -> Any:
-    from ..feedback import submit
+    from vkit.core.feedback import submit
 
     return submit(server.context().store, args)
 
 
 def _feedback_list(server: Server, args: dict[str, Any]) -> Any:
-    from ..feedback import collect
+    from vkit.core.feedback import collect
 
     return collect(server.context().store, **args)
 
@@ -183,8 +186,8 @@ def _help(server: Server, args: dict[str, Any]) -> Any:
         raise Refusal("unknown or unavailable category")
     if args.get("all") and "category" in args:
         raise Refusal("all cannot be combined with category")
-    if not any(key in args for key in ("category", "query", "all")):
-        if args:
+    if not (args.get("all") or "category" in args or "query" in args):
+        if any(key != "all" for key in args):
             raise Refusal("pagination requires a category, query, or all selector")
         return {"contract_version": 2, "categories": [
             {"id": category, "label": label, "count": counts[category]}
@@ -238,8 +241,6 @@ def _check_run(server: Server, args: dict[str, Any]) -> Any:
 
 
 def _run_get(server: Server, args: dict[str, Any]) -> Any:
-    if "run_id" not in args:
-        raise Refusal("run_id is required")
     query.normalize_run_sections(args.get("sections"))
     view = query.run_view(server.context(), args["run_id"], sections=args.get("sections"),
                           log=args.get("log", "stdout"), offset=args.get("log_offset", 0),
@@ -267,7 +268,7 @@ def _model_compare(server: Server, args: dict[str, Any]) -> Any:
 
 
 def _change_certify(server: Server, args: dict[str, Any]) -> Any:
-    from ..change_methods import parse_kani_toolchain
+    from vkit.change.methods import parse_kani_toolchain
 
     ctx = server.context()
     toolchain = (parse_kani_toolchain(args["kani_toolchain"])
@@ -314,7 +315,7 @@ def _evidence_replay(server: Server, args: dict[str, Any]) -> Any:
 
 
 def _propose(server: Server, args: dict[str, Any]) -> Any:
-    from ..proposals import ProposalError, submit
+    from vkit.core.proposals import ProposalError, submit
 
     ctx = server.context()
     try:
@@ -326,8 +327,6 @@ def _propose(server: Server, args: dict[str, Any]) -> Any:
 
 
 def _run_cancel(server: Server, args: dict[str, Any]) -> Any:
-    if "run_id" not in args:
-        raise Refusal("run_id is required")
     ctx = server.context()
     record = ctx.store.record(args["run_id"])
     if record is None:
@@ -368,7 +367,7 @@ _KANI_TOOLCHAIN_SCHEMA = {
         "host_closure_complete": {"const": False},
     },
 }
-_BASE_TOOLS = (
+TOOLS = (
     Tool("feedback_add", "Record a missing verification capability that would materially help this task. "
          "Prioritize formal verification; reliable checks are also useful. Local feedback does not affect proof "
          "results, approval, or gates. Creates Markdown without overwriting previous feedback. "
@@ -431,9 +430,10 @@ _BASE_TOOLS = (
           "log_offset": {"type": "integer", "description": "negative counts from the end"},
           "log_limit": {"type": "integer", "minimum": 0, "maximum": 64_000},
           "artifact_offset": {"type": "integer", "minimum": 0},
-          "artifact_limit": {"type": "integer", "minimum": 0, "maximum": query.MAX_ARTIFACTS}}, _run_get, category="repository"),
+          "artifact_limit": {"type": "integer", "minimum": 0, "maximum": query.MAX_ARTIFACTS}}, _run_get,
+         required=("run_id",), category="repository"),
     Tool("run_cancel", "Stop a running check and everything it started.", {"run_id": _STR}, _run_cancel,
-         read_only=False, category="repository"),
+         read_only=False, required=("run_id",), category="repository"),
     Tool("run_wait", "Wait up to wait_seconds (max 60) for a durable job, then return a compact summary. Select "
          "sections for detail. This reports the checker result and its stated assurance; it does not independently "
          "upgrade that claim.", {"run_id": _STR, "wait_seconds": {"type": "integer", "minimum": 0,
@@ -476,7 +476,6 @@ _INVOKE = {
                     "required": ["name", "arguments"], "additionalProperties": False},
     "annotations": {"readOnlyHint": False},
 }
-TOOLS = _BASE_TOOLS
 if len({tool.name for tool in TOOLS}) != len(TOOLS):
     raise ValueError("duplicate MCP tool name")
 BY_NAME = {tool.name: tool for tool in TOOLS}

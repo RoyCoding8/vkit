@@ -5,8 +5,8 @@ from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from ..inputs import canonical_digest, is_secret
-from ..requests import PackageClaim
+from vkit.core.inputs import canonical_digest, is_secret
+from vkit.change.requests import PackageClaim
 
 OPERATIONS = ("new", "reserve", "release", "reserve_batch", "apply_command", "run_commands")
 _RUST_KEYWORDS = frozenset("as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while abstract become box do final macro override priv typeof unsized virtual yield try gen".split())

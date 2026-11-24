@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..outcome import ScenarioResult
+from vkit.core.outcome import ScenarioResult
 
 
 @dataclass(frozen=True, order=True)

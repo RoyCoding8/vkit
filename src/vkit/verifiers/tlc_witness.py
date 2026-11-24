@@ -30,8 +30,9 @@ def trace_states(document: Any) -> tuple[tuple[str, ...], tuple[tuple[int, dict]
         return None
     for index, action in enumerate(actions):
         if (not isinstance(action, list) or len(action) != 3
-                or action[0] != states[index] or action[2] != states[index + 1]
-                or not isinstance(action[1], dict)):
+                or not isinstance(action[1], dict)
+                or _canonical_state(action[0]) != _canonical_state(states[index])
+                or _canonical_state(action[2]) != _canonical_state(states[index + 1])):
             return None
     return tuple(variables), tuple(parsed)
 
@@ -50,8 +51,8 @@ def same_state_sequence(left: Any, right: Any) -> bool:
     )
 
 
-def _canonical_state(state: dict) -> str:
-    return json.dumps(state, sort_keys=True, separators=(",", ":"))
+def _canonical_state(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def without_internal_state(document: dict, index: int) -> dict | None:
@@ -71,7 +72,8 @@ def without_internal_state(document: dict, index: int) -> dict | None:
         target = rewritten_states[position + 1]
         descriptor = {"name": "Next"}
         for action in original["action"]:
-            if action[0][1] == source[1] and action[2][1] == target[1]:
+            if (_canonical_state(action[0][1]) == _canonical_state(source[1])
+                    and _canonical_state(action[2][1]) == _canonical_state(target[1])):
                 descriptor = deepcopy(action[1])
                 break
         rewritten_actions.append([source, descriptor, target])

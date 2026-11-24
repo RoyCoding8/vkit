@@ -1,0 +1,641 @@
+"""Bind checking results to frozen inputs, checker identities, and retained artifacts."""
+
+from __future__ import annotations
+
+import ast
+import threading
+import hashlib
+import os
+import shutil
+import stat
+import sys
+import textwrap
+from pathlib import Path
+from typing import Any
+
+from vkit.core.inputs import file_digest
+from vkit.runtime.paths import ProjectError
+from vkit.core.schemas import SchemaValidationError
+from vkit.core.store import read_json, write_json
+
+_UNSEALED = frozenset({"record.json", "receipt.json", "lock", "cancel", "worker.log", "worker.json"})
+
+
+def sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def is_link(path: Path) -> bool:
+    """Reject symlinks and Windows junctions on every supported Python version."""
+    try:
+        attributes = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(attributes.st_mode) or bool(
+        getattr(attributes, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def _retained_path(root: Path, relative: str) -> Path:
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts or is_link(root):
+        raise ValueError("unsafe evidence path")
+    current = root
+    for part in path.parts:
+        current = current / part
+        if is_link(current):
+            raise ValueError("evidence contains a filesystem link")
+    if not current.resolve().is_relative_to(root.resolve()):
+        raise ValueError("evidence escapes its bundle")
+    return current
+
+
+def retained_files(root: Path, *, exclude_replay_assets: bool = False):
+    count, total = 0, 0
+    if is_link(root):
+        raise ValueError("evidence root is a filesystem link")
+    replay_assets = root / "replay" / "assets"
+    if exclude_replay_assets and is_link(replay_assets):
+        raise ValueError("portable replay asset directory is a filesystem link")
+    if exclude_replay_assets and replay_assets.exists() and not replay_assets.is_dir():
+        raise ValueError("portable replay assets are not a directory")
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                if exclude_replay_assets and path == replay_assets:
+                    continue
+                count += 1
+                info = path.lstat()
+                if is_link(path) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                    raise ValueError("evidence contains a link or special file")
+                total += info.st_size if stat.S_ISREG(info.st_mode) else 0
+                if count > 10000 or total > 512 * 1024 * 1024:
+                    raise ValueError("retained evidence exceeds 10000 entries or 512 MiB")
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(path)
+                else:
+                    yield path
+
+
+def _artifact_names(directory: Path) -> set[str]:
+    names = (p.relative_to(directory).as_posix()
+             for p in retained_files(directory, exclude_replay_assets=True))
+    return {name for name in names if name not in _UNSEALED and not name.startswith(("snapshot/", "target-snapshot/", "replay/"))}
+
+
+_PRODUCER_ROOTS = (
+    "core.budgets", "core.ci", "core.evidence", "core.inputs", "core.job", "core.jobs",
+    "core.manifest", "core.outcome", "core.query", "core.replay_assets", "core.runner",
+    "core.schemas", "core.state", "core.store",
+    "change.analysis", "change.certification", "change.claim_acceptance", "change.intent",
+    "change.methods", "change.paired", "change.paired_profiles", "change.requests",
+    "change.service", "change.witness",
+    "rust.kani_execution", "rust.kani_result", "rust.kani_toolchain",
+    "rust.rust_relational", "rust.rust_source",
+    "runtime.container", "runtime.nowindow", "runtime.paths", "runtime.proc",
+    "formal", "verifiers",
+)
+
+
+_PRODUCER_LOCK = threading.Lock()
+
+
+def _producer_modules() -> dict[str, Path]:
+    package = Path(__file__).resolve().parents[1]
+    found: dict[str, Path] = {}
+    pending = [(f"vkit.{name}", f"vkit.{name}") for name in _PRODUCER_ROOTS]
+    while pending:
+        name, pkg = pending.pop()
+        if name in found or not name.startswith("vkit"):
+            continue
+        relative = name[len("vkit."):] if name != "vkit" else ""
+        path = package.joinpath(*relative.split(".")) if relative else package
+        if path.is_dir():
+            pkg = name
+            path = path / "__init__.py"
+        else:
+            pkg = name.rsplit(".", 1)[0]
+            path = path.with_suffix(".py")
+        if not path.is_file():
+            continue
+        found[name] = path
+        with _PRODUCER_LOCK:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                pending.extend((alias.name, alias.name) for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                base = pkg
+                for _ in range(node.level - 1):
+                    base = base.rsplit(".", 1)[0]
+                if node.level:
+                    target = f"{base}.{node.module}" if node.module else base
+                else:
+                    target = node.module or ""
+                pending.append((target, target))
+    return found
+
+
+def evaluator_closure(check) -> dict[str, bytes]:
+    from vkit.core.state import evaluator
+
+    root = check.cwd.resolve()
+    files = {name: bytes(data) for name, data in evaluator(check).items()}
+    seeds = set(files)
+    for name in files:
+        parent = Path(name).parent
+        while True:
+            if (root / parent / "conftest.py").is_file():
+                seeds.add((parent / "conftest.py").as_posix())
+            if parent == Path("."):
+                break
+            parent = parent.parent
+    pending = sorted(seeds)
+    visited: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        path = root / name
+        if not path.is_file():
+            continue
+        if name not in files:
+            files[name] = path.read_bytes()
+        try:
+            tree = ast.parse(files[name].decode("utf-8", "surrogateescape"))
+        except SyntaxError:
+            continue
+        base = name.split("/")[:-1]
+        for node in ast.walk(tree):
+            targets: list[str] = []
+            if isinstance(node, ast.Import):
+                targets = [alias.name.replace(".", "/") for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0:
+                    rel: list[str] = []
+                elif node.level - 1 <= len(base):
+                    rel = base[: len(base) - (node.level - 1)]
+                else:
+                    continue
+                prefix_parts = [*rel, *(node.module.split(".") if node.module else [])]
+                if prefix_parts:
+                    targets.append("/".join(prefix_parts))
+                for alias in node.names:
+                    if alias.name != "*":
+                        targets.append("/".join([*prefix_parts, alias.name]))
+            for target in targets:
+                if not target:
+                    continue
+                for candidate in (f"{target}.py", f"{target}/__init__.py"):
+                    if candidate in visited:
+                        continue
+                    candidate_path = (root / candidate).resolve()
+                    if candidate_path.is_file() and candidate_path.is_relative_to(root):
+                        pending.append(candidate)
+    return files
+
+
+def pin_evaluators(check) -> dict[str, dict[str, Any]]:
+    from vkit.core.state import evaluator
+
+    root = check.cwd.resolve()
+    pinned: dict[str, dict[str, Any]] = {}
+    for name in sorted(evaluator(check)):
+        path = root / name
+        with path.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        info = path.stat()
+        pinned[name] = {"path": str(path.resolve()), "sha256": digest,
+                        "inode": [info.st_dev, info.st_ino]}
+    return pinned
+
+
+def deps_receipt(
+    *, log: list[dict[str, Any]] | None = None, pinned: dict[str, dict[str, Any]] | None = None,
+    closure: dict[str, bytes] | None = None, declared: tuple[str, ...] = (),
+    host_log: dict[str, Any] | None = None, drift: list[str] | None = None,
+) -> dict[str, Any]:
+    bindings: dict[str, Any] = {}
+    absent: list[str] = []
+    spawns: list[dict[str, Any]] = []
+    isolated = False
+    if log:
+        provenance = "in-band recorder"
+        for entry in log:
+            path = entry["p"] if "p" in entry else None
+            if entry["e"] in ("spawn", "exec"):
+                spawns.append({"argv": entry.get("argv", []), **({} if entry["e"] == "spawn" else {"exec": True})})
+                if any(token.strip("\"'(), ") == "-I"
+                       for raw in entry.get("argv", []) for token in str(raw).split()):
+                    isolated = True
+            elif entry["e"] == "probe":
+                if path is not None and path not in absent:
+                    absent.append(path)
+            elif path is not None:
+                current = bindings.setdefault(path, {"op": entry["e"]})
+                if entry.get("sha256"):
+                    current["op"] = "read"
+                    current["sha256"] = entry["sha256"]
+    elif host_log:
+        provenance = "host-traced"
+        bindings.update(host_log.get("bindings", {}))
+    else:
+        provenance = "none"
+    does_not_establish = []
+    if isolated:
+        provenance = "none"
+        does_not_establish.append(
+            "dependency closure: the evaluator re-executed into an isolated (-I) interpreter; its opens are untraced")
+    elif provenance == "none":
+        does_not_establish.append("dependency closure: the execution world did not load the in-band recorder")
+    does_not_establish.extend([
+        "env reads: names and values are unobservable to the in-band recorder",
+        "native code and isolated descendants: their file opens are not traced",
+    ])
+    receipt: dict[str, Any] = {
+        "schema": "deps.v1",
+        "closure_provenance": provenance,
+        "established": provenance != "none",
+        "claim": "opened-file closure for non-isolated Python descendants under the pinned interpreter digest",
+        "does_not_establish": does_not_establish,
+        "bindings": bindings,
+        "negative_bindings": {"absent_probes": sorted(absent), "unused_declared": sorted(declared)},
+        "subprocesses": spawns,
+        "unsupported": {
+            "env_reads": "env reads are unobservable to the in-band recorder; a result may depend on unbound environment values",
+            "native_code": "native reads and isolated descendants are outside the recorder",
+            "isolated_descendants": "python -I children ignore PYTHONPATH and are untraced",
+        },
+        "staleness": {
+            "semantics": "one-shot",
+            "detail": ("a dependency discovered after job seal binds by identity and stales the run exactly once; "
+                       "the re-run binds it at open time, so convergence needs no re-acceptance"),
+        },
+        "residual_window": ("a symlink swap between the open-time hash and spawn that is swapped back before the "
+                            "post-run hash is undetected; the post-run hash over the pinned resolved path bounds the window"),
+    }
+    if pinned:
+        receipt["open_time_digests"] = {name: pin["sha256"] for name, pin in pinned.items()}
+    if closure is not None:
+        receipt["discovered_closure"] = {
+            name: hashlib.sha256(data).hexdigest() for name, data in sorted(closure.items())
+        }
+    if drift:
+        receipt["evaluator_drift"] = drift
+    return receipt
+
+
+def deps_recorder_source() -> str:
+    return textwrap.dedent('''
+        import hashlib, json, os, sys
+        _LOG = os.environ.get("VKIT_DEPS_LOG")
+        if _LOG:
+            _busy = False
+            def _emit(entry):
+                try:
+                    with open(_LOG, "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(entry) + "\\n")
+                except OSError:
+                    pass
+            def _bind(op, path):
+                if not isinstance(path, (str, bytes)):
+                    return
+                if isinstance(path, bytes):
+                    path = os.fsdecode(path)
+                path = os.path.abspath(path).replace("\\\\", "/")
+                entry = {"e": op, "p": path}
+                try:
+                    if op == "read" and os.path.isfile(path) and os.path.getsize(path) <= (1 << 20):
+                        with open(path, "rb") as handle:
+                            entry["sha256"] = hashlib.file_digest(handle, "sha256").hexdigest()
+                    elif not os.path.exists(path):
+                        entry["e"] = "probe"
+                except OSError:
+                    pass
+                _emit(entry)
+            def _hook(event, args):
+                global _busy
+                if _busy:
+                    return
+                _busy = True
+                try:
+                    if event == "open":
+                        mode = str(args[1] or "")
+                        if "r" in mode or mode == "":
+                            _bind("read", args[0])
+                    elif event in ("os.listdir", "os.scandir"):
+                        _bind("enumerate", "." if args[0] is None else args[0])
+                    elif event == "subprocess.Popen":
+                        seq = args[1] if isinstance(args[1], (list, tuple)) else str(args[1] or "").split()
+                        _emit({"e": "spawn", "argv": [str(a) for a in (args[0], *seq) if a]})
+                    elif event == "os.exec":
+                        seq = args[1] if isinstance(args[1], (list, tuple)) else str(args[1] or "").split()
+                        _emit({"e": "exec", "argv": [str(a) for a in seq]})
+                finally:
+                    _busy = False
+            sys.addaudithook(_hook)
+    ''')
+
+
+def policy_identity() -> dict[str, str]:
+    package = Path(__file__).resolve().parents[1]
+    files = list(_producer_modules().values())
+    files += [p for p in (package / "verifiers").glob("*") if p.suffix in (".py", ".js")]
+    files += list((package / "formal").rglob("*.py"))
+    from vkit.core.schemas import _schema_dir
+
+    result = {p.relative_to(package).as_posix(): sha256(p) for p in sorted(files)}
+    for schema in _schema_dir().iterdir():
+        if schema.name.endswith(".json"):
+            result["schemas/" + schema.name] = hashlib.sha256(
+                schema.read_bytes()
+            ).hexdigest()
+    return result
+
+
+def backend_identity(check) -> dict[str, Any]:
+    if check.kind.value == "external":
+        from vkit.verifiers.external import identity
+
+        return identity(check)
+    from vkit.verifiers import dispatch
+
+    argv = dispatch.argv_for(check, Path("__vkit_run__"), None)
+    candidates = [sys.executable, argv[0]]
+    candidates.extend(p.executable for p in check.prerequisites)
+    if check.kind.value == "lean":
+        candidates += [check.toolchain.tool]
+        if check.toolchain.comparator:
+            candidates += [check.toolchain.comparator, "lake", "lean4export", "landrun"]
+    elif check.kind.value == "tlc":
+        from vkit.verifiers.tlc_adapter import _tool_paths
+
+        candidates += list(_tool_paths(check.toolchain.tool))
+    elif hasattr(check, "runner"):
+        candidates += [check.runner.executable]
+    tools = {}
+    for name in candidates:
+        name = name.replace("{{python}}", sys.executable)
+        resolved = shutil.which(name) or (name if Path(name).is_file() else None)
+        key = os.path.normcase(str(Path(resolved).resolve()) if resolved else str(Path(name)))
+        tools[key] = (
+            None
+            if resolved is None
+            else {
+                "path": str(Path(resolved).resolve()),
+                "sha256": sha256(Path(resolved)),
+            }
+        )
+    from vkit.core.runner import _child_env
+
+    return {
+        "kind": check.kind.value,
+        "tools": tools,
+        "implementation": policy_identity(),
+        "environment": {
+            name: _child_env().get(name)
+            for name in ("LEAN_PATH", "LEAN_SYSROOT", "JAVA_HOME", "PYTHONPATH")
+        },
+    }
+
+
+def assurance(check) -> str:
+    return {"lean": "kernel_proof", "tlc": "finite_model"}.get(
+        check.kind.value, getattr(check, "assurance", "empirical")
+    )
+
+
+def seal(record: dict[str, Any], directory: Path, check=None) -> None:
+    artifacts = {name: sha256(directory / name) for name in sorted(_artifact_names(directory))}
+    result = record["outcome"]["result"]
+    claim_outcome = {"PASS": "established", "FAIL": "refuted", "BLOCKED": "unknown"}[
+        result
+    ]
+    if check is not None and check.kind.value == "lean" and result == "FAIL":
+        claim_outcome = "unknown"
+    shadow = record["subject"]["kind"] == "change_certification"
+    if shadow:
+        claim_outcome = "unknown"
+    receipt = {
+        "schema_version": 2,
+        "job_id": record["job_id"],
+        "subject": record["subject"],
+        "source": record["source"],
+        "inputs": record["inputs"],
+        "assurance": "empirical" if shadow else assurance(check) if check else "trusted_engine",
+        "claim_outcome": claim_outcome,
+        "outcome": record["outcome"],
+        "obligations": record["obligations"],
+        "artifacts": artifacts,
+        "verification": record.get("verification", {}),
+    }
+    if shadow:
+        receipt.update(method="change_methods", category="change_certification", scope="shadow",
+                       source_proof=False, approval_authority=False)
+    elif check is None:
+        receipt.update(method="verus_source", category="source_verification", scope="required_api",
+                       verification=record.get("verification", {}))
+    for field in (
+        "check_digest",
+        "backend",
+        "policy_sha256",
+        "package_sha256",
+        "checker_sha256",
+        "authority",
+        "target_source", "trusted_target_oid", "change_request", "bound_request_sha256",
+        "method_plan", "implementation",
+    ):
+        if field in record:
+            receipt[field] = record[field]
+    from vkit.core.schemas import EVIDENCE_RECORD, validate
+
+    validate("evidence receipt", EVIDENCE_RECORD, receipt)
+    write_json(directory / "receipt.json", receipt)
+    record["assurance"] = receipt["assurance"]
+    if check is None:
+        record.update({key: receipt[key] for key in ("method", "category", "scope")})
+    record["claim_outcome"] = receipt["claim_outcome"]
+    record["receipt"] = {
+        "path": "receipt.json",
+        "sha256": sha256(directory / "receipt.json"),
+        "assurance": receipt["assurance"],
+        "claim_outcome": receipt["claim_outcome"],
+    }
+
+
+def validate_record(record: dict[str, Any], directory: Path) -> bool:
+    """Local state is trusted; imported success flags are never sufficient for replay."""
+    try:
+        artifact_names = _artifact_names(directory)
+        link = record["receipt"]
+        if (
+            link["path"] != "receipt.json"
+            or sha256(_retained_path(directory, "receipt.json")) != link["sha256"]
+        ):
+            return False
+        receipt = read_json(directory / "receipt.json")
+        if artifact_names != set(receipt["artifacts"]):
+            return False
+        if receipt["schema_version"] == 1:
+            if record.get("subject", {}).get("kind") == "change_certification":
+                return False
+            if any(
+                receipt[name] != record[name]
+                for name in (
+                    "job_id",
+                    "check_digest",
+                    "backend",
+                    "inputs",
+                    "outcome",
+                    "obligations",
+                )
+            ):
+                return False
+            if record["job_id"] != record["key"]:
+                return False
+        elif receipt["schema_version"] == 2:
+            from vkit.core.inputs import load_capture
+            from vkit.core.job import validate_job
+
+            job = validate_job(read_json(_retained_path(directory, "job.json")))
+            source = load_capture(job["source"], directory / "snapshot")
+            if record["subject"]["kind"] == "change_certification":
+                target = load_capture(job["target_source"], directory / "target-snapshot")
+                if (target.digest != record["target_source"]["digest"]
+                        or any(job[name] != record.get(name) for name in (
+                            "target_source", "trusted_target_oid", "change_request",
+                            "bound_request_sha256", "method_plan", "implementation"))):
+                    return False
+            if (
+                job["job_id"] != record["job_id"]
+                or job["subject"] != record["subject"]
+                or job["source"] != record["source"]
+                or source.digest != record["source"]["digest"]
+                or record["job_id"] != record["key"]
+                or job.get("authority") != record.get("authority")
+                or receipt.get("authority") != record.get("authority")
+            ):
+                return False
+            if record["subject"]["kind"] == "formal_goal" and any(
+                job[name] != record.get(name)
+                for name in ("policy_sha256", "package_sha256", "checker_sha256")
+            ):
+                return False
+            fields = (
+                "job_id",
+                "subject",
+                "source",
+                "inputs",
+                "outcome",
+                "obligations",
+                "check_digest",
+                "backend",
+                "policy_sha256",
+                "package_sha256",
+                "checker_sha256",
+                "method",
+                "category",
+                "scope",
+                "verification",
+                "target_source", "trusted_target_oid", "change_request", "bound_request_sha256",
+                "method_plan", "implementation",
+                "source_proof", "approval_authority",
+            )
+            if any(
+                name in receipt and receipt[name] != record.get(name) for name in fields
+            ):
+                return False
+            if any(
+                name not in receipt
+                for name in (
+                    "job_id",
+                    "subject",
+                    "source",
+                    "inputs",
+                    "outcome",
+                    "obligations",
+                )
+            ):
+                return False
+            from vkit.core.schemas import EVIDENCE_RECORD, validate
+
+            validate("evidence receipt", EVIDENCE_RECORD, receipt)
+            if record["subject"]["kind"] == "formal_goal" and record["outcome"]["result"] == "PASS":
+                from vkit.core.inputs import canonical_digest
+
+                identity = receipt["verification"]["execution_identity"]
+                if identity["digest"] != record["checker_sha256"] or canonical_digest(identity["semantic"]) != record["checker_sha256"]:
+                    return False
+        else:
+            return False
+        if (
+            receipt["assurance"] != link["assurance"]
+            or receipt["claim_outcome"] != link["claim_outcome"]
+        ):
+            return False
+        if (
+            record["assurance"] != receipt["assurance"]
+            or record["claim_outcome"] != receipt["claim_outcome"]
+        ):
+            return False
+        for item in (
+            (record.get("verification") or {})
+            .get("evidence_bundle", {})
+            .get("files", [])
+        ):
+            if receipt["artifacts"].get("evidence/" + item["path"]) != item["sha256"]:
+                return False
+        for relative, digest in receipt["artifacts"].items():
+            path = _retained_path(directory, relative)
+            if sha256(path) != digest:
+                return False
+        for item in record["inputs"]["files"]:
+            path = _retained_path(directory, "snapshot/" + item["path"])
+            digest = file_digest(path) if record.get("subject", {}).get("kind") == "registered_check" else sha256(path)
+            if digest != item["sha256"]:
+                return False
+        if receipt["schema_version"] == 2 and record.get("subject", {}).get("kind") == "change_certification":
+            from vkit.change.claim_acceptance import validate_claim_acceptance
+
+            validate_claim_acceptance(record, directory, target, source)
+        return True
+    except (OSError, ValueError, KeyError, TypeError, ProjectError, SchemaValidationError):
+        return False
+
+
+def export(
+    store, run_id: str, destination: Path, *, include_assets: bool = False
+) -> dict[str, Any]:
+    record = store.record(run_id)
+    if (
+        record is None
+        or record["state"] != "done"
+        or not validate_record(record, store.run_dir(run_id))
+    ):
+        raise ValueError("run has no complete, intact evidence bundle")
+    shutil.copytree(
+        store.run_dir(run_id),
+        destination,
+        symlinks=True,
+        ignore=shutil.ignore_patterns("lock", "cancel", "worker.log", "worker.json"),
+    )
+    portable_assets = None
+    if include_assets:
+        from vkit.core.replay_assets import capture
+
+        try:
+            portable_assets = capture(record, store.run_dir(run_id), destination)
+        except BaseException:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
+    return {
+        "run_id": run_id,
+        "job_id": record["job_id"],
+        "bundle": str(destination.resolve()),
+        "receipt_sha256": record["receipt"]["sha256"],
+        **({"portable_assets": portable_assets} if portable_assets is not None else {}),
+    }

@@ -16,11 +16,11 @@ The configuration contains one job, one component, two policy/package/checker/so
 
 The model checks that selected inputs have evidence, overlapping guards intersect, and violations remain visible when other evidence is missing or unknown. It also checks repairs that satisfy standing intent. An empty admissible domain remains unknown. Reachability controls establish that completion and conformance are reachable; constructed faulty variants must produce counterexamples.
 
-`tests/test_difference_model_bridge.py` exercises the public parsers and Python assessor with concrete observations, including duplicate records, intersecting guards, repairs, and incomplete evidence.
+`tests/change/test_difference_model_bridge.py` exercises the public parsers and Python assessor with concrete observations, including duplicate records, intersecting guards, repairs, and incomplete evidence.
 
 ## TLC and Python decision comparison
 
-`DifferenceDecisionBridge.tla` records terminal decisions from the clean finite configurations without changing their transition relation. `scripts/check_difference_decisions.py` runs TLC and compares every emitted decision with the public Python assessor. Record order and multiplicity are preserved. Negative controls alter a modeled violation or terminal status to check that disagreement is detected.
+`DifferenceDecisionBridge.tla` records terminal decisions from the clean finite configurations without changing their transition relation. `scripts/checks/check_difference_decisions.py` runs TLC and compares every emitted decision with the public Python assessor. Record order and multiplicity are preserved. Negative controls alter a modeled violation or terminal status to check that disagreement is detected.
 
 ## Run qualification
 
@@ -29,9 +29,9 @@ Requires Java, the repository's Python test environment, and the repository-pinn
 ```powershell
 $env:VKIT_TLA2TOOLS_JAR = 'PATH_TO_JAR_MATCHING_REPOSITORY_PIN'
 $env:PYTHONPATH = (Resolve-Path '.\src').Path
-.\.venv\Scripts\python.exe scripts\check_authority.py --suite authority
-.\.venv\Scripts\python.exe scripts\check_authority.py --suite differences
-.\.venv\Scripts\python.exe scripts\check_difference_decisions.py --output tmp\difference-decisions
+.\.venv\Scripts\python.exe scripts\checks\check_authority.py --suite authority
+.\.venv\Scripts\python.exe scripts\checks\check_authority.py --suite differences
+.\.venv\Scripts\python.exe scripts\checks\check_difference_decisions.py --output tmp\difference-decisions
 ```
 
 Java is resolved from `JAVA_HOME` or `PATH`. The authority and difference suites create isolated VKit projects and run TLC through VKit's registered-check interface. Reports, model copies, checker output, and comparison evidence are retained under `tmp/`. CI also runs the decision comparison and uploads its evidence.

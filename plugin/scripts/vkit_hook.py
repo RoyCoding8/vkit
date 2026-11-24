@@ -36,7 +36,7 @@ def _summary(status: dict[str, Any]) -> str:
 
 
 def _git(project: str, *args: str) -> bytes:
-    from vkit.paths import open_project
+    from vkit.runtime.paths import open_project
 
     done = subprocess.run(["git", "-C", str(open_project(project).root), *args], capture_output=True, timeout=30)
     if done.returncode != 0:
@@ -46,7 +46,7 @@ def _git(project: str, *args: str) -> bytes:
 
 def _telemetry(project: str, event: str) -> None:
     try:
-        from vkit.paths import open_project
+        from vkit.runtime.paths import open_project
 
         path = open_project(project).git_common_dir / "vkit" / "telemetry.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,7 +62,7 @@ def _record_bypass(project: str) -> None:
 
 def _record_base(project: str) -> None:
     try:
-        from vkit.paths import open_project
+        from vkit.runtime.paths import open_project
 
         top = _git(project, "rev-parse", "--show-toplevel").decode("utf-8", "surrogateescape").strip()
         head = _git(project, "rev-parse", "HEAD").decode("utf-8", "surrogateescape").strip()
@@ -73,7 +73,7 @@ def _record_base(project: str) -> None:
 
 
 def _changed_paths(project: str) -> list[str]:
-    from vkit.paths import open_project
+    from vkit.runtime.paths import open_project
 
     base_file = open_project(project).git_common_dir / "vkit" / "session_base.txt"
     if not base_file.is_file():
@@ -104,7 +104,7 @@ def handle(event: str, payload: dict[str, Any], project: str) -> dict[str, Any]:
 
 
 def _handle(event: str, payload: dict[str, Any], project: str) -> dict[str, Any]:
-    from vkit import query
+    from vkit.core import query
 
     if event == "SessionStart":
         _record_base(project)

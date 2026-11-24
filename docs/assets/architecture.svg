@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 636" width="1000" height="636" role="img" aria-labelledby="arch-title arch-desc">
+  <title id="arch-title">VKit Architecture</title>
+  <desc id="arch-desc">Four-layer architecture of VKit: Interfaces (CLI, MCP Server, Web Console and TUI), Core Engine (Manifest and Approvals, Gate Verdict Engine, Durable Job Store), Verification Layer (Test and Property Adapters, Formal Models for TLA+, Verus, Lean, and Kani, Exhaustive Trust-Boundary Checkers), and Output (Tamper-Evident Receipts and Portable Evidence Bundles).</desc>
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#131c31"/>
+    </linearGradient>
+    <linearGradient id="output-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#132a46"/>
+      <stop offset="100%" stop-color="#0f293a"/>
+    </linearGradient>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 1 1 L 9 5 L 1 9 z" fill="#3987e5"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 1 1 L 9 5 L 1 9 z" fill="#2dd4bf"/>
+    </marker>
+    <style>
+      .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .header-title { font-size: 19px; font-weight: 700; fill: #f8fafc; letter-spacing: -0.2px; }
+      .header-sub { font-size: 12.5px; font-weight: 400; fill: #94a3b8; }
+      .tier-label { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; }
+      .card-title { font-size: 13.5px; font-weight: 600; fill: #f1f5f9; }
+      .card-sub { font-size: 11.5px; font-weight: 400; fill: #94a3b8; }
+      .output-title { font-size: 15px; font-weight: 700; fill: #f8fafc; }
+      .output-sub { font-size: 12px; font-weight: 400; fill: #bae6fd; }
+    </style>
+  </defs>
+
+  <!-- Outer card -->
+  <rect x="8" y="8" width="984" height="620" rx="16" fill="url(#bg-grad)" stroke="#293548" stroke-width="1.5"/>
+
+  <!-- Header with VKit logo mark -->
+  <g transform="translate(32 24)">
+    <g transform="scale(0.56)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="0" y="0" width="64" height="64" rx="15" stroke="#3987e5" stroke-width="3" opacity="0.45"/>
+      <path d="M16 33.5 L27 44 L48 21" stroke="#3987e5" stroke-width="6.5"/>
+      <path d="M13 56 H51" stroke="#898781" stroke-width="3.5"/>
+    </g>
+    <text x="50" y="16" class="sans header-title">VKit Architecture</text>
+    <text x="50" y="34" class="sans header-sub">Deterministic verification pipeline from user and agent interfaces to tamper-evident evidence</text>
+  </g>
+  <line x1="32" y1="78" x2="968" y2="78" stroke="#1e293b" stroke-width="1.25"/>
+
+  <!-- Tier 1: Interfaces -->
+  <rect x="32" y="94" width="936" height="114" rx="12" fill="#152036" stroke="#253a5e" stroke-width="1.25"/>
+  <text x="50" y="116" class="sans tier-label" fill="#60a5fa">INTERFACES</text>
+
+  <g transform="translate(50 128)">
+    <rect x="0" y="0" width="288" height="66" rx="8" fill="#1c2a42" stroke="#2f4a73" stroke-width="1"/>
+    <text x="144" y="28" text-anchor="middle" class="sans card-title">CLI (<tspan class="mono">vkit</tspan>)</text>
+    <text x="144" y="48" text-anchor="middle" class="sans card-sub">Local gate, check runs, CI candidate checks</text>
+  </g>
+  <g transform="translate(356 128)">
+    <rect x="0" y="0" width="288" height="66" rx="8" fill="#1c2a42" stroke="#2f4a73" stroke-width="1"/>
+    <text x="144" y="28" text-anchor="middle" class="sans card-title">MCP Server</text>
+    <text x="144" y="48" text-anchor="middle" class="sans card-sub">Agent tool discovery and verification hooks</text>
+  </g>
+  <g transform="translate(662 128)">
+    <rect x="0" y="0" width="288" height="66" rx="8" fill="#1c2a42" stroke="#2f4a73" stroke-width="1"/>
+    <text x="144" y="28" text-anchor="middle" class="sans card-title">Web Console &amp; TUI</text>
+    <text x="144" y="48" text-anchor="middle" class="sans card-sub">Live runs, logs, coverage, and proposals</text>
+  </g>
+
+  <!-- Arrows: Interfaces -> Core Engine -->
+  <line x1="194" y1="208" x2="194" y2="236" stroke="#3987e5" stroke-width="1.75" marker-end="url(#arrow-blue)"/>
+  <line x1="500" y1="208" x2="500" y2="236" stroke="#3987e5" stroke-width="1.75" marker-end="url(#arrow-blue)"/>
+  <line x1="806" y1="208" x2="806" y2="236" stroke="#3987e5" stroke-width="1.75" marker-end="url(#arrow-blue)"/>
+
+  <!-- Tier 2: Core Engine -->
+  <rect x="32" y="242" width="936" height="114" rx="12" fill="#162238" stroke="#2a78d6" stroke-width="1.4"/>
+  <text x="50" y="264" class="sans tier-label" fill="#3987e5">CORE ENGINE</text>
+
+  <g transform="translate(50 276)">
+    <rect x="0" y="0" width="288" height="66" rx="8" fill="#1e2d48" stroke="#355586" stroke-width="1"/>
+    <text x="144" y="28" text-anchor="middle" class="sans card-title">Manifest &amp; Approvals</text>
+    <text x="144" y="48" text-anchor="middle" class="sans card-sub">Declared checks, inputs, and tool pins</text>
+  </g>
+  <g transform="translate(356 276)">
+    <rect x="0" y="0" width="288" height="66" rx="8" fill="#1e2d48" stroke="#3987e5" stroke-width="1.2"/>
+    <text x="144" y="28" text-anchor="middle" class="sans card-title">Gate Verdict Engine</text>
+    <text x="144" y="48" text-anchor="middle" class="sans card-sub">Evidence freshness and pass/block rules</text>
+  </g>
+  <g transform="translate(662 276)">
+    <rect x="0" y="0" width="288" height="66" rx="8" fill="#1e2d48" stroke="#355586" stroke-width="1"/>
+    <text x="144" y="28" text-anchor="middle" class="sans card-title">Durable Job Store</text>
+    <text x="144" y="48" text-anchor="middle" class="sans card-sub">Run history, logs, and workspace state</text>
+  </g>
+
+  <!-- Arrows: Core Engine -> Verification Layer -->
+  <line x1="194" y1="356" x2="194" y2="384" stroke="#3987e5" stroke-width="1.75" marker-end="url(#arrow-blue)"/>
+  <line x1="500" y1="356" x2="500" y2="384" stroke="#3987e5" stroke-width="1.75" marker-end="url(#arrow-blue)"/>
+  <line x1="806" y1="356" x2="806" y2="384" stroke="#3987e5" stroke-width="1.75" marker-end="url(#arrow-blue)"/>
+
+  <!-- Tier 3: Verification Layer -->
+  <rect x="32" y="390" width="936" height="114" rx="12" fill="#122434" stroke="#1f5368" stroke-width="1.25"/>
+  <text x="50" y="412" class="sans tier-label" fill="#2dd4bf">VERIFICATION LAYER</text>
+
+  <g transform="translate(50 424)">
+    <rect x="0" y="0" width="288" height="66" rx="8" fill="#183042" stroke="#255a6e" stroke-width="1"/>
+    <text x="144" y="28" text-anchor="middle" class="sans card-title">Test &amp; Property Adapters</text>
+    <text x="144" y="48" text-anchor="middle" class="sans card-sub">Scenarios, pytest, Node, property tests</text>
+  </g>
+  <g transform="translate(356 424)">
+    <rect x="0" y="0" width="288" height="66" rx="8" fill="#183042" stroke="#255a6e" stroke-width="1"/>
+    <text x="144" y="28" text-anchor="middle" class="sans card-title">Formal Models</text>
+    <text x="144" y="48" text-anchor="middle" class="sans card-sub">TLA+ / Verus / Lean / Kani</text>
+  </g>
+  <g transform="translate(662 424)">
+    <rect x="0" y="0" width="288" height="66" rx="8" fill="#183042" stroke="#255a6e" stroke-width="1"/>
+    <text x="144" y="28" text-anchor="middle" class="sans card-title">Exhaustive Trust-Boundary Checkers</text>
+    <text x="144" y="48" text-anchor="middle" class="sans card-sub">Transition diffing and external verifiers</text>
+  </g>
+
+  <!-- Arrows: Verification Layer -> Output -->
+  <line x1="194" y1="504" x2="194" y2="532" stroke="#2dd4bf" stroke-width="1.75" marker-end="url(#arrow-teal)"/>
+  <line x1="500" y1="504" x2="500" y2="532" stroke="#2dd4bf" stroke-width="1.75" marker-end="url(#arrow-teal)"/>
+  <line x1="806" y1="504" x2="806" y2="532" stroke="#2dd4bf" stroke-width="1.75" marker-end="url(#arrow-teal)"/>
+
+  <!-- Tier 4: Output -->
+  <rect x="32" y="538" width="936" height="72" rx="12" fill="url(#output-grad)" stroke="#3987e5" stroke-width="1.5"/>
+  <g transform="translate(54 556)">
+    <rect x="0" y="0" width="36" height="36" rx="9" fill="#1e3a5f" stroke="#3987e5" stroke-width="1.25"/>
+    <path d="M10 18.5 L16 24.5 L27 12.5" fill="none" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="106" y="570" class="sans output-title">Tamper-Evident Receipts &amp; Portable Evidence Bundles</text>
+  <text x="106" y="591" class="sans output-sub">Content-addressed verdicts bound to source inputs, accepted requirements, and pinned verifier versions</text>
+</svg>

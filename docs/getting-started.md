@@ -1,87 +1,144 @@
 # Getting started
 
-This guide uses a Python CLI example to demonstrate check execution, evidence freshness, and verification gates.
+In this tutorial, you run a bundled Python CLI example to verify code behavior, trigger stale evidence, observe a failed check, and restore a passing gate.
 
-Requires [uv](https://docs.astral.sh/uv/getting-started/installation/), Git, and Python 3.11 or newer. Clone VKit as shown in the [README](../README.md#get-started), then run the following commands from the VKit checkout.
+## Prerequisites
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), Git, and Python 3.11 or newer. Clone the VKit repository as shown in the [README](../README.md#get-started), then run every command below from the VKit checkout.
+
+## How the verification loop works
+
+VKit binds every check result to the source files, requirements, and tools it evaluated. Each repository follows four steps:
+
+```mermaid
+flowchart LR
+    M["manifest<br/>verification/manifest.json"] --> A["accept<br/>vkit accept"]
+    A --> R["run<br/>vkit check run"]
+    R --> G["gate<br/>vkit gate"]
+    G -- "Source edit invalidates evidence" --> R
+```
+
+1. Declare checks and their declared inputs in `verification/manifest.json`.
+2. Review and accept those definitions with `vkit accept`.
+3. Execute checks with `vkit check run` to record fresh evidence.
+4. Evaluate the gate with `vkit gate`. Any edit to a declared input marks prior evidence stale until you run the check again.
 
 ## Run the example
+
+Run the quickstart script from the VKit checkout:
 
 ```sh
 uv run python examples/quickstart.py
 ```
 
-The command creates a separate repository under `tmp/`, accepts the bundled `totals-behavior` definition, runs its six scenarios, and evaluates the gate. A commit is not required.
+The script creates a fresh Git repository under `tmp/`, accepts the bundled `totals-behavior` check definition, runs its six scenarios, and evaluates the gate. You do not need to create a commit.
 
-The expected result is `totals-behavior: PASS`, six passing scenarios, and a `READY` gate. Each execution creates a new directory.
+You should see `totals-behavior: PASS`, six passing scenarios, and a `READY` gate. The script prints the generated demo repository path at the start and end of its output. Replace `DEMO_PATH` in the commands below with that path.
 
-The command prints the example repository's path. Replace `DEMO_PATH` below with that path. Its `verification/manifest.json` registers a driver that compares the program's output with expected totals.
+Inside `DEMO_PATH`, `verification/manifest.json` registers a check that runs `src/totals.py` against six scenarios and compares the output to expected integer totals.
 
-## Evidence freshness
+## Trigger stale evidence
 
-Open `src/totals.py` inside the printed demo directory. Change this line:
+Open `src/totals.py` inside `DEMO_PATH`. Find this line:
 
 ```python
 running += amount
 ```
 
-to:
+Change it to introduce an off-by-one defect per item:
 
 ```python
 running += amount + 1
 ```
 
-Check the status and gate without rerunning the check:
+Check the repository status and gate without rerunning `totals-behavior`:
 
 ```sh
 uv run vkit status --project DEMO_PATH
 uv run vkit gate --project DEMO_PATH
 ```
 
-Status marks `totals-behavior` as `stale`. The gate reports `BLOCKED` and exits with code `3`, because the previous pass covers a different source snapshot.
+You should see `totals-behavior` marked as `stale` in the status output. The gate prints `BLOCKED` and exits with code `3` because the previous passing run covers an older source snapshot.
 
-Run the check against the changed program:
+## Run the check against the defect
+
+Run `totals-behavior` against the edited file and evaluate the gate again:
 
 ```sh
 uv run vkit check run --project DEMO_PATH --check totals-behavior
 uv run vkit gate --project DEMO_PATH
 ```
 
-The check reports `FAIL` with the incorrect totals, and the gate reports `REJECTED`. Both commands exit with code `1`.
+You should see `totals-behavior: FAIL` with scenario observations showing the wrong totals. The gate prints `REJECTED`. Both commands exit with code `1`.
 
 ## Restore passing evidence
 
-Restore `running += amount`, then rerun:
+Change the line in `src/totals.py` back to `running += amount`. Then run the check and gate again:
 
 ```sh
 uv run vkit check run --project DEMO_PATH --check totals-behavior
 uv run vkit gate --project DEMO_PATH
 ```
 
-The check returns `PASS`, and the gate returns `READY`.
+You should see `totals-behavior: PASS` and a `READY` gate. Both commands exit with code `0`.
 
-## Console
+## Inspect runs in the console
+
+Launch the local web console for the demo repository:
 
 ```sh
 uv run vkit console --project DEMO_PATH
 ```
 
-Open **Runs** to inspect the attempts and their scenario results. In **Checks**, use **Run** to submit another attempt. **Feature map** shows which application behaviors the check covers and which still have gaps.
+VKit starts a local server on `127.0.0.1` and opens the console in your browser. Use these views to inspect the demo:
 
-The feature map includes coverage gaps for non-integer input and very large amounts. The gate evaluates registered requirements; the feature map describes application coverage.
+- Open **Runs** to inspect the passing and failing attempts along with their scenario observations.
+- Open **Checks** and select **Run** to submit a new attempt.
+- Open **Feature map** to see which behaviors `totals-behavior` covers and which gaps remain.
 
-## Repository configuration
+The demo feature map lists explicit gaps for non-integer input and very large amounts. The gate checks registered requirements, while the feature map tracks application coverage.
 
-Start with an [example](../README.md#documentation) close to your application. Define its checks in `verification/manifest.json` using the [manifest schema](../schemas/manifest.v3.json).
+## Exit codes
 
-Review the declared commands and inputs before accepting a repository's definitions:
+VKit commands return deterministic exit codes for scripts and CI jobs:
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Command succeeded, check returned `PASS`, or gate returned `READY`. |
+| `1` | Check returned `FAIL` or gate returned `REJECTED`. |
+| `2` | Request or manifest is invalid. |
+| `3` | Check or gate is `BLOCKED`, or prerequisite check failed. |
+| `4` | Internal error. |
+| `5` | Required optional dependency or service is unavailable. |
+
+## Configure your own repository
+
+To add VKit to an existing repository, start from an [example](../README.md#documentation) that matches your language and runtime.
+
+1. Create `verification/manifest.json` using the [manifest schema](../schemas/manifest.v3.json).
+2. Verify prerequisites and manifest validity:
 
 ```sh
 uv run vkit doctor --project /path/to/your-repository
+```
+
+3. Review the declared commands and inputs, then accept the definitions:
+
+```sh
 uv run vkit accept --project /path/to/your-repository
+```
+
+4. Run every missing or stale check and evaluate the gate:
+
+```sh
 uv run vkit check run --project /path/to/your-repository --needed
 uv run vkit gate --project /path/to/your-repository
 ```
 
-Add `verification/features.json` to map application behavior to checks, following the [example feature map](../examples/python-cli/verification/features.json).
+5. Optionally add `verification/features.json` to map application behaviors to checks. Follow the format in the [Python CLI feature map](../examples/python-cli/verification/features.json).
 
-The [console guide](console.md) explains daily use. For proofs and model checking, see the [verification reference](verification.md).
+## Next steps
+
+- Read the [console guide](console.md) for daily check execution, workspace switching, and tool settings.
+- Read the [MCP tools guide](tool-discovery.md) to connect a coding agent over stdio.
+- Read the [verification reference](verification.md) for Lean proofs, TLA+ model checking, Verus contracts, and change certification.

@@ -13,6 +13,7 @@
 </p>
 
 <p align="center">
+  <a href="#architecture">Architecture</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="docs/console.md">Console guide</a> ·
   <a href="docs/tool-discovery.md">MCP tools</a> ·
@@ -35,7 +36,13 @@ A totals function passes its tests. An edit makes `10 + 20 + 12` return `45`, bu
 - Compare two finite state models and get a shortest sequence of actions that distinguishes their behavior.
 - Check Lean theorems, verify the supported Verus resource-ledger contracts, and run bounded Kani checks of captured Rust models.
 - Run checks and review logs, evidence freshness, feature coverage, and proposals across remembered repositories in the local web console.
-- Check merge candidates against the target branch's accepted requirements in [protected CI](examples/protected-ci/README.md) (`vkit gate --candidate --target`) — the only real authority boundary; the local gate and evidence ledger are the advisory in-flight loop.
+- Check merge candidates against the target branch's accepted requirements in [protected CI](examples/protected-ci/README.md) (`vkit gate --candidate --target`). Protected CI is the authority boundary. The local gate and evidence ledger form the advisory in-flight loop.
+
+## Architecture
+
+![VKit architecture: interfaces, core engine, verification layer, and tamper-evident evidence output.](docs/assets/architecture.svg)
+
+Core source code lives in `src/vkit/`, formal models and checks live in `formal/`, automated tests live in `tests/`, and maintenance scripts live in `scripts/tools/`.
 
 ## Get started
 

@@ -1,76 +1,108 @@
 # Use the VKit console
 
-The console runs repository checks and displays evidence, coverage, proposals, and tool settings. Start it from the VKit checkout:
+The VKit console is a local web interface for running checks, inspecting run logs, reviewing proposals, and managing tool settings across remembered repositories.
+
+## Start the console
+
+Run this command from the VKit checkout:
 
 ```sh
 uv run vkit console --project /path/to/your-repository
 ```
 
-VKit opens the local console in your browser. The packaged interface needs no Node installation or external web services.
+VKit binds an HTTP server on `127.0.0.1`, prints the local URL, and opens it in your browser. The interface ships as packaged static assets in `src/vkit/console/static`, so it requires no Node installation and no external web services.
+
+Use these flags to override saved launch defaults:
+
+| Flag | Purpose |
+| --- | --- |
+| `--project PATH` | Select the initial repository. Defaults to the saved project, then the current directory. |
+| `--port PORT` | Bind a specific port from `0` to `65535`. Pass `0` to pick an open port. |
+| `--browser` or `--no-browser` | Open or suppress the browser tab on startup. |
+
+## Architecture
+
+The console runs strictly on loopback (`127.0.0.1`). The server enforces `Host` and `Origin` checks along with a per-process CSRF token (`X-Vkit-Token`) on every `POST` request.
+
+```mermaid
+flowchart LR
+    UI["Browser UI<br/>Packaged static assets"] <-->|"HTTP + JSON<br/>Host, Origin, X-Vkit-Token"| SRV["localhost HTTP Server<br/>src/vkit/console/server.py"]
+    SRV <-->|"Status, runs, config, registry"| STORE["Durable Store<br/>.git/vkit/ &amp; workspaces.sqlite3"]
+    SRV <-->|"POST /api/call"| MCP["MCP Tools<br/>vkit.mcp.Server"]
+    MCP <--> STORE
+```
+
+Read endpoints (`/api/status`, `/api/runs`, `/api/run`, `/api/config`, `/api/workspaces`) query the repository store and workspace registry directly. Action requests go through `/api/call` to the same MCP tool handlers that coding agents use.
 
 ## Run checks
 
-Select a workspace, then open **Checks**. Use **Run** beside a check to submit it, or **Run needed checks** to run checks with stale or missing evidence. Open **Runs** for progress, logs, artifacts, and cancellation.
+Select a single workspace in the sidebar, then open **Checks**.
 
-**Refresh** reloads status. It does not run checks.
+- Select **Run** beside a check to submit one attempt.
+- Select **Run needed checks** to submit every check with stale or missing evidence.
+- Open **Runs** to inspect live progress, stdout and stderr logs, artifacts, or to cancel a running attempt.
 
-The console runs checks declared in `verification/manifest.json` and accepted through the CLI. See [Getting started](getting-started.md) for repository configuration. Formal package verification uses `vkit verify` or the MCP `verify` tool, as described in the [verification reference](verification.md).
+Select **Refresh** to reload repository status. Refreshing does not execute checks.
+
+The console executes checks declared in `verification/manifest.json` that you have already accepted through the CLI. See [Getting started](getting-started.md) to configure a repository. For formal package verification, run `vkit verify` or call the MCP `verify` tool as described in the [verification reference](verification.md).
 
 ## Resolve incomplete evidence
 
-Use the check states to choose the next action:
+Check states tell you why a check is not ready for the gate and what to do next:
 
-| State | Action |
+| State | Next action |
 | --- | --- |
-| Not set up | Add a valid `verification/manifest.json`. Start with the [tutorial](getting-started.md) or an [example](../README.md#documentation). |
-| Not approved | Review the check definition with `vkit accept --project /path/to/your-repository`. |
-| Missing | Run the check. It has no evidence yet. |
-| Stale | Run the check again. Its recorded inputs or definition have changed. |
-| Failed | Open the run, inspect its observations, fix the cause, and rerun. |
-| Blocked | Open the run and resolve the reported prerequisite or execution problem. |
-| Fresh pass | The recorded check passed for its current inputs. |
+| Not set up | Add a valid `verification/manifest.json`. Start with [Getting started](getting-started.md) or an [example](../README.md#documentation). |
+| Not approved | Review and accept the check definition with `vkit accept --project /path/to/your-repository`. |
+| Missing | Run the check. No evidence exists for it yet. |
+| Stale | Run the check again. Its declared inputs or definition changed after the last run. |
+| Failed | Open the run, read its observations and logs, fix the defect, and rerun. |
+| Blocked | Open the run and resolve the reported prerequisite or execution error. |
+| Fresh pass | No action required. The recorded pass matches the current inputs. |
 
-The gate requires current passing evidence for required checks and formal components. A successful refresh or an old passing run does not complete that requirement.
+The gate requires fresh passing evidence for every required check and formal component. Refreshing the view or keeping an older passing run does not satisfy the gate.
 
-## Understand capabilities and feature coverage
+## Inspect capabilities and feature coverage
 
-**Capabilities** lists the adapters for registered checks and their check counts in the selected workspace. **No checks registered** means the project has no checks using that adapter. Install any required tool, add a check definition, and accept it before expecting evidence from that adapter.
+Open **Capabilities** to view the adapters used by registered checks in the selected workspace and how many checks use each adapter. **No checks registered** means the manifest defines no checks for that adapter. Install any required external tool, add a check definition to `verification/manifest.json`, and run `vkit accept` before expecting evidence from that adapter.
 
-Formal package verification, change certification, and model comparison have separate workflows. See the [verification reference](verification.md) for those methods.
+Formal package verification, change certification, and finite model comparison follow separate workflows. See the [verification reference](verification.md) for those commands.
 
-**Feature map** describes your application's behavior and its coverage. It reads `verification/features.json`; it is not a list of VKit tools. If the map is empty, add feature entries that name the relevant checks. The [Python example](../examples/python-cli/verification/features.json) includes both covered behavior and explicit gaps.
+Open **Feature map** to inspect application behaviors and their test coverage. This view reads `verification/features.json` from your repository rather than listing VKit tools. If the map is empty, add feature entries that reference your check IDs. The [Python CLI feature map](../examples/python-cli/verification/features.json) shows both covered behaviors and explicit gaps.
 
 ## Switch workspaces
 
-Open the workspace picker at the top of the sidebar. Select a remembered repository, or choose **Add workspace** and enter a repository path.
+Open the workspace picker at the top of the sidebar to switch repositories:
 
-VKit remembers repositories used through the CLI, MCP server, or console. It records those paths without scanning other directories.
+- Select a remembered repository to view its checks, runs, and settings.
+- Select **Add workspace** and enter a repository path to register a new checkout.
+- Select **All workspaces** to see a combined status overview and a cross-repository inbox of pending proposals.
 
-Choose **All workspaces** for a combined overview and pending-proposal inbox. Select a specific workspace before running checks or changing project settings. Separate browser tabs can work with different repositories.
+VKit remembers repositories opened through the CLI, MCP server, or console without scanning your filesystem. Git worktrees appear as separate workspace entries. Separate browser tabs can inspect different workspaces at the same time.
 
-If you move a repository, choose **Add workspace** and enter its new path. The old entry can remain visible as unavailable. Git worktrees appear as separate choices.
-
-The last-seen time records the most recent VKit use of a workspace.
+Select a specific workspace before running checks or changing project settings. If you move a repository on disk, select **Add workspace** with the new path. The previous entry remains visible as unavailable. Each workspace records a last-seen timestamp from its most recent VKit command or visit.
 
 ## Review proposals
 
-The proposal inbox shows suggested changes to check definitions. Open a proposal to review it and copy its acceptance command. Acceptance runs through the CLI; the console does not accept proposals.
+Open the proposal inbox to inspect changes to check definitions proposed by an agent. Select a proposal to read its diff and copy its CLI acceptance command.
 
-In **All workspaces**, proposals identify their repository. Open that workspace before acting on a proposal.
+Acceptance always runs through the CLI (`vkit accept --proposal DIGEST`). The console does not accept proposals on your behalf. In **All workspaces**, each proposal labels its repository so you can switch to that workspace before acting on it.
 
 ## Configure tools
 
-Open **Setup & tools**, then **Project settings > Show tools** to enable or disable tools and change MCP exposure. Reconnect the MCP client after changing exposure or startup category scope.
+Open **Setup & tools**, then select **Project settings > Show tools** to enable or disable individual tools, toggle tool categories, or change MCP exposure (`compact` or `named`).
 
-Tool settings control which VKit operations are available; repository and host permissions still apply. See [MCP tools and settings](tool-discovery.md) for availability rules.
+Reconnect your MCP client after changing exposure or startup category scope so the client reloads the tool catalog. Tool settings control which operations VKit exposes, while repository approvals and host permissions continue to apply. See [MCP tools and settings](tool-discovery.md) for full availability rules.
 
 ## Settings and storage
 
+VKit separates per-repository verification state from user-level launcher defaults:
+
 | Data | Location |
 | --- | --- |
-| Project settings | `<git common directory>/vkit/config.json`, usually `.git/vkit/config.json`. |
-| Project approvals, proposals, and evidence | VKit storage in the repository's Git common directory. |
-| Launch defaults | `%APPDATA%/vkit/config.json` on Windows; `$XDG_CONFIG_HOME/vkit/config.json` on other systems, defaulting to `~/.config/vkit/config.json`. |
-| Remembered workspaces | `workspaces.sqlite3` beside the launch defaults file. |
+| Project settings | `<git common directory>/vkit/config.json` (typically `.git/vkit/config.json`). |
+| Approvals, proposals, runs, and evidence | `<git common directory>/vkit/`. |
+| Launch defaults | `%APPDATA%/vkit/config.json` on Windows, or `$XDG_CONFIG_HOME/vkit/config.json` on Linux and macOS (default `~/.config/vkit/config.json`). |
+| Remembered workspaces | `workspaces.sqlite3` in the same directory as the launch defaults file. |
 
-`VKIT_CONFIG` selects a different launch defaults file and relocates the workspace registry beside it. The registry stores workspace paths and use times. Project evidence and approvals stay with the repository.
+Set `VKIT_CONFIG` to point to an alternate launch defaults file. VKit places `workspaces.sqlite3` beside that file, while repository evidence and approvals always stay inside the repository's Git common directory.
